@@ -64,7 +64,8 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     interpreter: DoryX86Interpreter = .init(),
     executionTier: DoryPCExecutionTier = .interpreter,
     baselineJITMaximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
-    clockSource: DoryPCClockSource = .hostMonotonic
+    clockSource: DoryPCClockSource = .hostMonotonic,
+    hostTimeInstrumentationEnabled: Bool = false
   ) throws {
     guard firmware.manifest.platform == .pcV1 else {
       throw DoryPCUEFIMachineError.incompatibleFirmwarePlatform(firmware.manifest.platform)
@@ -186,7 +187,8 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
       interpreter: interpreter,
       executionTier: executionTier,
       baselineJITMaximumCodeBytes: baselineJITMaximumCodeBytes,
-      clockSource: clockSource
+      clockSource: clockSource,
+      hostTimeInstrumentationEnabled: hostTimeInstrumentationEnabled
     )
     try machine.loadUEFI()
     let bootVariableSnapshot = try DoryPCUEFIBootVariables.applying(

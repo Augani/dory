@@ -162,6 +162,48 @@ public struct DoryPCTimerInterruptDiagnostics: Sendable, Hashable {
   }
 }
 
+public struct DoryPCHostTimeBreakdown: Sendable, Hashable {
+  public let totalNanoseconds: UInt64
+  public let processorEventNanoseconds: UInt64
+  public let clockAdvancementNanoseconds: UInt64
+  public let interruptDeliveryNanoseconds: UInt64
+  public let processorExecutionNanoseconds: UInt64
+  public let idleWaitNanoseconds: UInt64
+
+  public var attributedNanoseconds: UInt64 {
+    [
+      processorEventNanoseconds, clockAdvancementNanoseconds,
+      interruptDeliveryNanoseconds, processorExecutionNanoseconds, idleWaitNanoseconds,
+    ].reduce(0, saturatingSum)
+  }
+
+  public var unattributedNanoseconds: UInt64 {
+    totalNanoseconds > attributedNanoseconds ? totalNanoseconds - attributedNanoseconds : 0
+  }
+
+  public var attributedBasisPoints: UInt64 {
+    guard totalNanoseconds > 0 else { return 0 }
+    let boundedAttributed = min(attributedNanoseconds, totalNanoseconds)
+    return totalNanoseconds.dividingFullWidth(
+      boundedAttributed.multipliedFullWidth(by: 10_000)
+    ).quotient
+  }
+
+  private func saturatingSum(_ partial: UInt64, _ value: UInt64) -> UInt64 {
+    let (sum, overflow) = partial.addingReportingOverflow(value)
+    return overflow ? .max : sum
+  }
+}
+
+/// Opt-in host timing for the serialized machine run loop. Wall time supports boot reconciliation;
+/// per-thread CPU time distinguishes guest work from scheduler sleep and host descheduling.
+public struct DoryPCHostExecutionDiagnostics: Sendable, Hashable {
+  public let enabled: Bool
+  public let runCalls: UInt64
+  public let wall: DoryPCHostTimeBreakdown
+  public let threadCPU: DoryPCHostTimeBreakdown
+}
+
 public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let recentLookupHits: UInt64
   public let dictionaryLookupHits: UInt64
@@ -306,6 +348,39 @@ public enum DoryPCExceptionPolicy: Sendable, Hashable {
 
 /// Deterministic direct-kernel DoryPC machine shared by interpreter and translated execution tiers.
 public final class DoryPCDirectKernelMachine: @unchecked Sendable {
+  private enum HostTimeCategory {
+    case processorEvent
+    case clockAdvancement
+    case interruptDelivery
+    case processorExecution
+    case idleWait
+  }
+
+  private struct HostTimeSample {
+    let wallNanoseconds: UInt64
+    let threadCPUNanoseconds: UInt64
+  }
+
+  private struct HostTimeAccumulator {
+    var totalNanoseconds: UInt64 = 0
+    var processorEventNanoseconds: UInt64 = 0
+    var clockAdvancementNanoseconds: UInt64 = 0
+    var interruptDeliveryNanoseconds: UInt64 = 0
+    var processorExecutionNanoseconds: UInt64 = 0
+    var idleWaitNanoseconds: UInt64 = 0
+
+    var snapshot: DoryPCHostTimeBreakdown {
+      .init(
+        totalNanoseconds: totalNanoseconds,
+        processorEventNanoseconds: processorEventNanoseconds,
+        clockAdvancementNanoseconds: clockAdvancementNanoseconds,
+        interruptDeliveryNanoseconds: interruptDeliveryNanoseconds,
+        processorExecutionNanoseconds: processorExecutionNanoseconds,
+        idleWaitNanoseconds: idleWaitNanoseconds
+      )
+    }
+  }
+
   private final class ProcessorState: @unchecked Sendable {
     var value: DoryX86ArchitecturalState
 
@@ -350,6 +425,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   // is executing and would otherwise wait until the full quantum retired (or deadlock its socket
   // deadline). Publish an immutable snapshot after every quantum under a dedicated short lock.
   private let executionStatisticsLock = NSLock()
+  private let hostExecutionDiagnosticsLock = NSLock()
   private var loadedStates: [ProcessorState?]
   private var haltedProcessors: [Bool]
   private var processorLifecycles: [DoryPCProcessorLifecycle]
@@ -384,6 +460,30 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     optimizingJITInstructions: 0,
     optimizingJITBlocks: 0
   )
+  private let hostTimeInstrumentationEnabled: Bool
+  private var hostTimeRunCalls: UInt64 = 0
+  private var hostWallTime = HostTimeAccumulator()
+  private var hostThreadCPUTime = HostTimeAccumulator()
+  private var publishedHostExecutionDiagnostics = DoryPCHostExecutionDiagnostics(
+    enabled: false,
+    runCalls: 0,
+    wall: .init(
+      totalNanoseconds: 0,
+      processorEventNanoseconds: 0,
+      clockAdvancementNanoseconds: 0,
+      interruptDeliveryNanoseconds: 0,
+      processorExecutionNanoseconds: 0,
+      idleWaitNanoseconds: 0
+    ),
+    threadCPU: .init(
+      totalNanoseconds: 0,
+      processorEventNanoseconds: 0,
+      clockAdvancementNanoseconds: 0,
+      interruptDeliveryNanoseconds: 0,
+      processorExecutionNanoseconds: 0,
+      idleWaitNanoseconds: 0
+    )
+  )
   private var pitClockRemainder: UInt64 = 0
   private var rtcClockRemainder: UInt64 = 0
   private var localAPICClockRemainder: UInt64 = 0
@@ -416,7 +516,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     executionTier: DoryPCExecutionTier = .interpreter,
     baselineJITMaximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
     optimizingJITWarmupDispatches: UInt8 = 8,
-    clockSource: DoryPCClockSource = .deterministic
+    clockSource: DoryPCClockSource = .deterministic,
+    hostTimeInstrumentationEnabled: Bool = false
   ) throws {
     guard memoryBytes >= 1024 * 1024,
       memoryBytes % (1024 * 1024) == 0,
@@ -437,6 +538,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     self.executionTier = executionTier
     self.optimizingJITWarmupDispatches = optimizingJITWarmupDispatches
     self.clockSource = clockSource
+    self.hostTimeInstrumentationEnabled = hostTimeInstrumentationEnabled
+    publishedHostExecutionDiagnostics = .init(
+      enabled: hostTimeInstrumentationEnabled,
+      runCalls: 0,
+      wall: hostWallTime.snapshot,
+      threadCPU: hostThreadCPUTime.snapshot
+    )
     baselineJIT =
       switch executionTier {
       case .interpreter:
@@ -781,6 +889,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     )
   }
 
+  public var hostExecutionDiagnostics: DoryPCHostExecutionDiagnostics {
+    hostExecutionDiagnosticsLock.withLock { publishedHostExecutionDiagnostics }
+  }
+
   public func state(forProcessor index: Int) -> DoryX86ArchitecturalState? {
     lock.withLock { loadedStates.indices.contains(index) ? loadedStates[index]?.value : nil }
   }
@@ -859,33 +971,45 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           physicalAddressBits: interpreter.profile.physicalAddressBits
         )
       }
-      defer { publishExecutionStatistics() }
+      let runTimeSample = hostTimeSample()
+      defer {
+        recordTotalHostTime(since: runTimeSample)
+        publishExecutionStatistics()
+        publishHostExecutionDiagnostics()
+      }
       var completed: UInt64 = 0
       while completed < maximumInstructions {
         if let stop = powerStop(instructionCount: completed) { return stop }
-        applyProcessorEvents()
-        if clockSource.monotonicNanoseconds != nil {
-          synchronizeHostClock()
-        } else {
-          // Deterministic conformance time advances with retired work and remains identical across
-          // interpreter and JIT tiers. Product UEFI execution never uses this policy.
-          advanceClocks(by: 1)
+        measuredHostTime(.processorEvent) { applyProcessorEvents() }
+        measuredHostTime(.clockAdvancement) {
+          if clockSource.monotonicNanoseconds != nil {
+            synchronizeHostClock()
+          } else {
+            // Deterministic conformance time advances with retired work and remains identical across
+            // interpreter and JIT tiers. Product UEFI execution never uses this policy.
+            advanceClocks(by: 1)
+          }
         }
-        if let stop = try deliverPendingInterrupts(instructionCount: completed) { return stop }
+        let interruptStop = try measuredHostTime(.interruptDelivery) {
+          try deliverPendingInterrupts(instructionCount: completed)
+        }
+        if let interruptStop { return interruptStop }
         guard let processor = nextRunnableProcessor() else {
-          if waitForNextInterrupt() { continue }
+          if measuredHostTime(.idleWait, { waitForNextInterrupt() }) { continue }
           return .halted(instructionCount: completed)
         }
         guard let processorState = loadedStates[processor] else { continue }
         let remaining = maximumInstructions - completed
         let jitInstructionBudget =
           baselineJIT == nil ? nil : baselineInstructionBudget(maximumInstructions: remaining)
-        let execution = try execute(
-          processor: processor,
-          state: &processorState.value,
-          maximumInstructions: remaining,
-          jitInstructionBudget: jitInstructionBudget
-        )
+        let execution = try measuredHostTime(.processorExecution) {
+          try execute(
+            processor: processor,
+            state: &processorState.value,
+            maximumInstructions: remaining,
+            jitInstructionBudget: jitInstructionBudget
+          )
+        }
         completed += execution.instructionCount
         switch execution.jitTier {
         case .baseline:
@@ -897,14 +1021,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         case .interpreterFallback, nil:
           interpreterInstructionCount &+= execution.instructionCount
         }
-        if clockSource.monotonicNanoseconds != nil {
-          synchronizeHostClock()
-        } else {
-          if execution.instructionCount > 1 {
-            advanceClocks(by: execution.instructionCount - 1)
+        measuredHostTime(.clockAdvancement) {
+          if clockSource.monotonicNanoseconds != nil {
+            synchronizeHostClock()
+          } else {
+            if execution.instructionCount > 1 {
+              advanceClocks(by: execution.instructionCount - 1)
+            }
+            // Deterministic TSC progression is an explicit test/replay policy, not product time.
+            advanceTSCs(byMachineTicks: execution.instructionCount)
           }
-          // Deterministic TSC progression is an explicit test/replay policy, not product time.
-          advanceTSCs(byMachineTicks: execution.instructionCount)
         }
         if let stop = powerStop(instructionCount: completed) { return stop }
         switch execution.result {
@@ -939,13 +1065,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             instructionBytes: faultBytes
           )
           do {
-            try DoryX86InterruptDelivery(profile: interpreter.profile).deliverException(
-              exception,
-              state: &processorState.value,
-              physicalMemory: physicalMemories[processor],
-              pagingUnit: pagingUnits[processor],
-              mode: executionMode(processorState.value)
-            )
+            try measuredHostTime(.interruptDelivery) {
+              try DoryX86InterruptDelivery(profile: interpreter.profile).deliverException(
+                exception,
+                state: &processorState.value,
+                physicalMemory: physicalMemories[processor],
+                pagingUnit: pagingUnits[processor],
+                mode: executionMode(processorState.value)
+              )
+            }
           } catch DoryX86InterruptDeliveryError.processorShutdown {
             return .tripleFault(
               source: .exception(evidence),
@@ -976,6 +1104,80 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         .map { .init(vector: $0.key, deliveries: $0.value) }
     )
     executionStatisticsLock.withLock { publishedExecutionStatistics = snapshot }
+  }
+
+  private func publishHostExecutionDiagnostics() {
+    let snapshot = DoryPCHostExecutionDiagnostics(
+      enabled: hostTimeInstrumentationEnabled,
+      runCalls: hostTimeRunCalls,
+      wall: hostWallTime.snapshot,
+      threadCPU: hostThreadCPUTime.snapshot
+    )
+    hostExecutionDiagnosticsLock.withLock { publishedHostExecutionDiagnostics = snapshot }
+  }
+
+  private func hostTimeSample() -> HostTimeSample? {
+    guard hostTimeInstrumentationEnabled else { return nil }
+    return .init(
+      wallNanoseconds: DispatchTime.now().uptimeNanoseconds,
+      threadCPUNanoseconds: dory_thread_cpu_time_nanoseconds()
+    )
+  }
+
+  private func measuredHostTime<Result>(
+    _ category: HostTimeCategory,
+    _ body: () throws -> Result
+  ) rethrows -> Result {
+    let sample = hostTimeSample()
+    defer { recordHostTime(category, since: sample) }
+    return try body()
+  }
+
+  private func recordTotalHostTime(since sample: HostTimeSample?) {
+    guard let sample, let elapsed = elapsedHostTime(since: sample) else { return }
+    saturatingIncrement(&hostTimeRunCalls)
+    saturatingAdd(elapsed.wallNanoseconds, to: &hostWallTime.totalNanoseconds)
+    saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.totalNanoseconds)
+  }
+
+  private func recordHostTime(_ category: HostTimeCategory, since sample: HostTimeSample?) {
+    guard let sample, let elapsed = elapsedHostTime(since: sample) else { return }
+    switch category {
+    case .processorEvent:
+      saturatingAdd(elapsed.wallNanoseconds, to: &hostWallTime.processorEventNanoseconds)
+      saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.processorEventNanoseconds)
+    case .clockAdvancement:
+      saturatingAdd(elapsed.wallNanoseconds, to: &hostWallTime.clockAdvancementNanoseconds)
+      saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.clockAdvancementNanoseconds)
+    case .interruptDelivery:
+      saturatingAdd(elapsed.wallNanoseconds, to: &hostWallTime.interruptDeliveryNanoseconds)
+      saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.interruptDeliveryNanoseconds)
+    case .processorExecution:
+      saturatingAdd(elapsed.wallNanoseconds, to: &hostWallTime.processorExecutionNanoseconds)
+      saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.processorExecutionNanoseconds)
+    case .idleWait:
+      saturatingAdd(elapsed.wallNanoseconds, to: &hostWallTime.idleWaitNanoseconds)
+      saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.idleWaitNanoseconds)
+    }
+  }
+
+  private func elapsedHostTime(since sample: HostTimeSample) -> HostTimeSample? {
+    let wallNow = DispatchTime.now().uptimeNanoseconds
+    let cpuNow = dory_thread_cpu_time_nanoseconds()
+    guard wallNow >= sample.wallNanoseconds, cpuNow >= sample.threadCPUNanoseconds else { return nil }
+    return .init(
+      wallNanoseconds: wallNow - sample.wallNanoseconds,
+      threadCPUNanoseconds: cpuNow - sample.threadCPUNanoseconds
+    )
+  }
+
+  private func saturatingIncrement(_ value: inout UInt64) {
+    if value < .max { value += 1 }
+  }
+
+  private func saturatingAdd(_ increment: UInt64, to value: inout UInt64) {
+    let (sum, overflow) = value.addingReportingOverflow(increment)
+    value = overflow ? .max : sum
   }
 
   private enum ProcessorResult {

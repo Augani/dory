@@ -2,6 +2,7 @@
 
 #include <signal.h>
 #include <string.h>
+#include <time.h>
 
 static volatile sig_atomic_t dory_sigcont_generation_value = 0;
 
@@ -30,6 +31,14 @@ void dory_atomic_u64_increment_saturating(uint64_t *value) {
     while (current != UINT64_MAX &&
            !__atomic_compare_exchange_n(
                value, &current, current + 1, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
+
+uint64_t dory_thread_cpu_time_nanoseconds(void) {
+    struct timespec value;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) != 0) {
+        return 0;
+    }
+    return (uint64_t)value.tv_sec * UINT64_C(1000000000) + (uint64_t)value.tv_nsec;
 }
 
 int dory_install_sigcont_generation_tracker(void) {

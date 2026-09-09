@@ -456,6 +456,31 @@ import Testing
     #expect(diagnostics.totalRequests == 1)
   }
 
+  @Test func hostTimingInstrumentationIsOptInAndSeparatesWallFromThreadCPU() throws {
+    let disabled = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    try disabled.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+    _ = try disabled.runOnDedicatedStack(maximumInstructions: 1)
+    #expect(!disabled.hostExecutionDiagnostics.enabled)
+    #expect(disabled.hostExecutionDiagnostics.runCalls == 0)
+
+    let enabled = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      hostTimeInstrumentationEnabled: true
+    )
+    try enabled.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+    _ = try enabled.runOnDedicatedStack(maximumInstructions: 16)
+
+    let diagnostics = enabled.hostExecutionDiagnostics
+    #expect(diagnostics.enabled)
+    #expect(diagnostics.runCalls == 1)
+    #expect(diagnostics.wall.totalNanoseconds > 0)
+    #expect(diagnostics.wall.processorExecutionNanoseconds > 0)
+    #expect(diagnostics.wall.attributedBasisPoints <= 10_000)
+    #expect(diagnostics.threadCPU.totalNanoseconds > 0)
+    #expect(diagnostics.threadCPU.processorExecutionNanoseconds > 0)
+    #expect(diagnostics.threadCPU.attributedBasisPoints <= 10_000)
+  }
+
   @Test func productionClockAdvancesTSCAndDevicesFromHostMonotonicTime() throws {
     final class ManualClock: @unchecked Sendable {
       private let lock = NSLock()

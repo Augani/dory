@@ -111,6 +111,7 @@ private struct Arguments {
   let expectedSerialMarker: String?
   let bootProbe: Bool
   let bootTimelineEnabled: Bool
+  let hostTimeInstrumentationEnabled: Bool
   let clockSource: DoryPCClockSource
   let clockSourceDescription: String
   let initialRTCUnixSeconds: UInt64
@@ -133,6 +134,7 @@ private struct Arguments {
           "--exception-policy", "--execution-tier", "--progress-instructions",
           "--expected-serial-marker",
           "--boot-probe", "--clock-source", "--boot-timeline",
+          "--host-time-instrumentation",
           "--initial-rtc-unix-seconds",
           "--trace-after-instructions", "--trace-capacity", "--trace-break-rip-below",
         ].contains(name)
@@ -152,6 +154,7 @@ private struct Arguments {
           + "[--expected-serial-marker text] "
           + "[--boot-probe enabled|disabled] [--clock-source host-monotonic|deterministic] "
           + "[--initial-rtc-unix-seconds seconds] [--boot-timeline enabled|disabled] "
+          + "[--host-time-instrumentation enabled|disabled] "
           + "[--trace-after-instructions count] [--trace-capacity count] "
           + "[--trace-break-rip-below address] "
           + "[--timeout-seconds 1...7200] [--max-instructions count] [--progress-instructions count] [--memory-bytes count]"
@@ -161,6 +164,11 @@ private struct Arguments {
     case "enabled": bootTimelineEnabled = true
     case "disabled": bootTimelineEnabled = false
     default: throw SmokeError.usage("--boot-timeline must be enabled or disabled")
+    }
+    switch options["--host-time-instrumentation"] ?? "enabled" {
+    case "enabled": hostTimeInstrumentationEnabled = true
+    case "disabled": hostTimeInstrumentationEnabled = false
+    default: throw SmokeError.usage("--host-time-instrumentation must be enabled or disabled")
     }
     let timeoutText = options["--timeout-seconds"] ?? "900"
     guard let timeoutSeconds = UInt64(timeoutText), (1...7200).contains(timeoutSeconds) else {
@@ -397,6 +405,31 @@ private func timerInterruptDiagnostics(
     "rtcRequests": diagnostics.rtcRequests,
     "hpetRequests": diagnostics.hpetRequests,
     "totalRequests": diagnostics.totalRequests,
+  ]
+}
+
+private func hostTimeBreakdown(_ value: DoryPCHostTimeBreakdown) -> [String: Any] {
+  [
+    "totalNanoseconds": value.totalNanoseconds,
+    "processorEventNanoseconds": value.processorEventNanoseconds,
+    "clockAdvancementNanoseconds": value.clockAdvancementNanoseconds,
+    "interruptDeliveryNanoseconds": value.interruptDeliveryNanoseconds,
+    "processorExecutionNanoseconds": value.processorExecutionNanoseconds,
+    "idleWaitNanoseconds": value.idleWaitNanoseconds,
+    "attributedNanoseconds": value.attributedNanoseconds,
+    "unattributedNanoseconds": value.unattributedNanoseconds,
+    "attributedBasisPoints": value.attributedBasisPoints,
+  ]
+}
+
+private func hostExecutionDiagnostics(
+  _ diagnostics: DoryPCHostExecutionDiagnostics
+) -> [String: Any] {
+  [
+    "enabled": diagnostics.enabled,
+    "runCalls": diagnostics.runCalls,
+    "wall": hostTimeBreakdown(diagnostics.wall),
+    "threadCPU": hostTimeBreakdown(diagnostics.threadCPU),
   ]
 }
 
@@ -686,6 +719,8 @@ private func runWithProgress(
         "physicalMemoryDiagnostics": physicalMemoryDiagnostics(machine.physicalMemory.diagnostics),
         "timerInterruptDiagnostics": timerInterruptDiagnostics(
           machine.timerInterruptDiagnostics),
+        "hostExecutionDiagnostics": hostExecutionDiagnostics(
+          machine.hostExecutionDiagnostics),
         "blockDevices": blockDeviceDiagnostics(blockDevices, memory: machine.physicalMemory),
       ]
       let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -828,7 +863,8 @@ private func run() throws {
     firmwareConfigurationFlags: arguments.bootProbe ? [.qualificationBootProbe] : [],
     displaySink: displaySink,
     executionTier: arguments.executionTier,
-    clockSource: arguments.clockSource
+    clockSource: arguments.clockSource,
+    hostTimeInstrumentationEnabled: arguments.hostTimeInstrumentationEnabled
   )
   let bootTimeline = arguments.bootTimelineEnabled ? DoryPCBootTimeline() : nil
   composed.machine.serial.observeBoot(with: bootTimeline)
@@ -966,6 +1002,7 @@ private func run() throws {
     "maximumInstructions": arguments.maximumInstructions,
     "executionTimeoutSeconds": arguments.timeoutSeconds,
     "executionElapsedNanoseconds": executionElapsed,
+    "hostTimeInstrumentationEnabled": arguments.hostTimeInstrumentationEnabled,
     "timedOut": timedOut,
     "progressInstructions": arguments.progressInstructions,
     "traceAfterInstructions": arguments.traceAfterInstructions.map { $0 as Any } ?? NSNull(),
@@ -991,6 +1028,8 @@ private func run() throws {
       composed.machine.physicalMemory.diagnostics),
     "timerInterruptDiagnostics": timerInterruptDiagnostics(
       composed.machine.timerInterruptDiagnostics),
+    "hostExecutionDiagnostics": hostExecutionDiagnostics(
+      composed.machine.hostExecutionDiagnostics),
     "persistentSystemDisk": arguments.systemDisk?.path ?? "in-memory",
     "installerMedia": arguments.installerMedia?.path ?? "none",
     "installerMediaByteCount": installerIdentity.map { $0.byteCount as Any } ?? NSNull(),
