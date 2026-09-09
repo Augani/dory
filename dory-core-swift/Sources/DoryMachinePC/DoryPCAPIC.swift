@@ -65,9 +65,11 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   private var timerDivideValue: UInt64 = 2
   private var timerBaseClockRemainder: UInt64 = 0
   private var timerInterruptRequestCount: UInt64 = 0
+  private let diagnosticsEnabled: Bool
 
-  public init(apicID: UInt32) {
+  public init(apicID: UInt32, diagnosticsEnabled: Bool = true) {
     self.apicID = apicID
+    self.diagnosticsEnabled = diagnosticsEnabled
     hasPendingRequest = .allocate(capacity: 1)
     hasPendingRequest.initialize(to: 0)
   }
@@ -270,7 +272,7 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
     }
 
     if !timer.masked {
-      if timerInterruptRequestCount < .max { timerInterruptRequestCount += 1 }
+      if diagnosticsEnabled, timerInterruptRequestCount < .max { timerInterruptRequestCount += 1 }
       injectLocked(vector: timer.vector, levelTriggered: false)
     }
     switch timer.mode {

@@ -410,8 +410,13 @@ public final class DoryPCPIT8254: DoryPCPortIODevice, @unchecked Sendable {
   private var channel2LatchedCount: UInt32?
   private var elapsedClocks: UInt64 = 0
   private var interruptRequestCount: UInt64 = 0
+  private let diagnosticsEnabled: Bool
 
-  public init(onInterrupt: @escaping @Sendable () -> Void) {
+  public init(
+    diagnosticsEnabled: Bool = true,
+    onInterrupt: @escaping @Sendable () -> Void
+  ) {
+    self.diagnosticsEnabled = diagnosticsEnabled
     self.onInterrupt = onInterrupt
   }
 
@@ -433,7 +438,7 @@ public final class DoryPCPIT8254: DoryPCPortIODevice, @unchecked Sendable {
         let remaining = (clocks - UInt64(current)) % UInt64(reload)
         current = remaining == 0 ? reload : reload - UInt32(remaining)
       }
-      if interruptRequestCount < .max { interruptRequestCount += 1 }
+      if diagnosticsEnabled, interruptRequestCount < .max { interruptRequestCount += 1 }
       return true
     }
     if shouldInterrupt { onInterrupt() }

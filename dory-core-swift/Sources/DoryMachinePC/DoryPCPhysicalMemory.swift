@@ -133,19 +133,39 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   private var sealedMappings: SealedMappings?
   private let hasPublishedSealedMappings: UnsafeMutablePointer<UInt8>
   private let diagnosticCounters: UnsafeMutablePointer<UInt64>
+  private let diagnosticsEnabled: Bool
+  private let diagnosticsLock = NSLock()
+  private var publishedDiagnostics = DoryPCPhysicalMemoryDiagnostics(
+    instructionFetchHelperCalls: 0,
+    readHelperCalls: 0,
+    writeHelperCalls: 0,
+    validationHelperCalls: 0,
+    codeGenerationHelperCalls: 0,
+    atomicHelperCalls: 0,
+    bulkHelperCalls: 0,
+    dmaValidationCalls: 0,
+    mmioInstructionFetchExits: 0,
+    mmioReadExits: 0,
+    mmioWriteExits: 0
+  )
 
-  public convenience init(ram: any DoryX86PhysicalRAM) throws {
+  public convenience init(
+    ram: any DoryX86PhysicalRAM,
+    diagnosticsEnabled: Bool = true
+  ) throws {
     try self.init(
       ram: ram,
       mmioHoleStart: DoryPCV1ABI.mmioHoleStart,
-      above4GRAMStart: DoryPCV1ABI.above4GRAMStart
+      above4GRAMStart: DoryPCV1ABI.above4GRAMStart,
+      diagnosticsEnabled: diagnosticsEnabled
     )
   }
 
   init(
     ram: any DoryX86PhysicalRAM,
     mmioHoleStart: UInt64,
-    above4GRAMStart: UInt64
+    above4GRAMStart: UInt64,
+    diagnosticsEnabled: Bool = true
   ) throws {
     guard ram.baseAddress == 0, ram.byteCount > 0, mmioHoleStart > 0,
       above4GRAMStart > mmioHoleStart,
@@ -160,6 +180,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     self.ram = ram
     self.mmioHoleStart = mmioHoleStart
     self.above4GRAMStart = above4GRAMStart
+    self.diagnosticsEnabled = diagnosticsEnabled
     hasPublishedSealedMappings = .allocate(capacity: 1)
     hasPublishedSealedMappings.initialize(to: 0)
     diagnosticCounters = .allocate(capacity: DiagnosticCounter.allCases.count)
@@ -174,7 +195,15 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   public var diagnostics: DoryPCPhysicalMemoryDiagnostics {
-    .init(
+    diagnosticsLock.withLock { publishedDiagnostics }
+  }
+
+  /// Publishes a race-free snapshot after the owning execution thread reaches a quiescent point.
+  /// The hot counters are deliberately thread-confined so instrumentation does not place an
+  /// atomic read-modify-write on every CPU memory helper call.
+  public func publishDiagnostics() {
+    guard diagnosticsEnabled else { return }
+    let snapshot = DoryPCPhysicalMemoryDiagnostics(
       instructionFetchHelperCalls: diagnosticValue(.instructionFetchHelperCalls),
       readHelperCalls: diagnosticValue(.readHelperCalls),
       writeHelperCalls: diagnosticValue(.writeHelperCalls),
@@ -187,6 +216,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       mmioReadExits: diagnosticValue(.mmioReadExits),
       mmioWriteExits: diagnosticValue(.mmioWriteExits)
     )
+    diagnosticsLock.withLock { publishedDiagnostics = snapshot }
   }
 
   public func attach(_ device: any DoryPCMMIODevice) throws {
@@ -596,12 +626,15 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     return lower
   }
 
+  @inline(__always)
   private func incrementDiagnostic(_ counter: DiagnosticCounter) {
-    dory_atomic_u64_increment_saturating(diagnosticCounters.advanced(by: counter.rawValue))
+    guard diagnosticsEnabled else { return }
+    let value = diagnosticCounters.advanced(by: counter.rawValue)
+    if value.pointee != .max { value.pointee += 1 }
   }
 
   private func diagnosticValue(_ counter: DiagnosticCounter) -> UInt64 {
-    dory_atomic_u64_load_relaxed(diagnosticCounters.advanced(by: counter.rawValue))
+    diagnosticCounters.advanced(by: counter.rawValue).pointee
   }
 }
 

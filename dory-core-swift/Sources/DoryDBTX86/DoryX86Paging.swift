@@ -124,19 +124,25 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
   private var linearInvalidationCount: UInt64 = 0
   private var globalInvalidationCount: UInt64 = 0
   private var capacityFlushCount: UInt64 = 0
+  private let diagnosticsEnabled: Bool
   public let physicalAddressBits: UInt8
   public let maximumEntryCount: Int
 
-  public init(physicalAddressBits: UInt8 = 40, maximumEntryCount: Int = 4_096) {
+  public init(
+    physicalAddressBits: UInt8 = 40,
+    maximumEntryCount: Int = 4_096,
+    diagnosticsEnabled: Bool = true
+  ) {
     precondition((32...52).contains(physicalAddressBits))
     precondition(maximumEntryCount > 0)
     self.physicalAddressBits = physicalAddressBits
     self.maximumEntryCount = maximumEntryCount
+    self.diagnosticsEnabled = diagnosticsEnabled
   }
 
   public func invalidate(linearAddress: UInt64) {
     lock.lock()
-    increment(&linearInvalidationCount)
+    if diagnosticsEnabled, linearInvalidationCount < .max { linearInvalidationCount += 1 }
     // A large translation may occupy several 4 KiB cache slots. INVLPG must remove
     // every slot belonging to the large page, including the hot lookup entries.
     func containsAddress(_ key: TLBKey, _ value: TLBValue) -> Bool {
@@ -154,7 +160,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 
   public func invalidateAll() {
     lock.lock()
-    increment(&globalInvalidationCount)
+    if diagnosticsEnabled, globalInvalidationCount < .max { globalInvalidationCount += 1 }
     generation &+= 1
     entries.removeAll(keepingCapacity: true)
     recentEntries = [nil, nil, nil]
@@ -197,8 +203,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     }
     guard context.control.cr0 & (1 << 31) != 0 else {
       lock.withLock {
-        increment(&translationRequestCount)
-        increment(&pagingDisabledBypassCount)
+        if diagnosticsEnabled, translationRequestCount < .max { translationRequestCount += 1 }
+        if diagnosticsEnabled, pagingDisabledBypassCount < .max { pagingDisabledBypassCount += 1 }
       }
       return .init(
         linearAddress: linearAddress,
@@ -212,7 +218,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 
     lock.lock()
     defer { lock.unlock() }
-    increment(&translationRequestCount)
+    if diagnosticsEnabled, translationRequestCount < .max { translationRequestCount += 1 }
     let key = TLBKey(
       linearPage: linearAddress >> 12,
       cr3: context.control.cr3,
@@ -230,19 +236,19 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     )
     let recentIndex = recentEntryIndex(access)
     if let recent = recentEntries[recentIndex], recent.key == key {
-      increment(&recentTLBHitCount)
+      if diagnosticsEnabled, recentTLBHitCount < .max { recentTLBHitCount += 1 }
       return makeTranslation(
         linearAddress: linearAddress,
         value: recent.value
       )
     }
     if let cached = entries[key] {
-      increment(&dictionaryTLBHitCount)
+      if diagnosticsEnabled, dictionaryTLBHitCount < .max { dictionaryTLBHitCount += 1 }
       recentEntries[recentIndex] = .init(key: key, value: cached)
       return makeTranslation(linearAddress: linearAddress, value: cached)
     }
 
-    increment(&pageWalkCount)
+    if diagnosticsEnabled, pageWalkCount < .max { pageWalkCount += 1 }
     let translation: DoryX86Translation
     do {
       if ia32eActive {
@@ -268,11 +274,11 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
         )
       }
     } catch {
-      increment(&pageWalkFailureCount)
+      if diagnosticsEnabled, pageWalkFailureCount < .max { pageWalkFailureCount += 1 }
       throw error
     }
     if entries.count >= maximumEntryCount {
-      increment(&capacityFlushCount)
+      if diagnosticsEnabled, capacityFlushCount < .max { capacityFlushCount += 1 }
       entries.removeAll(keepingCapacity: true)
     }
     let value = TLBValue(
@@ -293,10 +299,6 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     case .read: 1
     case .write: 2
     }
-  }
-
-  private func increment(_ value: inout UInt64) {
-    if value < .max { value += 1 }
   }
 
   private func makeTranslation(

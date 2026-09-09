@@ -437,7 +437,10 @@ import Testing
   }
 
   @Test func timerDiagnosticsCountRequestsAtTheirDeviceSource() throws {
-    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      instrumentationEnabled: true
+    )
     try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
     try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
     try machine.localAPIC.configureTimer(
@@ -462,10 +465,19 @@ import Testing
     _ = try disabled.runOnDedicatedStack(maximumInstructions: 1)
     #expect(!disabled.hostExecutionDiagnostics.enabled)
     #expect(disabled.hostExecutionDiagnostics.runCalls == 0)
+    #expect(disabled.physicalMemory.diagnostics.totalMemoryHelperCalls == 0)
+    #expect(disabled.physicalMemory.diagnostics.totalMMIOExits == 0)
+    #expect(disabled.timerInterruptDiagnostics.totalRequests == 0)
+    #expect(
+      disabled.pagingDiagnostics.allSatisfy {
+        $0.translationRequests == 0 && $0.linearInvalidations == 0
+          && $0.globalInvalidations == 0
+      }
+    )
 
     let enabled = try DoryPCDirectKernelMachine(
       memoryBytes: 2 * 1024 * 1024,
-      hostTimeInstrumentationEnabled: true
+      instrumentationEnabled: true
     )
     try enabled.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
     _ = try enabled.runOnDedicatedStack(maximumInstructions: 16)
@@ -479,6 +491,8 @@ import Testing
     #expect(diagnostics.threadCPU.totalNanoseconds > 0)
     #expect(diagnostics.threadCPU.processorExecutionNanoseconds > 0)
     #expect(diagnostics.threadCPU.attributedBasisPoints <= 10_000)
+    #expect(enabled.physicalMemory.diagnostics.totalMemoryHelperCalls > 0)
+    #expect(enabled.pagingDiagnostics.contains { $0.translationRequests > 0 })
   }
 
   @Test func productionClockAdvancesTSCAndDevicesFromHostMonotonicTime() throws {

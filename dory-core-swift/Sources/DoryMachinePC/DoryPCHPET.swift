@@ -63,10 +63,12 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
   private var mainCounter: UInt64 = 0
   private var timers: [Timer]
   private var interruptRequestCounts: [UInt64]
+  private let diagnosticsEnabled: Bool
 
   public init(
     baseAddress: UInt64 = DoryPCV1ABI.hpetBase,
     timerCount: Int = 3,
+    diagnosticsEnabled: Bool = true,
     interruptSink: @escaping @Sendable (_ timer: Int, _ route: DoryPCHPETInterruptRoute, _ asserted: Bool) -> Void = {
       _, _, _ in
     }
@@ -75,6 +77,7 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
     self.baseAddress = baseAddress
     self.timerCount = timerCount
     self.interruptSink = interruptSink
+    self.diagnosticsEnabled = diagnosticsEnabled
     timers = .init(repeating: .init(), count: timerCount)
     interruptRequestCounts = .init(repeating: 0, count: timerCount)
   }
@@ -93,7 +96,9 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
         interruptStatus |= UInt64(1) << UInt64(index)
         let route = interruptRouteLocked(timer: index)
         if timers[index].configuration & (1 << 2) != 0 {
-          if interruptRequestCounts[index] < .max { interruptRequestCounts[index] += 1 }
+          if diagnosticsEnabled, interruptRequestCounts[index] < .max {
+            interruptRequestCounts[index] += 1
+          }
           if timers[index].configuration & (1 << 1) != 0 {
             notifications.append(.init(timer: index, route: route, asserted: true))
           } else {

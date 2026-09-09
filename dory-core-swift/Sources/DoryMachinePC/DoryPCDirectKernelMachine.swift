@@ -460,7 +460,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     optimizingJITInstructions: 0,
     optimizingJITBlocks: 0
   )
-  private let hostTimeInstrumentationEnabled: Bool
+  private let instrumentationEnabled: Bool
   private var hostTimeRunCalls: UInt64 = 0
   private var hostWallTime = HostTimeAccumulator()
   private var hostThreadCPUTime = HostTimeAccumulator()
@@ -517,7 +517,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     baselineJITMaximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
     optimizingJITWarmupDispatches: UInt8 = 8,
     clockSource: DoryPCClockSource = .deterministic,
-    hostTimeInstrumentationEnabled: Bool = false
+    instrumentationEnabled: Bool = false
   ) throws {
     guard memoryBytes >= 1024 * 1024,
       memoryBytes % (1024 * 1024) == 0,
@@ -538,9 +538,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     self.executionTier = executionTier
     self.optimizingJITWarmupDispatches = optimizingJITWarmupDispatches
     self.clockSource = clockSource
-    self.hostTimeInstrumentationEnabled = hostTimeInstrumentationEnabled
+    self.instrumentationEnabled = instrumentationEnabled
     publishedHostExecutionDiagnostics = .init(
-      enabled: hostTimeInstrumentationEnabled,
+      enabled: instrumentationEnabled,
       runCalls: 0,
       wall: hostWallTime.snapshot,
       threadCPU: hostThreadCPUTime.snapshot
@@ -597,19 +597,21 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     )
     memory = sharedMemory
     physicalMemories = try (0..<processorCount).map {
-      _ in try DoryPCPhysicalMemoryBus(ram: sharedMemory)
+      _ in try DoryPCPhysicalMemoryBus(ram: sharedMemory, diagnosticsEnabled: instrumentationEnabled)
     }
     physicalMemory = physicalMemories[0]
     memoryByteCount = memoryBytes
     ioBus = DoryPCPortIOBus()
-    localAPICs = (0..<processorCount).map { DoryPCLocalAPIC(apicID: UInt32($0)) }
+    localAPICs = (0..<processorCount).map {
+      DoryPCLocalAPIC(apicID: UInt32($0), diagnosticsEnabled: instrumentationEnabled)
+    }
     localAPIC = localAPICs[0]
     multiprocessorController = try .init(localAPICs: localAPICs)
     ioAPIC = DoryPCIOAPIC()
     for apic in localAPICs { try ioAPIC.attach(apic) }
     ioAPIC.seal()
     legacyPIC = DoryPCPIC8259Pair()
-    legacyPIT = DoryPCPIT8254 { [legacyPIC, ioAPIC] in
+    legacyPIT = DoryPCPIT8254(diagnosticsEnabled: instrumentationEnabled) { [legacyPIC, ioAPIC] in
       try? legacyPIC.raise(irq: 0)
       try? ioAPIC.setAsserted(true, pin: 2)
       try? ioAPIC.setAsserted(false, pin: 2)
@@ -620,12 +622,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       try? legacyPIC.setAsserted(asserted, irq: 4)
       try? ioAPIC.setAsserted(asserted, pin: 4)
     }
-    rtc = DoryPCRTC146818(initialDate: initialRTCDate)
+    rtc = DoryPCRTC146818(
+      initialDate: initialRTCDate,
+      diagnosticsEnabled: instrumentationEnabled
+    )
     rtc.connectInterruptSink { [legacyPIC, ioAPIC] asserted in
       try? legacyPIC.setAsserted(asserted, irq: 8)
       try? ioAPIC.setAsserted(asserted, pin: 8)
     }
-    hpet = DoryPCHPET { [legacyPIC, ioAPIC] _, route, asserted in
+    hpet = DoryPCHPET(diagnosticsEnabled: instrumentationEnabled) {
+      [legacyPIC, ioAPIC] _, route, asserted in
       if case .legacyIRQ(let irq) = route { try? legacyPIC.setAsserted(asserted, irq: irq) }
       try? ioAPIC.setAsserted(asserted, pin: Self.ioAPICPin(forHPETRoute: route))
     }
@@ -699,7 +705,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       bus.seal()
     }
     pagingUnits = (0..<processorCount).map { _ in
-      DoryX86PagingUnit(physicalAddressBits: interpreter.profile.physicalAddressBits)
+      DoryX86PagingUnit(
+        physicalAddressBits: interpreter.profile.physicalAddressBits,
+        diagnosticsEnabled: instrumentationEnabled
+      )
     }
     pagingUnit = pagingUnits[0]
     translatedMemories = zip(physicalMemories, pagingUnits).map { physicalMemory, pagingUnit in
@@ -974,14 +983,22 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       let runTimeSample = hostTimeSample()
       defer {
         recordTotalHostTime(since: runTimeSample)
+        physicalMemories.forEach { $0.publishDiagnostics() }
         publishExecutionStatistics()
         publishHostExecutionDiagnostics()
       }
       var completed: UInt64 = 0
       while completed < maximumInstructions {
         if let stop = powerStop(instructionCount: completed) { return stop }
-        measuredHostTime(.processorEvent) { applyProcessorEvents() }
-        measuredHostTime(.clockAdvancement) {
+        if instrumentationEnabled {
+          let sample = hostTimeSample()
+          applyProcessorEvents()
+          recordHostTime(.processorEvent, since: sample)
+        } else {
+          applyProcessorEvents()
+        }
+        if instrumentationEnabled {
+          let sample = hostTimeSample()
           if clockSource.monotonicNanoseconds != nil {
             synchronizeHostClock()
           } else {
@@ -989,21 +1006,51 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             // interpreter and JIT tiers. Product UEFI execution never uses this policy.
             advanceClocks(by: 1)
           }
+          recordHostTime(.clockAdvancement, since: sample)
+        } else {
+          if clockSource.monotonicNanoseconds != nil {
+            synchronizeHostClock()
+          } else {
+            advanceClocks(by: 1)
+          }
         }
-        let interruptStop = try measuredHostTime(.interruptDelivery) {
-          try deliverPendingInterrupts(instructionCount: completed)
+        let interruptStop: DoryPCMachineStop?
+        if instrumentationEnabled {
+          let sample = hostTimeSample()
+          interruptStop = try deliverPendingInterrupts(instructionCount: completed)
+          recordHostTime(.interruptDelivery, since: sample)
+        } else {
+          interruptStop = try deliverPendingInterrupts(instructionCount: completed)
         }
         if let interruptStop { return interruptStop }
         guard let processor = nextRunnableProcessor() else {
-          if measuredHostTime(.idleWait, { waitForNextInterrupt() }) { continue }
+          let resumed: Bool
+          if instrumentationEnabled {
+            let sample = hostTimeSample()
+            resumed = waitForNextInterrupt()
+            recordHostTime(.idleWait, since: sample)
+          } else {
+            resumed = waitForNextInterrupt()
+          }
+          if resumed { continue }
           return .halted(instructionCount: completed)
         }
         guard let processorState = loadedStates[processor] else { continue }
         let remaining = maximumInstructions - completed
         let jitInstructionBudget =
           baselineJIT == nil ? nil : baselineInstructionBudget(maximumInstructions: remaining)
-        let execution = try measuredHostTime(.processorExecution) {
-          try execute(
+        let execution: ProcessorExecution
+        if instrumentationEnabled {
+          let sample = hostTimeSample()
+          execution = try execute(
+            processor: processor,
+            state: &processorState.value,
+            maximumInstructions: remaining,
+            jitInstructionBudget: jitInstructionBudget
+          )
+          recordHostTime(.processorExecution, since: sample)
+        } else {
+          execution = try execute(
             processor: processor,
             state: &processorState.value,
             maximumInstructions: remaining,
@@ -1021,7 +1068,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         case .interpreterFallback, nil:
           interpreterInstructionCount &+= execution.instructionCount
         }
-        measuredHostTime(.clockAdvancement) {
+        if instrumentationEnabled {
+          let sample = hostTimeSample()
           if clockSource.monotonicNanoseconds != nil {
             synchronizeHostClock()
           } else {
@@ -1029,6 +1077,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
               advanceClocks(by: execution.instructionCount - 1)
             }
             // Deterministic TSC progression is an explicit test/replay policy, not product time.
+            advanceTSCs(byMachineTicks: execution.instructionCount)
+          }
+          recordHostTime(.clockAdvancement, since: sample)
+        } else {
+          if clockSource.monotonicNanoseconds != nil {
+            synchronizeHostClock()
+          } else {
+            if execution.instructionCount > 1 {
+              advanceClocks(by: execution.instructionCount - 1)
+            }
             advanceTSCs(byMachineTicks: execution.instructionCount)
           }
         }
@@ -1065,7 +1123,17 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             instructionBytes: faultBytes
           )
           do {
-            try measuredHostTime(.interruptDelivery) {
+            if instrumentationEnabled {
+              let sample = hostTimeSample()
+              try DoryX86InterruptDelivery(profile: interpreter.profile).deliverException(
+                exception,
+                state: &processorState.value,
+                physicalMemory: physicalMemories[processor],
+                pagingUnit: pagingUnits[processor],
+                mode: executionMode(processorState.value)
+              )
+              recordHostTime(.interruptDelivery, since: sample)
+            } else {
               try DoryX86InterruptDelivery(profile: interpreter.profile).deliverException(
                 exception,
                 state: &processorState.value,
@@ -1108,7 +1176,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   private func publishHostExecutionDiagnostics() {
     let snapshot = DoryPCHostExecutionDiagnostics(
-      enabled: hostTimeInstrumentationEnabled,
+      enabled: instrumentationEnabled,
       runCalls: hostTimeRunCalls,
       wall: hostWallTime.snapshot,
       threadCPU: hostThreadCPUTime.snapshot
@@ -1116,21 +1184,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     hostExecutionDiagnosticsLock.withLock { publishedHostExecutionDiagnostics = snapshot }
   }
 
+  @inline(__always)
   private func hostTimeSample() -> HostTimeSample? {
-    guard hostTimeInstrumentationEnabled else { return nil }
+    guard instrumentationEnabled else { return nil }
     return .init(
       wallNanoseconds: DispatchTime.now().uptimeNanoseconds,
       threadCPUNanoseconds: dory_thread_cpu_time_nanoseconds()
     )
-  }
-
-  private func measuredHostTime<Result>(
-    _ category: HostTimeCategory,
-    _ body: () throws -> Result
-  ) rethrows -> Result {
-    let sample = hostTimeSample()
-    defer { recordHostTime(category, since: sample) }
-    return try body()
   }
 
   private func recordTotalHostTime(since sample: HostTimeSample?) {
@@ -1140,6 +1200,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.totalNanoseconds)
   }
 
+  @inline(__always)
   private func recordHostTime(_ category: HostTimeCategory, since sample: HostTimeSample?) {
     guard let sample, let elapsed = elapsedHostTime(since: sample) else { return }
     switch category {

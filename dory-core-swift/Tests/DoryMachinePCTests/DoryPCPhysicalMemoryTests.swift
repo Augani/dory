@@ -78,6 +78,7 @@ import Testing
     _ = bus.bulkCopyRAMSpan(at: 0x100, maximumByteCount: 4)
     try bus.validateDMA(at: 0x100, byteCount: 1, deviceWillWrite: false)
 
+    bus.publishDiagnostics()
     let diagnostics = bus.diagnostics
     #expect(diagnostics.instructionFetchHelperCalls == 2)
     #expect(diagnostics.readHelperCalls == 4)

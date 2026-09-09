@@ -34,11 +34,13 @@ public final class DoryPCRTC146818: DoryPCPortIODevice, @unchecked Sendable {
   private var interruptSink: (@Sendable (Bool) -> Void)?
   private var lastInterruptLevel = false
   private var interruptRequestCount: UInt64 = 0
+  private let diagnosticsEnabled: Bool
 
-  public init(initialDate: Date = Date()) {
+  public init(initialDate: Date = Date(), diagnosticsEnabled: Bool = true) {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(secondsFromGMT: 0)!
     self.calendar = calendar
+    self.diagnosticsEnabled = diagnosticsEnabled
     date = initialDate
     cmos[0x0D] = 0x80
   }
@@ -301,7 +303,7 @@ public final class DoryPCRTC146818: DoryPCPortIODevice, @unchecked Sendable {
     let level = interruptLevelLocked()
     guard level != lastInterruptLevel else { return nil }
     lastInterruptLevel = level
-    if level, interruptRequestCount < .max { interruptRequestCount += 1 }
+    if diagnosticsEnabled, level, interruptRequestCount < .max { interruptRequestCount += 1 }
     return interruptSink.map { ($0, level) }
   }
 
