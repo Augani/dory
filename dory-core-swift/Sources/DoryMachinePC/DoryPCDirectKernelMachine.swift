@@ -238,37 +238,60 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let translationCacheHitRate: Double
 
   fileprivate init(_ source: DoryARM64BaselineExecutorDiagnostics) {
-    recentLookupHits = source.recentLookupHits
-    dictionaryLookupHits = source.dictionaryLookupHits
-    lookupMisses = source.lookupMisses
-    memoryGenerationHits = source.memoryGenerationHits
-    byteValidationHits = source.byteValidationHits
-    sharedCodeHits = source.sharedCodeHits
-    compiledBlocks = source.compiledBlocks
-    declinedCompilations = source.declinedCompilations
-    negativeCacheHits = source.negativeCacheHits
-    negativeCacheMisses = source.negativeCacheMisses
-    negativeGenerationMismatches = source.negativeGenerationMismatches
-    negativeEntryCount = source.negativeEntryCount
-    negativeCacheHotSites = source.negativeCacheHotSites.map(DoryPCJITNegativeCacheHotSite.init)
-    codeCacheWraps = source.codeCacheWraps
-    nativeTraceAttempts = source.nativeTraceAttempts
-    nativeTraceReplays = source.nativeTraceReplays
-    codeGenerationChecks = source.codeGenerationChecks
-    codeGenerationMismatches = source.codeGenerationMismatches
-    chainedExecutionCalls = source.chainedExecutionCalls
-    chainedRequestedInstructions = source.chainedRequestedInstructions
-    chainedRetiredInstructions = source.chainedRetiredInstructions
-    translationCacheEntryCount = source.translationCacheEntryCount
-    translationCacheAllocatedBytes = source.translationCacheAllocatedBytes
-    translationCacheAddressSpaceGeneration = source.translationCacheAddressSpaceGeneration
-    translationCacheInvalidations = source.translationCacheInvalidations
-    translationCacheHits = source.translationCacheHits
-    translationCacheMisses = source.translationCacheMisses
-    translationCacheFills = source.translationCacheFills
-    translationCachePageFaults = source.translationCachePageFaults
-    translationCacheFallbacks = source.translationCacheFallbacks
-    translationCacheHitRate = source.translationCacheHitRate
+    self.init([source])
+  }
+
+  fileprivate init(_ sources: [DoryARM64BaselineExecutorDiagnostics]) {
+    precondition(!sources.isEmpty)
+    func sum(_ keyPath: KeyPath<DoryARM64BaselineExecutorDiagnostics, UInt64>) -> UInt64 {
+      sources.reduce(0) { partial, source in
+        let addition = partial.addingReportingOverflow(source[keyPath: keyPath])
+        return addition.overflow ? .max : addition.partialValue
+      }
+    }
+    recentLookupHits = sum(\.recentLookupHits)
+    dictionaryLookupHits = sum(\.dictionaryLookupHits)
+    lookupMisses = sum(\.lookupMisses)
+    memoryGenerationHits = sum(\.memoryGenerationHits)
+    byteValidationHits = sum(\.byteValidationHits)
+    sharedCodeHits = sum(\.sharedCodeHits)
+    compiledBlocks = sum(\.compiledBlocks)
+    declinedCompilations = sum(\.declinedCompilations)
+    negativeCacheHits = sum(\.negativeCacheHits)
+    negativeCacheMisses = sum(\.negativeCacheMisses)
+    negativeGenerationMismatches = sum(\.negativeGenerationMismatches)
+    negativeEntryCount = sum(\.negativeEntryCount)
+    negativeCacheHotSites = Array(
+      sources.flatMap(\.negativeCacheHotSites)
+        .sorted { lhs, rhs in
+          if lhs.hitCount != rhs.hitCount { return lhs.hitCount > rhs.hitCount }
+          return lhs.guestRIP < rhs.guestRIP
+        }
+        .prefix(16)
+        .map(DoryPCJITNegativeCacheHotSite.init)
+    )
+    codeCacheWraps = sum(\.codeCacheWraps)
+    nativeTraceAttempts = sum(\.nativeTraceAttempts)
+    nativeTraceReplays = sum(\.nativeTraceReplays)
+    codeGenerationChecks = sum(\.codeGenerationChecks)
+    codeGenerationMismatches = sum(\.codeGenerationMismatches)
+    chainedExecutionCalls = sum(\.chainedExecutionCalls)
+    chainedRequestedInstructions = sum(\.chainedRequestedInstructions)
+    chainedRetiredInstructions = sum(\.chainedRetiredInstructions)
+    translationCacheEntryCount = sum(\.translationCacheEntryCount)
+    translationCacheAllocatedBytes = sum(\.translationCacheAllocatedBytes)
+    translationCacheAddressSpaceGeneration = sources.map(\.translationCacheAddressSpaceGeneration)
+      .max() ?? 0
+    translationCacheInvalidations = sum(\.translationCacheInvalidations)
+    translationCacheHits = sum(\.translationCacheHits)
+    translationCacheMisses = sum(\.translationCacheMisses)
+    translationCacheFills = sum(\.translationCacheFills)
+    translationCachePageFaults = sum(\.translationCachePageFaults)
+    translationCacheFallbacks = sum(\.translationCacheFallbacks)
+    let lookupCount = translationCacheHits.addingReportingOverflow(translationCacheMisses)
+    let denominator = lookupCount.overflow ? UInt64.max : lookupCount.partialValue
+    translationCacheHitRate =
+      denominator == 0 ? 0 : Double(translationCacheHits) / Double(denominator)
   }
 }
 
@@ -455,8 +478,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var pendingNMIs: Set<Int> = []
   private var roundRobinCursor = 0
   private var consumedPayload = false
-  private let baselineJIT: DoryARM64BaselineExecutor?
-  private let optimizingJIT: DoryARM64BaselineExecutor?
+  private let baselineJITs: [DoryARM64BaselineExecutor]
+  private let optimizingJITs: [DoryARM64BaselineExecutor]
   private let optimizingJITWarmupDispatches: UInt8
   private struct JITHotnessEntry {
     var tag: UInt64 = 0
@@ -568,42 +591,44 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       wall: hostWallTime.snapshot,
       threadCPU: hostThreadCPUTime.snapshot
     )
-    baselineJIT =
+    let baselineCodeBytes =
+      executionTier == .optimizingJIT
+      ? max(4_096, baselineJITMaximumCodeBytes / 4)
+      : baselineJITMaximumCodeBytes
+    let perProcessorBaselineCodeBytes = max(4_096, baselineCodeBytes / processorCount)
+    baselineJITs = try
       switch executionTier {
       case .interpreter:
-        nil
-      case .baselineJIT:
-        try DoryARM64BaselineExecutor(
-          maximumCodeBytes: baselineJITMaximumCodeBytes,
-          decoder: interpreter.decoder,
-          cpuProfileIdentifier: interpreter.profile.identifier,
-          physicalAddressBits: interpreter.profile.physicalAddressBits,
-          profile: interpreter.profile,
-          optimization: .baseline
-        )
-      case .optimizingJIT:
-        try DoryARM64BaselineExecutor(
-          maximumCodeBytes: max(4_096, baselineJITMaximumCodeBytes / 4),
-          decoder: interpreter.decoder,
-          cpuProfileIdentifier: interpreter.profile.identifier,
-          physicalAddressBits: interpreter.profile.physicalAddressBits,
-          profile: interpreter.profile,
-          optimization: .baseline
-        )
+        []
+      case .baselineJIT, .optimizingJIT:
+        try (0..<processorCount).map { _ in
+          try DoryARM64BaselineExecutor(
+            maximumCodeBytes: perProcessorBaselineCodeBytes,
+            decoder: interpreter.decoder,
+            cpuProfileIdentifier: interpreter.profile.identifier,
+            physicalAddressBits: interpreter.profile.physicalAddressBits,
+            profile: interpreter.profile,
+            optimization: .baseline
+          )
+        }
       }
-    optimizingJIT =
+    let optimizingCodeBytes = max(4_096, baselineJITMaximumCodeBytes * 3 / 4)
+    let perProcessorOptimizingCodeBytes = max(4_096, optimizingCodeBytes / processorCount)
+    optimizingJITs = try
       switch executionTier {
       case .interpreter, .baselineJIT:
-        nil
+        []
       case .optimizingJIT:
-        try DoryARM64BaselineExecutor(
-          maximumCodeBytes: max(4_096, baselineJITMaximumCodeBytes * 3 / 4),
-          decoder: interpreter.decoder,
-          cpuProfileIdentifier: interpreter.profile.identifier,
-          physicalAddressBits: interpreter.profile.physicalAddressBits,
-          profile: interpreter.profile,
-          optimization: .optimizing
-        )
+        try (0..<processorCount).map { _ in
+          try DoryARM64BaselineExecutor(
+            maximumCodeBytes: perProcessorOptimizingCodeBytes,
+            decoder: interpreter.decoder,
+            cpuProfileIdentifier: interpreter.profile.identifier,
+            physicalAddressBits: interpreter.profile.physicalAddressBits,
+            profile: interpreter.profile,
+            optimization: .optimizing
+          )
+        }
       }
     firmwareConfiguration = DoryPCFirmwareConfiguration(
       totalRAMBytes: UInt64(memoryBytes),
@@ -935,11 +960,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   }
 
   public var baselineJITDiagnostics: DoryPCJITCacheStatistics? {
-    baselineJIT.map { .init($0.diagnostics) }
+    baselineJITs.isEmpty ? nil : .init(baselineJITs.map(\.diagnostics))
   }
 
   public var optimizingJITDiagnostics: DoryPCJITCacheStatistics? {
-    optimizingJIT.map { .init($0.diagnostics) }
+    optimizingJITs.isEmpty ? nil : .init(optimizingJITs.map(\.diagnostics))
   }
 
   public var pagingDiagnostics: [DoryX86PagingDiagnostics] {
@@ -1095,7 +1120,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         guard let processorState = loadedStates[processor] else { continue }
         let remaining = maximumInstructions - completed
         let jitInstructionBudget =
-          baselineJIT == nil ? nil : baselineInstructionBudget(maximumInstructions: remaining)
+          baselineJITs.isEmpty ? nil : baselineInstructionBudget(maximumInstructions: remaining)
         let execution: ProcessorExecution
         if instrumentationEnabled {
           let sample = hostTimeSample()
@@ -1322,7 +1347,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       for pagingUnit in pagingUnits { pagingUnit.invalidateAll() }
     }
     let mode = executionMode(state)
-    if let jit = selectedJIT(for: state, mode: mode),
+    if let jit = selectedJIT(forProcessor: processor, state: state, mode: mode),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0),
       !state.rflags.contains(.trap),
       state.interruptShadow == nil
@@ -1400,15 +1425,22 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   }
 
   private func selectedJIT(
-    for state: DoryX86ArchitecturalState,
+    forProcessor processor: Int,
+    state: DoryX86ArchitecturalState,
     mode: DoryX86ExecutionMode
   ) -> DoryARM64BaselineExecutor? {
-    guard executionTier == .optimizingJIT, let optimizingJIT else { return baselineJIT }
+    guard baselineJITs.indices.contains(processor) else { return nil }
+    let baselineJIT = baselineJITs[processor]
+    guard executionTier == .optimizingJIT, optimizingJITs.indices.contains(processor) else {
+      return baselineJIT
+    }
+    let optimizingJIT = optimizingJITs[processor]
     guard optimizingJITWarmupDispatches > 0 else { return optimizingJIT }
 
     var tag = state.rip
     tag ^= state.control.cr3 &* 0x9e37_79b9_7f4a_7c15
     tag ^= UInt64(state.cs.selector & 3) << 57
+    tag ^= UInt64(processor) &* 0xd6e8_feb8_6659_fd93
     tag ^= state.control.cr0 & (1 << 31) != 0 ? 1 << 56 : 0
     switch mode {
     case .real16: tag ^= 0x11

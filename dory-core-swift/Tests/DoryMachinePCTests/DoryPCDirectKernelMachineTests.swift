@@ -265,6 +265,8 @@ import Testing
       #expect(diagnostics.chainedExecutionCalls == 2)
       #expect(diagnostics.chainedRequestedInstructions == 128)
       #expect(diagnostics.chainedRetiredInstructions == 128)
+      #expect(diagnostics.translationCacheEntryCount == 2 * 1_024)
+      #expect(diagnostics.translationCacheAllocatedBytes == 2 * 48 * 1_024)
       #expect(machine.executionStatistics.interpreterInstructions == 2)
       #expect(machine.processorExecutionSnapshots[1].lifecycle == .running)
     #endif
