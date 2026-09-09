@@ -84,6 +84,9 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(operand, knownConstants: &knownConstants)
 
+      case .atomicUnary:
+        statements.append(statement)
+
       case .shift(_, let destination, _):
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)

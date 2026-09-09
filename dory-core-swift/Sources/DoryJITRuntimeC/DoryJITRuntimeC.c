@@ -646,8 +646,23 @@ uintptr_t dory_jit_atomic_fetch_add_from_context_address(void) {
             return __atomic_fetch_and((type *)(host_address), (type)(value), __ATOMIC_SEQ_CST); \
         case DORY_JIT_ATOMIC_RMW_OR: \
             return __atomic_fetch_or((type *)(host_address), (type)(value), __ATOMIC_SEQ_CST); \
-        default: \
+        case DORY_JIT_ATOMIC_RMW_XOR: \
             return __atomic_fetch_xor((type *)(host_address), (type)(value), __ATOMIC_SEQ_CST); \
+        default: { \
+            type observed = __atomic_load_n((type *)(host_address), __ATOMIC_SEQ_CST); \
+            type expected; \
+            do { \
+                expected = observed; \
+            } while (!__atomic_compare_exchange_n( \
+                (type *)(host_address), \
+                &observed, \
+                (type)(0 - expected), \
+                0, \
+                __ATOMIC_SEQ_CST, \
+                __ATOMIC_SEQ_CST \
+            )); \
+            return expected; \
+        } \
     }
 
 static uint64_t dory_jit_atomic_rmw(
@@ -685,7 +700,7 @@ int dory_jit_atomic_rmw_from_context(
 ) {
     if (context == NULL || observed_out == NULL ||
         (byte_count != 1 && byte_count != 2 && byte_count != 4 && byte_count != 8) ||
-        operation > DORY_JIT_ATOMIC_RMW_XOR) {
+        operation > DORY_JIT_ATOMIC_RMW_NEGATE) {
         return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
     }
     if ((linear_address & UINT64_C(0xfff)) > UINT64_C(4096) - byte_count) {

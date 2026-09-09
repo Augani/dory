@@ -1416,7 +1416,7 @@ import Testing
     #if arch(arm64)
       let cases: [[UInt8]] = [
         [0xF0, 0x80, 0x20, 0xFD],  // lock and byte ptr [rax],0xfd
-        [0xF0, 0x48, 0xFF, 0x00],  // lock inc qword ptr [rax]
+        [0xF0, 0x48, 0x11, 0x08],  // lock adc qword ptr [rax],rcx
       ]
       let initial = try DoryX86ArchitecturalState(
         registers: .init(rax: 0x80, rcx: 0x1122_3344),
@@ -3596,6 +3596,101 @@ import Testing
           try physical.readScalar(at: 0x81, byteCount: 8)
             == 0x00FF_00FF_00FF_00FF
         )
+      }
+    #endif
+  }
+
+  @Test func alignedLockedUnaryRMWMatchesInterpreterAcrossOperationsAndWidths() throws {
+    #if arch(arm64)
+      struct UnaryCase {
+        let opcode: UInt8
+        let modRM: UInt8
+        let destination32: UInt64
+        let destination64: UInt64
+      }
+      let cases: [UnaryCase] = [
+        .init(
+          opcode: 0xFF,
+          modRM: 0x02,
+          destination32: 0x7FFF_FFFF,
+          destination64: 0x7FFF_FFFF_FFFF_FFFF
+        ),
+        .init(
+          opcode: 0xFF,
+          modRM: 0x0A,
+          destination32: 0x8000_0000,
+          destination64: 0x8000_0000_0000_0000
+        ),
+        .init(
+          opcode: 0xF7,
+          modRM: 0x12,
+          destination32: 0x55AA_00FF,
+          destination64: 0x55AA_00FF_AA55_FF00
+        ),
+        .init(
+          opcode: 0xF7,
+          modRM: 0x1A,
+          destination32: 0x8000_0000,
+          destination64: 0x8000_0000_0000_0000
+        ),
+      ]
+      let instructionAddress: UInt64 = 0x3B00
+      for is64Bit in [false, true] {
+        for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+          for (index, testCase) in cases.enumerated() {
+            let bytes = [UInt8(0xF0)] + (is64Bit ? [0x48] : [])
+              + [testCase.opcode, testCase.modRM]
+            let byteCount = is64Bit ? 8 : 4
+            let destination = is64Bit ? testCase.destination64 : testCase.destination32
+            let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: Int(getpagesize()))
+            let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+            let paging = DoryX86PagingUnit()
+            let initial = try DoryX86ArchitecturalState(
+              registers: .init(rdx: 0x80),
+              rip: instructionAddress,
+              rflags: [.reservedOne, .carry, .direction]
+            )
+            var expected = initial
+            var state = initial
+            try interpretedMemory.write(at: instructionAddress, bytes: bytes)
+            try interpretedMemory.writeScalar(
+              at: 0x80,
+              value: destination,
+              byteCount: byteCount
+            )
+            try physical.writeScalar(at: 0x80, value: destination, byteCount: byteCount)
+            _ = DoryX86Interpreter().step(
+              state: &expected,
+              memory: interpretedMemory,
+              mode: .long64
+            )
+            let translated = DoryX86TranslatedMemory(
+              physicalMemory: physical,
+              pagingUnit: paging,
+              context: .init(state: state, mode: .long64)
+            )
+            let execution = try #require(DoryARM64BaselineExecutor(
+              maximumCodeBytes: 4_096,
+              optimization: optimization
+            ).execute(
+              bytes: bytes,
+              at: instructionAddress,
+              mode: .long64,
+              addressSpaceID: UInt64(140 + index + (is64Bit ? 10 : 0)),
+              maximumInstructions: 1,
+              state: &state,
+              memory: translated
+            ))
+
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(state == expected)
+            #expect(
+              try physical.readScalar(at: 0x80, byteCount: byteCount)
+                == interpretedMemory.readScalar(at: 0x80, byteCount: byteCount)
+            )
+            #expect(paging.diagnostics.translationRequests == 1)
+          }
+        }
       }
     #endif
   }

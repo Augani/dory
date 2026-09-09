@@ -84,6 +84,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
     source: DoryIROperand
   )
   case unary(DoryIRUnaryOperation, operand: DoryIROperand)
+  case atomicUnary(DoryIRUnaryOperation, operand: DoryIROperand)
   case shift(DoryIRShiftOperation, destination: DoryIROperand, count: DoryIRShiftCount)
   case conditionalMove(
     DoryX86Condition,
@@ -336,6 +337,20 @@ public struct DoryX86IRTranslator: Sendable {
         nil
       )
     case .unary(let operation, let source):
+      if instruction.prefixes.lock {
+        let sourceOperand = operand(
+          source,
+          instructionRelativeBase: instruction.nextInstructionAddress
+        )
+        guard mode == .long64,
+          case .memory(_, let width) = sourceOperand,
+          width == .i32 || width == .i64
+        else { return fallback(instruction, reason: .interpreter) }
+        return ([.atomicUnary(
+          irUnaryOperation(operation),
+          operand: sourceOperand
+        )], .next(instruction.nextInstructionAddress))
+      }
       return (
         [
           .unary(
@@ -703,6 +718,7 @@ public struct DoryX86IRTranslator: Sendable {
     {
       return true
     }
+    if case .unary(_, let operand) = operation, case .memory = operand { return true }
     return false
   }
 
@@ -873,6 +889,9 @@ public struct DoryX86IRTranslator: Sendable {
       case .immediate:
         return false
       }
+    case .atomicUnary(_, let operand):
+      guard case .memory(let address, let width) = operand else { return false }
+      return (width == .i32 || width == .i64) && isJITMemoryAddress(address)
     case .shift(let operation, let destination, let count):
       guard case .register(let register) = destination else { return false }
       if operation == .rotateLeft || operation == .rotateRight {
@@ -1069,6 +1088,8 @@ public struct DoryX86IRTranslator: Sendable {
       return .write
     case .unary(_, let operand):
       return isMemory(operand) ? .write : .none
+    case .atomicUnary:
+      return .write
     case .shift(_, let destination, _):
       return isMemory(destination) ? .write : .none
     case .conditionalMove(_, let destination, let source):

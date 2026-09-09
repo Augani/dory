@@ -44,6 +44,7 @@ typedef enum dory_jit_atomic_rmw_operation {
     DORY_JIT_ATOMIC_RMW_AND = 2,
     DORY_JIT_ATOMIC_RMW_OR = 3,
     DORY_JIT_ATOMIC_RMW_XOR = 4,
+    DORY_JIT_ATOMIC_RMW_NEGATE = 5,
 } dory_jit_atomic_rmw_operation;
 typedef uint64_t (*dory_jit_memory_read_function)(
     void *memory_context,
