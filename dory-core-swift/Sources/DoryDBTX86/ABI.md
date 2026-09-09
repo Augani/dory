@@ -2,9 +2,10 @@
 
 This document is normative for the tier-1 ARM64 translator. It separates the
 stable vCPU context layout from the internal pinned-register convention. The
-legacy baseline emitter still enters each block through the Darwin C ABI with
-the context pointer in `x0`; migration to the pinned convention must preserve
-that external entry boundary until the dispatcher changes atomically.
+legacy baseline emitter and the opt-in tier-1 compiler both enter standalone
+blocks through the Darwin C ABI with the context pointer in `x0`. Tier-1 then
+installs the pinned convention internally; direct chaining will replace those
+per-block boundaries atomically in the dispatcher.
 
 ## Pinned register convention
 
@@ -65,6 +66,12 @@ cannot target the C entry shim.
 boundaries. Its entry saves `x19`...`x30` in one 96-byte, 16-byte-aligned host
 frame before installing pinned state. Its exit writes architectural state,
 restores that frame, and returns a `DoryJITExitCode` through `w0`.
+
+`DoryARM64Tier1Emitter` is admitted through the executor's `tier1Enabled`
+feature flag. It compiles a whole register-only IR block or declines it without
+publishing code; a decline is compiled by the legacy baseline emitter. Admitted
+blocks cover the producer and condition-consumer families below plus direct and
+conditional terminators. Their compiled tier is reported as `tier1`.
 
 An exit publishes every dirty architectural value and the complete pending-flags
 record to the context before returning an exit code. The executor materializes
