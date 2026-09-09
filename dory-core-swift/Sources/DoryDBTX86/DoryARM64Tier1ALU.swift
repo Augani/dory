@@ -28,6 +28,12 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     case immediate(UInt8)
   }
 
+  enum HighByteCopySource: Sendable, Equatable {
+    case guestLowByte(Int)
+    case guestHighByte(Int)
+    case immediate(UInt8)
+  }
+
   struct NativeFlags: Sendable, Equatable {
     enum Origin: Sendable, Equatable {
       case binary(DoryIRBinaryOperation)
@@ -106,6 +112,44 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
         Self.encodeLogical(
           .or, is64Bit: true, left: destination, right: 16, destination: destination))
     }
+    return true
+  }
+
+  /// Copies a low byte, legacy high byte, or immediate into AH/CH/DH/BH without changing NZCV or
+  /// the pending lazy-flags record. The source is staged before the destination is changed so
+  /// aliases such as `movb %ah,%bh` remain exact.
+  func emitHighByteCopy(
+    destinationLegacyRegister: Int,
+    source: HighByteCopySource,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<4).contains(destinationLegacyRegister) else { return false }
+    switch source {
+    case .guestLowByte(let sourceRegister):
+      guard (0..<16).contains(sourceRegister) else { return false }
+      words.append(
+        Self.encodeMove(destination: 16, source: UInt32(sourceRegister), is64Bit: true))
+    case .guestHighByte(let sourceRegister):
+      guard (0..<4).contains(sourceRegister) else { return false }
+      words.append(
+        Self.encodeLogical(
+          .or, is64Bit: true, left: 31, right: UInt32(sourceRegister),
+          shiftAmount: 8, logicalRightShift: true, destination: 16))
+    case .immediate(let value):
+      Self.emitImmediate(UInt64(value), register: 16, into: &words)
+    }
+    Self.emitImmediate(0xFF, register: 17, into: &words)
+    words.append(
+      Self.encodeLogical(.and, is64Bit: true, left: 16, right: 17, destination: 16))
+    Self.emitImmediate(~UInt64(0xFF00), register: 17, into: &words)
+    let destination = UInt32(destinationLegacyRegister)
+    words.append(
+      Self.encodeLogical(
+        .and, is64Bit: true, left: destination, right: 17, destination: destination))
+    words.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: destination, right: 16,
+        shiftAmount: 8, destination: destination))
     return true
   }
 

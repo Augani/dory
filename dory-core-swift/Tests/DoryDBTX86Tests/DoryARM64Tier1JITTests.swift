@@ -6,6 +6,129 @@ import Testing
 @testable import DoryDBTX86
 
 @Suite struct DoryARM64Tier1JITTests {
+  @Test func highByteCopiesPreserveSurroundingBitsAndMatchInterpreter() throws {
+    #if arch(arm64)
+      let cases: [([UInt8], UInt64, UInt64)] = [
+        ([0x88, 0xCF], 0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210),  // movb %cl,%bh
+        ([0x88, 0xE7], 0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210),  // movb %ah,%bh
+        ([0xB7, 0x5A], 0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210),  // movb $0x5a,%bh
+      ]
+      for (bytes, rax, rbx) in cases {
+        let codeAddress: UInt64 = 0x1000
+        let memory = try DoryX86ByteArrayMemory(baseAddress: codeAddress, bytes: bytes)
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(rax: rax, rcx: 0xA5, rbx: rbx),
+          rip: codeAddress,
+          rflags: [.reservedOne, .carry, .zero, .direction]
+        )
+        var interpreted = initial
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: memory,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire high-byte copy")
+          return
+        }
+        var tier1 = initial
+        let execution = try #require(
+          DoryARM64BaselineExecutor(
+            maximumCodeBytes: 4096,
+            tier1Enabled: true
+          ).execute(
+            bytes: bytes,
+            at: codeAddress,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &tier1,
+            memory: memory
+          ))
+        #expect(execution.block.tier == .tier1)
+        #expect(tier1 == interpreted)
+        #expect(tier1.rflags == initial.rflags)
+        #expect(tier1.registers.rbx & ~UInt64(0xFF00) == rbx & ~UInt64(0xFF00))
+      }
+    #endif
+  }
+
+  @Test func measuredHighByteCopyThenMemoryLoadMatchesInterpreterAndRollsBackReadFault() throws {
+    let codeAddress: UInt64 = 0xFFFF_FFFF_81E1_C6BE
+    let bytes: [UInt8] = [
+      0x88, 0xCF,  // movb %cl,%bh
+      0x0F, 0xB7, 0x4E, 0x02,  // movzwl 0x2(%rsi),%ecx
+    ]
+    let block = try DoryX86IRTranslator().translate(bytes, at: codeAddress, mode: .long64)
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+    #expect(compiled.tier == .tier1)
+    #expect(compiled.guestByteCount == 6)
+    #expect(compiled.guestInstructionCount == 2)
+    #expect(compiled.requiresMemoryCallbacks)
+    #expect(!compiled.requiresRestartableMemoryReads)
+
+    #if arch(arm64)
+      let dataAddress = codeAddress + 0x1000
+      let memory = try DoryX86ByteArrayMemory(baseAddress: codeAddress, byteCount: 0x3000)
+      try memory.write(at: codeAddress, bytes: bytes)
+      try memory.write(at: dataAddress + 2, bytes: [0x34, 0x12])
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(
+          rcx: 0xDEAD_BEEF_CAFE_BA7E,
+          rbx: 0xA55A_0123_4567_89AB,
+          rsi: dataAddress
+        ),
+        rip: codeAddress,
+        rflags: [.reservedOne, .carry, .zero, .direction]
+      )
+      var interpreted = initial
+      for _ in 0..<2 {
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: memory,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire measured high-byte/load block")
+          return
+        }
+      }
+      var tier1 = initial
+      let execution = try #require(
+        DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: true
+        ).execute(
+          bytes: bytes,
+          at: codeAddress,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &tier1,
+          memory: memory
+        ))
+      #expect(execution.block.tier == .tier1)
+      #expect(tier1 == interpreted)
+
+      let codeOnly = try DoryX86ByteArrayMemory(baseAddress: codeAddress, bytes: bytes)
+      var failed = initial
+      let failure = try #require(
+        DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: true
+        ).execute(
+          bytes: bytes,
+          at: codeAddress,
+          mode: .long64,
+          addressSpaceID: 1,
+          maximumInstructions: 2,
+          state: &failed,
+          memory: codeOnly
+        ))
+      #expect(failure.block.tier == .tier1)
+      #expect(failure.exitCode == .interpreter)
+      #expect(failed == initial)
+    #endif
+  }
+
   @Test func compilerAdmitsRegisterALUAndDeclinesMemoryBlocksAtomically() throws {
     let registerBlock = try DoryX86IRTranslator().translate(
       [0x48, 0x01, 0xD8],  // add rax, rbx

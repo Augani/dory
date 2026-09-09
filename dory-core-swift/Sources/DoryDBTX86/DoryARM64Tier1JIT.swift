@@ -38,7 +38,8 @@ struct DoryARM64Tier1Emitter: Sendable {
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
         wroteMemory = true
-      case .copy(_, .memory), .unsignedAccumulatorMultiply(.memory):
+      case .copy(_, .memory), .extendMove(_, .memory, _),
+        .unsignedAccumulatorMultiply(.memory):
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
@@ -102,6 +103,15 @@ struct DoryARM64Tier1Emitter: Sendable {
             )
           else { return nil }
           nativeFlags = nil
+        } else if let destination = register(destination), destination.bank == "x86.high8" {
+          guard destination.width == .i8,
+            let source = highByteCopySource(source),
+            alu.emitHighByteCopy(
+              destinationLegacyRegister: Int(destination.index),
+              source: source,
+              into: &body
+            )
+          else { return nil }
         } else {
           guard let destination = lowRegister(destination) else { return nil }
           switch source {
@@ -245,17 +255,38 @@ struct DoryARM64Tier1Emitter: Sendable {
         else { return nil }
 
       case .extendMove(let destination, let source, let signed):
-        guard let destination = lowRegister(destination),
-          let source = lowRegister(source),
-          alu.emitExtendMove(
-            destinationWidth: destination.width,
-            destinationGuestRegister: Int(destination.index),
-            sourceWidth: source.width,
-            sourceGuestRegister: Int(source.index),
-            signed: signed,
-            into: &body
-          )
-        else { return nil }
+        guard let destination = lowRegister(destination) else { return nil }
+        switch source {
+        case .memory(let address, let width):
+          guard width.rawValue < destination.width.rawValue,
+            alu.emitMemoryLoad(
+              width: width,
+              destinationGuestRegister: Int(destination.index),
+              address: address,
+              into: &body
+            ),
+            alu.emitExtendMove(
+              destinationWidth: destination.width,
+              destinationGuestRegister: Int(destination.index),
+              sourceWidth: width,
+              sourceGuestRegister: Int(destination.index),
+              signed: signed,
+              into: &body
+            )
+          else { return nil }
+          nativeFlags = nil
+        default:
+          guard let source = lowRegister(source),
+            alu.emitExtendMove(
+              destinationWidth: destination.width,
+              destinationGuestRegister: Int(destination.index),
+              sourceWidth: source.width,
+              sourceGuestRegister: Int(source.index),
+              signed: signed,
+              into: &body
+            )
+          else { return nil }
+        }
 
       case .signExtendAccumulatorHigh(let width):
         guard alu.emitSignExtendAccumulatorHigh(width: width, into: &body) else {
@@ -738,6 +769,23 @@ struct DoryARM64Tier1Emitter: Sendable {
     _ operand: DoryIROperand
   ) -> DoryARM64Tier1ALUEmitter.HighByteSource? {
     switch operand {
+    case .register(let value)
+    where value.bank == "x86.high8" && value.index < 4 && value.width == .i8:
+      return .guestHighByte(Int(value.index))
+    case .immediate(let value, .i8):
+      return .immediate(UInt8(truncatingIfNeeded: value))
+    default:
+      return nil
+    }
+  }
+
+  private func highByteCopySource(
+    _ operand: DoryIROperand
+  ) -> DoryARM64Tier1ALUEmitter.HighByteCopySource? {
+    switch operand {
+    case .register(let value)
+    where value.bank == "x86.gpr" && value.index < 16 && value.width == .i8:
+      return .guestLowByte(Int(value.index))
     case .register(let value)
     where value.bank == "x86.high8" && value.index < 4 && value.width == .i8:
       return .guestHighByte(Int(value.index))
