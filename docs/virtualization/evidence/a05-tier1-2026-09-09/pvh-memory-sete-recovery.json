@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-memory-sete-recovery",
+  "observedAt": "2026-09-09T18:17:18Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission recovery evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "restoredAdmissionCommit": "2c4034e13fe1d570a5a147da351c13ab6692694e",
+    "originalCandidateCommit": "50953af61667f4f33356608516abb11d617fed00",
+    "originalWithdrawalCommit": "817b2fca13e77fa6716e75960827b3a8fb39a05a",
+    "reprotectionFixCommit": "8277ef0caef092247e5bc873ed591c9e71a60dc1",
+    "negativeEvidenceCommit": "358f8c8f1681d3cd2542c5766cc8a8dde4990f76",
+    "candidateRunnerSHA256": "ddb6ae46036e77fd3294a22d4bd814e8430021104df39cdfb1376855c9443c44",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "measuredSite": {
+      "guestRIP": "0xffffffff815cab95",
+      "symbol": "__free_one_page+0x95",
+      "guestByteCount": 5,
+      "instruction": "sete 0x23(%rsp)",
+      "bytes": "0f 94 44 24 23",
+      "priorNegativeCacheHits": 2388,
+      "remainsInRecoveryRunNegativeCache": false
+    },
+    "boundedRule": "Only the complete one-instruction, one-statement block at 0xffffffff815cab95 with the measured five-byte memory SETE operation is admitted.",
+    "implementation": "Tier one materializes pending flags, stages the equality predicate, and performs one final transactional byte write. A failed write publishes neither architectural state nor memory.",
+    "deferred": "All other memory SETcc sites, predicates, encodings, and block shapes remain on the legacy path."
+  },
+  "priorFailure": {
+    "receipt": "pvh-rejected-memory-sete.json",
+    "runID": "465ab54c-8ecc-4745-96b8-8d527f5c2367",
+    "retiredInstructions": 629367042,
+    "outcome": "guest-reset",
+    "failureAddress": "0xffffffff830c96ac",
+    "failureSection": ".altinstr_aux",
+    "interpretationAfterIsolation": "The candidate encountered the byte-revalidation protection hole later isolated by the CR3 control experiment; the failure did not originate in the measured SETE semantics."
+  },
+  "verification": {
+    "focusedGate": "45 tests in DoryARM64Tier1JITTests passed with both the recovered memory-SETcc and CR3 slices.",
+    "dbtAndPCGate": "1,445 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "True and false equality outcomes match the interpreter at the measured high-canonical block, including a chained pending-flags producer; the same operation at an adjacent RIP declines.",
+    "rollbackCoverage": "A failed transactional byte write preserves the original architectural state and memory.",
+    "coherencyCoverage": "The byte-revalidation and shared-code reuse regressions pass with the admission enabled.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "a77ea9c8-cda2-4405-89d5-30c4c4f45f4c",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 145370171292,
+    "retiredInstructions": 733939989,
+    "throughputMIPS": 5.048766074065,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731122969,
+    "interpreterInstructions": 2817020,
+    "deliveredMaskableInterrupts": 57992,
+    "retiredInterruptReturns": 146239,
+    "byteValidationHits": 72432,
+    "codeGenerationMismatches": 78266,
+    "sharedCodeHits": 114756,
+    "compiledBlocks": 186060,
+    "tier1CompilationAttempts": 224168,
+    "tier1CompilationDeclines": 125223,
+    "tier1DeclinePercentOfAttempts": 55.861229078191,
+    "tier1CompiledBlocks": 98945,
+    "lazyFlagMaterializations": 59408767,
+    "translationCacheInvalidations": 225204
+  },
+  "unmatchedRecoveryComparison": {
+    "cr3OnlyElapsedNanoseconds": 146186261125,
+    "memorySETccElapsedNanoseconds": 145370171292,
+    "directionalElapsedReductionPercent": 0.558253441,
+    "interpretation": "The executions have different interrupt, compilation, trace, and instruction totals. The elapsed difference is reported for completeness and is not a performance claim."
+  },
+  "nextVisibleKernelHelperSite": {
+    "guestRIP": "0xffffffff81e35772",
+    "symbol": "sync_regs+0x22",
+    "instruction": "rep movsq (%rsi),%es:(%rdi)",
+    "guestByteCount": 3,
+    "hitCount": 12188,
+    "declineReason": "interpreterHelper"
+  },
+  "interpretation": "The exact memory-SETcc candidate failed before the general code-page reprotection repair and completed the authenticated workload after that repair, with its measured site absent from the retained negative-cache sample. The bounded admission is restored. A05.2 remains open because 125,223 of 224,168 full-run tier-one attempts still declined.",
+  "limitations": [
+    "The complete workload evidence contains one recovery run on one local Apple M2 Pro.",
+    "The exact-site admission is tied to the pinned kernel and does not establish general memory-SETcc coverage.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no performance delta and does not satisfy G1-G5."
+  ]
+}
