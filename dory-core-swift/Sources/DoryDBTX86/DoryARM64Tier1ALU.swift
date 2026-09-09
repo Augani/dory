@@ -252,6 +252,48 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Executes the measured `ds xorb $1,(base)` image installed when Linux removes the lock
+  /// prefix for a uniprocessor guest. The read is replay-safe and the transactional write is the
+  /// final callback; only after it returns does the fragment publish the replacement flags record.
+  func emitMeasuredPatchedByteXOR(
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    guard Self.emitMemoryRead(width: .i8, address: address, into: &fragment),
+      Self.emitMemoryAddress(address, into: &fragment)
+    else { return false }
+
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    fragment.append(Self.encodeLoad64(register: 17, word: .rip))
+    Self.emitImmediate(1, register: 16, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .xor, is64Bit: true, left: 17, right: 16, destination: 17))
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+    Self.emitStagedMemoryWrite(byteCount: 1, into: &fragment)
+
+    fragment.append(Self.encodeLoad64(register: 16, word: .rip))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    Self.emitImmediate(1, register: 17, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+    fragment.append(
+      Self.encodeLogical(
+        .xor, is64Bit: true, left: 16, right: 17, destination: 16))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
+    Self.emitImmediate(UInt64(DoryIRIntegerWidth.i8.rawValue), register: 17, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
+    Self.emitImmediate(
+      DoryARM64LazyFlagsState.Operation.logical.rawValue,
+      register: 26,
+      into: &fragment
+    )
+    fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Performs the mandatory source read for a dword/qword memory CMOV before evaluating the
   /// predicate. A false CMOV therefore still faults; dword forms apply the architecture's
   /// destination zero-extension on either predicate outcome.

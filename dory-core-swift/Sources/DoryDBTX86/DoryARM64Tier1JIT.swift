@@ -35,6 +35,11 @@ struct DoryARM64Tier1Emitter: Sendable {
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
+      case .binary where Self.isMeasuredPatchedByteXOR(statement):
+        guard !wroteMemory else { return nil }
+        memoryCallbackCount += 2
+        requiresMemoryCallbacks = true
+        wroteMemory = true
       case .binary(_, .register, .memory, _), .binary(_, .memory, _, _):
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
@@ -119,6 +124,13 @@ struct DoryARM64Tier1Emitter: Sendable {
             into: &body
           )
         } else if case .memory(let address, let width) = destination {
+          if operation == .xor, width == .i8,
+            source == .immediate(1, width: .i8), writesDestination,
+            alu.emitMeasuredPatchedByteXOR(address: address, into: &body)
+          {
+            nativeFlags = nil
+            continue
+          }
           guard operation == .test, width == .i16,
             case .immediate = source,
             let source = lowSource(source, matching: width)
@@ -528,6 +540,18 @@ struct DoryARM64Tier1Emitter: Sendable {
     guard case .atomicBinary(.xor, .memory(_, let width), let source) = statement else {
       return false
     }
+    return width == .i8 && source == .immediate(1, width: .i8)
+  }
+
+  private static func isMeasuredPatchedByteXOR(_ statement: DoryIRStatement) -> Bool {
+    guard
+      case .binary(
+        .xor,
+        .memory(_, let width),
+        let source,
+        writesDestination: true
+      ) = statement
+    else { return false }
     return width == .i8 && source == .immediate(1, width: .i8)
   }
 
