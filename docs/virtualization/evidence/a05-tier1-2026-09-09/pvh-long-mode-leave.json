@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-long-mode-leave",
+  "observedAt": "2026-09-09T22:00:57Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "f147b164a9a102ce6b22bcb638432f7922fa3d84",
+    "candidateRunnerSHA256": "e368c820ad02e12193951848624b890219d00cebc0862090b4471b1bbdcd974b",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "operation": "64-bit long-mode LEAVE",
+    "lowering": "RSP receives RBP, then the existing transactional qword stack-pop path loads the caller RBP and advances RSP.",
+    "boundedRule": "Only the qword form in long mode lowers to native IR. Operand-size-overridden 16-bit LEAVE remains on the architectural interpreter path.",
+    "restartability": "The native block mutates only its private execution context until the stack read succeeds. A failed read returns the original RSP, RBP, RIP, flags, and memory.",
+    "previouslyMeasuredSite": {
+      "guestRIP": "0xffffffff814e164e",
+      "symbol": "btf_verifier_log_member+0x6e",
+      "instruction": "leave",
+      "priorNegativeCacheHits": 103976,
+      "remainsInCandidateRunNegativeCache": false
+    }
+  },
+  "verification": {
+    "focusedGate": "Three tier-one stack and LEAVE tests pass.",
+    "dbtAndPCGate": "1,460 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "A nontrivial old RSP, frame RBP, loaded caller RBP, unchanged memory, flags, and final RIP match the interpreter.",
+    "faultCoverage": "An unmapped frame address causes the tier-one callback exit to preserve the complete block-entry state and memory.",
+    "negativeCoverage": "The 16-bit operand-size-overridden long-mode form declines tier one.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "1015b213-7fcd-4399-acc9-c47dfa16ae2d",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 150315693625,
+    "retiredInstructions": 733312998,
+    "throughputMIPS": 4.878,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 730815801,
+    "interpreterInstructions": 2497197,
+    "deliveredMaskableInterrupts": 57919,
+    "retiredInterruptReturns": 146097,
+    "byteValidationHits": 72300,
+    "codeGenerationMismatches": 78207,
+    "sharedCodeHits": 115308,
+    "compiledBlocks": 186132,
+    "tier1CompilationAttempts": 221822,
+    "tier1CompilationDeclines": 119616,
+    "tier1DeclinePercentOfAttempts": 53.9243176961708,
+    "tier1CompiledBlocks": 102206,
+    "lazyFlagMaterializations": 54725031,
+    "translationCacheInvalidations": 240609
+  },
+  "unmatchedPriorRunComparison": {
+    "btfStackSetEqualElapsedNanoseconds": 148366512084,
+    "longModeLeaveElapsedNanoseconds": 150315693625,
+    "directionalElapsedIncreasePercent": 1.313761113354502,
+    "tier1AttemptDecrease": 1068,
+    "tier1DeclineDecrease": 1113,
+    "tier1CompiledBlockIncrease": 45,
+    "interpreterInstructionDecrease": 118590,
+    "lazyFlagMaterializationDecrease": 72970,
+    "translationCacheInvalidationDecrease": 447,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. The previously measured LEAVE site's absence establishes production use; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleSites": [
+    {
+      "guestRIP": "aslr-dependent-user-address-ending-0x9f2",
+      "guestByteCount": 1,
+      "hitCount": 121030,
+      "declineReason": "interpreterHelper",
+      "limitation": "The retained diagnostics do not capture live instruction bytes or user-image load bases, so this site is not identified by static offset inference."
+    },
+    {
+      "guestRIP": "0xffffffff81e479f6",
+      "symbol": "_raw_spin_unlock_irqrestore+0x16",
+      "guestByteCount": 1,
+      "hitCount": 30122,
+      "declineReason": "interpreterHelper",
+      "limitation": "The one-byte live block differs from the six-byte static image at this alternatives-patched site; live bytes remain required before lowering."
+    },
+    {
+      "guestRIP": "0xffffffff81e35772",
+      "symbol": "sync_regs+0x22",
+      "instruction": "rep movsq",
+      "guestByteCount": 3,
+      "hitCount": 12165,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff813cd9a6",
+      "instruction": "rep movsq",
+      "guestByteCount": 3,
+      "visibleHitCountAcrossAddressSpaces": 13852,
+      "largestSingleAddressSpaceHitCount": 10855,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff810017e8",
+      "symbol": "native_irq_return_iret",
+      "instruction": "iretq",
+      "guestByteCount": 2,
+      "visibleHitCountAcrossAddressSpaces": 9141,
+      "largestSingleAddressSpaceHitCount": 6805,
+      "declineReason": "interpreterHelper"
+    }
+  ],
+  "interpretation": "The general long-mode LEAVE lowering executes successfully in the authenticated workload and removes the previously measured 103,976-hit kernel LEAVE site from the retained negative-cache sample. A05.2 remains open because 119,616 of 221,822 tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
