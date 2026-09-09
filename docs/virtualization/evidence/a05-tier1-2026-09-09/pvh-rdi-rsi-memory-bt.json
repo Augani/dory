@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-rdi-rsi-memory-bt",
+  "observedAt": "2026-09-09T21:24:38Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "ee4aa2419b6f6cc87d04c05301d2e9fd02e86cc8",
+    "candidateRunnerSHA256": "33c188ddf9ef4a26ec4aa0414eb76cbe5e62725b4f6f756f12a72979746d69cc",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "measuredBlock": {
+      "guestRIP": "0xffffffff81e1c65c",
+      "symbol": "__radix_tree_replace+0x3c",
+      "instructions": "btq %rdi,0x228(%rsi); jae",
+      "bytes": "48 0f a3 be 28 02 00 00 0f 83 ab 00 00 00",
+      "priorNegativeCacheHits": 17268,
+      "remainsInCandidateRunNegativeCache": false
+    },
+    "boundedRule": "Tier one admits only the exact 14-byte, two-instruction fixture block with qword memory BT through RSI plus displacement, RDI index, and its near JAE. The same bytes at an adjacent RIP decline.",
+    "restartability": "One replay-safe scalar read completes before CF and the conditional target publish. A failing read returns the original block-entry state."
+  },
+  "verification": {
+    "focusedGate": "All three measured memory-BT tests pass.",
+    "dbtAndPCGate": "1,458 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Signed indices 0, 63, 64, -1, and -65, both old-bit states, exact CF, and both near-JAE destinations match the interpreter with unchanged memory.",
+    "negativeCoverage": "The same bytes at an adjacent RIP decline, and an inaccessible target rolls back to the block-entry state.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "ee64a8cc-784f-474a-a9ee-aa16d43c0e7d",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 147400981500,
+    "retiredInstructions": 732350904,
+    "throughputMIPS": 4.968,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 729682961,
+    "interpreterInstructions": 2667943,
+    "deliveredMaskableInterrupts": 57870,
+    "retiredInterruptReturns": 146088,
+    "byteValidationHits": 72409,
+    "codeGenerationMismatches": 78180,
+    "sharedCodeHits": 114241,
+    "compiledBlocks": 185900,
+    "tier1CompilationAttempts": 223195,
+    "tier1CompilationDeclines": 121150,
+    "tier1DeclinePercentOfAttempts": 54.279889782477206,
+    "tier1CompiledBlocks": 102045,
+    "lazyFlagMaterializations": 55808676,
+    "translationCacheInvalidations": 240263
+  },
+  "unmatchedPriorRunComparison": {
+    "atomicMemoryBitSetElapsedNanoseconds": 149194774084,
+    "rdiRsiMemoryBitTestElapsedNanoseconds": 147400981500,
+    "directionalElapsedReductionPercent": 1.2023159624814035,
+    "tier1AttemptIncrease": 1666,
+    "tier1DeclineIncrease": 953,
+    "tier1CompiledBlockIncrease": 713,
+    "interpreterInstructionIncrease": 28710,
+    "lazyFlagMaterializationIncrease": 1117508,
+    "translationCacheInvalidationIncrease": 326,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. Absence of the measured site directly establishes bounded admission; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleKernelSites": [
+    {
+      "guestRIP": "0xffffffff813cd9a6",
+      "instruction": "rep movsq",
+      "guestByteCount": 3,
+      "visibleHitCountAcrossAddressSpaces": 15479,
+      "largestSingleAddressSpaceHitCount": 12488,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff8133cb12",
+      "symbol": "__resched_curr+0x122",
+      "instruction": "lock btsq %rax,(%rsi)",
+      "guestByteCount": 5,
+      "hitCount": 7302,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff81a07cd3",
+      "instruction": "inb %dx,%al",
+      "guestByteCount": 1,
+      "hitCount": 6779,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81842c35",
+      "symbol": "blake2s_compress_generic+0x705",
+      "instructions": "rorl $8,%edi; movl %r14d,0x78(%rsp)",
+      "guestByteCount": 8,
+      "hitCount": 3532,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff81681086",
+      "symbol": "dup_fd+0x2c6",
+      "instructions": "btq %rax,(%rdi); jb",
+      "guestByteCount": 6,
+      "hitCount": 1859,
+      "declineReason": "nativeEmitter"
+    }
+  ],
+  "interpretation": "The measured RDI/RSI memory-BT block is absent from the retained negative-cache sample and the authenticated workload completes. A05.2 remains open because 121,150 of 223,195 full-run tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
