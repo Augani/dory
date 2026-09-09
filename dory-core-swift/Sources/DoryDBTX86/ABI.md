@@ -96,6 +96,11 @@ RCL/RCR use bounded bit loops, including modulo-9 and modulo-17 effective counts
 for narrow operands. Shift/rotate consumers currently materialize rather than
 claiming an NZCV token.
 
+Register SHLD/SHRD producers cover their 16-, 32-, and 64-bit immediate and CL
+forms. The 16-bit oversized-count path intentionally follows the interpreter's
+deterministic zero result, while architectural flags remain represented by the
+dedicated double-shift lazy operation.
+
 Subtraction maps x86 CF to inverted ARM C: JB/JAE/JBE/JA therefore use CC/CS/LS/HI.
 Addition maps CF directly to ARM C, so JB/JAE use CS/CC; JBE/JA after addition do
 not have a single native condition and materialize. Logical operations treat CF

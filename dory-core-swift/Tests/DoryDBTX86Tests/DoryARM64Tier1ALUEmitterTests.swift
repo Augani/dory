@@ -550,6 +550,104 @@ import Testing
     #endif
   }
 
+  @Test func doubleShiftProducersMatchInterpreterAcrossWidthsAndCounts() throws {
+    #if arch(arm64)
+      let operations: [(DoryARM64Tier1ALUEmitter.DoubleShiftOperation, UInt8, UInt8)] = [
+        (.left, 0xA4, 0xA5), (.right, 0xAC, 0xAD),
+      ]
+      let values: [(UInt64, UInt64)] = [
+        (0, 0), (1, .max), (0x7FFF, 0x8001), (0x8000, 0x7FFF),
+        (0xA5A5_A5A5_8000_0001, 0x5A5A_5A5A_7FFF_FFFE),
+        (0x8000_0000_0000_0001, 0x0123_4567_89AB_CDEF),
+      ]
+      let counts: [UInt8] = [0, 1, 15, 16, 17, 31, 32, 63, 64, 255]
+      let prior: DoryX86RFLAGS = [
+        .reservedOne, .carry, .parity, .auxiliaryCarry, .direction, .overflow,
+      ]
+
+      for width: DoryIRIntegerWidth in [.i16, .i32, .i64] {
+        for (operation, immediateOpcode, clOpcode) in operations {
+          for countKind in [DoryIRShiftCount.immediate(0), .cl] {
+            let emittedCounts: [UInt8] =
+              switch countKind {
+              case .immediate: counts
+              case .cl: [0]
+              }
+            for emittedCount in emittedCounts {
+              let actualCount: DoryIRShiftCount =
+                switch countKind {
+                case .immediate: .immediate(emittedCount)
+                case .cl: .cl
+                }
+              var words: [UInt32] = []
+              let boundary = DoryARM64Tier1BoundaryEmitter()
+              boundary.emitEntry(into: &words)
+              #expect(
+                DoryARM64Tier1ALUEmitter().emitDoubleShift(
+                  operation,
+                  width: width,
+                  destinationGuestRegister: 0,
+                  sourceGuestRegister: 2,
+                  count: actualCount,
+                  into: &words
+                ))
+              boundary.emitExit(.dispatch, into: &words)
+              let region = try executableRegion(words)
+              let runtimeCounts: [UInt8] =
+                switch actualCount {
+                case .immediate: [emittedCount]
+                case .cl: counts
+                }
+
+              for rawCount in runtimeCounts {
+                for (destination, source) in values {
+                  var context = makeContext(
+                    rax: destination, rcx: UInt64(rawCount), rdx: source, rflags: prior)
+                  #expect(try region.execute(at: 0, context: &context) == .dispatch)
+
+                  var interpreted = try DoryX86ArchitecturalState(
+                    registers: .init(
+                      rax: destination, rcx: UInt64(rawCount), rdx: source),
+                    rip: 0x100,
+                    rflags: prior
+                  )
+                  let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+                  var bytes: [UInt8] = []
+                  if width == .i16 { bytes.append(0x66) }
+                  if width == .i64 { bytes.append(0x48) }
+                  bytes.append(0x0F)
+                  switch actualCount {
+                  case .immediate:
+                    bytes.append(immediateOpcode)
+                    bytes.append(0xD0)
+                    bytes.append(rawCount)
+                  case .cl:
+                    bytes.append(clOpcode)
+                    bytes.append(0xD0)
+                  }
+                  try memory.write(at: 0x100, bytes: bytes)
+                  guard
+                    case .retired = DoryX86Interpreter().step(
+                      state: &interpreted, memory: memory, mode: .long64)
+                  else {
+                    Issue.record("interpreter did not retire SHLD/SHRD \(width)")
+                    continue
+                  }
+
+                  let lazy = try #require(DoryARM64LazyFlagsState(context: context))
+                  #expect(lazy.materialize() == interpreted.rflags)
+                  #expect(
+                    context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
+                      == interpreted.registers.rax)
+                }
+              }
+            }
+          }
+        }
+      }
+    #endif
+  }
+
   @Test func fusedArithmeticAndLogicalConditionsUseTheirNativeCarryDomains() throws {
     #if arch(arm64)
       let cases: [(DoryIRBinaryOperation, [DoryX86Condition])] = [

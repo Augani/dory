@@ -8,6 +8,10 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     case left, right
   }
 
+  enum DoubleShiftOperation: Sendable, Equatable {
+    case left, right
+  }
+
   enum Source: Sendable, Equatable {
     case guestRegister(Int)
     case immediate(UInt64)
@@ -618,6 +622,157 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     emitImmediate(outgoingCarry, register: 17, into: &words)
   }
 
+  /// Emits register SHLD/SHRD for the architectural 16-, 32-, and 64-bit forms.
+  func emitDoubleShift(
+    _ operation: DoubleShiftOperation,
+    width: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    sourceGuestRegister: Int,
+    count: DoryIRShiftCount,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard width != .i8,
+      (0..<16).contains(destinationGuestRegister),
+      (0..<16).contains(sourceGuestRegister)
+    else { return false }
+    let countMask: UInt64 = width == .i64 ? 0x3F : 0x1F
+    if case .immediate(let rawCount) = count,
+      UInt64(rawCount) & countMask == 0
+    {
+      if width == .i32 {
+        let destination = UInt32(destinationGuestRegister)
+        words.append(
+          Self.encodeMove(
+            destination: destination, source: destination, is64Bit: false))
+      }
+      return true
+    }
+
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    let destination = UInt32(destinationGuestRegister)
+    let source = UInt32(sourceGuestRegister)
+    let is64Bit = width == .i64
+    let isNarrow = width == .i16
+    let mask = Self.mask(for: width)
+    fragment.append(
+      Self.encodeMove(
+        destination: 16, source: destination, is64Bit: isNarrow || is64Bit))
+    fragment.append(
+      Self.encodeMove(
+        destination: 17, source: source, is64Bit: isNarrow || is64Bit))
+    if isNarrow {
+      Self.emitImmediate(mask, register: 26, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: 16, right: 26, destination: 16))
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: 17, right: 26, destination: 17))
+    }
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+
+    switch count {
+    case .immediate(let rawCount):
+      Self.emitImmediate(UInt64(rawCount) & countMask, register: 26, into: &fragment)
+    case .cl:
+      Self.emitImmediate(countMask, register: 26, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: 1, right: 26, destination: 26))
+    }
+    fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
+
+    let zeroCountBranch = fragment.count
+    fragment.append(0)
+    var oversizedBranch: Int?
+    if width == .i16 {
+      fragment.append(
+        Self.encodeAddSubtractImmediateSetFlags(
+          add: false, is64Bit: true, left: 26, immediate: 16, destination: 31))
+      oversizedBranch = fragment.count
+      fragment.append(0)
+    }
+
+    let firstShift: VariableShiftOperation = operation == .left ? .left : .logicalRight
+    fragment.append(
+      Self.encodeVariableShift(
+        firstShift, is64Bit: is64Bit, value: 16, count: 26, destination: 16))
+    fragment.append(
+      Self.encodeAddSubtract(
+        add: false, is64Bit: is64Bit, left: 31, right: 26, destination: 26))
+    if width == .i16 {
+      fragment.append(
+        Self.encodeAddSubtractImmediate(
+          add: true, is64Bit: false, left: 26, immediate: 16, destination: 26))
+    }
+    let secondShift: VariableShiftOperation = operation == .left ? .logicalRight : .left
+    fragment.append(
+      Self.encodeVariableShift(
+        secondShift, is64Bit: is64Bit, value: 17, count: 26, destination: 17))
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: is64Bit, left: 16, right: 17, destination: 16))
+    let calculatedDoneBranch = fragment.count
+    fragment.append(0)
+    let oversizedStart = fragment.count
+    if let oversizedBranch {
+      Self.emitImmediate(0, register: 16, into: &fragment)
+      fragment[oversizedBranch] = Self.encodeConditionalBranch(
+        condition: .higher, wordOffset: oversizedStart - oversizedBranch)
+    }
+    let calculationDone = fragment.count
+    fragment[zeroCountBranch] = Self.encodeCompareAndBranchZero(
+      register: 26, wordOffset: calculationDone - zeroCountBranch)
+    fragment[calculatedDoneBranch] = Self.encodeUnconditionalBranch(
+      wordOffset: calculationDone - calculatedDoneBranch)
+
+    if isNarrow {
+      Self.emitImmediate(mask, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: 16, right: 17, destination: 16))
+    }
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
+    if isNarrow {
+      Self.emitImmediate(~mask, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: destination, right: 17, destination: destination))
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    } else if width == .i32 {
+      fragment.append(Self.encodeMove(destination: destination, source: 16, is64Bit: false))
+    } else {
+      fragment.append(Self.encodeMove(destination: destination, source: 16, is64Bit: true))
+    }
+
+    Self.emitImmediate(UInt64(width.rawValue), register: 17, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
+    fragment.append(Self.encodeLoad64(register: 17, word: .lazyFlagsOperation))
+    let lazyOperation: DoryARM64LazyFlagsState.Operation =
+      operation == .left ? .doubleShiftLeft : .doubleShiftRight
+    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 26, right: 17, shiftAmount: 8, destination: 26))
+    fragment.append(
+      Self.encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 17, right: 31, destination: 31))
+    fragment.append(
+      Self.encodeConditionalSelect(
+        destination: 26,
+        trueRegister: 26,
+        falseRegister: 31,
+        condition: .notEqual
+      ))
+    fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Writes a fused x86 condition result into the low byte of a pinned guest register.
   ///
   /// Conditions without a single native mapping return `false` without appending any words.
@@ -1133,6 +1288,24 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       case (true, false): 0x1100_0000
       case (false, true): 0xD100_0000
       case (false, false): 0x5100_0000
+      }
+    return base | immediate << 10 | left << 5 | destination
+  }
+
+  private static func encodeAddSubtractImmediateSetFlags(
+    add: Bool,
+    is64Bit: Bool,
+    left: UInt32,
+    immediate: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    precondition(immediate < 4096)
+    let base: UInt32 =
+      switch (add, is64Bit) {
+      case (true, true): 0xB100_0000
+      case (true, false): 0x3100_0000
+      case (false, true): 0xF100_0000
+      case (false, false): 0x7100_0000
       }
     return base | immediate << 10 | left << 5 | destination
   }
