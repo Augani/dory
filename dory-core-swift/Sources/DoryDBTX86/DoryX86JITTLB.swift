@@ -21,6 +21,13 @@ public enum DoryX86JITTLBError: Error, Sendable, Equatable {
   case invalidAddressSpaceGeneration(UInt64)
 }
 
+public enum DoryX86JITTLBResolution: Sendable, Hashable {
+  case hit(hostAddress: UInt64)
+  case filled(hostAddress: UInt64)
+  case pageFault(address: UInt64, errorCode: UInt32)
+  case fallback
+}
+
 /// Per-vCPU direct-mapped translation storage shared by generated code and its slow path.
 ///
 /// Each access class owns a distinct power-of-two array. An entry is exactly two words: an exact
@@ -113,6 +120,57 @@ public final class DoryX86JITTLB: @unchecked Sendable {
 
   public func invalidateAll() {
     dory_jit_tlb_invalidate_all(storage)
+  }
+
+  /// Exercises the same C-owned miss path that generated code branches to. The caller keeps the
+  /// memory callback context alive for the complete C-to-Swift-to-C round trip.
+  public func resolve(
+    linearAddress: UInt64,
+    byteCount: Int,
+    addressSpaceGeneration: UInt64,
+    access: DoryX86JITTLBAccess,
+    memory: any DoryX86Memory
+  ) throws -> DoryX86JITTLBResolution {
+    _ = try Self.tag(
+      linearAddress: linearAddress,
+      addressSpaceGeneration: addressSpaceGeneration
+    )
+    guard let hostMemory = memory as? any DoryX86HostAddressSpaceMemory,
+      hostMemory.hostAddressSpaceByteCount > 0,
+      byteCount > 0, byteCount <= Int(UInt32.max)
+    else { return .fallback }
+    var callback = DoryJITMemoryCallbackContext(
+      capabilities: .init(memory: memory),
+      requiresRestartableReads: false
+    )
+    var resolution = dory_jit_tlb_resolution()
+    let result = withUnsafeMutablePointer(to: &callback) { callback in
+      dory_jit_tlb_resolve(
+        storage,
+        access.runtimeValue,
+        linearAddress,
+        UInt32(byteCount),
+        addressSpaceGeneration,
+        hostMemory.hostAddressSpaceBase,
+        UInt64(hostMemory.hostAddressSpaceByteCount),
+        UnsafeMutableRawPointer(callback),
+        &resolution
+      )
+    }
+    guard result == 0 else { throw DoryX86JITTLBError.unavailable(result) }
+    switch resolution.status {
+    case UInt32(DORY_JIT_TLB_RESOLUTION_HIT.rawValue):
+      return .hit(hostAddress: resolution.host_address)
+    case UInt32(DORY_JIT_TLB_RESOLUTION_FILLED.rawValue):
+      return .filled(hostAddress: resolution.host_address)
+    case UInt32(DORY_JIT_TLB_RESOLUTION_PAGE_FAULT.rawValue):
+      return .pageFault(
+        address: resolution.fault_address,
+        errorCode: resolution.fault_error_code
+      )
+    default:
+      return .fallback
+    }
   }
 
   public static func tag(

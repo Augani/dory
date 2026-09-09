@@ -17,6 +17,20 @@ typedef struct dory_jit_tlb_entry {
     uint64_t tag;
     uint64_t host_address_delta;
 } dory_jit_tlb_entry;
+
+typedef enum dory_jit_tlb_resolution_status {
+    DORY_JIT_TLB_RESOLUTION_HIT = 0,
+    DORY_JIT_TLB_RESOLUTION_FILLED = 1,
+    DORY_JIT_TLB_RESOLUTION_PAGE_FAULT = 2,
+    DORY_JIT_TLB_RESOLUTION_FALLBACK = 3,
+} dory_jit_tlb_resolution_status;
+
+typedef struct dory_jit_tlb_resolution {
+    uint64_t host_address;
+    uint64_t fault_address;
+    uint32_t fault_error_code;
+    uint32_t status;
+} dory_jit_tlb_resolution;
 typedef uint64_t (*dory_jit_memory_read_function)(
     void *memory_context,
     uint64_t address,
@@ -63,6 +77,27 @@ int dory_jit_tlb_fill(
 );
 void dory_jit_tlb_invalidate_page(dory_jit_tlb *tlb, uint64_t linear_address);
 void dory_jit_tlb_invalidate_all(dory_jit_tlb *tlb);
+int dory_jit_tlb_resolve(
+    dory_jit_tlb *tlb,
+    dory_jit_tlb_access access,
+    uint64_t linear_address,
+    uint32_t byte_count,
+    uint64_t address_space_generation,
+    uint64_t host_address_space_base,
+    uint64_t host_address_space_byte_count,
+    void *memory_context,
+    dory_jit_tlb_resolution *resolution_out
+);
+
+// Implemented by DoryDBTX86 and called only through dory_jit_tlb_resolve's C boundary.
+int32_t dory_x86_jit_translate(
+    void *memory_context,
+    uint64_t linear_address,
+    uint32_t access,
+    uint64_t *physical_address_out,
+    uint64_t *fault_address_out,
+    uint32_t *fault_error_code_out
+);
 
 int dory_jit_region_create(size_t minimum_capacity, dory_jit_region **region_out);
 void dory_jit_region_destroy(dory_jit_region *region);

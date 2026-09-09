@@ -137,4 +137,154 @@ import Testing
       try DoryX86JITTLB(entryCount: 3)
     }
   }
+
+  @Test func cSlowPathWalksOnceThenReturnsAHostAddressHit() throws {
+    let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)
+    let paging = DoryX86PagingUnit()
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: physical,
+      pagingUnit: paging,
+      context: .init(state: .reset(), mode: .real16)
+    )
+    let tlb = try DoryX86JITTLB(entryCount: 16)
+
+    #expect(
+      try tlb.resolve(
+        linearAddress: 0x4_123,
+        byteCount: 8,
+        addressSpaceGeneration: 1,
+        access: .read,
+        memory: translated
+      ) == .filled(hostAddress: physical.hostAddressSpaceBase + 0x4_123))
+    #expect(paging.diagnostics.translationRequests == 1)
+    #expect(
+      try tlb.lookup(
+        linearAddress: 0x4_123,
+        addressSpaceGeneration: 1,
+        access: .read
+      ) == physical.hostAddressSpaceBase + 0x4_123)
+    #expect(
+      try tlb.resolve(
+        linearAddress: 0x4_127,
+        byteCount: 4,
+        addressSpaceGeneration: 1,
+        access: .read,
+        memory: translated
+      ) == .hit(hostAddress: physical.hostAddressSpaceBase + 0x4_127))
+    #expect(paging.diagnostics.translationRequests == 1)
+  }
+
+  @Test func cSlowPathReturnsExactPageFaultAndRetriesAfterMappingAppears() throws {
+    let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)
+    let paging = DoryX86PagingUnit()
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: physical,
+      pagingUnit: paging,
+      context: longModeContext()
+    )
+    let tlb = try DoryX86JITTLB(entryCount: 16)
+    let linear: UInt64 = 0x0040_0123
+
+    #expect(
+      try tlb.resolve(
+        linearAddress: linear,
+        byteCount: 4,
+        addressSpaceGeneration: 3,
+        access: .read,
+        memory: translated
+      ) == .pageFault(address: linear, errorCode: 0x4))
+    #expect(paging.diagnostics.pageWalkFailures == 1)
+
+    try installFourLevelMapping(
+      linear: linear,
+      physicalPage: 0x8_000,
+      flags: 0x7,
+      memory: physical
+    )
+    #expect(
+      try tlb.resolve(
+        linearAddress: linear,
+        byteCount: 4,
+        addressSpaceGeneration: 3,
+        access: .read,
+        memory: translated
+      ) == .filled(hostAddress: physical.hostAddressSpaceBase + 0x8_123))
+    #expect(paging.diagnostics.translationRequests == 2)
+    #expect(try physical.readScalar(at: 0x1_000, byteCount: 8) & (1 << 5) != 0)
+    #expect(try physical.readScalar(at: 0x4_000, byteCount: 8) & (1 << 5) != 0)
+  }
+
+  @Test func cSlowPathDeclinesCrossPageAndOutOfReservationSpansBeforeCaching() throws {
+    let physical = try DoryX86MmapMemory(validatingByteCount: 0x2_000)
+    let paging = DoryX86PagingUnit()
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: physical,
+      pagingUnit: paging,
+      context: .init(state: .reset(), mode: .real16)
+    )
+    let tlb = try DoryX86JITTLB(entryCount: 16)
+
+    #expect(
+      try tlb.resolve(
+        linearAddress: 0x1_fff,
+        byteCount: 2,
+        addressSpaceGeneration: 1,
+        access: .read,
+        memory: translated
+      ) == .fallback)
+    #expect(paging.diagnostics.translationRequests == 0)
+    #expect(
+      try tlb.resolve(
+        linearAddress: 0x2_000,
+        byteCount: 1,
+        addressSpaceGeneration: 1,
+        access: .read,
+        memory: translated
+      ) == .fallback)
+    #expect(paging.diagnostics.translationRequests == 1)
+    #expect(
+      try tlb.lookup(linearAddress: 0x2_000, addressSpaceGeneration: 1, access: .read) == nil)
+  }
+
+  private func longModeContext() -> DoryX86PagingContext {
+    .init(
+      control: .init(
+        cr0: 0x8001_0011,
+        cr3: 0x1_000,
+        cr4: 1 << 5,
+        efer: (1 << 10) | (1 << 11)
+      ),
+      rflags: .reset,
+      currentPrivilegeLevel: 3,
+      mode: .long64
+    )
+  }
+
+  private func installFourLevelMapping(
+    linear: UInt64,
+    physicalPage: UInt64,
+    flags: UInt64,
+    memory: DoryX86MmapMemory
+  ) throws {
+    try memory.writeScalar(
+      at: 0x1_000 + ((linear >> 39) & 0x1ff) * 8,
+      value: 0x2_007,
+      byteCount: 8
+    )
+    try memory.writeScalar(
+      at: 0x2_000 + ((linear >> 30) & 0x1ff) * 8,
+      value: 0x3_007,
+      byteCount: 8
+    )
+    try memory.writeScalar(
+      at: 0x3_000 + ((linear >> 21) & 0x1ff) * 8,
+      value: 0x4_007,
+      byteCount: 8
+    )
+    try memory.writeScalar(
+      at: 0x4_000 + ((linear >> 12) & 0x1ff) * 8,
+      value: physicalPage | flags,
+      byteCount: 8
+    )
+  }
 }

@@ -795,6 +795,21 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
     self.context = context
   }
 
+  /// Permission-checks one generated-code miss through the architectural walker. Backing access
+  /// remains separate: the C slow path uses the physical result only to construct a host address
+  /// inside the reserved guest-physical region.
+  func translateForJIT(
+    linearAddress: UInt64,
+    access: DoryX86MemoryAccessKind
+  ) throws -> DoryX86Translation {
+    try pagingUnit.translate(
+      linearAddress: linearAddress,
+      access: access,
+      context: context,
+      physicalMemory: physicalMemory
+    )
+  }
+
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
     try readLinear(
       at: address, byteCount: maximumCount, access: .instructionFetch, allowShortRead: true)

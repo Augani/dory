@@ -15,6 +15,8 @@ enum {
     dory_jit_tlb_access_count = 3,
 };
 
+static const uint64_t dory_jit_tlb_maximum_generation = (UINT64_C(1) << 28) - 1;
+
 struct dory_jit_tlb {
     uint32_t magic;
     size_t entry_count;
@@ -22,6 +24,7 @@ struct dory_jit_tlb {
 };
 
 _Static_assert(sizeof(dory_jit_tlb_entry) == 16, "JIT TLB entries must remain two words");
+_Static_assert(sizeof(dory_jit_tlb_resolution) == 24, "JIT TLB resolution ABI changed");
 
 static int dory_jit_tlb_access_is_valid(dory_jit_tlb_access access) {
     return access >= DORY_JIT_TLB_ACCESS_READ && access <= DORY_JIT_TLB_ACCESS_EXECUTE;
@@ -29,6 +32,19 @@ static int dory_jit_tlb_access_is_valid(dory_jit_tlb_access access) {
 
 static size_t dory_jit_tlb_index(const dory_jit_tlb *tlb, uint64_t linear_address) {
     return (size_t)((linear_address >> 12) & (tlb->entry_count - 1));
+}
+
+static uint64_t dory_jit_tlb_tag(
+    uint64_t linear_address,
+    uint64_t address_space_generation
+) {
+    if (address_space_generation == 0 ||
+        address_space_generation > dory_jit_tlb_maximum_generation) {
+        return 0;
+    }
+    const uint64_t virtual_page_number_mask = (UINT64_C(1) << 36) - 1;
+    const uint64_t virtual_page_number = (linear_address >> 12) & virtual_page_number_mask;
+    return (virtual_page_number << 28) | address_space_generation;
 }
 
 int dory_jit_tlb_create(size_t entry_count, dory_jit_tlb **tlb_out) {
@@ -143,6 +159,82 @@ void dory_jit_tlb_invalidate_all(dory_jit_tlb *tlb) {
         0,
         tlb->entry_count * dory_jit_tlb_access_count * sizeof(dory_jit_tlb_entry)
     );
+}
+
+int dory_jit_tlb_resolve(
+    dory_jit_tlb *tlb,
+    dory_jit_tlb_access access,
+    uint64_t linear_address,
+    uint32_t byte_count,
+    uint64_t address_space_generation,
+    uint64_t host_address_space_base,
+    uint64_t host_address_space_byte_count,
+    void *memory_context,
+    dory_jit_tlb_resolution *resolution_out
+) {
+    if (tlb == NULL || tlb->magic != dory_jit_tlb_magic ||
+        !dory_jit_tlb_access_is_valid(access) || byte_count == 0 ||
+        memory_context == NULL || resolution_out == NULL) {
+        return EINVAL;
+    }
+    memset(resolution_out, 0, sizeof(*resolution_out));
+    const uint64_t tag = dory_jit_tlb_tag(linear_address, address_space_generation);
+    if (tag == 0) {
+        return EINVAL;
+    }
+    if ((uint64_t)byte_count > UINT64_C(4096) - (linear_address & UINT64_C(4095))) {
+        resolution_out->status = DORY_JIT_TLB_RESOLUTION_FALLBACK;
+        return 0;
+    }
+    uint64_t host_address = 0;
+    const int lookup = dory_jit_tlb_lookup(
+        tlb,
+        access,
+        linear_address,
+        tag,
+        &host_address
+    );
+    if (lookup == 0) {
+        resolution_out->host_address = host_address;
+        resolution_out->status = DORY_JIT_TLB_RESOLUTION_HIT;
+        return 0;
+    }
+    if (lookup != ENOENT) {
+        return lookup;
+    }
+
+    uint64_t physical_address = 0;
+    uint64_t fault_address = 0;
+    uint32_t fault_error_code = 0;
+    const int32_t translation = dory_x86_jit_translate(
+        memory_context,
+        linear_address,
+        (uint32_t)access,
+        &physical_address,
+        &fault_address,
+        &fault_error_code
+    );
+    if (translation == DORY_JIT_TLB_RESOLUTION_PAGE_FAULT) {
+        resolution_out->fault_address = fault_address;
+        resolution_out->fault_error_code = fault_error_code;
+        resolution_out->status = DORY_JIT_TLB_RESOLUTION_PAGE_FAULT;
+        return 0;
+    }
+    if (translation != DORY_JIT_TLB_RESOLUTION_FILLED ||
+        physical_address > host_address_space_byte_count ||
+        (uint64_t)byte_count > host_address_space_byte_count - physical_address ||
+        host_address_space_base > UINT64_MAX - physical_address) {
+        resolution_out->status = DORY_JIT_TLB_RESOLUTION_FALLBACK;
+        return 0;
+    }
+    host_address = host_address_space_base + physical_address;
+    const int fill = dory_jit_tlb_fill(tlb, access, linear_address, tag, host_address);
+    if (fill != 0) {
+        return fill;
+    }
+    resolution_out->host_address = host_address;
+    resolution_out->status = DORY_JIT_TLB_RESOLUTION_FILLED;
+    return 0;
 }
 
 #if defined(__aarch64__)

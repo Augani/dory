@@ -3039,7 +3039,7 @@ public enum DoryJITRuntimeError: Error, Sendable, Equatable {
   case invalidExitCode(UInt32)
 }
 
-fileprivate struct DoryJITMemoryCapabilities {
+struct DoryJITMemoryCapabilities {
   let memory: any DoryX86Memory
   let scalarMemory: (any DoryX86ScalarMemory)?
   let restartableScalarMemory: (any DoryX86RestartableScalarMemory)?
@@ -3053,10 +3053,52 @@ fileprivate struct DoryJITMemoryCapabilities {
   }
 }
 
-private struct DoryJITMemoryCallbackContext {
+struct DoryJITMemoryCallbackContext {
   let capabilities: DoryJITMemoryCapabilities
   let requiresRestartableReads: Bool
   var failed = false
+}
+
+/// C-callable architectural translation boundary used only by the JIT TLB miss resolver.
+/// Returning `FILLED` means the physical address was permission checked and may be cached;
+/// page faults retain their exact linear address and error code for the native exit path.
+@_cdecl("dory_x86_jit_translate")
+func doryX86JITTranslate(
+  _ opaque: UnsafeMutableRawPointer?,
+  _ linearAddress: UInt64,
+  _ rawAccess: UInt32,
+  _ physicalAddressOut: UnsafeMutablePointer<UInt64>?,
+  _ faultAddressOut: UnsafeMutablePointer<UInt64>?,
+  _ faultErrorCodeOut: UnsafeMutablePointer<UInt32>?
+) -> Int32 {
+  guard let opaque, let physicalAddressOut, let faultAddressOut, let faultErrorCodeOut else {
+    return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue)
+  }
+  let access: DoryX86MemoryAccessKind
+  switch rawAccess {
+  case UInt32(DORY_JIT_TLB_ACCESS_READ.rawValue): access = .read
+  case UInt32(DORY_JIT_TLB_ACCESS_WRITE.rawValue): access = .write
+  case UInt32(DORY_JIT_TLB_ACCESS_EXECUTE.rawValue): access = .instructionFetch
+  default: return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue)
+  }
+  let callback = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
+  guard !callback.pointee.failed,
+    let translatedMemory = callback.pointee.capabilities.memory as? DoryX86TranslatedMemory
+  else { return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue) }
+  do {
+    let translation = try translatedMemory.translateForJIT(
+      linearAddress: linearAddress,
+      access: access
+    )
+    physicalAddressOut.pointee = translation.physicalAddress
+    return Int32(DORY_JIT_TLB_RESOLUTION_FILLED.rawValue)
+  } catch DoryX86MemoryError.pageFault(let address, let errorCode) {
+    faultAddressOut.pointee = address
+    faultErrorCodeOut.pointee = errorCode
+    return Int32(DORY_JIT_TLB_RESOLUTION_PAGE_FAULT.rawValue)
+  } catch {
+    return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue)
+  }
 }
 
 private let doryJITMemorySynchronize: dory_jit_memory_synchronize_function = { opaque in
