@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-measured-cr3-writes",
+  "observedAt": "2026-09-09T19:36:00Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "3b70a9605d9f7aa74d738c72d8d33ae566f1ffb4",
+    "candidateRunnerSHA256": "04a8217dd11f4dc6523e5fd87d945ab0414abd04200f8a3e0e45cb919aa7df80",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "measuredSites": [
+      {
+        "guestRIP": "0xffffffff81001b43",
+        "instruction": "movq %rax,%cr3",
+        "bytes": "0f 22 d8",
+        "priorNegativeCacheHits": 12113,
+        "remainsInCandidateRunNegativeCache": false
+      },
+      {
+        "guestRIP": "0xffffffff810017b7",
+        "instruction": "movq %rdi,%cr3",
+        "bytes": "0f 22 df",
+        "priorNegativeCacheHits": 9606,
+        "remainsInCandidateRunNegativeCache": false
+      }
+    ],
+    "boundedRule": "Tier one admits only the exact three-byte, one-instruction CR3 writes at the two measured fixture RIPs with their measured RAX/RDI sources. The same operation at another RIP declines.",
+    "validation": "Every execution validates reserved physical-address bits before native entry and declines PCID bit-63 no-flush requests to the interpreter. User-mode and non-long-mode cases also decline before effects.",
+    "coherency": "Each admitted write is an isolated dispatch boundary. Successful publication updates architectural CR3, invalidates the translated-memory paging unit, flushes the executor JIT TLB, and returns before another guest instruction can run under the new root.",
+    "deferred": "PCID no-flush writes and every unmeasured control-register write remain interpreter-owned."
+  },
+  "verification": {
+    "focusedGate": "The measured CR3-write and 54-word ABI-layout tests pass.",
+    "dbtGate": "1,173 tests in 123 DoryDBTX86 suites passed.",
+    "dbtAndPCGate": "1,449 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Both measured encodings match the interpreter while preserving GPRs and flags; a two-instruction chain retires only the CR3 write at the mandatory dispatch boundary.",
+    "faultCoverage": "Reserved-high-bit and no-flush values leave state unchanged for precise interpreter retry; user mode and an adjacent RIP decline atomically.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "5e05ea4a-09b4-4b55-9309-b257878a2bbc",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 142129940375,
+    "retiredInstructions": 733805095,
+    "throughputMIPS": 5.163,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731032855,
+    "interpreterInstructions": 2772240,
+    "deliveredMaskableInterrupts": 57970,
+    "retiredInterruptReturns": 146152,
+    "byteValidationHits": 72219,
+    "codeGenerationMismatches": 78072,
+    "sharedCodeHits": 113828,
+    "compiledBlocks": 184621,
+    "tier1CompilationAttempts": 224212,
+    "tier1CompilationDeclines": 126310,
+    "tier1DeclinePercentOfAttempts": 56.3350757318966,
+    "tier1CompiledBlocks": 97902,
+    "lazyFlagMaterializations": 59390292,
+    "translationCacheInvalidations": 240633
+  },
+  "unmatchedPriorRunComparison": {
+    "memoryBitResetElapsedNanoseconds": 146514173916,
+    "cr3WriteElapsedNanoseconds": 142129940375,
+    "directionalElapsedReductionPercent": 2.992361369428724,
+    "tier1DeclineReduction": 1704,
+    "tier1DeclineReductionPercent": 1.3311044104551064,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. The elapsed and decline differences are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleKernelSites": [
+    {
+      "guestRIP": "0xffffffff81a07cd3",
+      "instruction": "inb %dx,%al",
+      "guestByteCount": 1,
+      "hitCount": 13097,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff810017e8",
+      "instruction": "iretq",
+      "guestByteCount": 2,
+      "hitCount": 12244,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff812df36a",
+      "instruction": "setne (%rbx)",
+      "guestByteCount": 3,
+      "hitCount": 11327,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff81e35772",
+      "symbol": "sync_regs+0x22",
+      "instruction": "rep movsq (%rsi),%es:(%rdi)",
+      "guestByteCount": 3,
+      "hitCount": 10315,
+      "declineReason": "interpreterHelper"
+    }
+  ],
+  "interpretation": "Both measured CR3-write sites are absent from the retained negative-cache sample and the authenticated workload completes. A05.2 remains open because 126,310 of 224,212 full-run tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no performance delta and does not satisfy G1-G5."
+  ]
+}
