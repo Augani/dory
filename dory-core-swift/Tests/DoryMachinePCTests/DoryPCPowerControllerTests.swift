@@ -60,11 +60,68 @@ import Testing
     try reset.load(kernel: makeMinimalELF())
     #expect(try reset.runOnDedicatedStack(maximumInstructions: 1) == .reset(instructionCount: 0))
   }
+
+  @Test func hostPowerOffInterruptsActiveExecutionWithinOneSecond() throws {
+    #if arch(arm64)
+      let tiers: [DoryPCExecutionTier] = [.interpreter, .baselineJIT, .optimizingJIT]
+    #else
+      let tiers: [DoryPCExecutionTier] = [.interpreter]
+    #endif
+
+    for tier in tiers {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        executionTier: tier,
+        baselineJITMaximumCodeBytes: 64 * 1024
+      )
+      // jmp $ keeps the processor active until the host lifecycle latch is observed.
+      try machine.load(kernel: makeMinimalELF(code: [0xEB, 0xFE]))
+      let result = PowerOffRunResult()
+      let started = DispatchSemaphore(value: 0)
+      let finished = DispatchSemaphore(value: 0)
+      let thread = Thread {
+        started.signal()
+        result.store(Result { try machine.run(maximumInstructions: .max) })
+        finished.signal()
+      }
+      thread.name = "dev.dory.tests.pc-power-cancellation"
+      thread.stackSize = 2 * 1024 * 1024
+      thread.start()
+      #expect(started.wait(timeout: .now() + 1) == .success)
+      usleep(50_000)
+
+      let requestedAt = DispatchTime.now().uptimeNanoseconds
+      machine.powerController.request(.powerOff)
+      let completion = finished.wait(timeout: .now() + 1)
+      #expect(completion == .success, "active \(tier.rawValue) execution ignored host power-off")
+      guard completion == .success else { return }
+      let elapsed = DispatchTime.now().uptimeNanoseconds - requestedAt
+      #expect(elapsed < 1_000_000_000)
+      guard case .poweredOff(let instructionCount) = try result.get() else {
+        Issue.record("\(tier.rawValue) did not report poweredOff")
+        continue
+      }
+      #expect(instructionCount > 0, "power-off was not sampled during active execution")
+    }
+  }
 }
 
-private func makeMinimalELF() -> Data {
+private final class PowerOffRunResult: @unchecked Sendable {
+  private let lock = NSLock()
+  private var result: Result<DoryPCMachineStop, any Error>?
+
+  func store(_ result: Result<DoryPCMachineStop, any Error>) {
+    lock.withLock { self.result = result }
+  }
+
+  func get() throws -> DoryPCMachineStop {
+    try lock.withLock { try result!.get() }
+  }
+}
+
+private func makeMinimalELF(code: [UInt8] = [0xF4]) -> Data {
   let segmentOffset = 0x200
-  var data = Data(repeating: 0, count: segmentOffset + 1)
+  var data = Data(repeating: 0, count: segmentOffset + code.count)
   data.replaceSubrange(0..<4, with: [0x7F, 0x45, 0x4C, 0x46])
   data[4] = 2
   data[5] = 1
@@ -81,8 +138,8 @@ private func makeMinimalELF() -> Data {
   write(UInt32(1), to: &data, at: 0x40)
   write(UInt64(segmentOffset), to: &data, at: 0x48)
   write(UInt64(0x10_0000), to: &data, at: 0x58)
-  write(UInt64(1), to: &data, at: 0x60)
-  write(UInt64(1), to: &data, at: 0x68)
+  write(UInt64(code.count), to: &data, at: 0x60)
+  write(UInt64(code.count), to: &data, at: 0x68)
   write(UInt32(4), to: &data, at: 0x78)
   write(UInt64(0x180), to: &data, at: 0x80)
   write(UInt64(20), to: &data, at: 0x98)
@@ -92,7 +149,7 @@ private func makeMinimalELF() -> Data {
       4, 0, 0, 0, 4, 0, 0, 0, 0x12, 0, 0, 0, 0x58, 0x65, 0x6E, 0,
       0, 0x00, 0x10, 0,
     ])
-  data[segmentOffset] = 0xF4
+  data.replaceSubrange(segmentOffset..<(segmentOffset + code.count), with: code)
   return data
 }
 
