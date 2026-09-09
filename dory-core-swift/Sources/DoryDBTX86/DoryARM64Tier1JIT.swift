@@ -19,6 +19,7 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredMemoryBitTestRCXRIP: UInt64 = 0xFFFF_FFFF_81E1_B3A0
   private static let measuredMemoryBitTestRDIRSIRIP: UInt64 = 0xFFFF_FFFF_81E1_C65C
   private static let measuredMemoryBitTestRAXRDIRIP: UInt64 = 0xFFFF_FFFF_8168_1086
+  private static let measuredMemoryBitTestRBXRAXRIP: UInt64 = 0xFFFF_FFFF_81E1_C104
   private static let measuredMemoryBitResetRIP: UInt64 = 0xFFFF_FFFF_81E1_B3A6
   private static let measuredMemoryBitResetR14RIP: UInt64 = 0xFFFF_FFFF_8168_1078
   private static let measuredMemoryBitResetPatchedRIP: UInt64 = 0xFFFF_FFFF_812D_C46A
@@ -915,6 +916,21 @@ struct DoryARM64Tier1Emitter: Sendable {
             addressWidth: .i64
           )
         && index == .init(bank: "x86.gpr", index: 0, width: .i64)
+    case measuredMemoryBitTestRBXRAXRIP:
+      return block.guestByteCount == 10
+        && address
+          == .init(
+            base: .init(bank: "x86.gpr", index: 0, width: .i64),
+            displacement: 0x228,
+            addressWidth: .i64
+          )
+        && index == .init(bank: "x86.gpr", index: 3, width: .i64)
+        && block.terminator
+          == .conditional(
+            condition: "x86.condition.3",
+            taken: measuredMemoryBitTestRBXRAXRIP - 27,
+            notTaken: measuredMemoryBitTestRBXRAXRIP + 10
+          )
     default:
       return false
     }
