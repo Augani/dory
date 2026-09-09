@@ -21,6 +21,17 @@ void dory_atomic_u8_store_release(uint8_t *value, uint8_t desired) {
     __atomic_store_n(value, desired, __ATOMIC_RELEASE);
 }
 
+uint64_t dory_atomic_u64_load_relaxed(const uint64_t *value) {
+    return __atomic_load_n(value, __ATOMIC_RELAXED);
+}
+
+void dory_atomic_u64_increment_saturating(uint64_t *value) {
+    uint64_t current = __atomic_load_n(value, __ATOMIC_RELAXED);
+    while (current != UINT64_MAX &&
+           !__atomic_compare_exchange_n(
+               value, &current, current + 1, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
+
 int dory_install_sigcont_generation_tracker(void) {
     struct sigaction action;
     memset(&action, 0, sizeof(action));

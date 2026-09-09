@@ -368,6 +368,26 @@ private func pagingDiagnostics(_ diagnostics: [DoryX86PagingDiagnostics]) -> [[S
   }
 }
 
+private func physicalMemoryDiagnostics(
+  _ diagnostics: DoryPCPhysicalMemoryDiagnostics
+) -> [String: Any] {
+  [
+    "instructionFetchHelperCalls": diagnostics.instructionFetchHelperCalls,
+    "readHelperCalls": diagnostics.readHelperCalls,
+    "writeHelperCalls": diagnostics.writeHelperCalls,
+    "validationHelperCalls": diagnostics.validationHelperCalls,
+    "codeGenerationHelperCalls": diagnostics.codeGenerationHelperCalls,
+    "atomicHelperCalls": diagnostics.atomicHelperCalls,
+    "bulkHelperCalls": diagnostics.bulkHelperCalls,
+    "dmaValidationCalls": diagnostics.dmaValidationCalls,
+    "totalMemoryHelperCalls": diagnostics.totalMemoryHelperCalls,
+    "mmioInstructionFetchExits": diagnostics.mmioInstructionFetchExits,
+    "mmioReadExits": diagnostics.mmioReadExits,
+    "mmioWriteExits": diagnostics.mmioWriteExits,
+    "totalMMIOExits": diagnostics.totalMMIOExits,
+  ]
+}
+
 private func completedInstructions(for stop: DoryPCMachineStop) -> UInt64 {
   switch stop {
   case .halted(let instructionCount), .exception(_, let instructionCount),
@@ -651,6 +671,7 @@ private func runWithProgress(
         "baselineJITInstructions": statistics.baselineJITInstructions,
         "optimizingJITInstructions": statistics.optimizingJITInstructions,
         "pagingDiagnostics": pagingDiagnostics(machine.pagingDiagnostics),
+        "physicalMemoryDiagnostics": physicalMemoryDiagnostics(machine.physicalMemory.diagnostics),
         "blockDevices": blockDeviceDiagnostics(blockDevices, memory: machine.physicalMemory),
       ]
       let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -952,6 +973,8 @@ private func run() throws {
     "optimizingJITBlocks": executionStatistics.optimizingJITBlocks,
     "optimizingJITDiagnostics": jitDiagnostics(composed.machine.optimizingJITDiagnostics),
     "pagingDiagnostics": pagingDiagnostics(composed.machine.pagingDiagnostics),
+    "physicalMemoryDiagnostics": physicalMemoryDiagnostics(
+      composed.machine.physicalMemory.diagnostics),
     "persistentSystemDisk": arguments.systemDisk?.path ?? "in-memory",
     "installerMedia": arguments.installerMedia?.path ?? "none",
     "installerMediaByteCount": installerIdentity.map { $0.byteCount as Any } ?? NSNull(),

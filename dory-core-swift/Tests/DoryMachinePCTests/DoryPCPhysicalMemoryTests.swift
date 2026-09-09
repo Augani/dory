@@ -54,6 +54,46 @@ import Testing
     }
   }
 
+  @Test func diagnosticsSeparateMemoryHelpersFromActualMMIOExits() throws {
+    let ram = try DoryX86ByteArrayMemory(validatingByteCount: 0x4000)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
+    let device = TestMMIODevice(
+      baseAddress: 0x1000, byteCount: 0x100, allowsInstructionFetch: true)
+    try bus.attach(device)
+    bus.seal()
+
+    _ = try bus.instructionBytes(at: 0x100, maximumCount: 4)
+    _ = try bus.instructionBytes(at: 0x1000, maximumCount: 4)
+    _ = try bus.read(at: 0x100, byteCount: 1)
+    _ = try bus.read(at: 0x1000, byteCount: 1)
+    _ = try bus.readScalar(at: 0x1000, byteCount: 1)
+    _ = try bus.readRestartableScalar(at: 0x1000, byteCount: 1)
+    try bus.write(at: 0x100, bytes: [1])
+    try bus.write(at: 0x1000, bytes: [2])
+    try bus.writeScalar(at: 0x1000, value: 3, byteCount: 1)
+    try bus.validateRead(at: 0x100, byteCount: 1)
+    try bus.validateWrite(at: 0x1000, byteCount: 1)
+    _ = try bus.codeGeneration(at: 0x100, byteCount: 1)
+    _ = try bus.compareExchangeScalar(at: 0x100, expected: 1, desired: 2, byteCount: 1)
+    _ = bus.bulkCopyRAMSpan(at: 0x100, maximumByteCount: 4)
+    try bus.validateDMA(at: 0x100, byteCount: 1, deviceWillWrite: false)
+
+    let diagnostics = bus.diagnostics
+    #expect(diagnostics.instructionFetchHelperCalls == 2)
+    #expect(diagnostics.readHelperCalls == 4)
+    #expect(diagnostics.writeHelperCalls == 3)
+    #expect(diagnostics.validationHelperCalls == 2)
+    #expect(diagnostics.codeGenerationHelperCalls == 1)
+    #expect(diagnostics.atomicHelperCalls == 1)
+    #expect(diagnostics.bulkHelperCalls == 1)
+    #expect(diagnostics.dmaValidationCalls == 1)
+    #expect(diagnostics.totalMemoryHelperCalls == 15)
+    #expect(diagnostics.mmioInstructionFetchExits == 1)
+    #expect(diagnostics.mmioReadExits == 3)
+    #expect(diagnostics.mmioWriteExits == 2)
+    #expect(diagnostics.totalMMIOExits == 6)
+  }
+
   @Test(arguments: [false, true]) func codeGenerationsCoverOnlyOrdinaryRAMPages(mmap: Bool) throws {
     let ram = try backing(mmap: mmap, byteCount: 0x4000)
     let bus = try DoryPCPhysicalMemoryBus(ram: ram)
@@ -280,11 +320,13 @@ import Testing
 private final class TestMMIODevice: DoryPCMMIODevice, @unchecked Sendable {
   let baseAddress: UInt64
   let byteCount: UInt64
+  let allowsInstructionFetch: Bool
   private var storage: [UInt8]
 
-  init(baseAddress: UInt64, byteCount: UInt64) {
+  init(baseAddress: UInt64, byteCount: UInt64, allowsInstructionFetch: Bool = false) {
     self.baseAddress = baseAddress
     self.byteCount = byteCount
+    self.allowsInstructionFetch = allowsInstructionFetch
     storage = Array(repeating: 0, count: Int(byteCount))
   }
 
