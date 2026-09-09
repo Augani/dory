@@ -1,3 +1,4 @@
+import Darwin
 import Testing
 
 @testable import DoryDBTX86
@@ -27,5 +28,75 @@ import Testing
     #expect(try memory.readScalar(at: 4088, byteCount: 8) == 0)
     try memory.writeScalar(at: 4088, value: .max, byteCount: 8)
     #expect(try memory.readScalar(at: 4088, byteCount: 8) == .max)
+  }
+
+  @Test func sparseReservationKeepsLogicalRAMContiguousAndHostHolesUncommitted() throws {
+    let page = Int(getpagesize())
+    let memory = try DoryX86MmapMemory(
+      validatingByteCount: page * 2,
+      hostAddressSpaceByteCount: page * 4,
+      ramMappings: [
+        .init(logicalOffset: 0, hostOffset: 0, byteCount: page),
+        .init(logicalOffset: page, hostOffset: page * 3, byteCount: page),
+      ]
+    )
+
+    #expect(memory.hostAddressSpaceByteCount == page * 4)
+    #expect(memory.hostAddressSpaceBase != 0)
+    try memory.write(at: UInt64(page - 2), bytes: [0x11, 0x22, 0x33, 0x44])
+    #expect(try memory.read(at: UInt64(page - 2), byteCount: 4) == [0x11, 0x22, 0x33, 0x44])
+    #expect(memory.bulkCopyRAMSpan(at: UInt64(page - 2), maximumByteCount: 4) == 2)
+
+    let base = mach_vm_address_t(memory.hostAddressSpaceBase)
+    var address = base + mach_vm_address_t(page)
+    var size: mach_vm_size_t = 0
+    var info = vm_region_basic_info_data_64_t()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<vm_region_basic_info_data_64_t>.size / MemoryLayout<integer_t>.size)
+    var objectName: mach_port_t = 0
+    let result = withUnsafeMutablePointer(to: &info) { infoPointer in
+      infoPointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+        mach_vm_region(
+          mach_task_self_,
+          &address,
+          &size,
+          VM_REGION_BASIC_INFO_64,
+          rebound,
+          &count,
+          &objectName
+        )
+      }
+    }
+    #expect(result == KERN_SUCCESS)
+    #expect(address == base + mach_vm_address_t(page))
+    #expect(info.protection == VM_PROT_NONE)
+  }
+
+  @Test func sparseReservationRejectsGapsOverlapAndUnalignedMappings() throws {
+    let page = Int(getpagesize())
+    let invalid: [[DoryX86MmapRAMMapping]] = [
+      [.init(logicalOffset: page, hostOffset: 0, byteCount: page)],
+      [
+        .init(logicalOffset: 0, hostOffset: 0, byteCount: page),
+        .init(logicalOffset: page, hostOffset: 0, byteCount: page),
+      ],
+      [.init(logicalOffset: 0, hostOffset: 1, byteCount: page)],
+    ]
+    for mappings in invalid {
+      #expect(throws: DoryX86MemoryAllocationError.self) {
+        try DoryX86MmapMemory(
+          validatingByteCount: page * (mappings.count == 1 ? 1 : 2),
+          hostAddressSpaceByteCount: page * 4,
+          ramMappings: mappings
+        )
+      }
+    }
+    #expect(throws: DoryX86MemoryAllocationError.invalidHostAddressSpace(byteCount: page + 1)) {
+      try DoryX86MmapMemory(
+        validatingByteCount: page,
+        hostAddressSpaceByteCount: page + 1,
+        ramMappings: [.init(logicalOffset: 0, hostOffset: 0, byteCount: page)]
+      )
+    }
   }
 }

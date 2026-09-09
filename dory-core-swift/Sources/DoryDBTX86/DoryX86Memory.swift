@@ -37,7 +37,14 @@ public enum DoryX86MemoryError: Error, Codable, Sendable, Hashable, CustomString
 public enum DoryX86MemoryAllocationError: Error, Sendable, Equatable {
   case invalidByteCount(Int)
   case addressOverflow(baseAddress: UInt64, byteCount: Int)
+  case invalidHostAddressSpace(byteCount: Int)
+  case invalidHostAddressSpaceMapping(
+    logicalOffset: Int,
+    hostOffset: Int,
+    byteCount: Int
+  )
   case mappingFailed(byteCount: Int, errorNumber: Int32)
+  case protectionFailed(offset: Int, byteCount: Int, errorNumber: Int32)
   case heapAllocationFailed(byteCount: Int, errorNumber: Int32)
 }
 
@@ -165,6 +172,15 @@ public protocol DoryX86PhysicalRAM:
 {
   var baseAddress: UInt64 { get }
   var byteCount: Int { get }
+}
+
+/// Optional host virtual-address reservation whose offsets match guest-physical addresses.
+/// Generated code may add a validated guest-physical address to this base. Uncommitted offsets
+/// stay `PROT_NONE`, so an accidentally emitted direct MMIO access faults instead of reaching an
+/// unrelated allocation.
+public protocol DoryX86HostAddressSpaceMemory: AnyObject, Sendable {
+  var hostAddressSpaceBase: UInt64 { get }
+  var hostAddressSpaceByteCount: Int { get }
 }
 
 extension DoryX86Memory {

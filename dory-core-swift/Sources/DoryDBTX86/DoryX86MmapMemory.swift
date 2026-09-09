@@ -1,41 +1,175 @@
 import Foundation
 
+/// Places one contiguous portion of the RAM object's compact logical storage at an offset in a
+/// larger host reservation. Logical ranges must cover the RAM object exactly; host ranges may
+/// leave gaps that remain inaccessible.
+public struct DoryX86MmapRAMMapping: Sendable, Equatable {
+  public let logicalOffset: Int
+  public let hostOffset: Int
+  public let byteCount: Int
+
+  public init(logicalOffset: Int, hostOffset: Int, byteCount: Int) {
+    self.logicalOffset = logicalOffset
+    self.hostOffset = hostOffset
+    self.byteCount = byteCount
+  }
+}
+
 /// Large-address-space backing store using mmap. Virtual pages are lazily backed
 /// by the host's VM system, so allocating 16 GB of guest RAM does not consume
 /// 16 GB of host physical memory — only pages that are actually touched cost RAM.
-public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory, @unchecked Sendable {
+public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory,
+  DoryX86HostAddressSpaceMemory, @unchecked Sendable
+{
   public let baseAddress: UInt64
   public let byteCount: Int
+  public let hostAddressSpaceByteCount: Int
   private let lock = NSLock()
   private let pointer: UnsafeMutableRawPointer
+  private let ramMappings: [DoryX86MmapRAMMapping]
   // Reserve generation metadata only for pages actually written, independently of virtual size.
   private var codePageGenerations: [Int: UInt64] = [:]
 
   var trackedCodePageCount: Int { lock.withLock { codePageGenerations.count } }
+
+  public var hostAddressSpaceBase: UInt64 {
+    UInt64(UInt(bitPattern: pointer))
+  }
 
   /// Both public allocation spellings preserve configuration and host mapping errors.
   public convenience init(baseAddress: UInt64 = 0, byteCount: Int) throws {
     try self.init(baseAddress: baseAddress, validatingByteCount: byteCount)
   }
 
-  public init(baseAddress: UInt64 = 0, validatingByteCount byteCount: Int) throws {
+  public convenience init(baseAddress: UInt64 = 0, validatingByteCount byteCount: Int) throws {
     try validateDoryX86RAMAllocation(baseAddress: baseAddress, byteCount: byteCount)
+    try self.init(
+      validatedBaseAddress: baseAddress,
+      byteCount: byteCount,
+      hostAddressSpaceByteCount: byteCount,
+      ramMappings: [.init(logicalOffset: 0, hostOffset: 0, byteCount: byteCount)],
+      reserveThenCommit: false
+    )
+  }
+
+  /// Reserves a guest-physical-shaped host address space and commits only the declared RAM ranges.
+  /// Mapping offsets and the reservation size must be host-page aligned. The compact logical ranges
+  /// remain the public `DoryX86PhysicalRAM` address space used by interpreter and device helpers.
+  public convenience init(
+    baseAddress: UInt64 = 0,
+    validatingByteCount byteCount: Int,
+    hostAddressSpaceByteCount: Int,
+    ramMappings: [DoryX86MmapRAMMapping]
+  ) throws {
+    try validateDoryX86RAMAllocation(baseAddress: baseAddress, byteCount: byteCount)
+    let pageByteCount = Int(getpagesize())
+    guard hostAddressSpaceByteCount > 0,
+      hostAddressSpaceByteCount.isMultiple(of: pageByteCount)
+    else {
+      throw DoryX86MemoryAllocationError.invalidHostAddressSpace(
+        byteCount: hostAddressSpaceByteCount)
+    }
+    let sorted = ramMappings.sorted { lhs, rhs in
+      lhs.logicalOffset == rhs.logicalOffset
+        ? lhs.hostOffset < rhs.hostOffset
+        : lhs.logicalOffset < rhs.logicalOffset
+    }
+    var expectedLogicalOffset = 0
+    var committedHostRanges: [Range<Int>] = []
+    for mapping in sorted {
+      let logicalEnd = mapping.logicalOffset.addingReportingOverflow(mapping.byteCount)
+      let hostEnd = mapping.hostOffset.addingReportingOverflow(mapping.byteCount)
+      let hostPageEnd = hostEnd.partialValue.addingReportingOverflow(pageByteCount - 1)
+      guard mapping.logicalOffset == expectedLogicalOffset,
+        mapping.hostOffset >= 0,
+        mapping.byteCount > 0,
+        mapping.logicalOffset.isMultiple(of: pageByteCount),
+        mapping.hostOffset.isMultiple(of: pageByteCount),
+        !logicalEnd.overflow,
+        !hostEnd.overflow,
+        !hostPageEnd.overflow,
+        hostEnd.partialValue <= hostAddressSpaceByteCount
+      else {
+        throw DoryX86MemoryAllocationError.invalidHostAddressSpaceMapping(
+          logicalOffset: mapping.logicalOffset,
+          hostOffset: mapping.hostOffset,
+          byteCount: mapping.byteCount
+        )
+      }
+      let committedHostEnd = hostPageEnd.partialValue / pageByteCount * pageByteCount
+      let committedRange = mapping.hostOffset..<committedHostEnd
+      guard !committedHostRanges.contains(where: { $0.overlaps(committedRange) }) else {
+        throw DoryX86MemoryAllocationError.invalidHostAddressSpaceMapping(
+          logicalOffset: mapping.logicalOffset,
+          hostOffset: mapping.hostOffset,
+          byteCount: mapping.byteCount
+        )
+      }
+      committedHostRanges.append(committedRange)
+      expectedLogicalOffset = logicalEnd.partialValue
+    }
+    guard expectedLogicalOffset == byteCount else {
+      let mapping = sorted.last ?? .init(logicalOffset: 0, hostOffset: 0, byteCount: 0)
+      throw DoryX86MemoryAllocationError.invalidHostAddressSpaceMapping(
+        logicalOffset: mapping.logicalOffset,
+        hostOffset: mapping.hostOffset,
+        byteCount: mapping.byteCount
+      )
+    }
+    try self.init(
+      validatedBaseAddress: baseAddress,
+      byteCount: byteCount,
+      hostAddressSpaceByteCount: hostAddressSpaceByteCount,
+      ramMappings: sorted,
+      reserveThenCommit: true
+    )
+  }
+
+  private init(
+    validatedBaseAddress baseAddress: UInt64,
+    byteCount: Int,
+    hostAddressSpaceByteCount: Int,
+    ramMappings: [DoryX86MmapRAMMapping],
+    reserveThenCommit: Bool
+  ) throws {
     let mapped = mmap(
-      nil, byteCount,
-      PROT_READ | PROT_WRITE,
+      nil, hostAddressSpaceByteCount,
+      reserveThenCommit ? PROT_NONE : PROT_READ | PROT_WRITE,
       MAP_ANONYMOUS | MAP_PRIVATE,
       -1, 0
     )
     guard mapped != MAP_FAILED, let mapped else {
-      throw DoryX86MemoryAllocationError.mappingFailed(byteCount: byteCount, errorNumber: errno)
+      throw DoryX86MemoryAllocationError.mappingFailed(
+        byteCount: hostAddressSpaceByteCount, errorNumber: errno)
+    }
+    if reserveThenCommit {
+      for mapping in ramMappings {
+        guard
+          mprotect(
+            mapped.advanced(by: mapping.hostOffset),
+            mapping.byteCount,
+            PROT_READ | PROT_WRITE
+          ) == 0
+        else {
+          let errorNumber = errno
+          munmap(mapped, hostAddressSpaceByteCount)
+          throw DoryX86MemoryAllocationError.protectionFailed(
+            offset: mapping.hostOffset,
+            byteCount: mapping.byteCount,
+            errorNumber: errorNumber
+          )
+        }
+      }
     }
     self.baseAddress = baseAddress
     self.byteCount = byteCount
+    self.hostAddressSpaceByteCount = hostAddressSpaceByteCount
+    self.ramMappings = ramMappings
     pointer = mapped
   }
 
   deinit {
-    munmap(pointer, byteCount)
+    munmap(pointer, hostAddressSpaceByteCount)
   }
 
   private func checkedOffset(
@@ -60,6 +194,56 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     return offset
   }
 
+  private func resolvedHostOffset(forLogicalOffset logicalOffset: Int) -> (
+    offset: Int, availableByteCount: Int
+  ) {
+    if ramMappings.count == 1 {
+      let mapping = ramMappings[0]
+      return (
+        mapping.hostOffset + logicalOffset - mapping.logicalOffset,
+        mapping.logicalOffset + mapping.byteCount - logicalOffset
+      )
+    }
+    let mapping = ramMappings.first {
+      $0.logicalOffset <= logicalOffset && logicalOffset < $0.logicalOffset + $0.byteCount
+    }!
+    return (
+      mapping.hostOffset + logicalOffset - mapping.logicalOffset,
+      mapping.logicalOffset + mapping.byteCount - logicalOffset
+    )
+  }
+
+  private func copyBytes(fromLogicalOffset offset: Int, byteCount: Int, into output: inout [UInt8])
+  {
+    output.withUnsafeMutableBytes { destination in
+      var logicalOffset = offset
+      var destinationOffset = 0
+      while destinationOffset < byteCount {
+        let resolved = resolvedHostOffset(forLogicalOffset: logicalOffset)
+        let count = min(resolved.availableByteCount, byteCount - destinationOffset)
+        destination.baseAddress!.advanced(by: destinationOffset).copyMemory(
+          from: pointer.advanced(by: resolved.offset), byteCount: count)
+        logicalOffset += count
+        destinationOffset += count
+      }
+    }
+  }
+
+  private func copyBytes(_ bytes: [UInt8], toLogicalOffset offset: Int) {
+    bytes.withUnsafeBytes { source in
+      var logicalOffset = offset
+      var sourceOffset = 0
+      while sourceOffset < bytes.count {
+        let resolved = resolvedHostOffset(forLogicalOffset: logicalOffset)
+        let count = min(resolved.availableByteCount, bytes.count - sourceOffset)
+        pointer.advanced(by: resolved.offset).copyMemory(
+          from: source.baseAddress!.advanced(by: sourceOffset), byteCount: count)
+        logicalOffset += count
+        sourceOffset += count
+      }
+    }
+  }
+
   private func markCodePagesWritten(offset: Int, byteCount: Int) {
     guard byteCount > 0 else { return }
     let first = offset / 4_096
@@ -76,10 +260,9 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: 1, access: .instructionFetch)
     let available = min(maximumCount, byteCount - offset)
-    return Array(
-      UnsafeBufferPointer(
-        start: pointer.advanced(by: offset).assumingMemoryBound(to: UInt8.self),
-        count: available))
+    var result = [UInt8](repeating: 0, count: available)
+    copyBytes(fromLogicalOffset: offset, byteCount: available, into: &result)
+    return result
   }
 
   public func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
@@ -90,10 +273,9 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .read)
-    return Array(
-      UnsafeBufferPointer(
-        start: pointer.advanced(by: offset).assumingMemoryBound(to: UInt8.self),
-        count: byteCount))
+    var result = [UInt8](repeating: 0, count: byteCount)
+    copyBytes(fromLogicalOffset: offset, byteCount: byteCount, into: &result)
+    return result
   }
 
   public func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
@@ -103,11 +285,23 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .read)
+    let resolved = resolvedHostOffset(forLogicalOffset: offset)
     var value: UInt64 = 0
-    for index in 0..<byteCount {
-      value |=
-        UInt64(pointer.advanced(by: offset + index).assumingMemoryBound(to: UInt8.self).pointee)
-        << UInt64(index * 8)
+    if byteCount <= resolved.availableByteCount {
+      for index in 0..<byteCount {
+        value |=
+          UInt64(
+            pointer.advanced(by: resolved.offset + index).assumingMemoryBound(to: UInt8.self)
+              .pointee
+          ) << UInt64(index * 8)
+      }
+    } else {
+      for index in 0..<byteCount {
+        let hostOffset = resolvedHostOffset(forLogicalOffset: offset + index).offset
+        value |=
+          UInt64(pointer.advanced(by: hostOffset).assumingMemoryBound(to: UInt8.self).pointee)
+          << UInt64(index * 8)
+      }
     }
     return value
   }
@@ -131,9 +325,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
-    bytes.withUnsafeBufferPointer { buffer in
-      pointer.advanced(by: offset).copyMemory(from: buffer.baseAddress!, byteCount: bytes.count)
-    }
+    copyBytes(bytes, toLogicalOffset: offset)
     markCodePagesWritten(offset: offset, byteCount: bytes.count)
   }
 
@@ -144,9 +336,18 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
-    for index in 0..<byteCount {
-      pointer.advanced(by: offset + index).assumingMemoryBound(to: UInt8.self).pointee =
-        UInt8(truncatingIfNeeded: value >> UInt64(index * 8))
+    let resolved = resolvedHostOffset(forLogicalOffset: offset)
+    if byteCount <= resolved.availableByteCount {
+      for index in 0..<byteCount {
+        pointer.advanced(by: resolved.offset + index).assumingMemoryBound(to: UInt8.self).pointee =
+          UInt8(truncatingIfNeeded: value >> UInt64(index * 8))
+      }
+    } else {
+      for index in 0..<byteCount {
+        let hostOffset = resolvedHostOffset(forLogicalOffset: offset + index).offset
+        pointer.advanced(by: hostOffset).assumingMemoryBound(to: UInt8.self).pointee =
+          UInt8(truncatingIfNeeded: value >> UInt64(index * 8))
+      }
     }
     markCodePagesWritten(offset: offset, byteCount: byteCount)
   }
@@ -163,16 +364,37 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
+    let resolved = resolvedHostOffset(forLogicalOffset: offset)
     var observed: UInt64 = 0
-    for index in 0..<byteCount {
-      observed |= UInt64(pointer.advanced(by: offset + index).assumingMemoryBound(to: UInt8.self).pointee)
-        << UInt64(index * 8)
+    if byteCount <= resolved.availableByteCount {
+      for index in 0..<byteCount {
+        observed |=
+          UInt64(
+            pointer.advanced(by: resolved.offset + index).assumingMemoryBound(to: UInt8.self)
+              .pointee
+          ) << UInt64(index * 8)
+      }
+    } else {
+      for index in 0..<byteCount {
+        let hostOffset = resolvedHostOffset(forLogicalOffset: offset + index).offset
+        observed |=
+          UInt64(pointer.advanced(by: hostOffset).assumingMemoryBound(to: UInt8.self).pointee)
+          << UInt64(index * 8)
+      }
     }
     let mask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
     let stored = (observed & mask) == (expected & mask) ? desired : observed
-    for index in 0..<byteCount {
-      pointer.advanced(by: offset + index).assumingMemoryBound(to: UInt8.self).pointee =
-        UInt8(truncatingIfNeeded: stored >> UInt64(index * 8))
+    if byteCount <= resolved.availableByteCount {
+      for index in 0..<byteCount {
+        pointer.advanced(by: resolved.offset + index).assumingMemoryBound(to: UInt8.self).pointee =
+          UInt8(truncatingIfNeeded: stored >> UInt64(index * 8))
+      }
+    } else {
+      for index in 0..<byteCount {
+        let hostOffset = resolvedHostOffset(forLogicalOffset: offset + index).offset
+        pointer.advanced(by: hostOffset).assumingMemoryBound(to: UInt8.self).pointee =
+          UInt8(truncatingIfNeeded: stored >> UInt64(index * 8))
+      }
     }
     markCodePagesWritten(offset: offset, byteCount: byteCount)
     return observed & mask
@@ -227,7 +449,12 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       guard address >= baseAddress else { return nil }
       let distance = address - baseAddress
       guard distance < UInt64(byteCount), distance <= UInt64(Int.max) else { return nil }
-      return min(maximumByteCount, byteCount - Int(distance))
+      let offset = Int(distance)
+      return min(
+        maximumByteCount,
+        byteCount - offset,
+        resolvedHostOffset(forLogicalOffset: offset).availableByteCount
+      )
     }
   }
 
@@ -246,13 +473,16 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       else { return nil }
       let sourceOffset = Int(sourceDistance)
       let destinationOffset = Int(destinationDistance)
+      let sourceResolved = resolvedHostOffset(forLogicalOffset: sourceOffset)
+      let destinationResolved = resolvedHostOffset(forLogicalOffset: destinationOffset)
       let count = min(
-        maximumByteCount, byteCount - sourceOffset, byteCount - destinationOffset)
+        maximumByteCount, byteCount - sourceOffset, byteCount - destinationOffset,
+        sourceResolved.availableByteCount, destinationResolved.availableByteCount)
       guard count > 0 else { return nil }
       guard sourceOffset + count <= destinationOffset || destinationOffset + count <= sourceOffset
       else { return nil }
-      pointer.advanced(by: destinationOffset).copyMemory(
-        from: pointer.advanced(by: sourceOffset), byteCount: count)
+      pointer.advanced(by: destinationResolved.offset).copyMemory(
+        from: pointer.advanced(by: sourceResolved.offset), byteCount: count)
       markCodePagesWritten(offset: destinationOffset, byteCount: count)
       return count
     }
@@ -277,10 +507,14 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       else { return nil }
       let sourceOffset = Int(sourceDistance)
       let destinationOffset = Int(destinationDistance)
+      let sourceResolved = resolvedHostOffset(forLogicalOffset: sourceOffset)
+      let destinationResolved = resolvedHostOffset(forLogicalOffset: destinationOffset)
       let elementCount = min(
         maximumElementCount,
         (byteCount - sourceOffset) / elementByteCount,
-        (byteCount - destinationOffset) / elementByteCount)
+        (byteCount - destinationOffset) / elementByteCount,
+        sourceResolved.availableByteCount / elementByteCount,
+        destinationResolved.availableByteCount / elementByteCount)
       guard elementCount > 0 else { return nil }
       let totalBytes = elementCount * elementByteCount
       guard
@@ -294,8 +528,8 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       else {
         return nil
       }
-      pointer.advanced(by: destinationOffset).copyMemory(
-        from: pointer.advanced(by: sourceOffset), byteCount: totalBytes)
+      pointer.advanced(by: destinationResolved.offset).copyMemory(
+        from: pointer.advanced(by: sourceResolved.offset), byteCount: totalBytes)
       markCodePagesWritten(offset: destinationOffset, byteCount: totalBytes)
       return elementCount
     }
@@ -314,11 +548,16 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       let distance = destinationAddress - baseAddress
       guard distance < UInt64(byteCount), distance <= UInt64(Int.max) else { return nil }
       let offset = Int(distance)
-      let elementCount = min(maximumElementCount, (byteCount - offset) / pattern.count)
+      let resolved = resolvedHostOffset(forLogicalOffset: offset)
+      let elementCount = min(
+        maximumElementCount,
+        (byteCount - offset) / pattern.count,
+        resolved.availableByteCount / pattern.count
+      )
       guard elementCount > 0 else { return nil }
       let totalBytes = elementCount * pattern.count
       pattern.withUnsafeBufferPointer { buffer in
-        let dest = pointer.advanced(by: offset)
+        let dest = pointer.advanced(by: resolved.offset)
         dest.copyMemory(from: buffer.baseAddress!, byteCount: pattern.count)
         var filled = pattern.count
         // Replicate the initialized prefix. Each copy is disjoint and ends on
