@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-measured-memory-setne",
+  "observedAt": "2026-09-09T19:52:39Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "f2ee21fcc35b982df1166619517bab903f6962d9",
+    "candidateRunnerSHA256": "7b6820f66d348ede86db7a2358748ec05381385c97537540d4a426efd7638aaa",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "measuredSite": {
+      "guestRIP": "0xffffffff812df36a",
+      "instruction": "setne (%rbx)",
+      "bytes": "0f 95 03",
+      "priorNegativeCacheHits": 11327,
+      "remainsInCandidateRunNegativeCache": false
+    },
+    "boundedRule": "Tier one admits only the exact three-byte, one-instruction memory SETNE at the measured fixture RIP. The same decoded operation at an adjacent RIP declines.",
+    "transactionality": "The shared measured-memory SETcc emitter materializes pending flags, computes the effective address and condition result, and performs the byte store only as the block's final transactional write.",
+    "deferred": "All other memory SETNE forms remain interpreter-owned; the independently qualified measured memory SETE site remains admitted under its own exact boundary."
+  },
+  "verification": {
+    "focusedGate": "The measured memory SETE and SETNE tests pass.",
+    "dbtAndPCGate": "1,450 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Both zero-flag outcomes match the interpreter exactly in architectural state and destination memory.",
+    "negativeCoverage": "The identical bytes at the adjacent RIP decline; the existing shared-emitter regression retains failed-write rollback coverage.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "13be33e3-4065-464f-bb1c-c71da4ee37e2",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 143849876000,
+    "retiredInstructions": 733948756,
+    "throughputMIPS": 5.102,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731183530,
+    "interpreterInstructions": 2765226,
+    "deliveredMaskableInterrupts": 57990,
+    "retiredInterruptReturns": 146182,
+    "byteValidationHits": 72399,
+    "codeGenerationMismatches": 78210,
+    "sharedCodeHits": 115090,
+    "compiledBlocks": 185732,
+    "tier1CompilationAttempts": 225774,
+    "tier1CompilationDeclines": 127035,
+    "tier1DeclinePercentOfAttempts": 56.26644343458503,
+    "tier1CompiledBlocks": 98739,
+    "lazyFlagMaterializations": 59643891,
+    "translationCacheInvalidations": 241072
+  },
+  "unmatchedPriorRunComparison": {
+    "cr3WriteElapsedNanoseconds": 142129940375,
+    "memorySetNotEqualElapsedNanoseconds": 143849876000,
+    "directionalElapsedIncreasePercent": 1.2101149275529626,
+    "tier1DeclineIncrease": 725,
+    "interpreterInstructionReduction": 7014,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. The elapsed and decline differences are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleKernelSites": [
+    {
+      "guestRIP": "0xffffffff810017e8",
+      "instruction": "iretq",
+      "guestByteCount": 2,
+      "largestSingleAddressSpaceHitCount": 12186,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81001732",
+      "instruction": "runtime-patched seven-byte boundary",
+      "guestByteCount": 7,
+      "hitCount": 6841,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81a07cd3",
+      "instruction": "inb %dx,%al",
+      "guestByteCount": 1,
+      "hitCount": 5537,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff815cab87",
+      "instruction": "sete 0x22(%rsp)",
+      "guestByteCount": 5,
+      "hitCount": 1881,
+      "declineReason": "nativeEmitter"
+    }
+  ],
+  "interpretation": "The measured memory SETNE site is absent from the retained negative-cache sample and the authenticated workload completes. A05.2 remains open because 127,035 of 225,774 full-run tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no performance delta and does not satisfy G1-G5."
+  ]
+}
