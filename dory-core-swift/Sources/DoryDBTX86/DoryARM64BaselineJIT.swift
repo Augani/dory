@@ -2938,10 +2938,18 @@ public struct DoryARM64BaselineEmitter: Sendable {
     into words: inout [UInt32]
   ) -> Bool {
     guard lhs.bank == "x86.gpr", rhs.bank == "x86.gpr",
-      lhs.index < 16, rhs.index < 16, lhs.width == .i64, rhs.width == .i64
+      lhs.index < 16, rhs.index < 16, lhs.width == rhs.width,
+      lhs.width == .i32 || lhs.width == .i64
     else { return false }
-    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(lhs.index) * 8))
-    words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(rhs.index) * 8))
+    let is64Bit = lhs.width == .i64
+    words.append(
+      is64Bit
+        ? encodeLoad64(register: 9, base: 0, byteOffset: Int(lhs.index) * 8)
+        : encodeLoad32(register: 9, base: 0, byteOffset: Int(lhs.index) * 8))
+    words.append(
+      is64Bit
+        ? encodeLoad64(register: 10, base: 0, byteOffset: Int(rhs.index) * 8)
+        : encodeLoad32(register: 10, base: 0, byteOffset: Int(rhs.index) * 8))
     words.append(encodeStore64(register: 10, base: 0, byteOffset: Int(lhs.index) * 8))
     words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(rhs.index) * 8))
     return true

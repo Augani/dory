@@ -247,8 +247,9 @@ struct DoryARM64Tier1Emitter: Sendable {
 
       case .exchangeRegisters(let lhs, let rhs):
         guard lhs.bank == "x86.gpr", rhs.bank == "x86.gpr",
-          lhs.width == .i64, rhs.width == .i64,
+          lhs.width == rhs.width,
           alu.emitExchangeRegisters(
+            width: lhs.width,
             lhsGuestRegister: Int(lhs.index),
             rhsGuestRegister: Int(rhs.index),
             into: &body

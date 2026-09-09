@@ -564,7 +564,8 @@ public struct DoryX86IRTranslator: Sendable {
         case .register(let rhsRegister) = rhsOperand,
         lhsRegister.bank == "x86.gpr", rhsRegister.bank == "x86.gpr",
         lhsRegister.index < 16, rhsRegister.index < 16,
-        lhsRegister.width == .i64, rhsRegister.width == .i64
+        lhsRegister.width == rhsRegister.width,
+        lhsRegister.width == .i32 || lhsRegister.width == .i64
       {
         return ([.exchangeRegisters(lhs: lhsRegister, rhs: rhsRegister)], nil)
       }
@@ -1154,8 +1155,8 @@ public struct DoryX86IRTranslator: Sendable {
         isJITGeneralRegister($0) && $0.width == address.addressWidth
       }
     case .exchangeRegisters(let lhs, let rhs):
-      return isJITGeneralRegister(lhs) && lhs.width == .i64
-        && isJITGeneralRegister(rhs) && rhs.width == .i64
+      return isJITGeneralRegister(lhs) && isJITGeneralRegister(rhs)
+        && lhs.width == rhs.width
     case .exchangeMemory(let destination, let source):
       guard case .memory(let address, let width) = destination,
         (width == .i32 || width == .i64) && isJITMemoryAddress(address),

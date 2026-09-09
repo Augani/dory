@@ -1113,21 +1113,31 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     fragment.append(Self.encodeMove(destination: 26, source: 31, is64Bit: true))
   }
 
-  /// Exchanges two pinned qword registers without changing NZCV or lazy flags.
+  /// Exchanges two pinned dword or qword registers without changing NZCV or lazy flags.
+  /// Dword moves zero-extend both architectural destinations.
   func emitExchangeRegisters(
+    width: DoryIRIntegerWidth,
     lhsGuestRegister: Int,
     rhsGuestRegister: Int,
     into words: inout [UInt32]
   ) -> Bool {
-    guard (0..<16).contains(lhsGuestRegister), (0..<16).contains(rhsGuestRegister) else {
+    guard (width == .i32 || width == .i64),
+      (0..<16).contains(lhsGuestRegister), (0..<16).contains(rhsGuestRegister)
+    else {
       return false
     }
-    guard lhsGuestRegister != rhsGuestRegister else { return true }
+    let is64Bit = width == .i64
     let lhs = UInt32(lhsGuestRegister)
     let rhs = UInt32(rhsGuestRegister)
-    words.append(Self.encodeMove(destination: 16, source: lhs, is64Bit: true))
-    words.append(Self.encodeMove(destination: lhs, source: rhs, is64Bit: true))
-    words.append(Self.encodeMove(destination: rhs, source: 16, is64Bit: true))
+    guard lhsGuestRegister != rhsGuestRegister else {
+      if !is64Bit {
+        words.append(Self.encodeMove(destination: lhs, source: lhs, is64Bit: false))
+      }
+      return true
+    }
+    words.append(Self.encodeMove(destination: 16, source: lhs, is64Bit: is64Bit))
+    words.append(Self.encodeMove(destination: lhs, source: rhs, is64Bit: is64Bit))
+    words.append(Self.encodeMove(destination: rhs, source: 16, is64Bit: is64Bit))
     return true
   }
 

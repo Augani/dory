@@ -7116,6 +7116,15 @@ import Testing
       }
       let cases: [Case] = [
         .init(
+          bytes: [0x92],
+          registers: .init(rax: 0xAAAA_BBBB_1122_3344, rdx: 0xCCCC_DDDD_8877_6655),
+          comment: "measured xchg eax,edx userspace hot site zero-extends both results",
+          check: { state in
+            #expect(state.registers.rax == 0x0000_0000_8877_6655)
+            #expect(state.registers.rdx == 0x0000_0000_1122_3344)
+          }
+        ),
+        .init(
           bytes: [0x48, 0x87, 0xCA],
           registers: .init(rcx: 0x1111_2222_3333_4444, rdx: 0xAAAA_BBBB_CCCC_DDDD),
           comment: "measured xchg rdx,rcx firmware hot site",
@@ -7280,7 +7289,7 @@ import Testing
 
   @Test func measuredRegisterOnlyFirmwareSitesKeepUnsupportedFormsBounded() throws {
     let unsupported: [[UInt8]] = [
-      [0x87, 0xCA],  // 32-bit register exchange remains interpreter until explicitly qualified
+      [0x66, 0x87, 0xCA],  // 16-bit register exchange remains interpreter until explicitly qualified
       [0x98],  // cwde is distinct from measured REX.W cdqe
       [0xF6, 0x10],  // not byte ptr [rax] is a memory write
       [0xF6, 0xD4],  // not ah is a legacy high-byte write
