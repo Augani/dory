@@ -598,7 +598,6 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     let ramByteCount = UInt64(memoryBytes)
     let lowRAMByteCount = min(ramByteCount, DoryPCV1ABI.mmioHoleStart)
     let highRAMByteCount = ramByteCount - lowRAMByteCount
-    let hostAddressSpaceUpperBound = DoryPCV1ABI.above4GRAMStart + highRAMByteCount
     var ramMappings = [
       DoryX86MmapRAMMapping(
         logicalOffset: 0,
@@ -627,8 +626,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     let sharedMemory = try DoryX86MmapMemory(
       validatingByteCount: memoryBytes,
       hostAddressSpaceByteCount: Int(
-        max(DoryPCV1ABI.above4GRAMStart, hostAddressSpaceUpperBound)
-      ),
+        DoryPCV1ABI.guestPhysicalAddressSpaceBytes(memoryBytes: ramByteCount)),
       ramMappings: ramMappings,
       readOnlyMappings: readOnlyMappings
     )

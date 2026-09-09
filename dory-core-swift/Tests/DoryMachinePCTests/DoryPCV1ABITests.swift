@@ -39,6 +39,15 @@ import Testing
     }
   }
 
+  @Test func selectsTheSmallestAdmittedPowerOfTwoGuestPhysicalSpace() {
+    #expect(DoryPCV1ABI.guestPhysicalAddressBits(memoryBytes: 512 << 20) == 36)
+    #expect(DoryPCV1ABI.guestPhysicalAddressSpaceBytes(memoryBytes: 512 << 20) == 64 << 30)
+    #expect(DoryPCV1ABI.guestPhysicalAddressBits(memoryBytes: 60 << 30) == 36)
+    #expect(DoryPCV1ABI.guestPhysicalAddressBits(memoryBytes: 64 << 30) == 37)
+    #expect(DoryPCV1ABI.guestPhysicalAddressBits(memoryBytes: 512 << 30) == 40)
+    #expect(DoryPCV1ABI.guestPhysicalAddressSpaceBytes(memoryBytes: 512 << 30) == 1 << 40)
+  }
+
   @Test func checkedInABIProjectionMatchesSource() throws {
     let source = URL(fileURLWithPath: #filePath)
     let packageRoot = source.deletingLastPathComponent().deletingLastPathComponent()

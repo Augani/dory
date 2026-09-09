@@ -35,6 +35,8 @@ public enum DoryPCV1ABI {
   public static let minimumProductMemoryBytes: UInt64 = 512 << 20
   public static let maximumMemoryBytes: UInt64 = 512 << 30
   public static let maximumVCPUCount = 255
+  public static let minimumGuestPhysicalAddressBits: UInt8 = 36
+  public static let maximumGuestPhysicalAddressBits: UInt8 = 40
 
   public static let pvhStartInfo: UInt64 = 0x0009_0000
   public static let pvhCommandLine: UInt64 = 0x0009_1000
@@ -137,6 +139,18 @@ public enum DoryPCV1ABI {
     return pciINTxFirstGSI &+ ((device &+ pin &- 1) % pciINTxLineCount)
   }
 
+  public static func guestPhysicalAddressBits(memoryBytes: UInt64) -> UInt8 {
+    precondition(memoryBytes > 0 && memoryBytes <= maximumMemoryBytes)
+    let highRAMBytes = memoryBytes > mmioHoleStart ? memoryBytes - mmioHoleStart : 0
+    let requiredUpperBound = above4GRAMStart + highRAMBytes
+    let requiredBits = UInt8(UInt64.bitWidth - (requiredUpperBound - 1).leadingZeroBitCount)
+    return min(max(requiredBits, minimumGuestPhysicalAddressBits), maximumGuestPhysicalAddressBits)
+  }
+
+  public static func guestPhysicalAddressSpaceBytes(memoryBytes: UInt64) -> UInt64 {
+    1 << guestPhysicalAddressBits(memoryBytes: memoryBytes)
+  }
+
   public static func validateProductMemoryBytes(_ byteCount: UInt64) throws {
     guard byteCount >= minimumProductMemoryBytes else {
       throw DoryPCV1ABIError.memoryBelowMinimum(
@@ -183,7 +197,7 @@ public enum DoryPCV1ABI {
     | Firmware code | `0xff000000` | `0x01000000` |
     | RAM remapped above 4 GiB | `0x0000000100000000` | variable |
 
-    UEFI resets at `0xfffffff0`, uses firmware ABI `dory.edk2.pc@1`, and persists variables as `dory.uefi.variables.pc@1`. Product launches accept 512 MiB through 512 GiB in 2 MiB increments and 1...255 logical processors.
+    UEFI resets at `0xfffffff0`, uses firmware ABI `dory.edk2.pc@1`, and persists variables as `dory.uefi.variables.pc@1`. Product launches accept 512 MiB through 512 GiB in 2 MiB increments and 1...255 logical processors. The host reservation is a power-of-two guest-physical space selected from 36 through 40 address bits for the admitted RAM size.
 
     ## Interrupt and PCI contract
 

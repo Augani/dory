@@ -58,7 +58,7 @@ import Testing
   @Test func configuredRAMUsesAFullGuestPhysicalReservation() throws {
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 << 20)
     #expect(machine.hostAddressSpaceBase != 0)
-    #expect(machine.hostAddressSpaceByteCount == Int(DoryPCV1ABI.above4GRAMStart))
+    #expect(machine.hostAddressSpaceByteCount == 64 << 30)
     #expect(
       protection(at: machine.hostAddressSpaceBase) == (VM_PROT_READ | VM_PROT_WRITE)
     )
@@ -83,8 +83,7 @@ import Testing
     let memoryBytes = Int(DoryPCV1ABI.mmioHoleStart) + (2 << 20)
     let machine = try DoryPCDirectKernelMachine(memoryBytes: memoryBytes)
     #expect(
-      machine.hostAddressSpaceByteCount
-        == Int(DoryPCV1ABI.above4GRAMStart) + (2 << 20)
+      machine.hostAddressSpaceByteCount == 64 << 30
     )
     try machine.physicalMemory.writeScalar(
       at: DoryPCV1ABI.above4GRAMStart,
@@ -127,7 +126,19 @@ import Testing
     let before = try #require(residentByteCount())
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 << 20)
     let after = try #require(residentByteCount())
-    #expect(machine.hostAddressSpaceByteCount == 4 << 30)
+    #expect(machine.hostAddressSpaceByteCount == 64 << 30)
     #expect(after >= before ? after - before < 256 << 20 : true)
+  }
+
+  @Test func maximumRAMConfigurationUsesTheFortyBitReservation() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: Int(DoryPCV1ABI.maximumMemoryBytes))
+    #expect(machine.hostAddressSpaceByteCount == 1 << 40)
+    let lastRAMAddress = machine.hostAddressSpaceBase + DoryPCV1ABI.above4GRAMStart
+      + DoryPCV1ABI.maximumMemoryBytes - DoryPCV1ABI.mmioHoleStart - 1
+    #expect(kernelReadResult(at: lastRAMAddress) == KERN_SUCCESS)
+    #expect(
+      kernelReadResult(
+        at: machine.hostAddressSpaceBase + UInt64(machine.hostAddressSpaceByteCount) - 1)
+        != KERN_SUCCESS)
   }
 }
