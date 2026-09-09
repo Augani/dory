@@ -6733,6 +6733,136 @@ import Testing
     #endif
   }
 
+  @Test func memoryConditionalMovesReadUnconditionallyAndMatchInterpreterAcrossTiers() throws {
+    #if arch(arm64)
+      struct MemoryCMOVCase {
+        let bytes: [UInt8]
+        let registers: DoryX86GeneralRegisters
+        let dataValue: UInt64
+        let dataByteCount: Int
+      }
+      let cases = [
+        MemoryCMOVCase(
+          bytes: [0x0F, 0x44, 0x08],  // cmove ecx,[rax]
+          registers: .init(rax: 0x80, rcx: 0xFFFF_FFFF_1234_5678),
+          dataValue: 0xDEAD_BEEF,
+          dataByteCount: 4
+        ),
+        MemoryCMOVCase(
+          bytes: [0x48, 0x0F, 0x44, 0x08],  // cmove rcx,[rax]
+          registers: .init(rax: 0x80, rcx: 0x1122_3344_5566_7788),
+          dataValue: 0x8877_6655_4433_2211,
+          dataByteCount: 8
+        ),
+        MemoryCMOVCase(
+          bytes: [0x48, 0x0F, 0x44, 0x00],  // cmove rax,[rax]
+          registers: .init(rax: 0x80),
+          dataValue: 0x0123_4567_89AB_CDEF,
+          dataByteCount: 8
+        ),
+      ]
+      let configurations: [(DoryARM64JITOptimization, Bool)] = [
+        (.baseline, false),
+        (.baseline, true),
+        (.optimizing, false),
+      ]
+
+      for (optimization, tier1Enabled) in configurations {
+        for testCase in cases {
+          for predicate in [false, true] {
+            var flags: DoryX86RFLAGS = [.reservedOne, .carry, .direction]
+            if predicate { flags.insert(.zero) }
+            let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+            try interpretedMemory.write(at: 0, bytes: testCase.bytes)
+            try interpretedMemory.writeScalar(
+              at: 0x80,
+              value: testCase.dataValue,
+              byteCount: testCase.dataByteCount
+            )
+            var interpreted = try DoryX86ArchitecturalState(
+              registers: testCase.registers,
+              rip: 0,
+              rflags: flags
+            )
+            guard case .retired = DoryX86Interpreter().step(
+              state: &interpreted,
+              memory: interpretedMemory,
+              mode: .long64
+            ) else {
+              Issue.record("reference memory CMOV unexpectedly faulted")
+              return
+            }
+
+            let translatedMemory = try ScalarTrackingMemory(byteCount: 0x100)
+            try translatedMemory.backing.writeScalar(
+              at: 0x80,
+              value: testCase.dataValue,
+              byteCount: testCase.dataByteCount
+            )
+            var translated = try DoryX86ArchitecturalState(
+              registers: testCase.registers,
+              rip: 0,
+              rflags: flags
+            )
+            let execution = try #require(DoryARM64BaselineExecutor(
+              maximumCodeBytes: 16 * 1024,
+              tier1Enabled: tier1Enabled,
+              optimization: optimization
+            ).execute(
+              bytes: testCase.bytes,
+              at: 0,
+              mode: .long64,
+              addressSpaceID: 0,
+              maximumInstructions: 1,
+              state: &translated,
+              memory: translatedMemory
+            ))
+
+            let expectedTier: DoryARM64CompilationTier =
+              tier1Enabled ? .tier1 : DoryARM64CompilationTier(rawValue: optimization.rawValue)!
+            #expect(execution.block.tier == expectedTier)
+            #expect(execution.block.requiresMemoryCallbacks)
+            #expect(execution.block.requiresRestartableMemoryReads == false)
+            #expect(translatedMemory.scalarReads == 1)
+            #expect(translated == interpreted)
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func falseMemoryConditionalMoveFaultsAndRollsBackAcrossNativeTiers() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x48, 0x0F, 0x44, 0x08]  // cmove rcx,[rax], with ZF clear
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x1000, rcx: 0x1122_3344_5566_7788),
+        rip: 0x7000,
+        rflags: [.reservedOne, .carry, .direction]
+      )
+      for tier1Enabled in [false, true] {
+        let memory = try ScalarTrackingMemory(byteCount: 0x100)
+        var state = initial
+        let execution = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: tier1Enabled
+        ).execute(
+          bytes: bytes,
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        ))
+
+        #expect(execution.block.tier == (tier1Enabled ? .tier1 : .baseline))
+        #expect(execution.exitCode == .interpreter)
+        #expect(memory.scalarReads == 1)
+        #expect(state == initial)
+      }
+    #endif
+  }
+
   @Test func hotConditionalMovePairExecutesNativelyWithExactRegisterWidths() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [

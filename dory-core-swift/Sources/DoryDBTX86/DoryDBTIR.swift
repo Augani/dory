@@ -954,11 +954,17 @@ public struct DoryX86IRTranslator: Sendable {
       return isJITGeneralRegister(register)
     case .conditionalMove(_, let destination, let source):
       guard case .register(let target) = destination,
-        case .register(let origin) = source,
-        target.width == origin.width,
-        target.width == .i32 || target.width == .i64
+        target.width == .i32 || target.width == .i64,
+        isJITGeneralRegister(target)
       else { return false }
-      return isJITGeneralRegister(target) && isJITGeneralRegister(origin)
+      switch source {
+      case .register(let origin):
+        return target.width == origin.width && isJITGeneralRegister(origin)
+      case .memory(let address, let width):
+        return target.width == width && isJITMemoryAddress(address)
+      case .immediate:
+        return false
+      }
     case .setCondition(_, let destination):
       guard case .register(let target) = destination else { return false }
       return isJITLowByteRegister(target)

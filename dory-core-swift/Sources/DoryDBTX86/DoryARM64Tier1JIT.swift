@@ -20,6 +20,10 @@ struct DoryARM64Tier1Emitter: Sendable {
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
+      case .conditionalMove(_, _, .memory):
+        guard !wroteMemory else { return nil }
+        memoryCallbackCount += 1
+        requiresMemoryCallbacks = true
       case .stackPush, .stackPushFlags:
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
@@ -227,29 +231,44 @@ struct DoryARM64Tier1Emitter: Sendable {
         nativeFlags = nil
 
       case .conditionalMove(let condition, let destination, let source):
-        guard let destination = lowRegister(destination), destination.width == .i64,
-          let source = lowSource(source, matching: .i64)
-        else { return nil }
-        if let nativeFlags,
-          alu.emitFusedConditionalMove(
-            condition,
-            flags: nativeFlags,
-            destinationGuestRegister: Int(destination.index),
-            source: source,
-            into: &body
-          )
-        {
-          continue
+        guard let destination = lowRegister(destination) else { return nil }
+        switch source {
+        case .memory(let address, let width):
+          guard width == destination.width,
+            alu.emitMemoryConditionalMove(
+              condition,
+              width: width,
+              destinationGuestRegister: Int(destination.index),
+              address: address,
+              into: &body
+            )
+          else { return nil }
+          nativeFlags = nil
+        default:
+          guard destination.width == .i64,
+            let source = lowSource(source, matching: .i64)
+          else { return nil }
+          if let nativeFlags,
+            alu.emitFusedConditionalMove(
+              condition,
+              flags: nativeFlags,
+              destinationGuestRegister: Int(destination.index),
+              source: source,
+              into: &body
+            )
+          {
+            continue
+          }
+          guard
+            alu.emitMaterializedConditionalMove(
+              condition,
+              destinationGuestRegister: Int(destination.index),
+              source: source,
+              into: &body
+            )
+          else { return nil }
+          nativeFlags = nil
         }
-        guard
-          alu.emitMaterializedConditionalMove(
-            condition,
-            destinationGuestRegister: Int(destination.index),
-            source: source,
-            into: &body
-          )
-        else { return nil }
-        nativeFlags = nil
 
       case .stackPushFlags:
         alu.emitPushFlags(into: &body)

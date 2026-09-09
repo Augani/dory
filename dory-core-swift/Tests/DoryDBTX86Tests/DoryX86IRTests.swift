@@ -67,17 +67,25 @@ import Testing
     #expect(DoryARM64BaselineEmitter().compile(block).tier == .baseline)
   }
 
-  @Test func memoryAndWordConditionalMovesRemainInterpreterFallbacks() throws {
-    let cases: [[UInt8]] = [
-      [0x4C, 0x0F, 0x43, 0x6C, 0x24, 0x68],  // cmovae r13,[rsp+0x68]
-      [0x66, 0x0F, 0x42, 0xC3],  // cmovb ax,bx
+  @Test func memoryConditionalMovesLowerNativelyWhileWordFormsRemainFallbacks() throws {
+    let memoryBytes: [UInt8] = [
+      0x4C, 0x0F, 0x43, 0x6C, 0x24, 0x68,  // cmovae r13,[rsp+0x68]
     ]
+    let memoryBlock = try DoryX86IRTranslator().translate(
+      memoryBytes, at: 0x3000, mode: .long64)
+    #expect(memoryBlock.guestInstructionCount == 1)
+    let compiledMemory = DoryARM64BaselineEmitter().compile(memoryBlock)
+    #expect(compiledMemory.tier == .baseline)
+    #expect(compiledMemory.requiresMemoryCallbacks)
+    #expect(compiledMemory.mayExitToInterpreter == false)
 
-    for bytes in cases {
-      let block = try DoryX86IRTranslator().translate(bytes, at: 0x3000, mode: .long64)
-      #expect(block.guestInstructionCount == 1)
-      #expect(DoryARM64BaselineEmitter().compile(block).tier == .interpreterFallback)
-    }
+    let wordBlock = try DoryX86IRTranslator().translate(
+      [0x66, 0x0F, 0x42, 0xC3],  // cmovb ax,bx
+      at: 0x3000,
+      mode: .long64
+    )
+    #expect(wordBlock.guestInstructionCount == 1)
+    #expect(DoryARM64BaselineEmitter().compile(wordBlock).tier == .interpreterFallback)
   }
 
   @Test func packsMultipleReadsWithRegisterWorkIntoOneRestartableBlock() throws {

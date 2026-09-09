@@ -181,6 +181,11 @@ replaces that staging value at exit. Loads preserve the pending lazy-flags
 record, but the helper call invalidates any live native-NZCV token. Blocks with
 more than one scalar read require replay-safe memory, and callback failure rolls
 the entire block back to its executor checkpoint before interpreter fallback.
+Memory-source CMOV first resolves a pending record, performs the source read
+unconditionally, and only then evaluates its predicate from `x25`; a false CMOV
+can therefore fault exactly like the interpreter. Qword selection preserves the
+untaken destination, while dword selection zero-extends on either outcome. The
+mandatory read uses the same replay and rollback contract as scalar MOV.
 
 ## Helper-call shim
 

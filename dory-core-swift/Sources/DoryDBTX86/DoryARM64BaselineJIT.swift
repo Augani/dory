@@ -848,19 +848,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
     into words: inout [UInt32]
   ) -> Bool {
     guard case .register(let target) = destination,
-      case .register(let origin) = source,
       target.bank == "x86.gpr", target.index < 16,
-      origin.bank == "x86.gpr", origin.index < 16,
-      target.width == origin.width,
       target.width == .i32 || target.width == .i64,
+      load(source, matching: target.width, into: 13, words: &words),
       emitX86Condition(condition, into: 10, words: &words)
     else { return false }
 
-    words.append(
-      target.width == .i64
-        ? encodeLoad64(register: 11, base: 0, byteOffset: Int(origin.index) * 8)
-        : encodeLoad32(register: 11, base: 0, byteOffset: Int(origin.index) * 8)
-    )
     words.append(
       target.width == .i64
         ? encodeLoad64(register: 12, base: 0, byteOffset: Int(target.index) * 8)
@@ -870,7 +863,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(
       encodeConditionalSelect(
         destination: 9,
-        trueRegister: 11,
+        trueRegister: 13,
         falseRegister: 12,
         condition: .notEqual
       ))
@@ -1030,7 +1023,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return operation == .test ? 1 : 2
     case .atomicBitTestMemory:
       return 1
-    case .conditionalMove, .setCondition, .bitTestRegister, .exchangeRegisters:
+    case .conditionalMove(_, _, let source):
+      if case .memory = source { return 1 }
+      return 0
+    case .setCondition, .bitTestRegister, .exchangeRegisters:
       return 0
     case .bitScan(_, let destination, let source):
       if case .memory = destination { return 1 }

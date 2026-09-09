@@ -101,86 +101,10 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     address: DoryIRMemoryAddress,
     into words: inout [UInt32]
   ) -> Bool {
-    guard (0..<16).contains(destinationGuestRegister),
-      address.segment == nil || address.segment == "fs" || address.segment == "gs",
-      address.addressWidth == .i32 || address.addressWidth == .i64,
-      address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8
-    else { return false }
-    for register in [address.base, address.index].compactMap({ $0 }) {
-      guard register.bank == "x86.gpr", register.index < 16,
-        register.width == address.addressWidth
-      else { return false }
-    }
-
+    guard (0..<16).contains(destinationGuestRegister) else { return false }
     var fragment: [UInt32] = []
-    let addressIs64Bit = address.addressWidth == .i64
-    let displacement = UInt64(bitPattern: address.displacement)
-    Self.emitImmediate(
-      addressIs64Bit ? displacement : displacement & UInt64(UInt32.max),
-      register: 16,
-      into: &fragment
-    )
-    if let relativeBase = address.instructionRelativeBase {
-      Self.emitImmediate(relativeBase, register: 17, into: &fragment)
-      fragment.append(
-        Self.encodeAddSubtract(
-          add: true,
-          is64Bit: addressIs64Bit,
-          left: 16,
-          right: 17,
-          destination: 16
-        ))
-    }
-    if let base = address.base {
-      fragment.append(
-        Self.encodeAddSubtract(
-          add: true,
-          is64Bit: addressIs64Bit,
-          left: 16,
-          right: UInt32(base.index),
-          destination: 16
-        ))
-    }
-    if let index = address.index {
-      fragment.append(
-        Self.encodeAddSubtract(
-          add: true,
-          is64Bit: addressIs64Bit,
-          left: 16,
-          right: UInt32(index.index),
-          leftShift: UInt32(address.scale.trailingZeroBitCount),
-          destination: 16
-        ))
-    }
-    if let segment = address.segment {
-      fragment.append(
-        Self.encodeLoad64(register: 17, word: segment == "fs" ? .fsBase : .gsBase))
-      fragment.append(
-        Self.encodeAddSubtract(
-          add: true,
-          is64Bit: true,
-          left: 16,
-          right: 17,
-          destination: 16
-        ))
-    }
-
-    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
-      fragment.append(
-        Self.encodeStore64(
-          register: register,
-          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
-    }
-    fragment.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
-    fragment.append(Self.encodeMove(destination: 1, source: 16, is64Bit: true))
-    Self.emitImmediate(UInt64(width.rawValue / 8), register: 2, into: &fragment)
-    fragment.append(Self.encodeBranchWithLink(register: 20))
-    fragment.append(Self.encodeStore64(register: 0, word: .rip))
-    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
-      fragment.append(
-        Self.encodeLoad64(
-          register: register,
-          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    guard Self.emitMemoryRead(width: width, address: address, into: &fragment) else {
+      return false
     }
     fragment.append(Self.encodeLoad64(register: 16, word: .rip))
 
@@ -206,6 +130,43 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
         Self.encodeLogical(
           .or, is64Bit: true, left: destination, right: 16, destination: destination))
     }
+    words.append(contentsOf: fragment)
+    return true
+  }
+
+  /// Performs the mandatory source read for a dword/qword memory CMOV before evaluating the
+  /// predicate. A false CMOV therefore still faults; dword forms apply the architecture's
+  /// destination zero-extension on either predicate outcome.
+  func emitMemoryConditionalMove(
+    _ condition: DoryX86Condition,
+    width: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister), width == .i32 || width == .i64 else {
+      return false
+    }
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    guard Self.emitMemoryRead(width: width, address: address, into: &fragment) else {
+      return false
+    }
+    Self.emitConditionFromMaterializedFlags(condition, into: &fragment)
+    fragment.append(Self.encodeLoad64(register: 17, word: .rip))
+    fragment.append(
+      Self.encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 16, right: 31, destination: 31))
+    let destination = UInt32(destinationGuestRegister)
+    fragment.append(
+      Self.encodeConditionalSelect(
+        destination: destination,
+        trueRegister: 17,
+        falseRegister: destination,
+        condition: .notEqual,
+        is64Bit: width == .i64
+      ))
+    fragment.append(Self.encodeMove(destination: 26, source: 31, is64Bit: true))
     words.append(contentsOf: fragment)
     return true
   }
@@ -2218,6 +2179,97 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     }
   }
 
+  /// Reads one scalar through the preserved callback and leaves its value in the context RIP
+  /// staging word. All pinned guest GPRs are restored to their pre-callback values.
+  private static func emitMemoryRead(
+    width: DoryIRIntegerWidth,
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard address.segment == nil || address.segment == "fs" || address.segment == "gs",
+      address.addressWidth == .i32 || address.addressWidth == .i64,
+      address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8
+    else { return false }
+    for register in [address.base, address.index].compactMap({ $0 }) {
+      guard register.bank == "x86.gpr", register.index < 16,
+        register.width == address.addressWidth
+      else { return false }
+    }
+
+    var fragment: [UInt32] = []
+    let addressIs64Bit = address.addressWidth == .i64
+    let displacement = UInt64(bitPattern: address.displacement)
+    emitImmediate(
+      addressIs64Bit ? displacement : displacement & UInt64(UInt32.max),
+      register: 16,
+      into: &fragment
+    )
+    if let relativeBase = address.instructionRelativeBase {
+      emitImmediate(relativeBase, register: 17, into: &fragment)
+      fragment.append(
+        encodeAddSubtract(
+          add: true,
+          is64Bit: addressIs64Bit,
+          left: 16,
+          right: 17,
+          destination: 16
+        ))
+    }
+    if let base = address.base {
+      fragment.append(
+        encodeAddSubtract(
+          add: true,
+          is64Bit: addressIs64Bit,
+          left: 16,
+          right: UInt32(base.index),
+          destination: 16
+        ))
+    }
+    if let index = address.index {
+      fragment.append(
+        encodeAddSubtract(
+          add: true,
+          is64Bit: addressIs64Bit,
+          left: 16,
+          right: UInt32(index.index),
+          leftShift: UInt32(address.scale.trailingZeroBitCount),
+          destination: 16
+        ))
+    }
+    if let segment = address.segment {
+      fragment.append(
+        encodeLoad64(register: 17, word: segment == "fs" ? .fsBase : .gsBase))
+      fragment.append(
+        encodeAddSubtract(
+          add: true,
+          is64Bit: true,
+          left: 16,
+          right: 17,
+          destination: 16
+        ))
+    }
+
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        encodeStore64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    fragment.append(encodeMove(destination: 0, source: 19, is64Bit: true))
+    fragment.append(encodeMove(destination: 1, source: 16, is64Bit: true))
+    emitImmediate(UInt64(width.rawValue / 8), register: 2, into: &fragment)
+    fragment.append(encodeBranchWithLink(register: 20))
+    fragment.append(encodeStore64(register: 0, word: .rip))
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        encodeLoad64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   private static func validWriteMode(
     operation: DoryIRBinaryOperation,
     writesDestination: Bool
@@ -2598,9 +2650,10 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     destination: UInt32,
     trueRegister: UInt32,
     falseRegister: UInt32,
-    condition: ARM64Condition
+    condition: ARM64Condition,
+    is64Bit: Bool = true
   ) -> UInt32 {
-    0x9A80_0000 | falseRegister << 16 | condition.rawValue << 12
+    (is64Bit ? 0x9A80_0000 : 0x1A80_0000) | falseRegister << 16 | condition.rawValue << 12
       | trueRegister << 5 | destination
   }
 

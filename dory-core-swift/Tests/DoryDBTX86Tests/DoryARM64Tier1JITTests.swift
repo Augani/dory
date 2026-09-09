@@ -42,6 +42,116 @@ import Testing
     #expect(compiled.mayExitToInterpreter)
   }
 
+  @Test func measuredDelayTSCMemoryCMOVBlockCompilesInTier1() throws {
+    let address: UInt64 = 0xFFFF_FFFF_81E2_DC27
+    let bytes: [UInt8] = [
+      0x48, 0x0F, 0x44, 0x15, 0xE1, 0x43, 0xBE, 0x00,  // cmove rdx,[rip + 0xbe43e1]
+      0x48, 0x69, 0xD2, 0xFA, 0x00, 0x00, 0x00,  // imul rdx,rdx,0xfa
+    ]
+    let block = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+
+    #expect(compiled.tier == .tier1)
+    #expect(compiled.guestByteCount == bytes.count)
+    #expect(compiled.guestInstructionCount == 2)
+    #expect(compiled.requiresMemoryCallbacks)
+    #expect(!compiled.requiresRestartableMemoryReads)
+    #expect(compiled.mayExitToInterpreter)
+  }
+
+  @Test func completeMeasuredDelayTSCBodyCompilesInTier1() throws {
+    let address: UInt64 = 0xFFFF_FFFF_81E2_DC14
+    let bytes: [UInt8] = [
+      0x65, 0x48, 0x8B, 0x15, 0xB4, 0xA5, 0x48, 0x01,  // mov rdx,gs:[rip + 0x148a5b4]
+      0x48, 0x8D, 0x04, 0xBD, 0, 0, 0, 0,  // lea rax,[rdi * 4]
+      0x48, 0x85, 0xD2,  // test rdx,rdx
+      0x48, 0x0F, 0x44, 0x15, 0xE1, 0x43, 0xBE, 0x00,  // cmove rdx,[rip + 0xbe43e1]
+      0x48, 0x69, 0xD2, 0xFA, 0x00, 0x00, 0x00,  // imul rdx,rdx,0xfa
+      0xF7, 0xE2,  // mul edx
+      0x48, 0x8B, 0x05, 0x19, 0x2A, 0x69, 0x00,  // mov rax,[rip + 0x692a19]
+      0x48, 0x8D, 0x7A, 0x01,  // lea rdi,[rdx + 1]
+      0xE9, 0x38, 0xB8, 0x01, 0x00,  // jmp 0xffffffff81e49480
+    ]
+    let block = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+
+    #expect(compiled.tier == .tier1)
+    #expect(compiled.guestByteCount == bytes.count)
+    #expect(compiled.guestInstructionCount == 9)
+    #expect(compiled.requiresMemoryCallbacks)
+    #expect(compiled.requiresRestartableMemoryReads)
+    #expect(compiled.mayExitToInterpreter)
+  }
+
+  @Test func memoryCMOVMaterializesPendingTestFlagsBeforeTheMandatoryRead() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [
+        0x48, 0x85, 0xD2,  // test rdx,rdx
+        0x48, 0x0F, 0x44, 0x08,  // cmove rcx,[rax]
+      ]
+      for rdx: UInt64 in [0, 1] {
+        let registers = DoryX86GeneralRegisters(
+          rax: 0x80,
+          rcx: 0x1122_3344_5566_7788,
+          rdx: rdx
+        )
+        let initialFlags: DoryX86RFLAGS = [.reservedOne, .carry, .direction]
+        let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+        try interpretedMemory.write(at: 0, bytes: bytes)
+        try interpretedMemory.writeScalar(
+          at: 0x80,
+          value: 0x8877_6655_4433_2211,
+          byteCount: 8
+        )
+        var interpreted = try DoryX86ArchitecturalState(
+          registers: registers,
+          rip: 0,
+          rflags: initialFlags
+        )
+        for _ in 0..<2 {
+          guard case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: interpretedMemory,
+            mode: .long64
+          ) else {
+            Issue.record("reference TEST-to-memory-CMOV block unexpectedly faulted")
+            return
+          }
+        }
+
+        let translatedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+        try translatedMemory.writeScalar(
+          at: 0x80,
+          value: 0x8877_6655_4433_2211,
+          byteCount: 8
+        )
+        var translated = try DoryX86ArchitecturalState(
+          registers: registers,
+          rip: 0,
+          rflags: initialFlags
+        )
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: true
+        )
+        let execution = try #require(executor.execute(
+          bytes: bytes,
+          at: 0,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &translated,
+          memory: translatedMemory
+        ))
+
+        #expect(execution.block.tier == .tier1)
+        #expect(execution.block.requiresMemoryCallbacks)
+        #expect(translated == interpreted)
+        #expect(executor.diagnostics.lazyFlagMaterializations == 1)
+      }
+    #endif
+  }
+
   @Test func executorRunsTier1BlockAndAggregatesOnDemandMaterialization() throws {
     #if arch(arm64)
       let address: UInt64 = 0x1000
