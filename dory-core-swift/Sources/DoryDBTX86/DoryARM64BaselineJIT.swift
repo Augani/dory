@@ -66,30 +66,35 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
 /// then the six visible segment selectors. Generated code returns a DoryJITExitCode in w0.
 /// The layout is intentionally independent of Swift struct ABI.
 public struct DoryARM64BaselineEmitter: Sendable {
-  private static let ripOffset = 16 * 8
-  private static let rflagsOffset = 17 * 8
-  private static let fsBaseOffset = 18 * 8
-  private static let gsBaseOffset = 19 * 8
-  private static let tscOffset = 20 * 8
-  private static let csSelectorOffset = 21 * 8
-  private static let dsSelectorOffset = 22 * 8
-  private static let esSelectorOffset = 23 * 8
-  private static let fsSelectorOffset = 24 * 8
-  private static let gsSelectorOffset = 25 * 8
-  private static let ssSelectorOffset = 26 * 8
-  private static let readTLBBaseOffset = 28 * 8
-  private static let writeTLBBaseOffset = 29 * 8
-  private static let tlbEntryMaskOffset = 31 * 8
-  private static let tlbAddressSpaceGenerationOffset = 32 * 8
-  private static let tlbResolverOffset = 35 * 8
-  private static let readTLBHitCounterOffset = 36 * 8
-  private static let writeTLBHitCounterOffset = 37 * 8
-  private static let atomicCompareExchangeOffset = 38 * 8
-  private static let atomicExchangeOffset = 39 * 8
-  private static let atomicFetchAddOffset = 40 * 8
-  private static let atomicRMWOffset = 41 * 8
-  private static let atomicCompareExchangePairOffset = 42 * 8
-  private static let rspOffset = 4 * 8
+  private static let ripOffset = DoryARM64Tier1ABI.ContextWord.rip.byteOffset
+  private static let rflagsOffset = DoryARM64Tier1ABI.ContextWord.rflags.byteOffset
+  private static let fsBaseOffset = DoryARM64Tier1ABI.ContextWord.fsBase.byteOffset
+  private static let gsBaseOffset = DoryARM64Tier1ABI.ContextWord.gsBase.byteOffset
+  private static let tscOffset = DoryARM64Tier1ABI.ContextWord.tsc.byteOffset
+  private static let csSelectorOffset = DoryARM64Tier1ABI.ContextWord.csSelector.byteOffset
+  private static let dsSelectorOffset = DoryARM64Tier1ABI.ContextWord.dsSelector.byteOffset
+  private static let esSelectorOffset = DoryARM64Tier1ABI.ContextWord.esSelector.byteOffset
+  private static let fsSelectorOffset = DoryARM64Tier1ABI.ContextWord.fsSelector.byteOffset
+  private static let gsSelectorOffset = DoryARM64Tier1ABI.ContextWord.gsSelector.byteOffset
+  private static let ssSelectorOffset = DoryARM64Tier1ABI.ContextWord.ssSelector.byteOffset
+  private static let readTLBBaseOffset = DoryARM64Tier1ABI.ContextWord.readTLBBase.byteOffset
+  private static let writeTLBBaseOffset = DoryARM64Tier1ABI.ContextWord.writeTLBBase.byteOffset
+  private static let tlbEntryMaskOffset = DoryARM64Tier1ABI.ContextWord.tlbEntryMask.byteOffset
+  private static let tlbAddressSpaceGenerationOffset =
+    DoryARM64Tier1ABI.ContextWord.tlbAddressSpaceGeneration.byteOffset
+  private static let tlbResolverOffset = DoryARM64Tier1ABI.ContextWord.tlbResolver.byteOffset
+  private static let readTLBHitCounterOffset =
+    DoryARM64Tier1ABI.ContextWord.readTLBHitCounter.byteOffset
+  private static let writeTLBHitCounterOffset =
+    DoryARM64Tier1ABI.ContextWord.writeTLBHitCounter.byteOffset
+  private static let atomicCompareExchangeOffset =
+    DoryARM64Tier1ABI.ContextWord.atomicCompareExchange.byteOffset
+  private static let atomicExchangeOffset = DoryARM64Tier1ABI.ContextWord.atomicExchange.byteOffset
+  private static let atomicFetchAddOffset = DoryARM64Tier1ABI.ContextWord.atomicFetchAdd.byteOffset
+  private static let atomicRMWOffset = DoryARM64Tier1ABI.ContextWord.atomicRMW.byteOffset
+  private static let atomicCompareExchangePairOffset =
+    DoryARM64Tier1ABI.ContextWord.atomicCompareExchangePair.byteOffset
+  private static let rspOffset = DoryARM64Tier1ABI.ContextWord.rsp.byteOffset
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
@@ -4056,23 +4061,30 @@ private let doryJITMemoryCompareExchange: dory_jit_memory_compare_exchange_funct
 }
 
 public final class DoryJITExecutableRegion: @unchecked Sendable {
-  public static let hostAddressSpaceBaseWordIndex = 27
-  public static let readTLBBaseWordIndex = 28
-  public static let writeTLBBaseWordIndex = 29
-  public static let executeTLBBaseWordIndex = 30
-  public static let tlbEntryMaskWordIndex = 31
-  public static let tlbAddressSpaceGenerationWordIndex = 32
-  public static let hostAddressSpaceByteCountWordIndex = 33
-  public static let tlbStorageWordIndex = 34
-  public static let tlbResolverWordIndex = 35
-  public static let readTLBHitCounterWordIndex = 36
-  public static let writeTLBHitCounterWordIndex = 37
-  public static let atomicCompareExchangeWordIndex = 38
-  public static let atomicExchangeWordIndex = 39
-  public static let atomicFetchAddWordIndex = 40
-  public static let atomicRMWWordIndex = 41
-  public static let atomicCompareExchangePairWordIndex = 42
-  public static let contextWordCount = 43
+  public static let hostAddressSpaceBaseWordIndex =
+    DoryARM64Tier1ABI.ContextWord.hostAddressSpaceBase.rawValue
+  public static let readTLBBaseWordIndex = DoryARM64Tier1ABI.ContextWord.readTLBBase.rawValue
+  public static let writeTLBBaseWordIndex = DoryARM64Tier1ABI.ContextWord.writeTLBBase.rawValue
+  public static let executeTLBBaseWordIndex = DoryARM64Tier1ABI.ContextWord.executeTLBBase.rawValue
+  public static let tlbEntryMaskWordIndex = DoryARM64Tier1ABI.ContextWord.tlbEntryMask.rawValue
+  public static let tlbAddressSpaceGenerationWordIndex =
+    DoryARM64Tier1ABI.ContextWord.tlbAddressSpaceGeneration.rawValue
+  public static let hostAddressSpaceByteCountWordIndex =
+    DoryARM64Tier1ABI.ContextWord.hostAddressSpaceByteCount.rawValue
+  public static let tlbStorageWordIndex = DoryARM64Tier1ABI.ContextWord.tlbStorage.rawValue
+  public static let tlbResolverWordIndex = DoryARM64Tier1ABI.ContextWord.tlbResolver.rawValue
+  public static let readTLBHitCounterWordIndex =
+    DoryARM64Tier1ABI.ContextWord.readTLBHitCounter.rawValue
+  public static let writeTLBHitCounterWordIndex =
+    DoryARM64Tier1ABI.ContextWord.writeTLBHitCounter.rawValue
+  public static let atomicCompareExchangeWordIndex =
+    DoryARM64Tier1ABI.ContextWord.atomicCompareExchange.rawValue
+  public static let atomicExchangeWordIndex = DoryARM64Tier1ABI.ContextWord.atomicExchange.rawValue
+  public static let atomicFetchAddWordIndex = DoryARM64Tier1ABI.ContextWord.atomicFetchAdd.rawValue
+  public static let atomicRMWWordIndex = DoryARM64Tier1ABI.ContextWord.atomicRMW.rawValue
+  public static let atomicCompareExchangePairWordIndex =
+    DoryARM64Tier1ABI.ContextWord.atomicCompareExchangePair.rawValue
+  public static let contextWordCount = DoryARM64Tier1ABI.contextWordCount
 
   private let lock = NSLock()
   private let region: OpaquePointer

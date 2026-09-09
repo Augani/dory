@@ -125,7 +125,8 @@ let package = Package(
     ),
     .target(
       name: "DoryDBTX86",
-      dependencies: ["DoryExecutionContracts", "DoryJITRuntimeC"]
+      dependencies: ["DoryExecutionContracts", "DoryJITRuntimeC"],
+      exclude: ["ABI.md"]
     ),
     .target(
       name: "DoryMachinePC",
