@@ -77,6 +77,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let fsSelectorOffset = 24 * 8
   private static let gsSelectorOffset = 25 * 8
   private static let ssSelectorOffset = 26 * 8
+  private static let readTLBBaseOffset = 28 * 8
+  private static let tlbEntryMaskOffset = 31 * 8
+  private static let tlbAddressSpaceGenerationOffset = 32 * 8
+  private static let tlbResolverOffset = 35 * 8
   private static let rspOffset = 4 * 8
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
@@ -1631,12 +1635,135 @@ public struct DoryARM64BaselineEmitter: Sendable {
     resultRegister: UInt32,
     words: inout [UInt32]
   ) {
+    let byteCount = UInt32(width.rawValue / 8)
+    words.append(encodeStore64(register: addressRegister, base: 31, byteOffset: 88))
+    // A scalar spanning two linear pages cannot use one direct-mapped entry. Preserve the
+    // callback path before consulting the table.
+    emitImmediate(0xfff, register: 13, into: &words)
+    words.append(encodeLogical(.and, left: addressRegister, right: 13, destination: 13))
+    emitImmediate(UInt64(4_097 - byteCount), register: 14, into: &words)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 13, 14, 31))
+    let crossPageBranch = words.count
+    words.append(0)
+
+    // Build the exact {canonical VPN, address-space generation} tag and direct-map index.
+    words.append(
+      encodeLogical(
+        .or,
+        left: 31,
+        right: addressRegister,
+        shiftAmount: 12,
+        logicalRightShift: true,
+        destination: 14
+      ))
+    words.append(
+      encodeLogical(.or, left: 31, right: 14, shiftAmount: 28, destination: 14))
+    words.append(
+      encodeLoad64(
+        register: 15,
+        base: 19,
+        byteOffset: Self.tlbAddressSpaceGenerationOffset
+      ))
+    words.append(encodeLogical(.or, left: 14, right: 15, destination: 14))
+    words.append(
+      encodeLogical(
+        .or,
+        left: 31,
+        right: addressRegister,
+        shiftAmount: 12,
+        logicalRightShift: true,
+        destination: 13
+      ))
+    words.append(
+      encodeLoad64(register: 15, base: 19, byteOffset: Self.tlbEntryMaskOffset))
+    words.append(encodeLogical(.and, left: 13, right: 15, destination: 13))
+    words.append(encodeLoad64(register: 15, base: 19, byteOffset: Self.readTLBBaseOffset))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 15, 31, 31))
+    let missingTLBBranch = words.count
+    words.append(0)
+    words.append(encodeAdd(is64Bit: true, left: 15, right: 13, leftShift: 4, destination: 15))
+    words.append(encodeLoad64(register: 16, base: 15, byteOffset: 0))
+    words.append(encodeLoad64(register: 17, base: 15, byteOffset: 8))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 14, 31))
+    let missBranch = words.count
+    words.append(0)
+
+    words.append(encodeAdd(is64Bit: true, left: addressRegister, right: 17, destination: 13))
+    words.append(encodeDirectLoad(width: width, register: resultRegister, base: 13))
+    let hitDoneBranch = words.count
+    words.append(0)
+
+    let missStart = words.count
+    words[missBranch] = encodeConditionalBranch(
+      condition: .notEqual,
+      wordOffset: missStart - missBranch
+    )
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    words.append(encodeLogical(.or, left: 31, right: 20, destination: 1))
+    words.append(encodeMoveWideZero32(register: 2, immediate: 0))
+    words.append(encodeLoad64(register: 3, base: 31, byteOffset: 88))
+    words.append(encodeMoveWideZero32(register: 4, immediate: UInt16(byteCount)))
+    words.append(encodeAddImmediate64(left: 31, immediate: 64, destination: 5))
+    words.append(encodeLoad64(register: 16, base: 19, byteOffset: Self.tlbResolverOffset))
+    words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C TLB miss resolver)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
+    let resolverErrorBranch = words.count
+    words.append(0)
+    words.append(encodeLoad32(register: 13, base: 31, byteOffset: 84))
+    words.append(encodeMoveWideZero32(register: 14, immediate: 2))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 13, 14, 31))
+    let pageFaultBranch = words.count
+    words.append(0)
+    words.append(encodeMoveWideZero32(register: 14, immediate: 3))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 13, 14, 31))
+    let resolverFallbackBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 13, base: 31, byteOffset: 64))
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    words.append(encodeDirectLoad(width: width, register: resultRegister, base: 13))
+    let filledDoneBranch = words.count
+    words.append(0)
+
+    let pageFaultStart = words.count
+    words[pageFaultBranch] = encodeConditionalBranch(
+      condition: .equal,
+      wordOffset: pageFaultStart - pageFaultBranch
+    )
+    emitMemoryEpilogue(into: &words)
+    words.append(
+      encodeMoveWideZero32(
+        register: 0,
+        immediate: UInt16(DoryJITExitCode.interpreter.rawValue)
+      ))
+    words.append(0xD65F_03C0)
+
+    let callbackStart = words.count
+    words[crossPageBranch] = encodeConditionalBranch(
+      condition: .carrySet,
+      wordOffset: callbackStart - crossPageBranch
+    )
+    words[missingTLBBranch] = encodeConditionalBranch(
+      condition: .equal,
+      wordOffset: callbackStart - missingTLBBranch
+    )
+    words[resolverErrorBranch] = encodeConditionalBranch(
+      condition: .notEqual,
+      wordOffset: callbackStart - resolverErrorBranch
+    )
+    words[resolverFallbackBranch] = encodeConditionalBranch(
+      condition: .equal,
+      wordOffset: callbackStart - resolverFallbackBranch
+    )
     words.append(encodeLogical(.or, left: 31, right: 20, destination: 0))
-    words.append(encodeLogical(.or, left: 31, right: addressRegister, destination: 1))
-    words.append(encodeMoveWideZero32(register: 2, immediate: UInt16(width.rawValue / 8)))
+    words.append(encodeLoad64(register: 1, base: 31, byteOffset: 88))
+    words.append(encodeMoveWideZero32(register: 2, immediate: UInt16(byteCount)))
     words.append(0xD63F_0000 | 21 << 5)  // blr x21
     words.append(encodeLogical(.or, left: 31, right: 0, destination: resultRegister))
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+
+    let done = words.count
+    words[hitDoneBranch] = encodeUnconditionalBranch(wordOffset: done - hitDoneBranch)
+    words[filledDoneBranch] = encodeUnconditionalBranch(wordOffset: done - filledDoneBranch)
   }
 
   private func emitMemoryWrite(
@@ -2674,6 +2801,21 @@ public struct DoryARM64BaselineEmitter: Sendable {
     0xF900_0000 | UInt32(byteOffset / 8) << 10 | base << 5 | register
   }
 
+  private func encodeDirectLoad(
+    width: DoryIRIntegerWidth,
+    register: UInt32,
+    base: UInt32
+  ) -> UInt32 {
+    let opcode: UInt32 =
+      switch width {
+      case .i8: 0x3940_0000
+      case .i16: 0x7940_0000
+      case .i32: 0xB940_0000
+      case .i64: 0xF940_0000
+      }
+    return opcode | base << 5 | register
+  }
+
   private func encodeVariableShift(
     _ operation: DoryIRShiftOperation,
     is64Bit: Bool,
@@ -2920,6 +3062,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
     precondition((-262_144..<262_144).contains(wordOffset))
     let immediate = UInt32(truncatingIfNeeded: wordOffset) & 0x7_ffff
     return 0x5400_0000 | immediate << 5 | condition.rawValue
+  }
+
+  private func encodeUnconditionalBranch(wordOffset: Int) -> UInt32 {
+    precondition((-33_554_432..<33_554_432).contains(wordOffset))
+    return 0x1400_0000 | (UInt32(truncatingIfNeeded: wordOffset) & 0x03ff_ffff)
   }
 }
 
@@ -3199,7 +3346,10 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
   public static let executeTLBBaseWordIndex = 30
   public static let tlbEntryMaskWordIndex = 31
   public static let tlbAddressSpaceGenerationWordIndex = 32
-  public static let contextWordCount = 33
+  public static let hostAddressSpaceByteCountWordIndex = 33
+  public static let tlbStorageWordIndex = 34
+  public static let tlbResolverWordIndex = 35
+  public static let contextWordCount = 36
 
   private let lock = NSLock()
   private let region: OpaquePointer
@@ -4929,6 +5079,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       translationTLB.map { UInt64($0.entryCount - 1) } ?? 0
     context[DoryJITExecutableRegion.tlbAddressSpaceGenerationWordIndex] =
       translationTLB == nil ? 0 : addressSpaceGeneration
+    context[DoryJITExecutableRegion.hostAddressSpaceByteCountWordIndex] =
+      UInt64((memory as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceByteCount ?? 0)
+    context[DoryJITExecutableRegion.tlbStorageWordIndex] = translationTLB?.storageAddress ?? 0
+    context[DoryJITExecutableRegion.tlbResolverWordIndex] =
+      translationTLB == nil ? 0 : UInt64(dory_jit_tlb_resolve_from_context_address())
   }
 
   private static func apply(

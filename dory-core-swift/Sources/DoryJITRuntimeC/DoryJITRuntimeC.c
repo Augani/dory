@@ -238,6 +238,46 @@ int dory_jit_tlb_resolve(
     return 0;
 }
 
+int dory_jit_tlb_resolve_from_context(
+    const uint64_t *context,
+    void *memory_context,
+    uint32_t access,
+    uint64_t linear_address,
+    uint32_t byte_count,
+    dory_jit_tlb_resolution *resolution_out
+) {
+    if (context == NULL || access > DORY_JIT_TLB_ACCESS_EXECUTE) {
+        return EINVAL;
+    }
+    dory_jit_tlb *tlb = (dory_jit_tlb *)(uintptr_t)context[34];
+    return dory_jit_tlb_resolve(
+        tlb,
+        (dory_jit_tlb_access)access,
+        linear_address,
+        byte_count,
+        context[32],
+        context[27],
+        context[33],
+        memory_context,
+        resolution_out
+    );
+}
+
+uintptr_t dory_jit_tlb_resolve_from_context_address(void) {
+    union {
+        int (*function)(
+            const uint64_t *,
+            void *,
+            uint32_t,
+            uint64_t,
+            uint32_t,
+            dory_jit_tlb_resolution *
+        );
+        uintptr_t address;
+    } resolver = {.function = dory_jit_tlb_resolve_from_context};
+    return resolver.address;
+}
+
 #if defined(__aarch64__)
 
 enum { dory_jit_region_magic = 0x444f5259 };

@@ -67,6 +67,10 @@ public final class DoryX86JITTLB: @unchecked Sendable {
     entryCount * Self.entryByteCount * DoryX86JITTLBAccess.allCases.count
   }
 
+  var storageAddress: UInt64 {
+    UInt64(UInt(bitPattern: storage))
+  }
+
   public func entriesBaseAddress(for access: DoryX86JITTLBAccess) -> UInt64 {
     guard let pointer = dory_jit_tlb_entries(storage, access.runtimeValue) else { return 0 }
     return UInt64(UInt(bitPattern: pointer))
