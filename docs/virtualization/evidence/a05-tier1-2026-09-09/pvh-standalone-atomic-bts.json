@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-standalone-atomic-bts",
+  "observedAt": "2026-09-09T21:37:31Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "66e08fd9f63d495f18bb1891242fb63666e35e19",
+    "candidateRunnerSHA256": "e513fbc9fb84458e739cd1778d00702c8699c1dc410e65543fc3bde76eb68bf4",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "measuredBlock": {
+      "guestRIP": "0xffffffff8133cb12",
+      "symbol": "__resched_curr+0x122",
+      "instruction": "lock btsq %rax,(%rsi)",
+      "bytes": "f0 48 0f ab 06",
+      "priorNegativeCacheHits": 7302,
+      "remainsInCandidateRunNegativeCache": false
+    },
+    "boundedRule": "Tier one admits only the exact five-byte, one-instruction fixture block at the measured second-instruction entry boundary with qword RSI memory and RAX index. The same bytes at an adjacent RIP decline.",
+    "restartability": "The existing production-qualified compare-exchange loop selects signed bit-string qwords, retries from the returned observed value, publishes CF only after success, and rolls back the block on callback failure."
+  },
+  "verification": {
+    "focusedGate": "Both measured atomic memory-BTS tests pass.",
+    "dbtAndPCGate": "1,459 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "The standalone boundary matches the interpreter for signed indices 0, 64, and -1 with both old-bit states, exact CF, full architectural state, and memory.",
+    "sharedEmitterCoverage": "The reused emitter is separately covered at indices 0, 63, 64, -1, and -65, callback-fault rollback, and eight-worker exactly-one-clear-CF atomicity.",
+    "negativeCoverage": "The same standalone bytes at an adjacent RIP decline.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "1f7373bd-9832-40ff-a929-32e24e6a3989",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 150515263458,
+    "retiredInstructions": 733507034,
+    "throughputMIPS": 4.873,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 730868066,
+    "interpreterInstructions": 2638968,
+    "deliveredMaskableInterrupts": 57938,
+    "retiredInterruptReturns": 146131,
+    "byteValidationHits": 72228,
+    "codeGenerationMismatches": 78022,
+    "sharedCodeHits": 114947,
+    "compiledBlocks": 185662,
+    "tier1CompilationAttempts": 223515,
+    "tier1CompilationDeclines": 121705,
+    "tier1DeclinePercentOfAttempts": 54.45048430754088,
+    "tier1CompiledBlocks": 101810,
+    "lazyFlagMaterializations": 54687874,
+    "translationCacheInvalidations": 247187
+  },
+  "unmatchedPriorRunComparison": {
+    "rdiRsiMemoryBitTestElapsedNanoseconds": 147400981500,
+    "standaloneAtomicMemoryBitSetElapsedNanoseconds": 150515263458,
+    "directionalElapsedIncreasePercent": 2.112795943628096,
+    "tier1AttemptIncrease": 320,
+    "tier1DeclineIncrease": 555,
+    "tier1CompiledBlockDecrease": 235,
+    "interpreterInstructionDecrease": 28975,
+    "lazyFlagMaterializationDecrease": 1120802,
+    "translationCacheInvalidationIncrease": 6924,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, invalidation, and instruction totals. Absence of the measured site directly establishes bounded admission; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleKernelSites": [
+    {
+      "guestRIP": "0xffffffff814e2090",
+      "symbol": "btf_struct_check_meta+0x80",
+      "instruction": "sete 0xb(%rsp)",
+      "guestByteCount": 5,
+      "hitCount": 18547,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff813cd9a6",
+      "instruction": "rep movsq",
+      "guestByteCount": 3,
+      "hitCount": 10957,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81363161",
+      "symbol": "__update_load_avg_se+0x3c1",
+      "instruction": "shrq %cl,0x8(%rsp)",
+      "guestByteCount": 5,
+      "hitCount": 1253,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff810000a0",
+      "symbol": "entry_SYSCALL_64+0x20",
+      "instruction": "movq %rsp,%cr3",
+      "guestByteCount": 3,
+      "hitCount": 951,
+      "declineReason": "nativeEmitter"
+    }
+  ],
+  "interpretation": "The measured standalone atomic BTS block is absent from the retained negative-cache sample and the authenticated workload completes. A05.2 remains open because 121,705 of 223,515 tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
