@@ -1317,6 +1317,96 @@ import Testing
     #endif
   }
 
+  @Test func measuredStandaloneAtomicMemoryBitSetMatchesInterpreter() throws {
+    let codeAddress: UInt64 = 0xFFFF_FFFF_8133_CB12
+    let bytes: [UInt8] = [0xF0, 0x48, 0x0F, 0xAB, 0x06]  // lock btsq %rax,(%rsi)
+    let block = try DoryX86IRTranslator().translate(bytes, at: codeAddress, mode: .long64)
+    #expect(block.guestByteCount == 5)
+    #expect(block.guestInstructionCount == 1)
+    #expect(block.statements.count == 1)
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+    #expect(compiled.tier == .tier1)
+    #expect(compiled.requiresMemoryCallbacks)
+    #expect(!compiled.requiresRestartableMemoryReads)
+    #expect(compiled.mayExitToInterpreter)
+
+    let sameOperationElsewhere = try DoryX86IRTranslator().translate(
+      bytes,
+      at: codeAddress + 1,
+      mode: .long64
+    )
+    #expect(DoryARM64Tier1Emitter().compile(sameOperationElsewhere) == nil)
+
+    #if arch(arm64)
+      let memoryBase = codeAddress - 0x200
+      let dataAddress = codeAddress + 0x1800
+      for signedIndex: Int64 in [0, 64, -1] {
+        let elementOffset = signedIndex >> 6
+        let bitOffset = UInt64(bitPattern: signedIndex) & 63
+        let selectedAddress = UInt64(
+          bitPattern: Int64(bitPattern: dataAddress) &+ elementOffset &* 8
+        )
+        let bit = UInt64(1) << bitOffset
+        for selected in [false, true] {
+          let interpretedMemory = try DoryX86ByteArrayMemory(
+            baseAddress: memoryBase,
+            byteCount: 0x3000
+          )
+          let tier1Memory = try DoryX86ByteArrayMemory(
+            baseAddress: memoryBase,
+            byteCount: 0x3000
+          )
+          let pattern: UInt64 = 0xA55A_6996_C33C_F00F
+          let initialQword = selected ? pattern | bit : pattern & ~bit
+          let qwordBytes = (0..<8).map {
+            UInt8(truncatingIfNeeded: initialQword >> ($0 * 8))
+          }
+          for memory in [interpretedMemory, tier1Memory] {
+            try memory.write(at: codeAddress, bytes: bytes)
+            try memory.write(at: selectedAddress, bytes: qwordBytes)
+          }
+          let initial = try DoryX86ArchitecturalState(
+            registers: .init(
+              rax: UInt64(bitPattern: signedIndex),
+              rsi: dataAddress
+            ),
+            rip: codeAddress,
+            rflags: selected
+              ? [.reservedOne, .direction]
+              : [.reservedOne, .carry, .direction]
+          )
+          var interpreted = initial
+          guard case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: interpretedMemory,
+            mode: .long64
+          ) else {
+            Issue.record("interpreter did not retire standalone atomic memory BTS fixture")
+            return
+          }
+          var tier1 = initial
+          let execution = try #require(
+            DoryARM64BaselineExecutor(
+              maximumCodeBytes: 16 * 1024,
+              tier1Enabled: true
+            ).execute(
+              bytes: bytes,
+              at: codeAddress,
+              mode: .long64,
+              addressSpaceID: UInt64(bitPattern: signedIndex),
+              maximumInstructions: 1,
+              state: &tier1,
+              memory: tier1Memory
+            ))
+          #expect(execution.block.tier == .tier1)
+          #expect(tier1 == interpreted)
+          #expect(tier1Memory.snapshot() == interpretedMemory.snapshot())
+          #expect(tier1.rflags.contains(.carry) == selected)
+        }
+      }
+    #endif
+  }
+
   @Test func measuredDelayTSCMulLoadBlockCompilesInTier1() throws {
     let address: UInt64 = 0xFFFF_FFFF_81E2_DC36
     let bytes: [UInt8] = [

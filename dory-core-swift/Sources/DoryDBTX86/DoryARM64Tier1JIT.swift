@@ -18,6 +18,7 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredMemoryBitResetRIP: UInt64 = 0xFFFF_FFFF_81E1_B3A6
   private static let measuredMemoryBitResetR14RIP: UInt64 = 0xFFFF_FFFF_8168_1078
   private static let measuredAtomicMemoryBitSetRIP: UInt64 = 0xFFFF_FFFF_8133_CB0F
+  private static let measuredAtomicMemoryBitSetStandaloneRIP: UInt64 = 0xFFFF_FFFF_8133_CB12
   private static let measuredCR3WriteRAXRIP: UInt64 = 0xFFFF_FFFF_8100_1B43
   private static let measuredCR3WriteRDIRIP: UInt64 = 0xFFFF_FFFF_8100_17B7
   private let boundary = DoryARM64Tier1BoundaryEmitter()
@@ -791,23 +792,35 @@ struct DoryARM64Tier1Emitter: Sendable {
   }
 
   private static func isMeasuredAtomicMemoryBitSetBlock(_ block: DoryIRBasicBlock) -> Bool {
-    guard block.guestStart == measuredAtomicMemoryBitSetRIP,
-      block.guestByteCount == 8,
-      block.guestInstructionCount == 2,
-      block.statements.count == 2,
-      case .extendMove(
-        .register(let destination),
-        .register(let source),
-        signed: true
-      ) = block.statements[0],
-      destination == .init(bank: "x86.gpr", index: 0, width: .i64),
-      source == .init(bank: "x86.gpr", index: 1, width: .i32),
-      case .atomicBitTestMemory(
-        .set,
-        .memory(let address, let width),
-        .register(let index)
-      ) = block.statements[1]
-    else { return false }
+    let atomicStatement: DoryIRStatement
+    switch block.guestStart {
+    case measuredAtomicMemoryBitSetRIP:
+      guard block.guestByteCount == 8,
+        block.guestInstructionCount == 2,
+        block.statements.count == 2,
+        case .extendMove(
+          .register(let destination),
+          .register(let source),
+          signed: true
+        ) = block.statements[0],
+        destination == .init(bank: "x86.gpr", index: 0, width: .i64),
+        source == .init(bank: "x86.gpr", index: 1, width: .i32)
+      else { return false }
+      atomicStatement = block.statements[1]
+    case measuredAtomicMemoryBitSetStandaloneRIP:
+      guard block.guestByteCount == 5,
+        block.guestInstructionCount == 1,
+        block.statements.count == 1
+      else { return false }
+      atomicStatement = block.statements[0]
+    default:
+      return false
+    }
+    guard case .atomicBitTestMemory(
+      .set,
+      .memory(let address, let width),
+      .register(let index)
+    ) = atomicStatement else { return false }
     return width == .i64
       && address
         == .init(
