@@ -86,11 +86,25 @@ def verify_platform_contract() -> None:
         / "DoryPlatformBootManagerLib"
         / "DoryPlatformBootManagerLib.c"
     )
+    variable_driver_definition = (
+        PLATFORM_ROOT
+        / "DoryVariableRuntimeDxe"
+        / "DoryVariableRuntimeDxe.inf"
+    )
+    variable_driver = (
+        PLATFORM_ROOT
+        / "DoryVariableRuntimeDxe"
+        / "DoryVariableRuntimeDxe.c"
+    )
     try:
         lines = configuration.read_text(encoding="utf-8").splitlines()
         flash_contents = flash_definition.read_text(encoding="utf-8")
         memory_contents = memory_definition.read_text(encoding="utf-8")
         boot_manager_contents = boot_manager.read_text(encoding="utf-8")
+        variable_driver_definition_contents = variable_driver_definition.read_text(
+            encoding="utf-8"
+        )
+        variable_driver_contents = variable_driver.read_text(encoding="utf-8")
     except OSError as error:
         raise BuildFailure(f"cannot read DoryPC platform definition: {error}") from error
     for line in lines:
@@ -151,6 +165,20 @@ def verify_platform_contract() -> None:
     if apriori_start < 0 or apriori_end < 0:
         raise BuildFailure("DoryPC firmware must define a DXE APRIORI dispatch list")
     apriori = flash_contents[apriori_start:apriori_end]
+    if "DoryVariableRuntimeDxe" in apriori:
+        raise BuildFailure(
+            "DoryPC variable services must wait for the CPU architectural protocol"
+        )
+    depex_start = variable_driver_definition_contents.find("[Depex]")
+    depex = variable_driver_definition_contents[depex_start:] if depex_start >= 0 else ""
+    if "gEfiCpuArchProtocolGuid" not in depex:
+        raise BuildFailure(
+            "DoryPC variable services must depend on the CPU architectural protocol"
+        )
+    if "Descriptor.Attributes | EFI_MEMORY_RUNTIME" not in variable_driver_contents:
+        raise BuildFailure(
+            "DoryPC variable services must preserve GCD attributes when becoming runtime memory"
+        )
     console_dispatch_order = (
         "MdeModulePkg/Universal/Console/ConPlatformDxe/ConPlatformDxe.inf",
         "MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe.inf",

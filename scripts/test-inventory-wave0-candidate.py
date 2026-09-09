@@ -16,6 +16,28 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "scripts/inventory-wave0-candidate.py"
+FIRMWARE_PRODUCER = ROOT / "scripts/build-dory-armvirt-firmware.py"
+
+
+class FirmwareProducerContractTests(unittest.TestCase):
+    def test_current_pc_platform_has_a_source_derived_identifier(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(FIRMWARE_PRODUCER),
+                "--platform",
+                "pc",
+                "--print-build-identifier",
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout.strip(), r"^dory-pc-v1-[0-9a-f]{20}$")
 
 
 class CandidateInventoryTests(unittest.TestCase):
