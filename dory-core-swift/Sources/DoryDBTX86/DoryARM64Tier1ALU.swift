@@ -2104,10 +2104,6 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     var fragment: [UInt32] = []
     DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
 
-    fragment.append(
-      Self.encodeAddSubtractImmediate(
-        add: false, is64Bit: true, left: 4, immediate: 8, destination: 16))
-    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
     switch source {
     case .guestRegister(let sourceRegister):
       fragment.append(
@@ -2116,6 +2112,35 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       Self.emitImmediate(value, register: 17, into: &fragment)
       fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
     }
+    Self.emitStagedStackPush(into: &fragment)
+    words.append(contentsOf: fragment)
+    return true
+  }
+
+  /// Resolves lazy flags, restartably reads one qword, and pushes it through the preserved write
+  /// callback. The read uses the old register image, so a source based on RSP observes pre-PUSH RSP.
+  func emitMemoryStackPush(
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    guard Self.emitMemoryRead(width: .i64, address: address, into: &fragment) else {
+      return false
+    }
+    fragment.append(Self.encodeLoad64(register: 17, word: .rip))
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+    Self.emitStagedStackPush(into: &fragment)
+    words.append(contentsOf: fragment)
+    return true
+  }
+
+  /// Performs the write half of PUSHQ after its source has been staged in `lazyFlagsSource2`.
+  private static func emitStagedStackPush(into fragment: inout [UInt32]) {
+    fragment.append(
+      Self.encodeAddSubtractImmediate(
+        add: false, is64Bit: true, left: 4, immediate: 8, destination: 16))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
 
     for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
       fragment.append(
@@ -2135,8 +2160,6 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
           word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
     }
     fragment.append(Self.encodeLoad64(register: 4, word: .lazyFlagsSource1))
-    words.append(contentsOf: fragment)
-    return true
   }
 
   /// Resolves lazy flags and performs one restartable POPQ through the preserved read callback.

@@ -28,6 +28,11 @@ struct DoryARM64Tier1Emitter: Sendable {
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
+      case .stackPush(.memory):
+        guard !wroteMemory else { return nil }
+        memoryCallbackCount += 2
+        requiresMemoryCallbacks = true
+        wroteMemory = true
       case .stackPush, .stackPushFlags:
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
@@ -304,9 +309,16 @@ struct DoryARM64Tier1Emitter: Sendable {
         nativeFlags = nil
 
       case .stackPush(let source):
-        guard let source = lowSource(source, matching: .i64),
-          alu.emitStackPush(source: source, into: &body)
-        else { return nil }
+        switch source {
+        case .memory(let address, let width):
+          guard width == .i64,
+            alu.emitMemoryStackPush(address: address, into: &body)
+          else { return nil }
+        default:
+          guard let source = lowSource(source, matching: .i64),
+            alu.emitStackPush(source: source, into: &body)
+          else { return nil }
+        }
         nativeFlags = nil
 
       case .stackPop(let destination):

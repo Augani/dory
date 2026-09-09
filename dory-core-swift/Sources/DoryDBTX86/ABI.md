@@ -170,13 +170,16 @@ and invokes the preserved scalar-write callback. Its temporary context and RSP
 change are published only when the callback succeeds; callback failure returns
 to the interpreter with the original architectural state.
 
-Register/immediate PUSH and register POP use the same restartable callback
-boundary. They materialize before borrowing the lazy-payload words as staging
-storage, spill all pinned GPRs, preserve pre-decrement PUSH RSP values, and give
-POP RSP its loaded-value precedence over the ordinary increment. No later
-callback may follow a committed stack write. A read-before-write sequence is
-admitted only with the executor's replay-safe scalar-read path, so failure can
-discard the temporary context without duplicating an observable read.
+Register/immediate PUSH, qword memory-source PUSH, and register POP use the same
+restartable callback boundary. They materialize before borrowing the
+lazy-payload words as staging storage, spill all pinned GPRs, preserve
+pre-decrement PUSH RSP values, and give POP RSP its loaded-value precedence over
+the ordinary increment. Memory-source PUSH reads and stages its qword through
+the old register image before calculating the destination, including when the
+source is based on RSP or aliases the destination. Its read-plus-write pair is
+always admitted through the executor's replay-safe scalar-read path, so either
+callback can fail while the temporary context and memory remain unpublished.
+No later callback may follow a committed stack write.
 
 Scalar memory-to-register MOV loads use the preserved read callback for 8-,
 16-, 32-, and 64-bit operands. Tier-1 forms the complete base/index/scale,

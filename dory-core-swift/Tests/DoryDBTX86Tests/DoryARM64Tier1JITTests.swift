@@ -1434,6 +1434,176 @@ import Testing
     #endif
   }
 
+  @Test func measuredMemoryPushBlocksCompileWithTwoRestartableCallbacks() throws {
+    for (address, bytes): (UInt64, [UInt8]) in [
+      (0xFFFF_FFFF_8100_176D, [0xFF, 0x77, 0x20]),  // pushq 0x20(%rdi)
+      (0xFFFF_FFFF_8100_1770, [0xFF, 0x77, 0x18]),  // pushq 0x18(%rdi)
+      (0xFFFF_FFFF_8100_1773, [0xFF, 0x77, 0x10]),  // pushq 0x10(%rdi)
+    ] {
+      let block = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
+      let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+
+      #expect(compiled.tier == .tier1)
+      #expect(compiled.guestByteCount == bytes.count)
+      #expect(compiled.guestInstructionCount == 1)
+      #expect(compiled.requiresMemoryCallbacks)
+      #expect(compiled.requiresRestartableMemoryReads)
+      #expect(compiled.mayExitToInterpreter)
+    }
+
+    let wordPush = DoryIRBasicBlock(
+      guestStart: 0x2000,
+      guestByteCount: 1,
+      guestInstructionCount: 1,
+      statements: [
+        .stackPush(
+          source: .memory(
+            .init(
+              base: .init(bank: "x86.gpr", index: 7, width: .i64),
+              addressWidth: .i64
+            ),
+            width: .i16
+          )
+        )
+      ],
+      terminator: .next(0x2001)
+    )
+    #expect(DoryARM64Tier1Emitter().compile(wordPush) == nil)
+  }
+
+  @Test func memoryStackPushesMatchTheInterpreterIncludingRSPAliasing() throws {
+    #if arch(arm64)
+      struct PushCase {
+        let bytes: [UInt8]
+        let registers: DoryX86GeneralRegisters
+        let sourceAddress: UInt64
+        let comment: String
+      }
+      let cases = [
+        PushCase(
+          bytes: [0xFF, 0x77, 0x28],
+          registers: .init(rsp: 0x1000, rdi: 0x800),
+          sourceAddress: 0x828,
+          comment: "pushq 0x28(%rdi)"
+        ),
+        PushCase(
+          bytes: [0xFF, 0x74, 0x24, 0x08],
+          registers: .init(rsp: 0x1000),
+          sourceAddress: 0x1008,
+          comment: "pushq 8(%rsp) reads through old RSP"
+        ),
+        PushCase(
+          bytes: [0xFF, 0x74, 0x24, 0xF8],
+          registers: .init(rsp: 0x1000),
+          sourceAddress: 0xFF8,
+          comment: "pushq -8(%rsp) reads before overwriting the same qword"
+        ),
+      ]
+      let sourceValue: UInt64 = 0x8877_6655_4433_2211
+
+      for (index, testCase) in cases.enumerated() {
+        let codeAddress = UInt64(0x400 + index * 0x10)
+        let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
+        let tier1Memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
+        let sourceBytes = (0..<8).map {
+          UInt8(truncatingIfNeeded: sourceValue >> UInt64($0 * 8))
+        }
+        for memory in [interpretedMemory, tier1Memory] {
+          try memory.write(at: codeAddress, bytes: testCase.bytes)
+          try memory.write(at: testCase.sourceAddress, bytes: sourceBytes)
+        }
+        let initial = try DoryX86ArchitecturalState(
+          registers: testCase.registers,
+          rip: codeAddress,
+          rflags: [.reservedOne, .carry, .direction]
+        )
+        var interpreted = initial
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: interpretedMemory,
+          mode: .long64
+        ) else {
+          Issue.record(Comment(rawValue: "interpreter did not retire \(testCase.comment)"))
+          return
+        }
+
+        var tier1 = initial
+        let execution = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: true
+        ).execute(
+          bytes: testCase.bytes,
+          at: codeAddress,
+          mode: .long64,
+          addressSpaceID: UInt64(index),
+          maximumInstructions: 1,
+          state: &tier1,
+          memory: tier1Memory
+        ))
+
+        #expect(execution.block.tier == .tier1, Comment(rawValue: testCase.comment))
+        #expect(execution.block.requiresRestartableMemoryReads)
+        #expect(tier1 == interpreted, Comment(rawValue: testCase.comment))
+        #expect(
+          tier1Memory.snapshot() == interpretedMemory.snapshot(),
+          Comment(rawValue: testCase.comment)
+        )
+      }
+    #endif
+  }
+
+  @Test func failedMemoryStackPushCallbacksLeaveStateAndMemoryRestartable() throws {
+    #if arch(arm64)
+      struct FailureCase {
+        let registers: DoryX86GeneralRegisters
+        let sourceAddress: UInt64?
+      }
+      let cases = [
+        FailureCase(
+          registers: .init(rsp: 0x800, rdi: 0x1000),
+          sourceAddress: nil
+        ),
+        FailureCase(
+          registers: .init(rsp: 4, rdi: 0x200),
+          sourceAddress: 0x228
+        ),
+      ]
+      let bytes: [UInt8] = [0xFF, 0x77, 0x28]
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: true
+      )
+
+      for (index, testCase) in cases.enumerated() {
+        let initial = try DoryX86ArchitecturalState(
+          registers: testCase.registers,
+          rip: 0x700,
+          rflags: [.reservedOne, .carry, .direction]
+        )
+        var state = initial
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+        if let sourceAddress = testCase.sourceAddress {
+          try memory.write(at: sourceAddress, bytes: Array(repeating: 0xA5, count: 8))
+        }
+        let initialMemory = memory.snapshot()
+        let execution = try #require(executor.execute(
+          bytes: bytes,
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: UInt64(index),
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        ))
+
+        #expect(execution.block.tier == .tier1)
+        #expect(execution.exitCode == .interpreter)
+        #expect(state == initial)
+        #expect(memory.snapshot() == initialMemory)
+      }
+    #endif
+  }
+
   @Test func registerAndImmediateStackOperationsExecuteInTier1() throws {
     #if arch(arm64)
       struct StackCase {
