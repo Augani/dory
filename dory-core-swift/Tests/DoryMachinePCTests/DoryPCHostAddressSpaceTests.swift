@@ -47,6 +47,9 @@ import Testing
       protection(at: machine.hostAddressSpaceBase + DoryPCV1ABI.pcieMMIOBase)
         == VM_PROT_NONE
     )
+    #expect(machine.physicalMemory.hostAddressSpaceBase == machine.hostAddressSpaceBase)
+    #expect(
+      machine.physicalMemory.hostAddressSpaceByteCount == machine.hostAddressSpaceByteCount)
     try machine.memory.writeScalar(at: 0x1ff000, value: 0x8877_6655_4433_2211, byteCount: 8)
     let direct = UnsafeRawPointer(
       bitPattern: UInt(machine.hostAddressSpaceBase + 0x1ff000)

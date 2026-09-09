@@ -1,3 +1,4 @@
+import Darwin
 import Testing
 
 @testable import DoryDBTX86
@@ -5970,6 +5971,43 @@ import Testing
       #expect(context[0] == 0x1234_5678)
       #expect(context[16] == 0x400A)
     #endif
+  }
+
+  @Test func executionContextCarriesTheHostAddressSpaceBase() throws {
+    let page = Int(getpagesize())
+    let memory = try DoryX86MmapMemory(
+      validatingByteCount: page,
+      hostAddressSpaceByteCount: page * 2,
+      ramMappings: [.init(logicalOffset: 0, hostOffset: page, byteCount: page)]
+    )
+    let translatedMemory = DoryX86TranslatedMemory(
+      physicalMemory: memory,
+      pagingUnit: DoryX86PagingUnit(),
+      context: .init(state: .reset(), mode: .real16)
+    )
+    #expect(translatedMemory.hostAddressSpaceBase == memory.hostAddressSpaceBase)
+    #expect(translatedMemory.hostAddressSpaceByteCount == memory.hostAddressSpaceByteCount)
+    var words = [UInt64](repeating: .max, count: DoryJITExecutableRegion.contextWordCount)
+    words.withUnsafeMutableBufferPointer { context in
+      DoryARM64BaselineExecutor.populateExecutionContext(
+        context,
+        from: .reset(),
+        memory: translatedMemory
+      )
+    }
+    #expect(
+      words[DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex]
+        == memory.hostAddressSpaceBase
+    )
+
+    words.withUnsafeMutableBufferPointer { context in
+      DoryARM64BaselineExecutor.populateExecutionContext(
+        context,
+        from: .reset(),
+        memory: nil
+      )
+    }
+    #expect(words[DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex] == 0)
   }
 
   @Test func nativeBatchReplaysGuardedCallbackFreeBlocksUntilTerminalExit() throws {

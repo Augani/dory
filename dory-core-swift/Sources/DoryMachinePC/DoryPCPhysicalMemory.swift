@@ -92,7 +92,8 @@ extension DoryPCMMIODevice {
 /// Sealed physical address router. RAM and devices share one DoryX86Memory boundary, so paging,
 /// interpreter, and every future JIT helper observe an identical DoryPC-v1 memory map.
 public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
-  DoryX86AtomicScalarMemory, DoryX86CodeGenerationMemory, @unchecked Sendable
+  DoryX86AtomicScalarMemory, DoryX86CodeGenerationMemory, DoryX86HostAddressSpaceMemory,
+  @unchecked Sendable
 {
   private enum DiagnosticCounter: Int, CaseIterable {
     case instructionFetchHelperCalls
@@ -125,6 +126,14 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   public let ram: any DoryX86PhysicalRAM
+
+  public var hostAddressSpaceBase: UInt64 {
+    (ram as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceBase ?? 0
+  }
+
+  public var hostAddressSpaceByteCount: Int {
+    (ram as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceByteCount ?? 0
+  }
   private let mmioHoleStart: UInt64
   private let above4GRAMStart: UInt64
   private let lock = NSLock()

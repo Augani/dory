@@ -3147,7 +3147,8 @@ private let doryJITMemoryCompareExchange: dory_jit_memory_compare_exchange_funct
 }
 
 public final class DoryJITExecutableRegion: @unchecked Sendable {
-  public static let contextWordCount = 27
+  public static let hostAddressSpaceBaseWordIndex = 27
+  public static let contextWordCount = 28
 
   private let lock = NSLock()
   private let region: OpaquePointer
@@ -3833,7 +3834,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           of: UInt64.self,
           capacity: DoryJITExecutableRegion.contextWordCount
         ) { checkpoint in
-          Self.populateExecutionContext(context, from: state)
+          Self.populateExecutionContext(context, from: state, memory: memory)
           var completed = 0
           var blockCount = 0
           let traceKey = makeLookupKey(
@@ -4183,7 +4184,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         of: UInt64.self,
         capacity: DoryJITExecutableRegion.contextWordCount
       ) { context in
-        Self.populateExecutionContext(context, from: state)
+        Self.populateExecutionContext(context, from: state, memory: memory)
         let exit = try region.execute(
           at: resident.offset,
           context: context,
@@ -4759,9 +4760,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     return Int(value & UInt64(recentEntries.count - 1))
   }
 
-  private static func populateExecutionContext(
+  static func populateExecutionContext(
     _ context: UnsafeMutableBufferPointer<UInt64>,
-    from state: DoryX86ArchitecturalState
+    from state: DoryX86ArchitecturalState,
+    memory: (any DoryX86Memory)?
   ) {
     precondition(context.count == DoryJITExecutableRegion.contextWordCount)
     context[0] = state.registers.rax
@@ -4791,6 +4793,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[24] = UInt64(state.fs.selector)
     context[25] = UInt64(state.gs.selector)
     context[26] = UInt64(state.ss.selector)
+    context[DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex] =
+      (memory as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceBase ?? 0
   }
 
   private static func apply(

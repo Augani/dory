@@ -752,7 +752,9 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 
 /// Per-step linear address-space view. It composes paging with physical memory while preserving
 /// the interpreter's exact access kind and handling accesses that cross guest page boundaries.
-public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, @unchecked Sendable {
+public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
+  DoryX86HostAddressSpaceMemory, @unchecked Sendable
+{
   private let physicalMemory: any DoryX86Memory
   private let scalarPhysicalMemory: (any DoryX86ScalarMemory)?
   private let restartableScalarPhysicalMemory: (any DoryX86RestartableScalarMemory)?
@@ -763,6 +765,14 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
   // Control-register instructions must invalidate the supplied translated-memory cache too.
   var translationUnit: DoryX86PagingUnit { pagingUnit }
   private var context: DoryX86PagingContext
+
+  public var hostAddressSpaceBase: UInt64 {
+    (physicalMemory as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceBase ?? 0
+  }
+
+  public var hostAddressSpaceByteCount: Int {
+    (physicalMemory as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceByteCount ?? 0
+  }
 
   public init(
     physicalMemory: any DoryX86Memory,
