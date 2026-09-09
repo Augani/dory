@@ -7,8 +7,9 @@ import Foundation
 /// to compile it with the old baseline emitter while tier-1 coverage grows.
 struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredPatchedByteXORRIP: UInt64 = 0xFFFF_FFFF_8153_A159
-  private static let measuredMemorySetEqualStack22RIP: UInt64 = 0xFFFF_FFFF_815C_AB87
-  private static let measuredMemorySetEqualRIP: UInt64 = 0xFFFF_FFFF_815C_AB95
+  private static let measuredMemorySetEqualFreePageStack22RIP: UInt64 = 0xFFFF_FFFF_815C_AB87
+  private static let measuredMemorySetEqualFreePageStack23RIP: UInt64 = 0xFFFF_FFFF_815C_AB95
+  private static let measuredMemorySetEqualPrintkStack22RIP: UInt64 = 0xFFFF_FFFF_8138_8B5D
   private static let measuredMemorySetNotEqualRIP: UInt64 = 0xFFFF_FFFF_812D_F36A
   private static let measuredMemoryBitTestRIP: UInt64 = 0xFFFF_FFFF_81E1_C883
   private static let measuredMemoryBitResetRIP: UInt64 = 0xFFFF_FFFF_81E1_B3A6
@@ -650,7 +651,9 @@ struct DoryARM64Tier1Emitter: Sendable {
     else { return false }
     guard width == .i8 else { return false }
     switch block.guestStart {
-    case measuredMemorySetEqualStack22RIP, measuredMemorySetEqualRIP:
+    case measuredMemorySetEqualFreePageStack22RIP,
+      measuredMemorySetEqualFreePageStack23RIP,
+      measuredMemorySetEqualPrintkStack22RIP:
       return block.guestByteCount == 5 && condition == .equal
     case measuredMemorySetNotEqualRIP:
       return block.guestByteCount == 3 && condition == .notEqual

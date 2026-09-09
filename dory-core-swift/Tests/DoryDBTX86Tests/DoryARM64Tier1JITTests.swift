@@ -3100,81 +3100,83 @@ import Testing
     #endif
   }
 
-  @Test func measuredSecondMemorySetEqualIsExactAndMatchesInterpreter() throws {
-    let codeAddress: UInt64 = 0xFFFF_FFFF_815C_AB87
+  @Test func measuredAdditionalMemorySetEqualSitesAreExactAndMatchInterpreter() throws {
     let bytes: [UInt8] = [0x0F, 0x94, 0x44, 0x24, 0x22]
-    let block = try DoryX86IRTranslator().translate(bytes, at: codeAddress, mode: .long64)
-    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
-    #expect(compiled.tier == .tier1)
-    #expect(compiled.guestByteCount == 5)
-    #expect(compiled.guestInstructionCount == 1)
-    #expect(compiled.requiresMemoryCallbacks)
-    #expect(!compiled.requiresRestartableMemoryReads)
-    #expect(compiled.mayExitToInterpreter)
+    let codeAddresses: [UInt64] = [0xFFFF_FFFF_815C_AB87, 0xFFFF_FFFF_8138_8B5D]
+    for codeAddress in codeAddresses {
+      let block = try DoryX86IRTranslator().translate(bytes, at: codeAddress, mode: .long64)
+      let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+      #expect(compiled.tier == .tier1)
+      #expect(compiled.guestByteCount == 5)
+      #expect(compiled.guestInstructionCount == 1)
+      #expect(compiled.requiresMemoryCallbacks)
+      #expect(!compiled.requiresRestartableMemoryReads)
+      #expect(compiled.mayExitToInterpreter)
 
-    let sameOperationElsewhere = try DoryX86IRTranslator().translate(
-      bytes,
-      at: codeAddress + 1,
-      mode: .long64
-    )
-    #expect(DoryARM64Tier1Emitter().compile(sameOperationElsewhere) == nil)
+      let sameOperationElsewhere = try DoryX86IRTranslator().translate(
+        bytes,
+        at: codeAddress + 1,
+        mode: .long64
+      )
+      #expect(DoryARM64Tier1Emitter().compile(sameOperationElsewhere) == nil)
 
-    #if arch(arm64)
-      let stackAddress = codeAddress + 0x1000
-      for zeroIsSet in [false, true] {
-        let interpretedMemory = try DoryX86ByteArrayMemory(
-          baseAddress: codeAddress,
-          byteCount: 0x3000
-        )
-        let tier1Memory = try DoryX86ByteArrayMemory(
-          baseAddress: codeAddress,
-          byteCount: 0x3000
-        )
-        for memory in [interpretedMemory, tier1Memory] {
-          try memory.write(at: codeAddress, bytes: bytes)
-          try memory.write(at: stackAddress + 0x22, bytes: [0xAA])
-        }
-        var flags: DoryX86RFLAGS = [.reservedOne, .carry, .direction, .overflow]
-        if zeroIsSet { flags.insert(.zero) }
-        let initial = try DoryX86ArchitecturalState(
-          registers: .init(rax: 0x1111, rsp: stackAddress, r15: 0xFFFF),
-          rip: codeAddress,
-          rflags: flags
-        )
-        var interpreted = initial
-        guard
-          case .retired = DoryX86Interpreter().step(
-            state: &interpreted,
-            memory: interpretedMemory,
-            mode: .long64
+      #if arch(arm64)
+        let stackAddress = codeAddress + 0x1000
+        for zeroIsSet in [false, true] {
+          let interpretedMemory = try DoryX86ByteArrayMemory(
+            baseAddress: codeAddress,
+            byteCount: 0x3000
           )
-        else {
-          Issue.record("interpreter did not retire second measured memory SETE")
-          return
-        }
+          let tier1Memory = try DoryX86ByteArrayMemory(
+            baseAddress: codeAddress,
+            byteCount: 0x3000
+          )
+          for memory in [interpretedMemory, tier1Memory] {
+            try memory.write(at: codeAddress, bytes: bytes)
+            try memory.write(at: stackAddress + 0x22, bytes: [0xAA])
+          }
+          var flags: DoryX86RFLAGS = [.reservedOne, .carry, .direction, .overflow]
+          if zeroIsSet { flags.insert(.zero) }
+          let initial = try DoryX86ArchitecturalState(
+            registers: .init(rax: 0x1111, rsp: stackAddress, r15: 0xFFFF),
+            rip: codeAddress,
+            rflags: flags
+          )
+          var interpreted = initial
+          guard
+            case .retired = DoryX86Interpreter().step(
+              state: &interpreted,
+              memory: interpretedMemory,
+              mode: .long64
+            )
+          else {
+            Issue.record("interpreter did not retire additional measured memory SETE")
+            return
+          }
 
-        var tier1 = initial
-        let execution = try #require(
-          DoryARM64BaselineExecutor(
-            maximumCodeBytes: 16 * 1024,
-            tier1Enabled: true
-          ).execute(
-            bytes: bytes,
-            at: codeAddress,
-            mode: .long64,
-            addressSpaceID: 0,
-            maximumInstructions: 1,
-            state: &tier1,
-            memory: tier1Memory
-          ))
-        #expect(execution.block.tier == .tier1)
-        #expect(tier1 == interpreted)
-        #expect(tier1Memory.snapshot() == interpretedMemory.snapshot())
-        #expect(
-          try tier1Memory.read(at: stackAddress + 0x22, byteCount: 1) == [zeroIsSet ? 1 : 0]
-        )
-      }
-    #endif
+          var tier1 = initial
+          let execution = try #require(
+            DoryARM64BaselineExecutor(
+              maximumCodeBytes: 16 * 1024,
+              tier1Enabled: true
+            ).execute(
+              bytes: bytes,
+              at: codeAddress,
+              mode: .long64,
+              addressSpaceID: 0,
+              maximumInstructions: 1,
+              state: &tier1,
+              memory: tier1Memory
+            ))
+          #expect(execution.block.tier == .tier1)
+          #expect(tier1 == interpreted)
+          #expect(tier1Memory.snapshot() == interpretedMemory.snapshot())
+          #expect(
+            try tier1Memory.read(at: stackAddress + 0x22, byteCount: 1) == [zeroIsSet ? 1 : 0]
+          )
+        }
+      #endif
+    }
   }
 
   @Test func measuredMemorySetNotEqualIsExactAndMatchesInterpreter() throws {
