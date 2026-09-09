@@ -258,6 +258,11 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         help="verify and package DoryPC firmware into one Xcode-built app",
     )
+    operation.add_argument(
+        "--print-build-identifier",
+        action="store_true",
+        help="print the source-derived build identifier without building firmware",
+    )
     parser.add_argument(
         "--platform",
         choices=tuple(PLATFORM_DEFINITIONS),
@@ -966,6 +971,10 @@ def main() -> int:
     arguments = parse_arguments()
     configure_platform(arguments.platform)
     verify_platform_contract()
+    if arguments.print_build_identifier:
+        source_lock = load_json(SOURCE_LOCK_PATH)
+        print(current_build_identifier(source_lock))
+        return 0
     if arguments.package_app is not None:
         return package_pc_qualification_app(arguments)
     assert arguments.output is not None

@@ -85,6 +85,26 @@ class CandidateInventoryTests(unittest.TestCase):
                 f"compressed_sha256={hashlib.sha256(b'rootfs').hexdigest()}\n"
             )
 
+    def write_pc_firmware(self, *, manifest_identifier: str, expected_identifier: str) -> None:
+        output = self.root / "guest/out/dory-pc-firmware"
+        output.mkdir(parents=True, exist_ok=True)
+        firmware = b"firmware"
+        (output / "firmware-code.fd").write_bytes(firmware)
+        (output / "manifest.json").write_text(json.dumps({
+            "buildIdentifier": manifest_identifier,
+            "firmwareCodeSHA256": hashlib.sha256(firmware).hexdigest(),
+            "source": {"repository": "fixture", "revision": "1"},
+            "machineABIIdentity": "dory.pc@1",
+            "firmwareABIIdentity": "dory.edk2.pc@1",
+        }))
+        producer = self.root / "scripts/build-dory-armvirt-firmware.py"
+        producer.parent.mkdir(parents=True, exist_ok=True)
+        producer.write_text(
+            "import sys\n"
+            "assert sys.argv[1:] == ['--platform', 'pc', '--print-build-identifier']\n"
+            f"print({expected_identifier!r})\n"
+        )
+
     def run_inventory(self) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
@@ -125,6 +145,42 @@ class CandidateInventoryTests(unittest.TestCase):
         ffi_producer = next(item for item in json.loads(result.stdout)["producers"] if item["id"] == "ffi")
         self.assertEqual(ffi_producer["metadata"]["status"], "archive-mismatch")
         self.assertEqual(ffi_producer["status"], "incomplete")
+
+    def test_pc_firmware_must_match_current_platform_sources(self) -> None:
+        self.write_pc_firmware(
+            manifest_identifier="dory-pc-v1-stale",
+            expected_identifier="dory-pc-v1-current",
+        )
+
+        result = self.run_inventory()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        firmware = next(
+            item for item in json.loads(result.stdout)["producers"]
+            if item["id"] == "pc-firmware"
+        )
+        self.assertEqual(firmware["metadata"]["status"], "stale-source")
+        self.assertEqual(
+            firmware["metadata"]["expectedBuildIdentifier"],
+            "dory-pc-v1-current",
+        )
+        self.assertEqual(firmware["status"], "incomplete")
+
+    def test_pc_firmware_current_source_binding_is_available(self) -> None:
+        self.write_pc_firmware(
+            manifest_identifier="dory-pc-v1-current",
+            expected_identifier="dory-pc-v1-current",
+        )
+
+        result = self.run_inventory()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        firmware = next(
+            item for item in json.loads(result.stdout)["producers"]
+            if item["id"] == "pc-firmware"
+        )
+        self.assertEqual(firmware["metadata"]["status"], "matches-current-source")
+        self.assertEqual(firmware["status"], "incomplete")
 
     def test_desktop_stamps_must_match_current_inputs(self) -> None:
         self.write_desktop_rootfs(stale=True)

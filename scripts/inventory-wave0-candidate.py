@@ -233,7 +233,7 @@ def ffi_metadata(receipt: Path, archive: Path) -> dict[str, Any]:
     }
 
 
-def firmware_metadata(manifest: Path, firmware: Path) -> dict[str, Any]:
+def firmware_metadata(root: Path, manifest: Path, firmware: Path) -> dict[str, Any]:
     if not direct_regular(manifest):
         return {"status": "unavailable"}
     try:
@@ -245,9 +245,50 @@ def firmware_metadata(manifest: Path, firmware: Path) -> dict[str, Any]:
         return {"status": "invalid"}
     if not direct_regular(firmware):
         return {"status": "unavailable", "manifestSHA256": sha256(manifest)}
+    build_identifier = value.get("buildIdentifier") if isinstance(value, dict) else None
+    producer_tool = root / "scripts/build-dory-armvirt-firmware.py"
+    if not isinstance(build_identifier, str) or not direct_regular(producer_tool):
+        source_status = "unavailable"
+        expected_identifier = None
+    else:
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(producer_tool),
+                    "--platform",
+                    "pc",
+                    "--print-build-identifier",
+                ],
+                cwd=root,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            source_status = "unavailable"
+            expected_identifier = None
+        else:
+            expected_identifier = result.stdout.strip() if result.returncode == 0 else None
+            source_status = (
+                "matches-current-source"
+                if expected_identifier == build_identifier
+                else "stale-source" if expected_identifier else "invalid"
+            )
+    artifact_matches = expected == sha256(firmware)
+    status = (
+        "matches-current-source"
+        if artifact_matches and source_status == "matches-current-source"
+        else "firmware-mismatch" if not artifact_matches else source_status
+    )
     return {
-        "status": "matches-current-firmware" if expected == sha256(firmware) else "firmware-mismatch",
+        "status": status,
         "manifestSHA256": sha256(manifest),
+        "buildIdentifier": build_identifier,
+        "expectedBuildIdentifier": expected_identifier,
         "source": value.get("source"),
         "machineABIIdentity": value.get("machineABIIdentity"),
         "firmwareABIIdentity": value.get("firmwareABIIdentity"),
@@ -482,9 +523,17 @@ def main() -> int:
         ),
         producer(
             identifier="pc-firmware", owner="DoryFirmware PC bundle producer",
-            inputs=source_inputs(root, ("dory-core-swift/Sources/DoryFirmware/DoryFirmwareBundleBuilder.swift", "dory-core-swift/Sources/DoryFirmware/DoryPCUEFILaunchPlan.swift")),
+            inputs=source_inputs(root, (
+                "scripts/build-dory-armvirt-firmware.py",
+                "Firmware/DoryPC/source.lock.json",
+                "Firmware/DoryPC/toolchain.lock.json",
+                "Firmware/DoryPC/DoryPCPkg/DoryPC.dsc",
+                "Firmware/DoryPC/DoryPCPkg/DoryPC.fdf",
+                "dory-core-swift/Sources/DoryFirmware/DoryFirmwareBundleBuilder.swift",
+                "dory-core-swift/Sources/DoryFirmware/DoryPCUEFILaunchPlan.swift",
+            )),
             artifacts=[guest_file("pc-firmware-manifest", "dory-pc-firmware/manifest.json"), guest_file("pc-firmware-code", "dory-pc-firmware/firmware-code.fd")],
-            metadata=firmware_metadata(firmware_manifest, firmware_code),
+            metadata=firmware_metadata(root, firmware_manifest, firmware_code),
         ),
         producer(
             identifier="arm64-kernel", owner="guest/kernel Venus profile producer",
