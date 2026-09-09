@@ -139,11 +139,15 @@ architectural destination byte. Native CMOV64 selects a pinned source without
 clobbering NZCV, and a fused conditional terminator selects the next guest RIP
 in `x27`; constant logical-domain predicates collapse to a move or no-op. Their
 materializing fallbacks share the same complete predicate evaluator as SETcc.
-LAHF consumes the same boundary and replaces AH from the canonical low RFLAGS
-image. PUSHF materializes that image, clears RF and VM, sets bit 1, and invokes
-the preserved scalar-write callback. Its temporary context and RSP change are
-published only when the callback succeeds; callback failure returns to the
-interpreter with the original architectural state.
+LAHF and SAHF have explicit IR operations and share the materialization
+boundary. LAHF replaces AH from the canonical low RFLAGS image. SAHF first
+resolves any pending producer, then replaces only CF, PF, AF, ZF, and SF from
+AH while preserving every other flag and forcing reserved bit 1. Native
+long-mode admission for either operation requires the advertised `lahf64`
+feature. PUSHF materializes the canonical image, clears RF and VM, sets bit 1,
+and invokes the preserved scalar-write callback. Its temporary context and RSP
+change are published only when the callback succeeds; callback failure returns
+to the interpreter with the original architectural state.
 
 ## Helper-call shim
 
