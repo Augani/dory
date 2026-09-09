@@ -416,6 +416,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let firmwareConfiguration: DoryPCFirmwareConfiguration
   public let platformMMIODevices: [any DoryPCMMIODevice]
   public let memoryByteCount: Int
+  /// Base of the guest-physical-shaped host reservation supplied to generated code.
+  public let hostAddressSpaceBase: UInt64
+  public let hostAddressSpaceByteCount: Int
   public let processorCount: Int
   public let executionTier: DoryPCExecutionTier
 
@@ -592,10 +595,46 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     self.platformMMIODevices = [firmwareConfiguration] + platformMMIODevices
     // Physical machines need a recoverable host allocation boundary at every size.
     // Swift Array allocation traps on exhaustion; byte-array RAM remains a conformance fixture.
-    let sharedMemory: any DoryX86PhysicalRAM = try DoryX86MmapMemory(
-      validatingByteCount: memoryBytes
+    let ramByteCount = UInt64(memoryBytes)
+    let lowRAMByteCount = min(ramByteCount, DoryPCV1ABI.mmioHoleStart)
+    let highRAMByteCount = ramByteCount - lowRAMByteCount
+    let hostAddressSpaceUpperBound = DoryPCV1ABI.above4GRAMStart + highRAMByteCount
+    var ramMappings = [
+      DoryX86MmapRAMMapping(
+        logicalOffset: 0,
+        hostOffset: 0,
+        byteCount: Int(lowRAMByteCount)
+      )
+    ]
+    if highRAMByteCount > 0 {
+      ramMappings.append(
+        .init(
+          logicalOffset: Int(DoryPCV1ABI.mmioHoleStart),
+          hostOffset: Int(DoryPCV1ABI.above4GRAMStart),
+          byteCount: Int(highRAMByteCount)
+        ))
+    }
+    let readOnlyMappings: [DoryX86MmapReadOnlyMapping] = platformMMIODevices.compactMap { device in
+      guard let flash = device as? DoryPCFirmwareFlash else { return nil }
+      return DoryX86MmapReadOnlyMapping(
+        hostOffset: Int(flash.baseAddress),
+        byteCount: Int(flash.byteCount),
+        contents: flash.image,
+        contentsOffset: Int(flash.imageOffset),
+        fillByte: 0xff
+      )
+    }
+    let sharedMemory = try DoryX86MmapMemory(
+      validatingByteCount: memoryBytes,
+      hostAddressSpaceByteCount: Int(
+        max(DoryPCV1ABI.above4GRAMStart, hostAddressSpaceUpperBound)
+      ),
+      ramMappings: ramMappings,
+      readOnlyMappings: readOnlyMappings
     )
     memory = sharedMemory
+    hostAddressSpaceBase = sharedMemory.hostAddressSpaceBase
+    hostAddressSpaceByteCount = sharedMemory.hostAddressSpaceByteCount
     physicalMemories = try (0..<processorCount).map {
       _ in try DoryPCPhysicalMemoryBus(ram: sharedMemory, diagnosticsEnabled: instrumentationEnabled)
     }
