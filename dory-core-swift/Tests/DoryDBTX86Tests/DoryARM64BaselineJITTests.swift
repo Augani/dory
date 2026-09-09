@@ -1,4 +1,6 @@
 import Darwin
+import Dispatch
+import Foundation
 import Testing
 
 @testable import DoryDBTX86
@@ -4017,6 +4019,289 @@ import Testing
     #endif
   }
 
+  @Test func interpreterAndNativeLockedRMWFamiliesRemainSingleCopyAcrossVCPUs() throws {
+    #if arch(arm64)
+      struct OperationCase {
+        let name: String
+        let bytes: [UInt8]
+        let initial: UInt64
+        let source: UInt64
+        let flags: DoryX86RFLAGS
+        let expected: UInt64
+      }
+      let workerCount = 4
+      let iterationsPerWorker = 64
+      let operationCount = UInt64(workerCount * iterationsPerWorker)
+      let mask: UInt64 = 0x00FF_00FF_00FF_00FF
+      let cases: [OperationCase] = [
+        .init(name: "ADD", bytes: [0xF0, 0x48, 0x01, 0x0A], initial: 0,
+          source: 1, flags: [.reservedOne], expected: operationCount),
+        .init(name: "ADC", bytes: [0xF0, 0x48, 0x11, 0x0A], initial: 0,
+          source: 1, flags: [.reservedOne, .carry], expected: operationCount * 2),
+        .init(name: "SUB", bytes: [0xF0, 0x48, 0x29, 0x0A], initial: operationCount,
+          source: 1, flags: [.reservedOne], expected: 0),
+        .init(name: "SBB", bytes: [0xF0, 0x48, 0x19, 0x0A], initial: operationCount * 2,
+          source: 1, flags: [.reservedOne, .carry], expected: 0),
+        .init(name: "AND", bytes: [0xF0, 0x48, 0x21, 0x0A], initial: .max,
+          source: mask, flags: [.reservedOne], expected: mask),
+        .init(name: "OR", bytes: [0xF0, 0x48, 0x09, 0x0A], initial: 0,
+          source: mask, flags: [.reservedOne], expected: mask),
+        .init(name: "XOR", bytes: [0xF0, 0x48, 0x31, 0x0A], initial: mask,
+          source: mask, flags: [.reservedOne], expected: mask),
+        .init(name: "INC", bytes: [0xF0, 0x48, 0xFF, 0x02], initial: 0,
+          source: 0, flags: [.reservedOne], expected: operationCount),
+        .init(name: "DEC", bytes: [0xF0, 0x48, 0xFF, 0x0A], initial: operationCount,
+          source: 0, flags: [.reservedOne], expected: 0),
+        .init(name: "NOT", bytes: [0xF0, 0x48, 0xF7, 0x12], initial: mask,
+          source: 0, flags: [.reservedOne], expected: mask),
+        .init(name: "NEG", bytes: [0xF0, 0x48, 0xF7, 0x1A], initial: mask,
+          source: 0, flags: [.reservedOne], expected: mask),
+        .init(name: "XADD", bytes: [0xF0, 0x48, 0x0F, 0xC1, 0x0A], initial: 0,
+          source: 1, flags: [.reservedOne], expected: operationCount),
+        .init(name: "BTS", bytes: [0xF0, 0x48, 0x0F, 0xAB, 0x0A], initial: 0,
+          source: 3, flags: [.reservedOne], expected: 1 << 3),
+        .init(name: "BTR", bytes: [0xF0, 0x48, 0x0F, 0xB3, 0x0A], initial: .max,
+          source: 3, flags: [.reservedOne], expected: .max ^ (1 << 3)),
+        .init(name: "BTC", bytes: [0xF0, 0x48, 0x0F, 0xBB, 0x0A], initial: 0,
+          source: 3, flags: [.reservedOne], expected: 0),
+      ]
+      let memoryAddress: UInt64 = 0x100
+      let instructionAddress: UInt64 = 0x2000
+
+      for (caseIndex, testCase) in cases.enumerated() {
+        let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()) * 3)
+        try physical.writeScalar(at: memoryAddress, value: testCase.initial, byteCount: 8)
+        try physical.write(at: instructionAddress, bytes: testCase.bytes)
+        let initialState = try DoryX86ArchitecturalState(
+          registers: .init(rcx: testCase.source, rdx: memoryAddress),
+          rip: instructionAddress,
+          rflags: testCase.flags
+        )
+        let executors = try (0..<workerCount).map { _ in
+          try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+        }
+        let memories = (0..<workerCount).map { _ in
+          DoryX86TranslatedMemory(
+            physicalMemory: physical,
+            pagingUnit: DoryX86PagingUnit(),
+            context: .init(state: initialState, mode: .long64)
+          )
+        }
+        let results = ConcurrentAtomicLitmusResults()
+
+        DispatchQueue.concurrentPerform(iterations: workerCount) { worker in
+          do {
+            for _ in 0..<iterationsPerWorker {
+              var state = initialState
+              if worker == 0 {
+                guard case .retired = DoryX86Interpreter().step(
+                  state: &state,
+                  memory: physical,
+                  mode: .long64
+                ) else {
+                  results.recordFailure("\(testCase.name) interpreter did not retire")
+                  return
+                }
+                continue
+              }
+              guard let execution = try executors[worker].execute(
+                bytes: testCase.bytes,
+                at: instructionAddress,
+                mode: .long64,
+                addressSpaceID: UInt64(500 + caseIndex * workerCount + worker),
+                maximumInstructions: 1,
+                state: &state,
+                memory: memories[worker]
+              ), execution.exitCode != .interpreter,
+                state.rip == instructionAddress + UInt64(testCase.bytes.count)
+              else {
+                results.recordFailure("\(testCase.name) declined or retired imprecisely")
+                return
+              }
+            }
+          } catch {
+            results.recordFailure("\(testCase.name): \(error)")
+          }
+        }
+
+        #expect(results.failures.isEmpty)
+        #expect(
+          try physical.readScalar(at: memoryAddress, byteCount: 8) == testCase.expected,
+          "\(testCase.name) lost or duplicated a concurrent update"
+        )
+      }
+
+      let exchangeBytes: [UInt8] = [0x48, 0x87, 0x0A]
+      let exchangeMemory = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()) * 3)
+      try exchangeMemory.writeScalar(at: memoryAddress, value: 0, byteCount: 8)
+      try exchangeMemory.write(at: instructionAddress, bytes: exchangeBytes)
+      let exchangeExecutors = try (0..<workerCount).map { _ in
+        try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+      }
+      let exchangeContextState = try DoryX86ArchitecturalState()
+      let exchangeResults = ConcurrentAtomicLitmusResults()
+      DispatchQueue.concurrentPerform(iterations: workerCount) { worker in
+        let translated = DoryX86TranslatedMemory(
+          physicalMemory: exchangeMemory,
+          pagingUnit: DoryX86PagingUnit(),
+          context: .init(state: exchangeContextState, mode: .long64)
+        )
+        do {
+          for iteration in 0..<iterationsPerWorker {
+            let token = UInt64(worker * iterationsPerWorker + iteration + 1)
+            var state = try DoryX86ArchitecturalState(
+              registers: .init(rcx: token, rdx: memoryAddress),
+              rip: instructionAddress
+            )
+            if worker == 0 {
+              guard case .retired = DoryX86Interpreter().step(
+                state: &state,
+                memory: exchangeMemory,
+                mode: .long64
+              ) else {
+                exchangeResults.recordFailure("XCHG interpreter did not retire")
+                return
+              }
+              exchangeResults.recordObserved(state.registers.rcx)
+              continue
+            }
+            guard let execution = try exchangeExecutors[worker].execute(
+              bytes: exchangeBytes,
+              at: instructionAddress,
+              mode: .long64,
+              addressSpaceID: UInt64(700 + worker),
+              maximumInstructions: 1,
+              state: &state,
+              memory: translated
+            ), execution.exitCode != .interpreter else {
+              exchangeResults.recordFailure("XCHG declined")
+              return
+            }
+            exchangeResults.recordObserved(state.registers.rcx)
+          }
+        } catch {
+          exchangeResults.recordFailure("XCHG: \(error)")
+        }
+      }
+      let finalExchange = try exchangeMemory.readScalar(at: memoryAddress, byteCount: 8)
+      let exchangeHistory = (exchangeResults.observed + [finalExchange]).sorted()
+      #expect(exchangeResults.failures.isEmpty)
+      #expect(exchangeHistory == Array(0...operationCount))
+    #endif
+  }
+
+  @Test func interpreterAndNativeCompareExchangeFormsHaveExactlyOneConcurrentWinner() throws {
+    #if arch(arm64)
+      struct CompareExchangeCase {
+        let name: String
+        let bytes: [UInt8]
+        let byteCount: Int
+      }
+      let cases: [CompareExchangeCase] = [
+        .init(name: "CMPXCHG", bytes: [0xF0, 0x48, 0x0F, 0xB1, 0x0A], byteCount: 8),
+        .init(name: "CMPXCHG8B", bytes: [0xF0, 0x0F, 0xC7, 0x0F], byteCount: 8),
+        .init(name: "CMPXCHG16B", bytes: [0xF0, 0x48, 0x0F, 0xC7, 0x0F], byteCount: 16),
+      ]
+      let workerCount = 8
+      let memoryAddress: UInt64 = 0x100
+      let instructionAddress: UInt64 = 0x2000
+
+      for (caseIndex, testCase) in cases.enumerated() {
+        let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()) * 3)
+        try physical.writeScalar(at: memoryAddress, value: 0, byteCount: 8)
+        if testCase.byteCount == 16 {
+          try physical.writeScalar(at: memoryAddress + 8, value: 0, byteCount: 8)
+        }
+        try physical.write(at: instructionAddress, bytes: testCase.bytes)
+        let executors = try (0..<workerCount).map { _ in
+          try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+        }
+        let results = ConcurrentAtomicLitmusResults()
+
+        DispatchQueue.concurrentPerform(iterations: workerCount) { worker in
+          do {
+            let token = UInt64(worker + 1)
+            let registers: DoryX86GeneralRegisters
+            if testCase.name == "CMPXCHG" {
+              registers = .init(rax: 0, rcx: token, rdx: memoryAddress)
+            } else {
+              registers = .init(rax: 0, rcx: 0xCAFE_BABE, rdx: 0, rbx: token,
+                rdi: memoryAddress)
+            }
+            var state = try DoryX86ArchitecturalState(
+              registers: registers,
+              rip: instructionAddress,
+              rflags: [.reservedOne]
+            )
+            if worker == 0 {
+              guard case .retired = DoryX86Interpreter().step(
+                state: &state,
+                memory: physical,
+                mode: .long64
+              ) else {
+                results.recordFailure("\(testCase.name) interpreter did not retire")
+                return
+              }
+              results.recordComparison(
+                zero: state.rflags.contains(.zero),
+                low: state.registers.rax,
+                high: state.registers.rdx
+              )
+              return
+            }
+            let translated = DoryX86TranslatedMemory(
+              physicalMemory: physical,
+              pagingUnit: DoryX86PagingUnit(),
+              context: .init(state: state, mode: .long64)
+            )
+            guard let execution = try executors[worker].execute(
+              bytes: testCase.bytes,
+              at: instructionAddress,
+              mode: .long64,
+              addressSpaceID: UInt64(800 + caseIndex * workerCount + worker),
+              maximumInstructions: 1,
+              state: &state,
+              memory: translated
+            ), execution.exitCode != .interpreter else {
+              results.recordFailure("\(testCase.name) declined")
+              return
+            }
+            results.recordComparison(
+              zero: state.rflags.contains(.zero),
+              low: state.registers.rax,
+              high: state.registers.rdx
+            )
+          } catch {
+            results.recordFailure("\(testCase.name): \(error)")
+          }
+        }
+
+        let firstWord = try physical.readScalar(at: memoryAddress, byteCount: 8)
+        let finalLow = testCase.name == "CMPXCHG8B" ? firstWord & 0xFFFF_FFFF : firstWord
+        let finalHigh: UInt64
+        if testCase.byteCount == 16 {
+          finalHigh = try physical.readScalar(at: memoryAddress + 8, byteCount: 8)
+        } else if testCase.name == "CMPXCHG8B" {
+          finalHigh = firstWord >> 32
+        } else {
+          finalHigh = 0
+        }
+        #expect(results.failures.isEmpty)
+        #expect(results.comparisons.filter(\.zero).count == 1)
+        #expect((1...workerCount).map(UInt64.init).contains(finalLow))
+        if testCase.name != "CMPXCHG" {
+          #expect(finalHigh == 0xCAFE_BABE)
+        }
+        for comparison in results.comparisons where !comparison.zero {
+          #expect(comparison.low == finalLow)
+          if testCase.name != "CMPXCHG" {
+            #expect(comparison.high == finalHigh)
+          }
+        }
+      }
+    #endif
+  }
+
   @Test func lockedCompareExchangeDeclinesBeforeUnsupportedMemoryOrPrivilegeSideEffects() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0xF0, 0x0F, 0xB1, 0x17]
@@ -8013,6 +8298,35 @@ import Testing
     #expect(execution.block.tier.rawValue == optimization.rawValue)
     #expect(execution.block.guestInstructionCount == 2)
     #expect(translated == interpreted)
+  }
+}
+
+private final class ConcurrentAtomicLitmusResults: @unchecked Sendable {
+  struct Comparison {
+    let zero: Bool
+    let low: UInt64
+    let high: UInt64
+  }
+
+  private let lock = NSLock()
+  private var storedFailures: [String] = []
+  private var storedObserved: [UInt64] = []
+  private var storedComparisons: [Comparison] = []
+
+  var failures: [String] { lock.withLock { storedFailures } }
+  var observed: [UInt64] { lock.withLock { storedObserved } }
+  var comparisons: [Comparison] { lock.withLock { storedComparisons } }
+
+  func recordFailure(_ failure: String) {
+    lock.withLock { storedFailures.append(failure) }
+  }
+
+  func recordObserved(_ value: UInt64) {
+    lock.withLock { storedObserved.append(value) }
+  }
+
+  func recordComparison(zero: Bool, low: UInt64, high: UInt64) {
+    lock.withLock { storedComparisons.append(.init(zero: zero, low: low, high: high)) }
   }
 }
 
