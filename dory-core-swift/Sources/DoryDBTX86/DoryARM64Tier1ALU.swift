@@ -300,6 +300,92 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Emits register-base BT/BTC/BTR/BTS. The index is reduced and staged before the base can be
+  /// changed, preserving base/index aliases. Only CF changes under the engine's deterministic
+  /// policy; an older lazy producer is materialized before that carry bit is replaced.
+  func emitBitTest(
+    _ operation: DoryX86BitOperation,
+    width: DoryIRIntegerWidth,
+    baseGuestRegister: Int,
+    index: Source,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard width == .i32 || width == .i64,
+      (0..<16).contains(baseGuestRegister)
+    else { return false }
+    if case .guestRegister(let indexRegister) = index {
+      guard (0..<16).contains(indexRegister) else { return false }
+    }
+
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    let is64Bit = width == .i64
+    let bitIndexMask = UInt64(width.rawValue - 1)
+    switch index {
+    case .guestRegister(let indexRegister):
+      Self.emitImmediate(bitIndexMask, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and,
+          is64Bit: is64Bit,
+          left: UInt32(indexRegister),
+          right: 17,
+          destination: 16
+        ))
+      Self.emitImmediate(1, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeVariableShift(
+          .left,
+          is64Bit: is64Bit,
+          value: 17,
+          count: 16,
+          destination: 16
+        ))
+    case .immediate(let rawIndex):
+      Self.emitImmediate(1 << (rawIndex & bitIndexMask), register: 16, into: &fragment)
+    }
+
+    let base = UInt32(baseGuestRegister)
+    fragment.append(
+      Self.encodeLogical(
+        .andSetFlags,
+        is64Bit: is64Bit,
+        left: base,
+        right: 16,
+        destination: 17
+      ))
+    fragment.append(Self.encodeConditionalSet(register: 17, condition: .notEqual))
+    Self.emitImmediate(~DoryX86RFLAGS.carry.rawValue, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(.and, is64Bit: true, left: 25, right: 26, destination: 25))
+    fragment.append(
+      Self.encodeLogical(.or, is64Bit: true, left: 25, right: 17, destination: 25))
+    fragment.append(Self.encodeMove(destination: 26, source: 31, is64Bit: true))
+
+    switch operation {
+    case .test:
+      break
+    case .set:
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: is64Bit, left: base, right: 16, destination: base))
+    case .complement:
+      fragment.append(
+        Self.encodeLogical(
+          .xor, is64Bit: is64Bit, left: base, right: 16, destination: base))
+    case .reset:
+      Self.emitImmediate(is64Bit ? .max : UInt64(UInt32.max), register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .xor, is64Bit: is64Bit, left: 16, right: 17, destination: 17))
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: is64Bit, left: base, right: 17, destination: base))
+    }
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Exchanges two pinned qword registers without changing NZCV or lazy flags.
   func emitExchangeRegisters(
     lhsGuestRegister: Int,

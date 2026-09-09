@@ -305,6 +305,19 @@ struct DoryARM64Tier1Emitter: Sendable {
         else { return nil }
         nativeFlags = nil
 
+      case .bitTestRegister(let operation, let base, let index):
+        guard let base = lowRegister(base),
+          let index = bitIndexSource(index, matching: base.width),
+          alu.emitBitTest(
+            operation,
+            width: base.width,
+            baseGuestRegister: Int(base.index),
+            index: index,
+            into: &body
+          )
+        else { return nil }
+        nativeFlags = nil
+
       default:
         return nil
       }
@@ -389,6 +402,21 @@ struct DoryARM64Tier1Emitter: Sendable {
     where value.bank == "x86.gpr" && value.index < 16 && value.width == width:
       return .guestRegister(Int(value.index))
     case .immediate(let value, let immediateWidth) where immediateWidth == width:
+      return .immediate(value)
+    default:
+      return nil
+    }
+  }
+
+  private func bitIndexSource(
+    _ operand: DoryIROperand,
+    matching width: DoryIRIntegerWidth
+  ) -> DoryARM64Tier1ALUEmitter.Source? {
+    switch operand {
+    case .register(let value)
+    where value.bank == "x86.gpr" && value.index < 16 && value.width == width:
+      return .guestRegister(Int(value.index))
+    case .immediate(let value, .i8):
       return .immediate(value)
     default:
       return nil

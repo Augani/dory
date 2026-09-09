@@ -2723,6 +2723,11 @@ import Testing
           expectedCarry: true
         ),
       ]
+      let configurations: [(DoryARM64JITOptimization, Bool, DoryARM64CompilationTier)] = [
+        (.baseline, false, .baseline),
+        (.baseline, true, .tier1),
+        (.optimizing, false, .optimizing),
+      ]
       for testCase in cases {
         let address: UInt64 = 0xB17_7000
         let decoded = try DoryX86Decoder().decode(testCase.bytes, at: address, mode: .long64)
@@ -2735,7 +2740,7 @@ import Testing
           Issue.record("\(testCase.name) did not lower to register bit-test IR")
         }
 
-        for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for (optimization, tier1Enabled, expectedTier) in configurations {
           let initial = try DoryX86ArchitecturalState(
             registers: .init(rax: testCase.rax, rcx: testCase.rcx),
             rip: address,
@@ -2752,6 +2757,7 @@ import Testing
           let execution = try #require(
             DoryARM64BaselineExecutor(
               maximumCodeBytes: 4096,
+              tier1Enabled: tier1Enabled,
               optimization: optimization
             ).execute(
               bytes: testCase.bytes,
@@ -2762,7 +2768,7 @@ import Testing
               state: &native
             )
           )
-          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(execution.block.tier == expectedTier)
           #expect(!execution.block.requiresMemoryCallbacks)
           #expect(native == interpreted)
           #expect(native.registers.rax == testCase.expectedRAX)
