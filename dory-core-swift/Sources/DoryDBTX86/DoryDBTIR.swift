@@ -290,7 +290,8 @@ public struct DoryX86IRTranslator: Sendable {
       if instruction.prefixes.lock {
         let loweredOperation = irBinaryOperation(operation)
         guard mode == .long64,
-          [.add, .subtract, .and, .or, .xor].contains(loweredOperation)
+          [.add, .addWithCarry, .subtract, .subtractWithBorrow, .and, .or, .xor]
+            .contains(loweredOperation)
         else { return fallback(instruction, reason: .interpreter) }
         let destinationOperand = operand(
           destination,
@@ -713,7 +714,8 @@ public struct DoryX86IRTranslator: Sendable {
     if case .compareExchange = operation { return true }
     if case .exchangeAdd = operation { return true }
     if case .alu(let operation, let destination, _) = operation,
-      [.add, .subtract, .and, .or, .xor].contains(operation),
+      [.add, .addWithCarry, .subtract, .subtractWithBorrow, .and, .or, .xor]
+        .contains(operation),
       case .memory = destination
     {
       return true
@@ -867,7 +869,8 @@ public struct DoryX86IRTranslator: Sendable {
         return width == targetWidth && isJITMemoryAddress(address)
       }
     case .atomicBinary(let operation, let destination, let source):
-      guard [.add, .subtract, .and, .or, .xor].contains(operation),
+      guard [.add, .addWithCarry, .subtract, .subtractWithBorrow, .and, .or, .xor]
+        .contains(operation),
         case .memory(let address, let width) = destination,
         (width == .i32 || width == .i64), isJITMemoryAddress(address)
       else { return false }

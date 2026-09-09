@@ -2159,8 +2159,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) -> Bool {
     let operationCode: UInt16
     switch operation {
-    case .add: operationCode = 0
-    case .subtract: operationCode = 1
+    case .add, .addWithCarry: operationCode = 0
+    case .subtract, .subtractWithBorrow: operationCode = 1
     case .and: operationCode = 2
     case .or: operationCode = 3
     case .xor: operationCode = 4
@@ -2173,6 +2173,23 @@ public struct DoryARM64BaselineEmitter: Sendable {
     else { return false }
 
     words.append(encodeStore64(register: 10, base: 31, byteOffset: 64))
+    let usesCarryInput = operation == .addWithCarry || operation == .subtractWithBorrow
+    let atomicValueOffset: Int
+    if usesCarryInput {
+      words.append(encodeLoad64(register: 11, base: 0, byteOffset: Self.rflagsOffset))
+      emitImmediate(1, register: 15, into: &words)
+      words.append(encodeLogical(.and, left: 11, right: 15, destination: 11))
+      words.append(encodeAdd(
+        is64Bit: width == .i64,
+        left: 10,
+        right: 11,
+        destination: 11
+      ))
+      words.append(encodeStore64(register: 11, base: 31, byteOffset: 72))
+      atomicValueOffset = 72
+    } else {
+      atomicValueOffset = 64
+    }
     words.append(encodeStore64(register: 12, base: 31, byteOffset: 88))
     words.append(encodeLoad64(register: 16, base: 19, byteOffset: Self.atomicRMWOffset))
     words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 31, 31))
@@ -2180,7 +2197,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
     words.append(encodeLogical(.or, left: 31, right: 20, destination: 1))
     words.append(encodeLoad64(register: 2, base: 31, byteOffset: 88))
-    words.append(encodeLoad64(register: 3, base: 31, byteOffset: 64))
+    words.append(encodeLoad64(register: 3, base: 31, byteOffset: atomicValueOffset))
     words.append(encodeMoveWideZero32(register: 4, immediate: UInt16(width.rawValue / 8)))
     words.append(encodeMoveWideZero32(register: 5, immediate: operationCode))
     words.append(encodeAddImmediate64(left: 31, immediate: 80, destination: 6))
@@ -2195,8 +2212,26 @@ public struct DoryARM64BaselineEmitter: Sendable {
     switch operation {
     case .add:
       words.append(encodeAddSubtractSetFlags(add: true, is64Bit: is64Bit, 9, 10, 11))
+    case .addWithCarry:
+      emitARMCarryFromX86(inverted: false, into: &words)
+      words.append(encodeAddSubtractCarrySetFlags(
+        add: true,
+        is64Bit: is64Bit,
+        9,
+        10,
+        11
+      ))
     case .subtract:
       words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 9, 10, 11))
+    case .subtractWithBorrow:
+      emitARMCarryFromX86(inverted: true, into: &words)
+      words.append(encodeAddSubtractCarrySetFlags(
+        add: false,
+        is64Bit: is64Bit,
+        9,
+        10,
+        11
+      ))
     case .and:
       words.append(encodeLogical(.andSetFlags, is64Bit: is64Bit, 9, 10, 11))
     case .or, .xor:
@@ -2212,8 +2247,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return false
     }
     emitX86ArithmeticFlags(
-      subtraction: operation == .subtract,
-      includesAuxiliaryCarry: operation == .add || operation == .subtract,
+      subtraction: operation == .subtract || operation == .subtractWithBorrow,
+      includesAuxiliaryCarry: operation == .add || operation == .addWithCarry
+        || operation == .subtract || operation == .subtractWithBorrow,
       resultRegister: 11,
       into: &words
     )

@@ -1416,7 +1416,6 @@ import Testing
     #if arch(arm64)
       let cases: [[UInt8]] = [
         [0xF0, 0x80, 0x20, 0xFD],  // lock and byte ptr [rax],0xfd
-        [0xF0, 0x48, 0x11, 0x08],  // lock adc qword ptr [rax],rcx
       ]
       let initial = try DoryX86ArchitecturalState(
         registers: .init(rax: 0x80, rcx: 0x1122_3344),
@@ -3689,6 +3688,70 @@ import Testing
                 == interpretedMemory.readScalar(at: 0x80, byteCount: byteCount)
             )
             #expect(paging.diagnostics.translationRequests == 1)
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func alignedLockedCarryRMWMatchesInterpreterAcrossWidthsAndCarryInputs() throws {
+    #if arch(arm64)
+      let instructionAddress: UInt64 = 0x3C00
+      for opcode in [UInt8(0x11), 0x19] {  // ADC, SBB r/m,reg
+        for carry in [false, true] {
+          for is64Bit in [false, true] {
+            for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+              let bytes = [UInt8(0xF0)] + (is64Bit ? [0x48] : []) + [opcode, 0x0A]
+              let byteCount = is64Bit ? 8 : 4
+              let source = is64Bit ? UInt64.max : UInt64(UInt32.max)
+              let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: Int(getpagesize()))
+              let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+              let paging = DoryX86PagingUnit()
+              var flags: DoryX86RFLAGS = [.reservedOne, .direction]
+              if carry { flags.insert(.carry) }
+              let initial = try DoryX86ArchitecturalState(
+                registers: .init(rcx: source, rdx: 0x80),
+                rip: instructionAddress,
+                rflags: flags
+              )
+              var expected = initial
+              var state = initial
+              try interpretedMemory.write(at: instructionAddress, bytes: bytes)
+              try interpretedMemory.writeScalar(at: 0x80, value: 0, byteCount: byteCount)
+              try physical.writeScalar(at: 0x80, value: 0, byteCount: byteCount)
+              _ = DoryX86Interpreter().step(
+                state: &expected,
+                memory: interpretedMemory,
+                mode: .long64
+              )
+              let translated = DoryX86TranslatedMemory(
+                physicalMemory: physical,
+                pagingUnit: paging,
+                context: .init(state: state, mode: .long64)
+              )
+              let execution = try #require(DoryARM64BaselineExecutor(
+                maximumCodeBytes: 4_096,
+                optimization: optimization
+              ).execute(
+                bytes: bytes,
+                at: instructionAddress,
+                mode: .long64,
+                addressSpaceID: UInt64(
+                  160 + Int(opcode) + (carry ? 1 : 0) + (is64Bit ? 2 : 0)
+                ),
+                maximumInstructions: 1,
+                state: &state,
+                memory: translated
+              ))
+
+              #expect(execution.block.tier.rawValue == optimization.rawValue)
+              #expect(state == expected)
+              #expect(
+                try physical.readScalar(at: 0x80, byteCount: byteCount)
+                  == interpretedMemory.readScalar(at: 0x80, byteCount: byteCount)
+              )
+              #expect(paging.diagnostics.translationRequests == 1)
+            }
           }
         }
       }
