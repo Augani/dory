@@ -94,6 +94,11 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case setCondition(DoryX86Condition, destination: DoryIROperand)
   case bitTestRegister(operation: DoryX86BitOperation, base: DoryIROperand, index: DoryIROperand)
   case bitTestMemoryImmediate(operation: DoryX86BitOperation, base: DoryIROperand, index: UInt8)
+  case atomicBitTestMemory(
+    operation: DoryX86BitOperation,
+    base: DoryIROperand,
+    index: DoryIROperand
+  )
   case bitScan(reverse: Bool, destination: DoryIROperand, source: DoryIROperand)
   case byteSwap(DoryIROperand)
   case stackPush(source: DoryIROperand)
@@ -415,15 +420,31 @@ public struct DoryX86IRTranslator: Sendable {
       )
     case .bitTest(let operation, let base, let index) where mode == .long64:
       if case .memory(let memory) = base,
-        memory.width == .doubleword || memory.width == .quadword,
-        case .immediate(let bit, .byte) = index,
-        !instruction.prefixes.lock
+        memory.width == .doubleword || memory.width == .quadword
       {
-        return ([.bitTestMemoryImmediate(
-          operation: operation,
-          base: operand(base, instructionRelativeBase: instruction.nextInstructionAddress),
-          index: UInt8(truncatingIfNeeded: bit)
-        )], nil)
+        if instruction.prefixes.lock {
+          guard operation != .test else { return fallback(instruction, reason: .interpreter) }
+          switch index {
+          case .register(_, let indexWidth) where indexWidth == memory.width:
+            break
+          case .immediate(_, .byte):
+            break
+          default:
+            return fallback(instruction, reason: .interpreter)
+          }
+          return ([.atomicBitTestMemory(
+            operation: operation,
+            base: operand(base, instructionRelativeBase: instruction.nextInstructionAddress),
+            index: operand(index)
+          )], nil)
+        }
+        if case .immediate(let bit, .byte) = index {
+          return ([.bitTestMemoryImmediate(
+            operation: operation,
+            base: operand(base, instructionRelativeBase: instruction.nextInstructionAddress),
+            index: UInt8(truncatingIfNeeded: bit)
+          )], nil)
+        }
       }
       guard case .register(_, let baseWidth) = base,
         baseWidth == .doubleword || baseWidth == .quadword
@@ -721,6 +742,11 @@ public struct DoryX86IRTranslator: Sendable {
       return true
     }
     if case .unary(_, let operand) = operation, case .memory = operand { return true }
+    if case .bitTest(let bitOperation, let base, _) = operation,
+      bitOperation != .test, case .memory = base
+    {
+      return true
+    }
     return false
   }
 
@@ -914,6 +940,19 @@ public struct DoryX86IRTranslator: Sendable {
     case .bitTestMemoryImmediate(_, let base, _):
       guard case .memory(let address, let width) = base else { return false }
       return (width == .i32 || width == .i64) && isJITMemoryAddress(address)
+    case .atomicBitTestMemory(let operation, let base, let index):
+      guard operation != .test,
+        case .memory(let address, let width) = base,
+        (width == .i32 || width == .i64), isJITMemoryAddress(address)
+      else { return false }
+      switch index {
+      case .register(let register):
+        return register.width == width && isJITGeneralRegister(register)
+      case .immediate(_, let indexWidth):
+        return indexWidth == .i8
+      case .memory:
+        return false
+      }
     case .bitTestRegister(_, let base, let index):
       guard case .register(let baseRegister) = base,
         isJITGeneralRegister(baseRegister)
@@ -1102,6 +1141,8 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(destination) ? .write : .none
     case .bitTestMemoryImmediate(let operation, _, _):
       return operation == .test ? .read : .write
+    case .atomicBitTestMemory:
+      return .write
     case .bitTestRegister:
       return .none
     case .bitScan(_, let destination, let source):

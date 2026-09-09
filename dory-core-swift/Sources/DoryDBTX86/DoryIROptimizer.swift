@@ -156,6 +156,9 @@ public struct DoryIROptimizer: Sendable {
           invalidate(base, knownConstants: &knownConstants)
         }
 
+      case .atomicBitTestMemory:
+        statements.append(statement)
+
       case .readTimestampCounter:
         statements.append(statement)
         invalidate(.register(.init(bank: "x86.gpr", index: 0, width: .i64)), knownConstants: &knownConstants)

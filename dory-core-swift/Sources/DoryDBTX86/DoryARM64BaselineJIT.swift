@@ -210,6 +210,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination)
       case .bitTestMemoryImmediate(_, let base, _):
         return isFSOrGS(base)
+      case .atomicBitTestMemory(_, let base, _):
+        return isFSOrGS(base)
       case .bitTestRegister:
         return false
       case .bitScan(_, let destination, let source), .extendMove(let destination, let source, _):
@@ -247,7 +249,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       .unary(_, .memory),
       .atomicUnary(_, .memory),
       .shift(_, .memory, _), .stackPush, .stackPushFlags, .compareExchange(.memory, _),
-      .exchangeMemory(.memory, _), .exchangeAddMemory(.memory, _): true
+      .exchangeMemory(.memory, _), .exchangeAddMemory(.memory, _),
+      .atomicBitTestMemory(_, .memory, _): true
     case .bitTestMemoryImmediate(let operation, .memory, _): operation != .test
     default: false
     }
@@ -316,6 +319,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .bitTestMemoryImmediate(let operation, let base, let index):
       return emitBitTest(
         operation: operation, base: base, index: .immediate(UInt64(index), width: .i8), into: &words)
+    case .atomicBitTestMemory(let operation, let base, let index):
+      return emitAtomicBitTestMemory(
+        operation: operation, base: base, index: index, into: &words)
     case .bitScan(let reverse, let destination, let source):
       return emitBitScan(
         reverse: reverse,
@@ -634,6 +640,115 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return true
   }
 
+  private func emitAtomicBitTestMemory(
+    operation: DoryX86BitOperation,
+    base: DoryIROperand,
+    index: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    let operationCode: UInt16
+    switch operation {
+    case .set: operationCode = 3
+    case .reset: operationCode = 2
+    case .complement: operationCode = 4
+    case .test: return false
+    }
+    guard case .memory(let address, let width) = base,
+      width == .i32 || width == .i64
+    else { return false }
+
+    switch index {
+    case .register(let register):
+      guard register.bank == "x86.gpr", register.index < 16, register.width == width,
+        emitMemoryAddress(address, into: 12, includeSegmentBase: false, words: &words),
+        load(register, into: 10, words: &words)
+      else { return false }
+      if width == .i32, address.addressWidth == .i64 {
+        // Register bit indices are signed at the operand width before they select a
+        // surrounding memory element. Extend ECX-like inputs before 64-bit address math.
+        words.append(0x9340_0000 | 31 << 10 | 10 << 5 | 10)  // sxtw x10, w10
+      }
+      emitImmediate(width == .i64 ? 6 : 5, register: 11, into: &words)
+      words.append(encodeVariableShift(
+        .arithmeticRight,
+        is64Bit: width == .i64 || address.addressWidth == .i64,
+        value: 10,
+        count: 11,
+        destination: 10
+      ))
+      words.append(encodeAdd(
+        is64Bit: address.addressWidth == .i64,
+        left: 12,
+        right: 10,
+        leftShift: width == .i64 ? 3 : 2,
+        destination: 12
+      ))
+      if let segment = address.segment {
+        let offset = segment == "fs" ? Self.fsBaseOffset : Self.gsBaseOffset
+        words.append(encodeLoad64(register: 10, base: 0, byteOffset: offset))
+        words.append(encodeAdd(is64Bit: true, left: 12, right: 10, destination: 12))
+      }
+      guard load(register, into: 10, words: &words) else { return false }
+      emitImmediate(UInt64(width.rawValue - 1), register: 11, into: &words)
+      words.append(encodeLogical(.and, left: 10, right: 11, destination: 10))
+      emitImmediate(1, register: 11, into: &words)
+      words.append(encodeVariableShift(
+        .left,
+        is64Bit: width == .i64,
+        value: 11,
+        count: 10,
+        destination: 10
+      ))
+    case .immediate(let rawIndex, .i8):
+      guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
+      emitImmediate(
+        1 << (rawIndex & UInt64(width.rawValue - 1)),
+        register: 10,
+        into: &words
+      )
+    default:
+      return false
+    }
+
+    if operation == .reset {
+      emitImmediate(width == .i64 ? UInt64.max : UInt64(UInt32.max), register: 11, into: &words)
+      words.append(encodeLogical(.xor, is64Bit: width == .i64, 10, 11, 10))
+    }
+    words.append(encodeStore64(register: 10, base: 31, byteOffset: 64))
+    words.append(encodeStore64(register: 12, base: 31, byteOffset: 88))
+    words.append(encodeLoad64(register: 16, base: 19, byteOffset: Self.atomicRMWOffset))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 31, 31))
+    emitInterpreterUnless(condition: .notEqual, usesMemory: true, into: &words)
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    words.append(encodeLogical(.or, left: 31, right: 20, destination: 1))
+    words.append(encodeLoad64(register: 2, base: 31, byteOffset: 88))
+    words.append(encodeLoad64(register: 3, base: 31, byteOffset: 64))
+    words.append(encodeMoveWideZero32(register: 4, immediate: UInt16(width.rawValue / 8)))
+    words.append(encodeMoveWideZero32(register: 5, immediate: operationCode))
+    words.append(encodeAddImmediate64(left: 31, immediate: 80, destination: 6))
+    words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C translated atomic RMW)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
+    emitInterpreterUnless(condition: .equal, usesMemory: true, into: &words)
+
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    words.append(encodeLoad64(register: 9, base: 31, byteOffset: 80))
+    words.append(encodeLoad64(register: 10, base: 31, byteOffset: 64))
+    if operation == .reset {
+      emitImmediate(width == .i64 ? UInt64.max : UInt64(UInt32.max), register: 11, into: &words)
+      words.append(encodeLogical(.xor, is64Bit: width == .i64, 10, 11, 10))
+    }
+    words.append(encodeLogical(.andSetFlags, is64Bit: width == .i64, 9, 10, 11))
+    words.append(encodeConditionalSet(register: 13, condition: .notEqual))
+    words.append(encodeLoad64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
+    emitImmediate(~DoryX86RFLAGS.carry.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.or, left: 14, right: 13, destination: 14))
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.or, left: 14, right: 15, destination: 14))
+    words.append(encodeStore64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
+    return true
+  }
+
   private func emitConditionalMove(
     _ condition: DoryX86Condition,
     destination: DoryIROperand,
@@ -811,6 +926,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return 0
     case .bitTestMemoryImmediate(let operation, _, _):
       return operation == .test ? 1 : 2
+    case .atomicBitTestMemory:
+      return 1
     case .conditionalMove, .setCondition, .bitTestRegister, .exchangeRegisters:
       return 0
     case .bitScan(_, let destination, let source):
@@ -5248,7 +5365,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       block.statements.contains(where: {
         switch $0 {
         case .unsignedAccumulatorMultiply, .unsignedAccumulatorDivide, .signedAccumulatorDivide, .doubleShiftRightCL,
-          .doubleShiftRightImmediate, .bitTestMemoryImmediate:
+          .doubleShiftRightImmediate, .bitTestMemoryImmediate, .atomicBitTestMemory:
           return true
         default:
           return false
