@@ -82,7 +82,8 @@ import Testing
       var expected = state
       expected.rip += UInt64(bytes.count)
       let execution = try #require(DoryARM64BaselineExecutor(
-        maximumCodeBytes: 4_096
+        maximumCodeBytes: 4_096,
+        tier1Enabled: true
       ).execute(
         bytes: bytes,
         at: state.rip,
@@ -94,6 +95,7 @@ import Testing
       ))
 
       #expect(execution.block.requiresMemoryCallbacks)
+      #expect(execution.block.tier == .tier1)
       #expect(execution.exitCode == .dispatch)
       #expect(state == expected)
     #endif

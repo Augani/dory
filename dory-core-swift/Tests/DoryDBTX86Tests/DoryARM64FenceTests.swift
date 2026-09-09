@@ -29,24 +29,34 @@ import Testing
         #expect(DoryARM64BaselineEmitter().compile(prefix, tier: tier).tier == tier)
         #expect(DoryARM64BaselineEmitter().compile(boundary, tier: tier).tier == tier)
       }
+      #expect(DoryARM64Tier1Emitter().compile(boundary)?.tier == .tier1)
     }
   }
 
   @Test func fenceAtEntryExecutesAndOrdersExactlyOnce() throws {
     #if arch(arm64)
-      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+      let configurations: [(DoryARM64JITOptimization, Bool, DoryARM64CompilationTier)] = [
+        (.baseline, false, .baseline),
+        (.baseline, true, .tier1),
+        (.optimizing, false, .optimizing),
+      ]
+      for (optimization, tier1Enabled, expectedTier) in configurations {
         for (fence, _) in fences {
           let memory = try FenceObservingMemory()
           try memory.backing.write(at: 0x1000, bytes: fence + [0x48, 0xFF, 0xC1])
           var state = try DoryX86ArchitecturalState(registers: .init(rcx: 9), rip: 0x1000)
           let initial = state
-          let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096, optimization: optimization)
+          let executor = try DoryARM64BaselineExecutor(
+            maximumCodeBytes: 4096,
+            tier1Enabled: tier1Enabled,
+            optimization: optimization
+          )
           let summary = try #require(executor.executeSummary(
             byteProvider: { try memory.instructionBytes(at: 0x1000, maximumCount: $0) },
             at: state.rip, mode: .long64, addressSpaceID: 0, maximumInstructions: 2,
             state: &state, memory: memory))
           #expect(summary.guestInstructionCount == 1)
-          #expect(summary.tier.rawValue == optimization.rawValue)
+          #expect(summary.tier == expectedTier)
           var expected = initial
           expected.rip += 3
           #expect(state == expected)

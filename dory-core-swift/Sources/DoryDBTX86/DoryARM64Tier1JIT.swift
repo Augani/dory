@@ -12,16 +12,21 @@ struct DoryARM64Tier1Emitter: Sendable {
   func compile(_ block: DoryIRBasicBlock) -> DoryARM64CompiledBlock? {
     guard block.guestInstructionCount > 0 else { return nil }
     var memoryCallbackCount = 0
+    var requiresMemoryCallbacks = false
     var wroteMemory = false
     for statement in block.statements {
       switch statement {
       case .stackPush, .stackPushFlags:
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
+        requiresMemoryCallbacks = true
         wroteMemory = true
       case .stackPop:
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
+        requiresMemoryCallbacks = true
+      case .memoryFence:
+        requiresMemoryCallbacks = true
       default:
         break
       }
@@ -273,6 +278,10 @@ struct DoryARM64Tier1Emitter: Sendable {
       case .readTimestampCounter:
         alu.emitReadTimestampCounter(into: &body)
 
+      case .memoryFence(let kind):
+        alu.emitMemoryFence(kind, into: &body)
+        nativeFlags = nil
+
       default:
         return nil
       }
@@ -317,7 +326,7 @@ struct DoryARM64Tier1Emitter: Sendable {
       machineWords: words,
       tier: .tier1,
       exitCode: exitCode,
-      requiresMemoryCallbacks: memoryCallbackCount > 0,
+      requiresMemoryCallbacks: requiresMemoryCallbacks,
       requiresRestartableMemoryReads: memoryCallbackCount > 1,
       mayExitToInterpreter: memoryCallbackCount > 0
     )

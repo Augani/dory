@@ -179,6 +179,29 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     words.append(Self.encodeMove(destination: 2, source: 17, is64Bit: false))
   }
 
+  /// Calls the memory owner's ordering boundary and then applies the conservative completion
+  /// barrier used by the legacy emitter. The Darwin call can clobber every pinned caller-saved
+  /// GPR and NZCV, so all guest GPRs are checkpointed while the callee-saved lazy record survives.
+  func emitMemoryFence(_ kind: DoryX86MemoryFence, into words: inout [UInt32]) {
+    _ = kind
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      words.append(
+        Self.encodeStore64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    words.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
+    words.append(Self.encodeBranchWithLink(register: 23))
+    words.append(0xD503_3F9F)  // dsb sy
+    words.append(0xD503_3FDF)  // isb
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      words.append(
+        Self.encodeLoad64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+  }
+
   /// Exchanges two pinned qword registers without changing NZCV or lazy flags.
   func emitExchangeRegisters(
     lhsGuestRegister: Int,
