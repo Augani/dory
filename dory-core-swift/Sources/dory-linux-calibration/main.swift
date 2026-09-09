@@ -13,10 +13,16 @@ usage: dory-linux-calibration launch \\
        dory-linux-calibration exec --agent-socket PATH \\
   [--timeout-ms 30000] [--output-limit-bytes 1048576] -- ARGV...
 
+       dory-linux-calibration profile --agent-socket PATH --machine-id ID \\
+  --machine-directory PATH --console-socket PATH [--samples 5] \\
+  [--serial-timeout-ms 30000] [--exec-timeout-ms 30000] \\
+  [--output-limit-bytes 1048576] -- ARGV...
+
 The workroot must not exist. This command emits calibration evidence only; it cannot qualify or
 publish a release and never reads or mutates Dory's production support catalog. The exec command
 connects only to the supplied calibration guest-agent socket; timeout is capped at 600000 ms and
-each output stream is capped at 16777216 bytes.
+each output stream is capped at 16777216 bytes. The profile command additionally uses only the
+supplied private serial log/input endpoints and reports nearest-rank p50/p95 phase timings.
 """
 
 private func fail(_ message: String, status: Int32 = 2) -> Never {
@@ -119,15 +125,33 @@ private func runExec(_ arguments: [String]) {
     }
 }
 
+private func runProfile(_ arguments: [String]) {
+    let configuration: DoryLinuxVMCalibrationProfileConfiguration
+    do {
+        configuration = try DoryLinuxVMCalibrationProfile.parse(arguments: arguments)
+    } catch {
+        fail("\(error)")
+    }
+    do {
+        let receipt = try DoryLinuxVMCalibrationProfile.run(configuration)
+        let json = try DoryLinuxVMCalibrationProfile.canonicalJSON(for: receipt)
+        FileHandle.standardOutput.write(json + Data([0x0a]))
+    } catch {
+        fail("\(error)", status: 1)
+    }
+}
+
 private let arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else {
-    fail("expected the launch or exec command")
+    fail("expected the launch, exec, or profile command")
 }
 switch command {
 case "launch":
     runLaunch(Array(arguments.dropFirst()))
 case "exec":
     runExec(Array(arguments.dropFirst()))
+case "profile":
+    runProfile(Array(arguments.dropFirst()))
 default:
-    fail("expected the launch or exec command")
+    fail("expected the launch, exec, or profile command")
 }
