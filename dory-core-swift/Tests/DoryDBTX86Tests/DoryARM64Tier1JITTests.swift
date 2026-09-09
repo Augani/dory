@@ -480,6 +480,72 @@ import Testing
     #endif
   }
 
+  @Test func segmentReadsPreserveUpperBitsAndTheNativeConditionPath() throws {
+    #if arch(arm64)
+      let address: UInt64 = 0x4FC0
+      let bytes: [UInt8] = [
+        0x48, 0x39, 0xF7,  // cmp rdi,rsi
+        0x8C, 0xC0,  // mov ax,es
+        0x8C, 0xC9,  // mov cx,cs
+        0x8C, 0xD2,  // mov dx,ss
+        0x8C, 0xDB,  // mov bx,ds
+        0x41, 0x8C, 0xE0,  // mov r8w,fs
+        0x41, 0x8C, 0xE9,  // mov r9w,gs
+        0x75, 0x04,  // jne +4
+      ]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(
+          rax: 0xAAAA_AAAA_AAAA_AAAA,
+          rcx: 0xBBBB_BBBB_BBBB_BBBB,
+          rdx: 0xCCCC_CCCC_CCCC_CCCC,
+          rbx: 0xDDDD_DDDD_DDDD_DDDD,
+          rsi: 1,
+          rdi: 2,
+          r8: 0xEEEE_EEEE_EEEE_EEEE,
+          r9: 0xFFFF_FFFF_FFFF_FFFF
+        ),
+        rip: address,
+        rflags: [.reservedOne, .carry, .direction],
+        cs: .init(selector: 0x11, attributes: 0xA09B, limit: .max),
+        ds: .init(selector: 0x22),
+        es: .init(selector: 0x33),
+        fs: .init(selector: 0x44),
+        gs: .init(selector: 0x55),
+        ss: .init(selector: 0x66)
+      )
+      let memory = try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+      var interpreted = initial
+      for _ in 0..<8 {
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: memory,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire tier-1 segment-read fixture")
+          return
+        }
+      }
+
+      var tier1 = initial
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        tier1Enabled: true
+      )
+      let execution = try #require(executor.execute(
+        bytes: bytes,
+        at: address,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 8,
+        state: &tier1
+      ))
+      #expect(execution.block.tier == .tier1)
+      #expect(tier1 == interpreted)
+      #expect(tier1.rip == address + UInt64(bytes.count) + 4)
+      #expect(executor.diagnostics.lazyFlagMaterializations == 1)
+    #endif
+  }
+
   @Test func wordNotPreservesUpperBitsAndFlagsAcrossBaselineAndTier1() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x66, 0xF7, 0xD1]  // not cx

@@ -202,6 +202,45 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     }
   }
 
+  /// Copies a selector from the stable context into a word-sized pinned GPR destination. Selector
+  /// context words are canonical UInt16 values, so only the destination's low word is replaced.
+  func emitReadSegment(
+    _ segment: DoryX86SegmentRegister,
+    destinationGuestRegister: Int,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister) else { return false }
+    let selectorWord: DoryARM64Tier1ABI.ContextWord =
+      switch segment {
+      case .cs: .csSelector
+      case .ds: .dsSelector
+      case .es: .esSelector
+      case .fs: .fsSelector
+      case .gs: .gsSelector
+      case .ss: .ssSelector
+      }
+    let destination = UInt32(destinationGuestRegister)
+    words.append(Self.encodeLoad64(register: 16, word: selectorWord))
+    Self.emitImmediate(~UInt64(0xFFFF), register: 17, into: &words)
+    words.append(
+      Self.encodeLogical(
+        .and,
+        is64Bit: true,
+        left: destination,
+        right: 17,
+        destination: destination
+      ))
+    words.append(
+      Self.encodeLogical(
+        .or,
+        is64Bit: true,
+        left: destination,
+        right: 16,
+        destination: destination
+      ))
+    return true
+  }
+
   /// Exchanges two pinned qword registers without changing NZCV or lazy flags.
   func emitExchangeRegisters(
     lhsGuestRegister: Int,

@@ -282,6 +282,15 @@ struct DoryARM64Tier1Emitter: Sendable {
         alu.emitMemoryFence(kind, into: &body)
         nativeFlags = nil
 
+      case .readSegment(let segment, let destination):
+        guard let destination = lowRegister(destination), destination.width == .i16,
+          alu.emitReadSegment(
+            segment,
+            destinationGuestRegister: Int(destination.index),
+            into: &body
+          )
+        else { return nil }
+
       default:
         return nil
       }
