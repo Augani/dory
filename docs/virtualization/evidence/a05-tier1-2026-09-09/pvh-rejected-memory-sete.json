@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-rejected-memory-sete",
+  "observedAt": "2026-09-09T16:16:12Z",
+  "status": "rejected-engineering-evidence",
+  "qualification": "negative local production-admission evidence; not correctness, performance, hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "50953af61667f4f33356608516abb11d617fed00",
+    "withdrawalCommit": "817b2fca13e77fa6716e75960827b3a8fb39a05a",
+    "parentEvidenceCommit": "a3154f3d1e3e9caef1ad4a34c855c729d6fc65d1",
+    "candidateRunnerSHA256": "2231f6e12c247f5dd339fd3323306d5873ad9f1c8ea9840cf582c85456f9c272",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "candidateAdmission": {
+    "measuredSite": {
+      "guestRIP": "0xffffffff815cab95",
+      "symbol": "__free_one_page+0x95",
+      "guestByteCount": 5,
+      "instruction": "sete 0x23(%rsp)",
+      "bytes": "0f 94 44 24 23",
+      "priorNegativeCacheHits": 2388
+    },
+    "boundedRule": "The candidate admitted only the complete one-instruction, one-statement block at 0xffffffff815cab95 with the measured five-byte memory SETE operation.",
+    "implementation": "Materialize pending flags, stage the equality predicate, then perform one final transactional byte write; a failed write publishes neither architectural state nor memory.",
+    "withdrawal": "The exact production admission was reverted after the pinned full workload reproduced the NX init-text panic. The measured site remains deferred."
+  },
+  "verificationBeforeProduction": {
+    "focusedGate": "44 tests in DoryARM64Tier1JITTests passed",
+    "dbtAndPCGate": "1,442 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent",
+    "differentialCoverage": "True and false equality outcomes matched the interpreter at the measured high-canonical block; the same operation at an adjacent RIP declined.",
+    "rollbackCoverage": "A failed transactional byte write preserved the original architectural state and memory.",
+    "additionalDiagnostic": "A local CMP-to-branch-to-measured-SETE differential carried pending lazy flags through a chained boundary and also passed.",
+    "interpretation": "The passing local differentials were insufficient to establish safe production admission."
+  },
+  "rejectedFullRun": {
+    "runID": "465ab54c-8ecc-4745-96b8-8d527f5c2367",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 120402239458,
+    "retiredInstructions": 629367042,
+    "outcome": "guest-reset",
+    "exitCode": 1,
+    "guestReceiptSeen": false,
+    "workloadsPassed": false,
+    "consoleBytes": 20513,
+    "baselineJITInstructions": 627119530,
+    "interpreterInstructions": 2247512,
+    "deliveredMaskableInterrupts": 47583,
+    "retiredInterruptReturns": 134320,
+    "compiledBlocks": 119079,
+    "tier1CompilationAttempts": 140969,
+    "tier1CompilationDeclines": 79203,
+    "tier1CompiledBlocks": 61766,
+    "lazyFlagMaterializations": 53618021,
+    "nativeTraceAttempts": 450211,
+    "nativeTraceReplays": 306680,
+    "failure": {
+      "address": "0xffffffff830c96ac",
+      "type": "supervisor instruction fetch from an NX-protected init-text page",
+      "context": "A timer interrupt arrived while free_init_pages was reaching set_memory_nx; the fatal exception in interrupt reset the guest before it emitted an authenticated receipt.",
+      "signature": "The address and free_init_pages/set_memory_nx call path match the earlier rejected broad memory-ALU and byte-XOR production admissions."
+    }
+  },
+  "verificationAfterWithdrawal": {
+    "dbtAndPCGate": "1,441 tests in 171 suites passed after reverting the candidate; the pinned PVH environment test skipped because its environment variables were absent",
+    "knownGoodState": "The source tree again contains the bounded byte-XOR admission and no memory-SETcc tier-one admission."
+  },
+  "interpretation": "The exact-site memory SETE candidate passed focused and aggregate differentials but failed the pinned production workload with a repeatable NX init-text signature. This does not prove that memory SETcc is generally incorrect; it proves that this production admission remains unsafe or unexplained under the current transition and interrupt model. The implementation was withdrawn, the known-good aggregate gate is green, and the site remains deferred.",
+  "limitations": [
+    "The failure was observed in one local pinned-fixture production run, but its signature matches two earlier rejected admission experiments.",
+    "The raw diagnostic remains a local build artifact and is not committed because it includes host-local paths and a large console transcript.",
+    "No causal mechanism has yet been isolated between this exact admission and the later init-text execution fault.",
+    "This rejected record supports neither a correctness claim nor a performance comparison."
+  ]
+}
