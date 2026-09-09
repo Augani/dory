@@ -284,6 +284,139 @@ import Testing
     }
   }
 
+  @Test func highByteALUProducersMatchInterpreterAndPreserveSurroundingBits() throws {
+    #if arch(arm64)
+      let cases: [(DoryIRBinaryOperation, UInt8, Bool)] = [
+        (.add, 0x00, true), (.addWithCarry, 0x10, true),
+        (.or, 0x08, true), (.and, 0x20, true),
+        (.subtract, 0x28, true), (.subtractWithBorrow, 0x18, true),
+        (.xor, 0x30, true), (.compare, 0x38, false), (.test, 0x84, false),
+      ]
+      let values: [(UInt64, UInt64)] = [
+        (0, 0), (0x0100, 0x0100), (0x7F00, 0x0100),
+        (0xA5A5_A5A5_A5A5_8001, 0x5A5A_5A5A_5A5A_FF02),
+        (0x0123_4567_89AB_FFCD, 0xFEDC_BA98_7654_0110),
+      ]
+      let priorFlags: [DoryX86RFLAGS] = [
+        [.reservedOne, .direction, .overflow],
+        [.reservedOne, .carry, .direction, .overflow],
+      ]
+      let conditionDestination: UInt64 = 0xCAFE_BABE_DEAD_BE00
+
+      for (operation, opcode, writesDestination) in cases {
+        var words: [UInt32] = []
+        let boundary = DoryARM64Tier1BoundaryEmitter()
+        let alu = DoryARM64Tier1ALUEmitter()
+        boundary.emitEntry(into: &words)
+        let flags = try #require(
+          alu.emitHighByteBinary(
+            operation,
+            destinationLegacyRegister: 0,
+            source: .guestHighByte(1),
+            writesDestination: writesDestination,
+            into: &words
+          ))
+        let canFuse = operation != .addWithCarry && operation != .subtractWithBorrow
+        #expect(
+          alu.emitFusedSetCondition(
+            .equal, flags: flags, destinationGuestRegister: 2, into: &words) == canFuse)
+        if !canFuse {
+          #expect(
+            alu.emitMaterializedSetCondition(
+              .equal, destinationGuestRegister: 2, into: &words))
+        }
+        boundary.emitExit(.dispatch, into: &words)
+        let region = try executableRegion(words)
+
+        for prior in priorFlags {
+          for (destination, source) in values {
+            var context = makeContext(
+              rax: destination, rcx: source, rdx: conditionDestination,
+              rflags: prior)
+            #expect(try region.execute(at: 0, context: &context) == .dispatch)
+
+            var interpreted = try DoryX86ArchitecturalState(
+              registers: .init(rax: destination, rcx: source),
+              rip: 0x100,
+              rflags: prior
+            )
+            let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+            try memory.write(at: 0x100, bytes: [opcode, 0xEC])
+            guard
+              case .retired = DoryX86Interpreter().step(
+                state: &interpreted, memory: memory, mode: .long64)
+            else {
+              Issue.record("interpreter did not retire high-byte \(operation)")
+              continue
+            }
+
+            let lazy = try #require(DoryARM64LazyFlagsState(context: context))
+            #expect(lazy.materialize() == interpreted.rflags)
+            #expect(
+              context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
+                == interpreted.registers.rax)
+            #expect(context[DoryARM64Tier1ABI.ContextWord.rcx.rawValue] == source)
+            #expect(
+              context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
+                == conditionDestination
+                | (interpreted.rflags.contains(.zero) ? 1 : 0))
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func highByteUnaryProducersMatchInterpreter() throws {
+    #if arch(arm64)
+      let cases: [(DoryIRUnaryOperation, [UInt8])] = [
+        (.increment, [0xFE, 0xC4]),
+        (.decrement, [0xFE, 0xCC]),
+        (.negate, [0xF6, 0xDC]),
+      ]
+      let values: [UInt64] = [
+        0, 0x0100, 0x7F00, 0x8000, 0xFF00,
+        0xA5A5_A5A5_A5A5_80CD, 0x0123_4567_89AB_FF10,
+      ]
+      let priorFlags: [DoryX86RFLAGS] = [
+        [.reservedOne, .direction], [.reservedOne, .carry, .direction],
+      ]
+
+      for (operation, opcode) in cases {
+        var words: [UInt32] = []
+        let boundary = DoryARM64Tier1BoundaryEmitter()
+        boundary.emitEntry(into: &words)
+        _ = try #require(
+          DoryARM64Tier1ALUEmitter().emitHighByteUnary(
+            operation, destinationLegacyRegister: 0, into: &words))
+        boundary.emitExit(.dispatch, into: &words)
+        let region = try executableRegion(words)
+        for prior in priorFlags {
+          for value in values {
+            var context = makeContext(rax: value, rcx: 0, rdx: 0, rflags: prior)
+            #expect(try region.execute(at: 0, context: &context) == .dispatch)
+
+            var interpreted = try DoryX86ArchitecturalState(
+              registers: .init(rax: value), rip: 0x100, rflags: prior)
+            let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+            try memory.write(at: 0x100, bytes: opcode)
+            guard
+              case .retired = DoryX86Interpreter().step(
+                state: &interpreted, memory: memory, mode: .long64)
+            else {
+              Issue.record("interpreter did not retire high-byte \(operation)")
+              continue
+            }
+            let lazy = try #require(DoryARM64LazyFlagsState(context: context))
+            #expect(lazy.materialize() == interpreted.rflags)
+            #expect(
+              context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
+                == interpreted.registers.rax)
+          }
+        }
+      }
+    #endif
+  }
+
   @Test func shiftAndRotateProducersMatchInterpreterAcrossWidthsAndCounts() throws {
     #if arch(arm64)
       let operations: [(DoryIRShiftOperation, UInt8)] = [

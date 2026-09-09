@@ -17,6 +17,11 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     case immediate(UInt64)
   }
 
+  enum HighByteSource: Sendable, Equatable {
+    case guestHighByte(Int)
+    case immediate(UInt8)
+  }
+
   struct NativeFlags: Sendable, Equatable {
     enum Origin: Sendable, Equatable {
       case binary(DoryIRBinaryOperation)
@@ -189,6 +194,142 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return .init(origin: .binary(operation), width: width, domain: domain)
   }
 
+  /// Emits an 8-bit binary producer targeting AH/CH/DH/BH without touching surrounding bits.
+  func emitHighByteBinary(
+    _ operation: DoryIRBinaryOperation,
+    destinationLegacyRegister: Int,
+    source: HighByteSource,
+    writesDestination: Bool,
+    into words: inout [UInt32]
+  ) -> NativeFlags? {
+    guard (0..<4).contains(destinationLegacyRegister),
+      Self.validWriteMode(operation: operation, writesDestination: writesDestination)
+    else { return nil }
+    if case .guestHighByte(let sourceRegister) = source {
+      guard (0..<4).contains(sourceRegister) else { return nil }
+    }
+
+    let lazyOperation: DoryARM64LazyFlagsState.Operation
+    let domain: NativeFlags.Domain
+    switch operation {
+    case .add:
+      lazyOperation = .add
+      domain = .addition
+    case .addWithCarry:
+      lazyOperation = .addWithCarry
+      domain = .materializedOnly
+    case .subtract, .compare:
+      lazyOperation = .subtract
+      domain = .subtraction
+    case .subtractWithBorrow:
+      lazyOperation = .subtractWithBorrow
+      domain = .materializedOnly
+    case .and, .test, .or, .xor:
+      lazyOperation = .logical
+      domain = .logical
+    }
+
+    var fragment: [UInt32] = []
+    let destination = UInt32(destinationLegacyRegister)
+    if operation == .addWithCarry || operation == .subtractWithBorrow {
+      Self.emitCarryFromMaterializedFlags(
+        inverted: operation == .subtractWithBorrow, into: &fragment)
+    }
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 31, right: destination,
+        shiftAmount: 8, logicalRightShift: true, destination: 16))
+    Self.emitImmediate(0xFF, register: 17, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .and, is64Bit: true, left: 16, right: 17, destination: 16))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+
+    switch source {
+    case .guestHighByte(let sourceRegister):
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: true, left: 31, right: UInt32(sourceRegister),
+          shiftAmount: 8, logicalRightShift: true, destination: 17))
+      Self.emitImmediate(0xFF, register: 26, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: 17, right: 26, destination: 17))
+    case .immediate(let value):
+      Self.emitImmediate(UInt64(value), register: 17, into: &fragment)
+    }
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+    let alignsFlags = operation != .addWithCarry && operation != .subtractWithBorrow
+    if alignsFlags {
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: false, left: 31, right: 16, shiftAmount: 24, destination: 16))
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: false, left: 31, right: 17, shiftAmount: 24, destination: 17))
+    }
+
+    switch operation {
+    case .add:
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: true, is64Bit: false, left: 16, right: 17, destination: 16))
+    case .addWithCarry:
+      fragment.append(
+        Self.encodeAddSubtractCarrySetFlags(
+          add: true, is64Bit: false, left: 16, right: 17, destination: 16))
+    case .subtract, .compare:
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: false, is64Bit: false, left: 16, right: 17, destination: 16))
+    case .subtractWithBorrow:
+      fragment.append(
+        Self.encodeAddSubtractCarrySetFlags(
+          add: false, is64Bit: false, left: 16, right: 17, destination: 16))
+    case .and, .test:
+      fragment.append(
+        Self.encodeLogical(
+          .andSetFlags, is64Bit: false, left: 16, right: 17, destination: 16))
+    case .or, .xor:
+      fragment.append(
+        Self.encodeLogical(
+          operation == .or ? .or : .xor, is64Bit: false,
+          left: 16, right: 17, destination: 16))
+      fragment.append(
+        Self.encodeLogical(
+          .andSetFlags, is64Bit: false, left: 16, right: 16, destination: 31))
+    }
+
+    if alignsFlags {
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: false, left: 31, right: 16,
+          shiftAmount: 24, logicalRightShift: true, destination: 16))
+    } else {
+      Self.emitImmediate(0xFF, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: 16, right: 17, destination: 16))
+    }
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
+    if writesDestination {
+      Self.emitImmediate(~UInt64(0xFF00), register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: destination, right: 17, destination: destination))
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: true, left: destination, right: 16,
+          shiftAmount: 8, destination: destination))
+    }
+    Self.emitImmediate(UInt64(DoryIRIntegerWidth.i8.rawValue), register: 17, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
+    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
+    words.append(contentsOf: fragment)
+    return .init(origin: .binary(operation), width: .i8, domain: domain)
+  }
+
   /// Emits INC/DEC/NEG for a pinned register. INC and DEC consume the carry bit from the last
   /// materialized RFLAGS image and preserve it through the pending record; callers must first
   /// materialize an older pending operation.
@@ -280,6 +421,79 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
     words.append(contentsOf: fragment)
     return .init(origin: .unary(operation), width: width, domain: domain)
+  }
+
+  /// Emits INC/DEC/NEG against AH/CH/DH/BH while preserving all non-target bits.
+  func emitHighByteUnary(
+    _ operation: DoryIRUnaryOperation,
+    destinationLegacyRegister: Int,
+    into words: inout [UInt32]
+  ) -> NativeFlags? {
+    guard operation != .bitwiseNot, (0..<4).contains(destinationLegacyRegister)
+    else { return nil }
+    var fragment: [UInt32] = []
+    let destination = UInt32(destinationLegacyRegister)
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 31, right: destination,
+        shiftAmount: 8, logicalRightShift: true, destination: 16))
+    Self.emitImmediate(0xFF, register: 17, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .and, is64Bit: true, left: 16, right: 17, destination: 16))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    Self.emitImmediate(operation == .negate ? 0 : 1, register: 17, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: false, left: 31, right: 16, shiftAmount: 24, destination: 16))
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: false, left: 31, right: 17, shiftAmount: 24, destination: 17))
+
+    let lazyOperation: DoryARM64LazyFlagsState.Operation
+    let domain: NativeFlags.Domain
+    switch operation {
+    case .increment:
+      lazyOperation = .increment
+      domain = .carryPreserving
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: true, is64Bit: false, left: 16, right: 17, destination: 16))
+    case .decrement:
+      lazyOperation = .decrement
+      domain = .carryPreserving
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: false, is64Bit: false, left: 16, right: 17, destination: 16))
+    case .negate:
+      lazyOperation = .negate
+      domain = .subtraction
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: false, is64Bit: false, left: 31, right: 16, destination: 16))
+    case .bitwiseNot:
+      return nil
+    }
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: false, left: 31, right: 16,
+        shiftAmount: 24, logicalRightShift: true, destination: 16))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
+    Self.emitImmediate(~UInt64(0xFF00), register: 17, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .and, is64Bit: true, left: destination, right: 17, destination: destination))
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: destination, right: 16,
+        shiftAmount: 8, destination: destination))
+    Self.emitImmediate(UInt64(DoryIRIntegerWidth.i8.rawValue), register: 17, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
+    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
+    words.append(contentsOf: fragment)
+    return .init(origin: .unary(operation), width: .i8, domain: domain)
   }
 
   /// Emits SHL/SHR/SAR/ROL/ROR with either an immediate or pinned CL count.

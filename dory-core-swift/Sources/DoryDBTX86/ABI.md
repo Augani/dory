@@ -86,6 +86,9 @@ producer stores its complete lazy record at words 43...47 while leaving ARM
 NZCV live. A returned `NativeFlags` token may be used only by an immediately
 adjacent fused consumer. ADC/SBB and carry-preserving INC/DEC require any older
 pending record to be materialized before emission so `x25.CF` is current.
+AH/CH/DH/BH binary and unary forms use the same aligned flag lowering and merge
+only bits 8...15 of their legacy parent register; they are unavailable when REX
+encoding would suppress the high-byte namespace.
 
 SHL/SHR/SAR/ROL/ROR/RCL/RCR producers accept immediate or pinned-CL counts at every
 architectural width. They resolve older lazy flags before a nonzero operation,
