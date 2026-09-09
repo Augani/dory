@@ -231,6 +231,30 @@ import Testing
     #endif
   }
 
+  @Test func baselineMachineCanDisableTier1ForMatchedMeasurement() throws {
+    #if arch(arm64)
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        executionTier: .baselineJIT,
+        baselineJITMaximumCodeBytes: 16 * 1024,
+        baselineJITTier1Enabled: false
+      )
+      // mov eax,1; add eax,2; jmp $
+      try machine.load(
+        kernel: makeELF(code: [0xB8, 1, 0, 0, 0, 0x83, 0xC0, 2, 0xEB, 0xFE]),
+        commandLine: "x"
+      )
+
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 6) == .instructionBudget(6))
+      #expect(machine.state?.registers.rax == 3)
+      let diagnostics = try #require(machine.baselineJITDiagnostics)
+      #expect(diagnostics.compiledBlocks == 2)
+      #expect(diagnostics.tier1CompilationAttempts == 0)
+      #expect(diagnostics.tier1CompilationDeclines == 0)
+      #expect(diagnostics.tier1CompiledBlocks == 0)
+    #endif
+  }
+
   @Test func soleRunnableJITProcessorUsesTheAdaptive4096InstructionQuantum() throws {
     #if arch(arm64)
       for (budget, expectedCalls) in [(4_095, UInt64(1)), (4_096, 1), (4_097, 2)] {

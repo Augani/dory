@@ -112,6 +112,7 @@ private struct Arguments {
   let variableStoreDirectory: URL?
   let exceptionPolicy: DoryPCExceptionPolicy
   let executionTier: DoryPCExecutionTier
+  let baselineJITTier1Enabled: Bool
   let expectedSerialMarker: String?
   let bootProbe: Bool
   let bootTimelineEnabled: Bool
@@ -137,6 +138,7 @@ private struct Arguments {
           "--processor-count",
           "--system-disk", "--installer-media", "--variable-store-directory",
           "--exception-policy", "--execution-tier", "--progress-instructions",
+          "--baseline-tier1",
           "--expected-serial-marker",
           "--boot-probe", "--clock-source", "--boot-timeline",
           "--instrumentation",
@@ -156,6 +158,7 @@ private struct Arguments {
           + "[--variable-store-directory /absolute/directory] "
           + "[--processor-count count] [--exception-policy stop|deliver] "
           + "[--execution-tier interpreter|baseline-jit|optimizing-jit] "
+          + "[--baseline-tier1 enabled|disabled] "
           + "[--expected-serial-marker text] "
           + "[--boot-probe enabled|disabled] [--clock-source host-monotonic|deterministic] "
           + "[--initial-rtc-unix-seconds seconds] [--boot-timeline enabled|disabled] "
@@ -237,6 +240,11 @@ private struct Arguments {
     case "baseline-jit": executionTier = .baselineJIT
     case "optimizing-jit": executionTier = .optimizingJIT
     default: throw SmokeError.usage("invalid execution tier: \(tierText)")
+    }
+    switch options["--baseline-tier1"] ?? "enabled" {
+    case "enabled": baselineJITTier1Enabled = true
+    case "disabled": baselineJITTier1Enabled = false
+    default: throw SmokeError.usage("--baseline-tier1 must be enabled or disabled")
     }
     if let marker = options["--expected-serial-marker"], marker.isEmpty {
       throw SmokeError.usage("expected serial marker must not be empty")
@@ -882,6 +890,7 @@ private func run() throws {
     firmwareConfigurationFlags: arguments.bootProbe ? [.qualificationBootProbe] : [],
     displaySink: displaySink,
     executionTier: arguments.executionTier,
+    baselineJITTier1Enabled: arguments.baselineJITTier1Enabled,
     clockSource: arguments.clockSource,
     instrumentationEnabled: arguments.instrumentationEnabled
   )
@@ -1021,6 +1030,7 @@ private func run() throws {
     "maximumInstructions": arguments.maximumInstructions,
     "executionTimeoutSeconds": arguments.timeoutSeconds,
     "executionElapsedNanoseconds": executionElapsed,
+    "baselineJITTier1Enabled": arguments.baselineJITTier1Enabled,
     "instrumentationEnabled": arguments.instrumentationEnabled,
     "timedOut": timedOut,
     "progressInstructions": arguments.progressInstructions,

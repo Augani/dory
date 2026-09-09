@@ -64,6 +64,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     interpreter: DoryX86Interpreter = .init(),
     executionTier: DoryPCExecutionTier = .interpreter,
     baselineJITMaximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
+    baselineJITTier1Enabled: Bool = true,
     clockSource: DoryPCClockSource = .hostMonotonic,
     instrumentationEnabled: Bool = false
   ) throws {
@@ -187,6 +188,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
       interpreter: interpreter,
       executionTier: executionTier,
       baselineJITMaximumCodeBytes: baselineJITMaximumCodeBytes,
+      baselineJITTier1Enabled: baselineJITTier1Enabled,
       clockSource: clockSource,
       instrumentationEnabled: instrumentationEnabled
     )
