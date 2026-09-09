@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-rcx-memory-setne",
+  "observedAt": "2026-09-09T23:40:51Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "4a2f11654cfb706f6a0e1602eefcf4a70b2da9ac",
+    "candidateRunnerSHA256": "97d899aa83056548feb2195e931dcb4a4b6a905ba1ee5a5808ab0374f2c2d26a",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "guestRIP": "0xffffffff812df1e6",
+    "symbol": "lookup_address_in_pgd_attr+0x66",
+    "guestByteCount": 3,
+    "guestInstructionCount": 1,
+    "instructionBytes": [
+      15,
+      149,
+      1
+    ],
+    "instruction": "setne (%rcx)",
+    "lowering": "The exact site reuses the production-qualified memory-SETcc emitter, which materializes the incoming flags before a final transactional byte write.",
+    "boundedRule": "The measured RIP, complete three-byte single instruction, SETNE condition, byte width, RCX base, and 64-bit address width must all match. An adjacent RIP or changed base declines.",
+    "priorNegativeCacheHits": 11649,
+    "remainsInCandidateRunNegativeCache": false
+  },
+  "verification": {
+    "focusedGate": "The expanded exact memory-SETNE matrix passes its tier-one differential and negative-admission checks.",
+    "dbtPCAndRunnerGate": "1,497 tests in 175 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Both zero-flag outcomes match the interpreter for complete state and memory using the RCX address base.",
+    "faultCoverage": "The shared memory-SETcc matrix retains transactional final-write rollback coverage.",
+    "negativeCoverage": "An adjacent RIP and the same operation with an RBX base both decline tier one.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "2eeff402-3a9d-492f-ba39-da3fc7b61588",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 135829677500,
+    "retiredInstructions": 734252699,
+    "throughputMIPS": 5.40568683158362,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731908390,
+    "interpreterInstructions": 2344309,
+    "deliveredMaskableInterrupts": 58018,
+    "retiredInterruptReturns": 146242,
+    "compiledBlocks": 185867,
+    "tier1CompilationAttempts": 218899,
+    "tier1CompilationDeclines": 116908,
+    "tier1DeclinePercentOfAttempts": 53.40727915614051,
+    "tier1CompiledBlocks": 101991,
+    "lazyFlagMaterializations": 54754394,
+    "translationCacheInvalidations": 240167
+  },
+  "unmatchedPriorRunComparison": {
+    "wordMemoryORElapsedNanoseconds": 141778091083,
+    "rcxMemorySETNEElapsedNanoseconds": 135829677500,
+    "directionalElapsedDecreasePercent": 4.195580246257983,
+    "tier1AttemptIncrease": 1479,
+    "tier1DeclineIncrease": 370,
+    "tier1CompiledBlockIncrease": 1109,
+    "interpreterInstructionDecrease": 7583,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. Exact-site absence establishes production use; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleSites": [
+    {
+      "guestRIP": "0xffffffff81e1c104",
+      "symbol": "__radix_tree_delete+0xb4",
+      "instructionBytes": [
+        72,
+        15,
+        163,
+        152,
+        40,
+        2,
+        0,
+        0
+      ],
+      "instruction": "btq %rbx,0x228(%rax); jae -37",
+      "guestByteCount": 10,
+      "hitCount": 3124,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff810000a0",
+      "instructionBytes": [
+        15,
+        34,
+        220
+      ],
+      "instruction": "movq %rsp,%cr3",
+      "hitCount": 1993,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff815e351d",
+      "instructionBytes": [
+        243,
+        72,
+        171
+      ],
+      "instruction": "rep stosq",
+      "hitCount": 9100,
+      "declineReason": "interpreterHelper"
+    }
+  ],
+  "interpretation": "The exact 11,649-hit RCX memory-SETNE site is absent from the candidate's capped live negative-cache sample. A05.2 remains open because 116,908 of 218,899 tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
