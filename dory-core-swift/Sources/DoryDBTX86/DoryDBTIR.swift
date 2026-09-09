@@ -116,6 +116,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case doubleShiftRightCL(destination: DoryIROperand, source: DoryIROperand)
   case doubleShiftRightImmediate(destination: DoryIROperand, source: DoryIROperand, count: UInt8)
   case compareExchange(destination: DoryIROperand, source: DoryIROperand)
+  case compareExchangePair(destination: DoryIROperand, doubleQuadword: Bool)
   case exchangeMemory(destination: DoryIROperand, source: DoryIRRegister)
   case exchangeAddMemory(destination: DoryIROperand, source: DoryIRRegister)
   case exchangeRegisters(lhs: DoryIRRegister, rhs: DoryIRRegister)
@@ -657,6 +658,19 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .compareExchangePair(let destination, let doubleQuadword) where mode == .long64:
+      return (
+        [
+          .compareExchangePair(
+            destination: operand(
+              .memory(destination),
+              instructionRelativeBase: instruction.nextInstructionAddress
+            ),
+            doubleQuadword: doubleQuadword
+          )
+        ],
+        nil
+      )
     case .extendMove(let destination, let source, let signed):
       return (
         [
@@ -733,6 +747,7 @@ public struct DoryX86IRTranslator: Sendable {
 
   private func supportsNativeLockPrefix(_ operation: DoryX86InstructionOperation) -> Bool {
     if case .compareExchange = operation { return true }
+    if case .compareExchangePair = operation { return true }
     if case .exchangeAdd = operation { return true }
     if case .alu(let operation, let destination, _) = operation,
       [.add, .addWithCarry, .subtract, .subtractWithBorrow, .and, .or, .xor]
@@ -1076,6 +1091,9 @@ public struct DoryX86IRTranslator: Sendable {
         register.width == width && isJITGeneralRegister(register)
       else { return false }
       return true
+    case .compareExchangePair(let destination, let doubleQuadword):
+      guard case .memory(let address, let width) = destination else { return false }
+      return width == (doubleQuadword ? .i64 : .i32) && isJITMemoryAddress(address)
     case .readSegment(_, let destination):
       switch destination {
       case .register(let register):
@@ -1168,6 +1186,8 @@ public struct DoryX86IRTranslator: Sendable {
       if isMemory(destination) { return .write }
       return isMemory(source) ? .read : .none
     case .compareExchange:
+      return .write
+    case .compareExchangePair:
       return .write
     case .exchangeMemory, .exchangeAddMemory:
       return .write

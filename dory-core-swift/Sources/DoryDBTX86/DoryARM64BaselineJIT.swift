@@ -88,6 +88,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let atomicExchangeOffset = 39 * 8
   private static let atomicFetchAddOffset = 40 * 8
   private static let atomicRMWOffset = 41 * 8
+  private static let atomicCompareExchangePairOffset = 42 * 8
   private static let rspOffset = 4 * 8
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
@@ -228,6 +229,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination) || isFSOrGS(source)
       case .compareExchange(let destination, let source):
         return isFSOrGS(destination) || isFSOrGS(source)
+      case .compareExchangePair(let destination, _):
+        return isFSOrGS(destination)
       case .exchangeMemory(let destination, _):
         return isFSOrGS(destination)
       case .exchangeAddMemory(let destination, _):
@@ -249,6 +252,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       .unary(_, .memory),
       .atomicUnary(_, .memory),
       .shift(_, .memory, _), .stackPush, .stackPushFlags, .compareExchange(.memory, _),
+      .compareExchangePair(.memory, _),
       .exchangeMemory(.memory, _), .exchangeAddMemory(.memory, _),
       .atomicBitTestMemory(_, .memory, _): true
     case .bitTestMemoryImmediate(let operation, .memory, _): operation != .test
@@ -360,6 +364,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
         destination: destination, source: source, immediateCount: count, into: &words)
     case .compareExchange(let destination, let source):
       return emitCompareExchange(destination: destination, source: source, into: &words)
+    case .compareExchangePair(let destination, let doubleQuadword):
+      return emitCompareExchangePair(
+        destination: destination,
+        doubleQuadword: doubleQuadword,
+        into: &words
+      )
     case .exchangeMemory(let destination, let source):
       return emitExchangeMemory(destination: destination, source: source, into: &words)
     case .exchangeAddMemory(let destination, let source):
@@ -955,7 +965,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .extendMove(_, let source, _):
       if case .memory = source { return 1 }
       return 0
-    case .compareExchange, .exchangeMemory, .exchangeAddMemory, .memoryFence:
+    case .compareExchange, .compareExchangePair, .exchangeMemory, .exchangeAddMemory,
+      .memoryFence:
       return 1
     case .readSegment(_, let destination):
       if case .memory = destination { return 1 }
@@ -2185,6 +2196,83 @@ public struct DoryARM64BaselineEmitter: Sendable {
         condition: .equal
       ))
     words.append(encodeStore64(register: 11, base: 0, byteOffset: 0))
+    return true
+  }
+
+  private func emitCompareExchangePair(
+    destination: DoryIROperand,
+    doubleQuadword: Bool,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard case .memory(let address, let width) = destination,
+      width == (doubleQuadword ? .i64 : .i32),
+      emitMemoryAddress(address, into: 13, words: &words)
+    else { return false }
+    words.append(doubleQuadword
+      ? encodeLoad64(register: 9, base: 0, byteOffset: 0)
+      : encodeLoad32(register: 9, base: 0, byteOffset: 0))   // RAX/EAX: expected low
+    words.append(doubleQuadword
+      ? encodeLoad64(register: 10, base: 0, byteOffset: 16)
+      : encodeLoad32(register: 10, base: 0, byteOffset: 16)) // RDX/EDX: expected high
+    words.append(doubleQuadword
+      ? encodeLoad64(register: 11, base: 0, byteOffset: 24)
+      : encodeLoad32(register: 11, base: 0, byteOffset: 24)) // RBX/EBX: desired low
+    words.append(doubleQuadword
+      ? encodeLoad64(register: 12, base: 0, byteOffset: 8)
+      : encodeLoad32(register: 12, base: 0, byteOffset: 8))  // RCX/ECX: desired high
+    words.append(encodeStore64(register: 9, base: 31, byteOffset: 64))
+    words.append(encodeStore64(register: 10, base: 31, byteOffset: 72))
+    words.append(encodeStore64(register: 11, base: 31, byteOffset: 80))
+    words.append(encodeStore64(register: 12, base: 31, byteOffset: 88))
+
+    words.append(
+      encodeLoad64(register: 16, base: 19, byteOffset: Self.atomicCompareExchangePairOffset))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 31, 31))
+    emitInterpreterUnless(condition: .notEqual, usesMemory: true, into: &words)
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    words.append(encodeLogical(.or, left: 31, right: 20, destination: 1))
+    words.append(encodeLogical(.or, left: 31, right: 13, destination: 2))
+    words.append(encodeMoveWideZero32(register: 3, immediate: doubleQuadword ? 16 : 8))
+    words.append(encodeAddImmediate64(left: 31, immediate: 64, destination: 4))
+    words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C translated pair compare-exchange)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
+    emitInterpreterUnless(condition: .equal, usesMemory: true, into: &words)
+
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    words.append(encodeLoad64(register: 9, base: 31, byteOffset: 64))
+    words.append(encodeLoad64(register: 10, base: 31, byteOffset: 72))
+    words.append(encodeLoad64(register: 11, base: 31, byteOffset: 96))
+    words.append(encodeLoad64(register: 12, base: 31, byteOffset: 104))
+    words.append(encodeLogical(.xor, left: 9, right: 11, destination: 13))
+    words.append(encodeLogical(.xor, left: 10, right: 12, destination: 14))
+    words.append(encodeLogical(.or, left: 13, right: 14, destination: 13))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 13, 31, 31))
+
+    words.append(encodeLoad64(register: 14, base: 0, byteOffset: 0))
+    words.append(encodeConditionalSelect(
+      destination: 9,
+      trueRegister: 14,
+      falseRegister: 11,
+      condition: .equal
+    ))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: 0))
+    words.append(encodeLoad64(register: 14, base: 0, byteOffset: 16))
+    words.append(encodeConditionalSelect(
+      destination: 10,
+      trueRegister: 14,
+      falseRegister: 12,
+      condition: .equal
+    ))
+    words.append(encodeStore64(register: 10, base: 0, byteOffset: 16))
+
+    words.append(encodeConditionalSet(register: 13, condition: .equal))
+    words.append(encodeLoad64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
+    emitImmediate(~DoryX86RFLAGS.zero.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.or, left: 14, right: 13, shiftAmount: 6, destination: 14))
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.or, left: 14, right: 15, destination: 14))
+    words.append(encodeStore64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
     return true
   }
 
@@ -3983,7 +4071,8 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
   public static let atomicExchangeWordIndex = 39
   public static let atomicFetchAddWordIndex = 40
   public static let atomicRMWWordIndex = 41
-  public static let contextWordCount = 42
+  public static let atomicCompareExchangePairWordIndex = 42
+  public static let contextWordCount = 43
 
   private let lock = NSLock()
   private let region: OpaquePointer
@@ -5311,13 +5400,19 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       // fetch, distinguishing a missing page from an invalid instruction.
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
-    // CMOV is the feature-dependent integer operation currently emitted natively.
-    // Reject before optimization can erase it and before any block prefix executes.
-    // The immutable profile applies to every resident/shared/trace cache in this
-    // executor, so a masked profile cannot reuse code compiled with CMOV enabled.
+    // Reject feature-dependent integer operations before optimization can erase them
+    // and before any block prefix executes. The immutable profile applies to every
+    // resident/shared/trace cache in this executor, so a masked profile cannot reuse
+    // code compiled with the corresponding feature enabled.
     if !profile.supports(.cmov), translated.statements.contains(where: {
       if case .conditionalMove = $0 { return true }
       return false
+    }) {
+      return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
+    }
+    if translated.statements.contains(where: {
+      guard case .compareExchangePair(_, let doubleQuadword) = $0 else { return false }
+      return !profile.supports(doubleQuadword ? .cmpxchg16b : .cmpxchg8b)
     }) {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
@@ -5355,8 +5450,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }
     if key.privilegeLevel != 0,
       block.statements.contains(where: {
-        if case .compareExchange = $0 { return true }
-        return false
+        switch $0 {
+        case .compareExchange, .compareExchangePair: return true
+        default: return false
+        }
       })
     {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
@@ -5824,6 +5921,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       translationTLB == nil ? 0 : UInt64(dory_jit_atomic_fetch_add_from_context_address())
     context[DoryJITExecutableRegion.atomicRMWWordIndex] =
       translationTLB == nil ? 0 : UInt64(dory_jit_atomic_rmw_from_context_address())
+    context[DoryJITExecutableRegion.atomicCompareExchangePairWordIndex] =
+      translationTLB == nil
+      ? 0 : UInt64(dory_jit_atomic_compare_exchange_pair_from_context_address())
   }
 
   private static func apply(

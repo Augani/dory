@@ -3889,6 +3889,134 @@ import Testing
     #endif
   }
 
+  @Test func alignedCompareExchangePairsMatchInterpreterAcrossWidthsOutcomesAndTiers() throws {
+    #if arch(arm64)
+      let instructionAddress: UInt64 = 0x3E80
+      let memoryAddress: UInt64 = 0x100
+      for doubleQuadword in [false, true] {
+        let byteCount = doubleQuadword ? 16 : 8
+        let memoryLow: UInt64 = doubleQuadword ? 0x1122_3344_5566_7788 : 0x5566_7788
+        let memoryHigh: UInt64 = doubleQuadword ? 0x99AA_BBCC_DDEE_FF00 : 0xDDEE_FF00
+        for matches in [false, true] {
+          for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+            let bytes = [UInt8(0xF0)] + (doubleQuadword ? [0x48] : [])
+              + [0x0F, 0xC7, 0x0F]
+            let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: Int(getpagesize()))
+            let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+            let paging = DoryX86PagingUnit()
+            let expectedRAX = matches
+              ? (doubleQuadword ? memoryLow : 0xAAAA_BBBB_0000_0000 | memoryLow)
+              : memoryLow ^ 1
+            let expectedRDX = doubleQuadword
+              ? memoryHigh
+              : 0xCCCC_DDDD_0000_0000 | memoryHigh
+            let initial = try DoryX86ArchitecturalState(
+              registers: .init(
+                rax: expectedRAX,
+                rcx: 0x0123_4567_89AB_CDEF,
+                rdx: expectedRDX,
+                rbx: 0xFEDC_BA98_7654_3210,
+                rdi: memoryAddress
+              ),
+              rip: instructionAddress,
+              rflags: [.reservedOne, .carry, .parity, .zero, .sign, .direction, .overflow]
+            )
+            var expected = initial
+            var state = initial
+            try interpretedMemory.write(at: instructionAddress, bytes: bytes)
+            try interpretedMemory.writeScalar(
+              at: memoryAddress,
+              value: doubleQuadword ? memoryLow : memoryLow | memoryHigh << 32,
+              byteCount: 8
+            )
+            try physical.writeScalar(
+              at: memoryAddress,
+              value: doubleQuadword ? memoryLow : memoryLow | memoryHigh << 32,
+              byteCount: 8
+            )
+            if doubleQuadword {
+              try interpretedMemory.writeScalar(
+                at: memoryAddress + 8, value: memoryHigh, byteCount: 8)
+              try physical.writeScalar(at: memoryAddress + 8, value: memoryHigh, byteCount: 8)
+            }
+            _ = DoryX86Interpreter().step(
+              state: &expected,
+              memory: interpretedMemory,
+              mode: .long64
+            )
+            let execution = try #require(DoryARM64BaselineExecutor(
+              maximumCodeBytes: 4_096,
+              optimization: optimization
+            ).execute(
+              bytes: bytes,
+              at: instructionAddress,
+              mode: .long64,
+              addressSpaceID: UInt64(400 + byteCount + (matches ? 1 : 0)),
+              maximumInstructions: 1,
+              state: &state,
+              memory: DoryX86TranslatedMemory(
+                physicalMemory: physical,
+                pagingUnit: paging,
+                context: .init(state: state, mode: .long64)
+              )
+            ))
+
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(state == expected)
+            #expect(
+              try physical.read(at: memoryAddress, byteCount: byteCount)
+                == interpretedMemory.read(at: memoryAddress, byteCount: byteCount)
+            )
+            #expect(paging.diagnostics.translationRequests == 1)
+            #expect(state.rflags.contains(.zero) == matches)
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func unalignedCompareExchangePairsDeclineWithoutEffects() throws {
+    #if arch(arm64)
+      for doubleQuadword in [false, true] {
+        let bytes = [UInt8(0xF0)] + (doubleQuadword ? [0x48] : [])
+          + [0x0F, 0xC7, 0x0F]
+        let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+        try physical.writeScalar(at: 0x101, value: 0x1122_3344_5566_7788, byteCount: 8)
+        if doubleQuadword {
+          try physical.writeScalar(at: 0x109, value: 0x99AA_BBCC_DDEE_FF00, byteCount: 8)
+        }
+        let before = try physical.read(at: 0x101, byteCount: doubleQuadword ? 16 : 8)
+        let paging = DoryX86PagingUnit()
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(rax: 1, rcx: 2, rdx: 3, rbx: 4, rdi: 0x101),
+          rip: 0x3F00,
+          rflags: [.reservedOne, .zero, .direction]
+        )
+        var state = initial
+        let execution = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4_096
+        ).execute(
+          bytes: bytes,
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: UInt64(450 + (doubleQuadword ? 1 : 0)),
+          maximumInstructions: 1,
+          state: &state,
+          memory: DoryX86TranslatedMemory(
+            physicalMemory: physical,
+            pagingUnit: paging,
+            context: .init(state: state, mode: .long64)
+          )
+        ))
+
+        #expect(execution.exitCode == .interpreter)
+        #expect(state == initial)
+        #expect(try physical.read(at: 0x101, byteCount: before.count) == before)
+        #expect(paging.diagnostics.translationRequests == 1)
+      }
+    #endif
+  }
+
   @Test func lockedCompareExchangeDeclinesBeforeUnsupportedMemoryOrPrivilegeSideEffects() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0xF0, 0x0F, 0xB1, 0x17]
@@ -7105,6 +7233,7 @@ import Testing
     #expect(words[DoryJITExecutableRegion.atomicExchangeWordIndex] != 0)
     #expect(words[DoryJITExecutableRegion.atomicFetchAddWordIndex] != 0)
     #expect(words[DoryJITExecutableRegion.atomicRMWWordIndex] != 0)
+    #expect(words[DoryJITExecutableRegion.atomicCompareExchangePairWordIndex] != 0)
 
     words.withUnsafeMutableBufferPointer { context in
       DoryARM64BaselineExecutor.populateExecutionContext(
@@ -7127,6 +7256,7 @@ import Testing
     #expect(words[DoryJITExecutableRegion.atomicExchangeWordIndex] == 0)
     #expect(words[DoryJITExecutableRegion.atomicFetchAddWordIndex] == 0)
     #expect(words[DoryJITExecutableRegion.atomicRMWWordIndex] == 0)
+    #expect(words[DoryJITExecutableRegion.atomicCompareExchangePairWordIndex] == 0)
   }
 
   @Test func executorAdvancesTLBGenerationAndScopesPageInvalidation() throws {

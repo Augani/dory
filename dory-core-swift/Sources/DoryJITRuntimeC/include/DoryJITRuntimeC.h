@@ -46,6 +46,14 @@ typedef enum dory_jit_atomic_rmw_operation {
     DORY_JIT_ATOMIC_RMW_XOR = 4,
     DORY_JIT_ATOMIC_RMW_NEGATE = 5,
 } dory_jit_atomic_rmw_operation;
+typedef struct dory_jit_atomic_pair_values {
+    uint64_t expected_low;
+    uint64_t expected_high;
+    uint64_t desired_low;
+    uint64_t desired_high;
+    uint64_t observed_low;
+    uint64_t observed_high;
+} dory_jit_atomic_pair_values;
 typedef uint64_t (*dory_jit_memory_read_function)(
     void *memory_context,
     uint64_t address,
@@ -176,6 +184,14 @@ int dory_jit_atomic_rmw_from_context(
     uint64_t *observed_out
 );
 uintptr_t dory_jit_atomic_rmw_from_context_address(void);
+int dory_jit_atomic_compare_exchange_pair_from_context(
+    const uint64_t *context,
+    void *memory_context,
+    uint64_t linear_address,
+    uint32_t byte_count,
+    dory_jit_atomic_pair_values *values
+);
+uintptr_t dory_jit_atomic_compare_exchange_pair_from_context_address(void);
 
 // Implemented by DoryDBTX86 and called only through dory_jit_tlb_resolve's C boundary.
 int32_t dory_x86_jit_translate(

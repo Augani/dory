@@ -31,6 +31,7 @@ struct dory_jit_tlb {
 
 _Static_assert(sizeof(dory_jit_tlb_entry) == 16, "JIT TLB entries must remain two words");
 _Static_assert(sizeof(dory_jit_tlb_resolution) == 24, "JIT TLB resolution ABI changed");
+_Static_assert(sizeof(dory_jit_atomic_pair_values) == 48, "atomic pair ABI changed");
 
 static int dory_jit_tlb_access_is_valid(dory_jit_tlb_access access) {
     return access >= DORY_JIT_TLB_ACCESS_READ && access <= DORY_JIT_TLB_ACCESS_EXECUTE;
@@ -751,6 +752,89 @@ uintptr_t dory_jit_atomic_rmw_from_context_address(void) {
         );
         uintptr_t address;
     } resolver = {.function = dory_jit_atomic_rmw_from_context};
+    return resolver.address;
+}
+
+int dory_jit_atomic_compare_exchange_pair_from_context(
+    const uint64_t *context,
+    void *memory_context,
+    uint64_t linear_address,
+    uint32_t byte_count,
+    dory_jit_atomic_pair_values *values
+) {
+    if (context == NULL || values == NULL || (byte_count != 8 && byte_count != 16)) {
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
+    if ((linear_address & UINT64_C(0xfff)) > UINT64_C(4096) - byte_count) {
+        return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
+    }
+
+    dory_jit_tlb_resolution resolution = {0};
+    const int result = dory_jit_tlb_resolve_from_context(
+        context,
+        memory_context,
+        DORY_JIT_TLB_ACCESS_WRITE,
+        linear_address,
+        byte_count,
+        &resolution
+    );
+    if (result != 0) {
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
+    if (resolution.status == DORY_JIT_TLB_RESOLUTION_PAGE_FAULT) {
+        return DORY_JIT_ATOMIC_RESOLUTION_PAGE_FAULT;
+    }
+    if (resolution.status == DORY_JIT_TLB_RESOLUTION_FALLBACK ||
+        (resolution.host_address & (byte_count - 1)) != 0) {
+        return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
+    }
+
+    dory_jit_atomic_lock();
+    if (byte_count == 8) {
+        const uint64_t expected =
+            (uint64_t)(uint32_t)values->expected_low |
+            ((uint64_t)(uint32_t)values->expected_high << 32);
+        const uint64_t desired =
+            (uint64_t)(uint32_t)values->desired_low |
+            ((uint64_t)(uint32_t)values->desired_high << 32);
+        const uint64_t observed = dory_jit_atomic_compare_exchange(
+            (void *)(uintptr_t)resolution.host_address,
+            expected,
+            desired,
+            8
+        );
+        values->observed_low = (uint32_t)observed;
+        values->observed_high = observed >> 32;
+    } else {
+        uint64_t *const host = (uint64_t *)(uintptr_t)resolution.host_address;
+        const uint64_t observed_low = __atomic_load_n(&host[0], __ATOMIC_SEQ_CST);
+        const uint64_t observed_high = __atomic_load_n(&host[1], __ATOMIC_SEQ_CST);
+        const int equal = observed_low == values->expected_low &&
+            observed_high == values->expected_high;
+        __atomic_store_n(
+            &host[0], equal ? values->desired_low : observed_low, __ATOMIC_SEQ_CST
+        );
+        __atomic_store_n(
+            &host[1], equal ? values->desired_high : observed_high, __ATOMIC_SEQ_CST
+        );
+        values->observed_low = observed_low;
+        values->observed_high = observed_high;
+    }
+    dory_jit_atomic_unlock();
+    return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
+}
+
+uintptr_t dory_jit_atomic_compare_exchange_pair_from_context_address(void) {
+    union {
+        int (*function)(
+            const uint64_t *,
+            void *,
+            uint64_t,
+            uint32_t,
+            dory_jit_atomic_pair_values *
+        );
+        uintptr_t address;
+    } resolver = {.function = dory_jit_atomic_compare_exchange_pair_from_context};
     return resolver.address;
 }
 

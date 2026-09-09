@@ -177,7 +177,7 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(.register(source), knownConstants: &knownConstants)
 
-      case .compareExchange:
+      case .compareExchange, .compareExchangePair:
         statements.append(statement)
         knownConstants.removeAll(keepingCapacity: true)
 
