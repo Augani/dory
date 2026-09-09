@@ -1,5 +1,6 @@
 use dory_pb::agent::{ExecRequest, ExecResponse};
 use std::collections::HashMap;
+use std::time::Instant;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -46,6 +47,17 @@ impl ExecError {
 }
 
 pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
+    run_received(req, Instant::now()).await
+}
+
+/// Executes one request while retaining the async handler's receipt time, so the response can
+/// separate queue/scheduling delay from process creation and execution without synchronizing the
+/// guest monotonic clock to the host.
+pub async fn run_received(
+    req: ExecRequest,
+    request_received: Instant,
+) -> Result<ExecResponse, ExecError> {
+    let agent_queue_ns = duration_ns(request_received.elapsed());
     let program = req.argv.first().ok_or(ExecError::EmptyArgv)?;
     if program.is_empty() {
         return Err(ExecError::EmptyProgram);
@@ -78,7 +90,9 @@ pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
     apply_constraints(&mut command, constraints)?;
 
     let _wait_guard = crate::reaper::managed_child_wait_guard().await;
+    let spawn_started = Instant::now();
     let mut child = command.spawn()?;
+    let process_spawn_ns = duration_ns(spawn_started.elapsed());
     let group_pid = child.id();
     let child_stdin = child.stdin.take();
     let stdout = child.stdout.take();
@@ -106,6 +120,7 @@ pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
 
     let timeout = std::time::Duration::from_millis(timeout_ms(req.timeout_ms));
     let mut timed_out = false;
+    let process_wait_started = Instant::now();
     let status = match tokio::time::timeout(timeout, child.wait()).await {
         Ok(status) => status?,
         Err(_) => {
@@ -115,7 +130,9 @@ pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
             child.wait().await?
         }
     };
+    let process_wait_ns = duration_ns(process_wait_started.elapsed());
 
+    let output_drain_started = Instant::now();
     let (stdout, stdout_truncated) = drain_output(stdout_task, group_pid).await?;
     let (stderr, stderr_truncated) = drain_output(stderr_task, group_pid).await?;
     // Commands are allowed to exit without consuming all stdin. The process status/stderr is the
@@ -130,6 +147,8 @@ pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
     {
         kill_process_group(group_pid);
     }
+    let output_drain_ns = duration_ns(output_drain_started.elapsed());
+    let agent_total_ns = duration_ns(request_received.elapsed());
 
     Ok(ExecResponse {
         exit_code: status.code().unwrap_or(if timed_out { 124 } else { 128 }),
@@ -138,7 +157,17 @@ pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
         timed_out,
         stdout_truncated,
         stderr_truncated,
+        agent_queue_ns,
+        process_spawn_ns,
+        process_wait_ns,
+        output_drain_ns,
+        agent_total_ns,
+        timing_valid: true,
     })
+}
+
+fn duration_ns(duration: std::time::Duration) -> u64 {
+    duration.as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -366,6 +395,10 @@ mod tests {
         assert_eq!(out.stdout, b"hello");
         assert_eq!(out.stderr, b"err");
         assert!(!out.timed_out);
+        assert!(out.timing_valid);
+        assert!(out.agent_total_ns >= out.process_spawn_ns);
+        assert!(out.agent_total_ns >= out.process_wait_ns);
+        assert!(out.agent_total_ns >= out.output_drain_ns);
     }
 
     #[tokio::test]

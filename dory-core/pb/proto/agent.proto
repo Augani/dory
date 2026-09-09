@@ -168,6 +168,14 @@ message ExecResponse {
   bool timed_out = 4;
   bool stdout_truncated = 5;
   bool stderr_truncated = 6;
+  // Monotonic guest-side phase durations. Older agents leave timing_valid false, preserving wire
+  // compatibility while preventing a missing measurement from being mistaken for zero work.
+  uint64 agent_queue_ns = 7;
+  uint64 process_spawn_ns = 8;
+  uint64 process_wait_ns = 9;
+  uint64 output_drain_ns = 10;
+  uint64 agent_total_ns = 11;
+  bool timing_valid = 12;
 }
 
 // --- Host-authoritative file sync (remote machines) ---

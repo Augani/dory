@@ -314,6 +314,28 @@ public struct DoryExecEnvironment: Sendable, Equatable, Hashable {
     }
 }
 
+public struct DoryExecTiming: Codable, Sendable, Equatable {
+    public var agentQueueNanoseconds: UInt64
+    public var processSpawnNanoseconds: UInt64
+    public var processWaitNanoseconds: UInt64
+    public var outputDrainNanoseconds: UInt64
+    public var agentTotalNanoseconds: UInt64
+
+    public init(
+        agentQueueNanoseconds: UInt64,
+        processSpawnNanoseconds: UInt64,
+        processWaitNanoseconds: UInt64,
+        outputDrainNanoseconds: UInt64,
+        agentTotalNanoseconds: UInt64
+    ) {
+        self.agentQueueNanoseconds = agentQueueNanoseconds
+        self.processSpawnNanoseconds = processSpawnNanoseconds
+        self.processWaitNanoseconds = processWaitNanoseconds
+        self.outputDrainNanoseconds = outputDrainNanoseconds
+        self.agentTotalNanoseconds = agentTotalNanoseconds
+    }
+}
+
 public struct DoryExecResult: Sendable, Equatable {
     public var exitCode: Int32
     public var stdout: Data
@@ -321,6 +343,7 @@ public struct DoryExecResult: Sendable, Equatable {
     public var timedOut: Bool
     public var stdoutTruncated: Bool
     public var stderrTruncated: Bool
+    public var timing: DoryExecTiming?
 
     public init(
         exitCode: Int32,
@@ -328,7 +351,8 @@ public struct DoryExecResult: Sendable, Equatable {
         stderr: Data,
         timedOut: Bool,
         stdoutTruncated: Bool,
-        stderrTruncated: Bool
+        stderrTruncated: Bool,
+        timing: DoryExecTiming? = nil
     ) {
         self.exitCode = exitCode
         self.stdout = stdout
@@ -336,6 +360,7 @@ public struct DoryExecResult: Sendable, Equatable {
         self.timedOut = timedOut
         self.stdoutTruncated = stdoutTruncated
         self.stderrTruncated = stderrTruncated
+        self.timing = timing
     }
 
     fileprivate init(_ raw: ExecResultFfi) {
@@ -345,7 +370,14 @@ public struct DoryExecResult: Sendable, Equatable {
             stderr: raw.stderr,
             timedOut: raw.timedOut,
             stdoutTruncated: raw.stdoutTruncated,
-            stderrTruncated: raw.stderrTruncated
+            stderrTruncated: raw.stderrTruncated,
+            timing: raw.timingValid ? DoryExecTiming(
+                agentQueueNanoseconds: raw.agentQueueNs,
+                processSpawnNanoseconds: raw.processSpawnNs,
+                processWaitNanoseconds: raw.processWaitNs,
+                outputDrainNanoseconds: raw.outputDrainNs,
+                agentTotalNanoseconds: raw.agentTotalNs
+            ) : nil
         )
     }
 }

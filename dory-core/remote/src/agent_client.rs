@@ -385,6 +385,7 @@ mod tests {
                 timed_out: false,
                 stdout_truncated: false,
                 stderr_truncated: false,
+                ..Default::default()
             }),
             Some(Method::LifecycleReceipt(request)) => {
                 Res::LifecycleReceipt(agent::LifecycleReceiptResponse {

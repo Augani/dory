@@ -16,6 +16,7 @@ use crate::usb_vhci::{self, UsbVhciError};
 use crate::virtiofs_mount::{self, VirtiofsMountError};
 
 pub async fn handle(req_bytes: &[u8]) -> Vec<u8> {
+    let request_received = std::time::Instant::now();
     let req = match AgentRequest::decode(req_bytes) {
         Ok(req) => req,
         Err(_) => return err(400, "malformed AgentRequest").encode_to_vec(),
@@ -31,7 +32,7 @@ pub async fn handle(req_bytes: &[u8]) -> Vec<u8> {
         Some(Method::SyncTree(r)) => wrap(sync_apply::tree(r).await, Res::SyncTree),
         Some(Method::SyncReadTree(r)) => wrap(sync_apply::read_tree(r).await, Res::SyncReadTree),
         Some(Method::SyncGetChunk(r)) => wrap(sync_apply::get_chunk(r).await, Res::SyncGetChunk),
-        Some(Method::Exec(r)) => wrap_exec(exec::run(r).await),
+        Some(Method::Exec(r)) => wrap_exec(exec::run_received(r, request_received).await),
         Some(Method::SnapshotQuiesce(r)) => AgentResponse {
             result: Some(Res::SnapshotQuiesce(snapshot_quiesce::run(r).await)),
         },

@@ -311,6 +311,12 @@ pub struct ExecResultFfi {
     pub timed_out: bool,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
+    pub agent_queue_ns: u64,
+    pub process_spawn_ns: u64,
+    pub process_wait_ns: u64,
+    pub output_drain_ns: u64,
+    pub agent_total_ns: u64,
+    pub timing_valid: bool,
 }
 
 /// A live remote connection owned by `doryd`. Holds its own runtime + the SSH session.
@@ -498,6 +504,12 @@ pub(crate) fn exec_result(out: dory_pb::agent::ExecResponse) -> ExecResultFfi {
         timed_out: out.timed_out,
         stdout_truncated: out.stdout_truncated,
         stderr_truncated: out.stderr_truncated,
+        agent_queue_ns: out.agent_queue_ns,
+        process_spawn_ns: out.process_spawn_ns,
+        process_wait_ns: out.process_wait_ns,
+        output_drain_ns: out.output_drain_ns,
+        agent_total_ns: out.agent_total_ns,
+        timing_valid: out.timing_valid,
     }
 }
 

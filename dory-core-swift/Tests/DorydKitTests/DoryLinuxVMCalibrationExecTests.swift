@@ -84,6 +84,36 @@ final class DoryLinuxVMCalibrationExecTests: XCTestCase {
         XCTAssertEqual(DoryLinuxVMCalibrationExec.processExitStatus(for: result), 7)
     }
 
+    func testCanonicalJSONIncludesValidAgentTiming() throws {
+        let result = DoryExecResult(
+            exitCode: 0,
+            stdout: Data(),
+            stderr: Data(),
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            timing: DoryExecTiming(
+                agentQueueNanoseconds: 1,
+                processSpawnNanoseconds: 2,
+                processWaitNanoseconds: 3,
+                outputDrainNanoseconds: 4,
+                agentTotalNanoseconds: 10
+            )
+        )
+
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: DoryLinuxVMCalibrationExec.canonicalJSON(for: result)
+            ) as? [String: Any]
+        )
+        let timing = try XCTUnwrap(object["agentTiming"] as? [String: Any])
+        XCTAssertEqual((timing["agentQueueNanoseconds"] as? NSNumber)?.uint64Value, 1)
+        XCTAssertEqual((timing["processSpawnNanoseconds"] as? NSNumber)?.uint64Value, 2)
+        XCTAssertEqual((timing["processWaitNanoseconds"] as? NSNumber)?.uint64Value, 3)
+        XCTAssertEqual((timing["outputDrainNanoseconds"] as? NSNumber)?.uint64Value, 4)
+        XCTAssertEqual((timing["agentTotalNanoseconds"] as? NSNumber)?.uint64Value, 10)
+    }
+
     func testTimeoutAndNonPortableGuestStatusesMapSafely() {
         func result(exitCode: Int32, timedOut: Bool) -> DoryExecResult {
             DoryExecResult(

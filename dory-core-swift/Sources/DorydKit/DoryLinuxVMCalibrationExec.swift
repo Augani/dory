@@ -55,6 +55,7 @@ public enum DoryLinuxVMCalibrationExec {
     private static let maximumArgumentBytes = 64 * 1_024
 
     private struct Receipt: Encodable {
+        let agentTiming: DoryExecTiming?
         let exitCode: Int32
         let stderr: String
         let stderrTruncated: Bool
@@ -63,6 +64,7 @@ public enum DoryLinuxVMCalibrationExec {
         let timedOut: Bool
 
         init(_ result: DoryExecResult) {
+            agentTiming = result.timing
             exitCode = result.exitCode
             stderr = String(decoding: result.stderr, as: UTF8.self)
             stderrTruncated = result.stderrTruncated
