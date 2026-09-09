@@ -7,6 +7,7 @@ import Foundation
 /// to compile it with the old baseline emitter while tier-1 coverage grows.
 struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredPatchedByteXORRIP: UInt64 = 0xFFFF_FFFF_8153_A159
+  private static let measuredMemorySetEqualStack22RIP: UInt64 = 0xFFFF_FFFF_815C_AB87
   private static let measuredMemorySetEqualRIP: UInt64 = 0xFFFF_FFFF_815C_AB95
   private static let measuredMemorySetNotEqualRIP: UInt64 = 0xFFFF_FFFF_812D_F36A
   private static let measuredMemoryBitTestRIP: UInt64 = 0xFFFF_FFFF_81E1_C883
@@ -649,7 +650,7 @@ struct DoryARM64Tier1Emitter: Sendable {
     else { return false }
     guard width == .i8 else { return false }
     switch block.guestStart {
-    case measuredMemorySetEqualRIP:
+    case measuredMemorySetEqualStack22RIP, measuredMemorySetEqualRIP:
       return block.guestByteCount == 5 && condition == .equal
     case measuredMemorySetNotEqualRIP:
       return block.guestByteCount == 3 && condition == .notEqual
