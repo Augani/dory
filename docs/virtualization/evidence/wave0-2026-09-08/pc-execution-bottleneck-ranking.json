@@ -1,0 +1,161 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.pc-execution-bottleneck-ranking",
+  "observedAt": "2026-09-09T03:03:41Z",
+  "status": "engineering-decision",
+  "qualification": "local development evidence; not signed release qualification",
+  "source": {
+    "bootAttributionReceipt": "pc-boot-cost-attribution.json",
+    "bootAttributionReceiptSHA256": "060796d25a5759b4035d45530faf3849cc01e6dcb09fbd952a2779a58d236e23",
+    "measurementSourceCommit": "84e4b96f3d0346687cbcba63c26a76f89e5c4ce1",
+    "decisionSourceCommit": "1a4b2077664326c2a6456d66d9be6b620a54a1b5",
+    "completedInstructions": 4027629219,
+    "instrumentationOverheadMedianPercent": 5.1369351096578475
+  },
+  "wallTimeRanking": [
+    {
+      "rank": 1,
+      "category": "processorExecution",
+      "wallPercent": 93.54104982360788
+    },
+    {
+      "rank": 2,
+      "category": "unattributed",
+      "wallPercent": 3.43769996847876
+    },
+    {
+      "rank": 3,
+      "category": "clockAdvancement",
+      "wallPercent": 1.484689771816184
+    },
+    {
+      "rank": 4,
+      "category": "interruptDelivery",
+      "wallPercent": 0.9824164981831822
+    },
+    {
+      "rank": 5,
+      "category": "processorEvent",
+      "wallPercent": 0.5186836067604331
+    },
+    {
+      "rank": 6,
+      "category": "idleWait",
+      "wallPercent": 0.03546033115355984
+    }
+  ],
+  "hotPathRanking": [
+    {
+      "rank": 1,
+      "decisions": [
+        "D02",
+        "D03"
+      ],
+      "owner": "flat guest-physical reservation plus inline software TLB",
+      "measurements": {
+        "memoryHelperCalls": 2971191672,
+        "memoryHelperCallsPer100RetiredInstructions": 73.77023828270126,
+        "translationRequests": 2952969797,
+        "translationRequestsPer100RetiredInstructions": 73.3178164233593,
+        "pageWalks": 5568237,
+        "pageWalkPercentOfTranslationRequests": 0.18856396721893054
+      },
+      "interpretation": "Translation and Swift memory-helper boundaries are nearly per-instruction, while actual page walks are rare. Remove the boundary and inline the hit path before optimizing the walker."
+    },
+    {
+      "rank": 2,
+      "decisions": [
+        "D04"
+      ],
+      "owner": "page-protection self-modifying-code invalidation",
+      "measurements": {
+        "codeGenerationHelperCalls": 1444253092,
+        "codeGenerationHelperCallsPer100RetiredInstructions": 35.8586407404847,
+        "optimizingCodeGenerationChecks": 1429212523,
+        "optimizingCodeGenerationChecksPer100RetiredInstructions": 35.4852059434322,
+        "codeGenerationMismatches": 35147,
+        "mismatchPercentOfChecks": 0.00245918640050987
+      },
+      "interpretation": "Per-block generation proof is paid roughly once every 2.8 instructions, but almost never invalidates. Replace repeated checks with protected-page invalidation after the flat memory base exists."
+    },
+    {
+      "rank": 3,
+      "decisions": [
+        "D05"
+      ],
+      "owner": "direct block chaining and indirect-branch prediction",
+      "measurements": {
+        "optimizingJITInstructions": 3988252592,
+        "optimizingJITBlocks": 1412689164,
+        "averageInstructionsPerOptimizingBlock": 2.823163575989601,
+        "recentLookupPercent": 59.35460292507513,
+        "dictionaryLookupPercent": 39.78157683909487,
+        "lookupMissPercent": 0.8638202358300014,
+        "chainedDispatcherCalls": 20607419,
+        "chainedDispatcherCallsPercentOfOptimizingBlocks": 1.4587369624645894
+      },
+      "interpretation": "Natural blocks are short and only 1.46% of completed blocks use the existing chained path. Direct chaining follows D02-D04 because it should consume the new inline memory/TLB and invalidation contracts."
+    },
+    {
+      "rank": 4,
+      "decisions": [
+        "D06"
+      ],
+      "owner": "pinned guest registers and lazy flags",
+      "measurements": {
+        "optimizingJITBlocksPer100RetiredInstructions": 35.074955691943
+      },
+      "interpretation": "Register and flag materialization are not independently timed by the current counters. The high block-boundary incidence makes D06 plausible, but its benefit must be isolated after D05 rather than assigned a fabricated wall share."
+    }
+  ],
+  "negativePriorities": {
+    "pageWalker": {
+      "reason": "Only 0.1886% of translation requests walked page tables; optimizing the rare walker before the hit path is not supported."
+    },
+    "deviceMMIO": {
+      "totalExits": 1765870,
+      "exitsPer100RetiredInstructions": 0.043843906774478095,
+      "reason": "MMIO is measured but too infrequent to lead the CPU redesign."
+    },
+    "timerRequests": {
+      "totalRequests": 557342,
+      "requestsPer100RetiredInstructions": 0.013837966945189151,
+      "reason": "Timer requests are measured but too infrequent to lead the CPU redesign."
+    },
+    "singleVCPU64InstructionCap": {
+      "present": false,
+      "reason": "The measured one-vCPU path uses a bounded 4096-instruction fairness limit; the 64-instruction limit remains only while multiple processors are runnable."
+    }
+  },
+  "decision": {
+    "firstEngineChange": "A04.1 flat guest-physical reservation",
+    "orderedWork": [
+      "A04.1 flat guest-physical reservation",
+      "A04.2 inline TLB and flat-address fast path",
+      "A04.3 protected-page SMC invalidation",
+      "A05.1 register convention and lazy flags",
+      "A05.2 direct chaining, IBTC, and shadow return stack"
+    ],
+    "planOrderAmended": false,
+    "reason": "The measurement confirms that memory translation/helper boundaries dominate hot-path incidence, followed by generation checks and block dispatch."
+  },
+  "cancellationVerification": {
+    "test": "DoryPCPowerControllerTests.hostPowerOffInterruptsActiveExecutionWithinOneSecond",
+    "tiers": [
+      "interpreter",
+      "baseline-jit",
+      "optimizing-jit"
+    ],
+    "activeGuest": "jmp $",
+    "perTierDeadlineNanoseconds": 1000000000,
+    "passed": true,
+    "suiteTestsPassed": 5,
+    "suiteElapsedSeconds": 0.173,
+    "commit": "1a4b2077664326c2a6456d66d9be6b620a54a1b5"
+  },
+  "limitations": [
+    "Hot-path percentages are event incidence rates per retired instruction, not sub-phase wall-time shares.",
+    "The counters select architecture order but do not claim the unimplemented changes meet G1-G5.",
+    "The source run was a local release build with opt-in instrumentation, not a signed or notarized candidate."
+  ]
+}

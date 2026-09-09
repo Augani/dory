@@ -293,6 +293,7 @@ Task directory:
 
 #### A02.5 — Rank bottlenecks against D02–D06
 - [ ] **Action:** Map measured cost to the architecture decisions (dispatcher returns, dictionary lookup, memory helper calls, TLB dictionary, 64-instruction cap, generation checks). Confirm the A04/A05 order or reorder with data. Verify user cancellation remains bounded during slow boot.
+- **Progress (2026-09-09):** The fixed-build counters rank D02/D03 first (73.77 memory helpers and 73.32 translations per 100 retired instructions, but only 0.189% of translations walk), D04 second (35.49 generation checks per 100 instructions with a 0.00246% mismatch rate), and D05 third (2.82 instructions per optimizing block; only 1.46% chained). D06 remains fourth because its wall share is not independently observed; no share is fabricated. This confirms A04.1 → A04.2 → A04.3 → A05.1 → A05.2. Active infinite-guest power-off returns within the one-second bound on interpreter, baseline JIT, and optimizing JIT. [Receipt](docs/virtualization/evidence/wave0-2026-09-08/pc-execution-bottleneck-ranking.json)
 - **Check:** Ranked list with percentages; A04/A05 step order confirmed or amended in place; cancellation test passes.
 
 **Card closes when:** G0 met, cost attributed, and the first engine change is chosen from measurement.
