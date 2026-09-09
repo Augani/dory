@@ -636,6 +636,109 @@ uintptr_t dory_jit_atomic_fetch_add_from_context_address(void) {
     return resolver.address;
 }
 
+#define DORY_JIT_ATOMIC_RMW_FOR_TYPE(type, host_address, value, operation) \
+    switch (operation) { \
+        case DORY_JIT_ATOMIC_RMW_ADD: \
+            return __atomic_fetch_add((type *)(host_address), (type)(value), __ATOMIC_SEQ_CST); \
+        case DORY_JIT_ATOMIC_RMW_SUBTRACT: \
+            return __atomic_fetch_sub((type *)(host_address), (type)(value), __ATOMIC_SEQ_CST); \
+        case DORY_JIT_ATOMIC_RMW_AND: \
+            return __atomic_fetch_and((type *)(host_address), (type)(value), __ATOMIC_SEQ_CST); \
+        case DORY_JIT_ATOMIC_RMW_OR: \
+            return __atomic_fetch_or((type *)(host_address), (type)(value), __ATOMIC_SEQ_CST); \
+        default: \
+            return __atomic_fetch_xor((type *)(host_address), (type)(value), __ATOMIC_SEQ_CST); \
+    }
+
+static uint64_t dory_jit_atomic_rmw(
+    void *host_address,
+    uint64_t value,
+    uint32_t byte_count,
+    uint32_t operation
+) {
+    switch (byte_count) {
+        case 1: {
+            DORY_JIT_ATOMIC_RMW_FOR_TYPE(uint8_t, host_address, value, operation)
+        }
+        case 2: {
+            DORY_JIT_ATOMIC_RMW_FOR_TYPE(uint16_t, host_address, value, operation)
+        }
+        case 4: {
+            DORY_JIT_ATOMIC_RMW_FOR_TYPE(uint32_t, host_address, value, operation)
+        }
+        default: {
+            DORY_JIT_ATOMIC_RMW_FOR_TYPE(uint64_t, host_address, value, operation)
+        }
+    }
+}
+
+#undef DORY_JIT_ATOMIC_RMW_FOR_TYPE
+
+int dory_jit_atomic_rmw_from_context(
+    const uint64_t *context,
+    void *memory_context,
+    uint64_t linear_address,
+    uint64_t value,
+    uint32_t byte_count,
+    uint32_t operation,
+    uint64_t *observed_out
+) {
+    if (context == NULL || observed_out == NULL ||
+        (byte_count != 1 && byte_count != 2 && byte_count != 4 && byte_count != 8) ||
+        operation > DORY_JIT_ATOMIC_RMW_XOR) {
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
+    if ((linear_address & UINT64_C(0xfff)) > UINT64_C(4096) - byte_count) {
+        return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
+    }
+
+    dory_jit_tlb_resolution resolution = {0};
+    const int result = dory_jit_tlb_resolve_from_context(
+        context,
+        memory_context,
+        DORY_JIT_TLB_ACCESS_WRITE,
+        linear_address,
+        byte_count,
+        &resolution
+    );
+    if (result != 0) {
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
+    if (resolution.status == DORY_JIT_TLB_RESOLUTION_PAGE_FAULT) {
+        return DORY_JIT_ATOMIC_RESOLUTION_PAGE_FAULT;
+    }
+    if (resolution.status == DORY_JIT_TLB_RESOLUTION_FALLBACK ||
+        (resolution.host_address & (byte_count - 1)) != 0) {
+        return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
+    }
+
+    dory_jit_atomic_lock();
+    *observed_out = dory_jit_atomic_rmw(
+        (void *)(uintptr_t)resolution.host_address,
+        value,
+        byte_count,
+        operation
+    );
+    dory_jit_atomic_unlock();
+    return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
+}
+
+uintptr_t dory_jit_atomic_rmw_from_context_address(void) {
+    union {
+        int (*function)(
+            const uint64_t *,
+            void *,
+            uint64_t,
+            uint64_t,
+            uint32_t,
+            uint32_t,
+            uint64_t *
+        );
+        uintptr_t address;
+    } resolver = {.function = dory_jit_atomic_rmw_from_context};
+    return resolver.address;
+}
+
 #if defined(__aarch64__)
 
 enum { dory_jit_region_magic = 0x444f5259 };

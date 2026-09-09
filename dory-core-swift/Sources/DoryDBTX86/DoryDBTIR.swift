@@ -78,6 +78,11 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
     source: DoryIROperand,
     writesDestination: Bool
   )
+  case atomicBinary(
+    DoryIRBinaryOperation,
+    destination: DoryIROperand,
+    source: DoryIROperand
+  )
   case unary(DoryIRUnaryOperation, operand: DoryIROperand)
   case shift(DoryIRShiftOperation, destination: DoryIROperand, count: DoryIRShiftCount)
   case conditionalMove(
@@ -281,6 +286,38 @@ public struct DoryX86IRTranslator: Sendable {
         nil
       )
     case .alu(let operation, let destination, let source):
+      if instruction.prefixes.lock {
+        let loweredOperation = irBinaryOperation(operation)
+        guard mode == .long64,
+          [.add, .subtract, .and, .or, .xor].contains(loweredOperation)
+        else { return fallback(instruction, reason: .interpreter) }
+        let destinationOperand = operand(
+          destination,
+          instructionRelativeBase: instruction.nextInstructionAddress
+        )
+        let sourceOperand = operand(
+          source,
+          instructionRelativeBase: instruction.nextInstructionAddress
+        )
+        guard case .memory(_, let memoryWidth) = destinationOperand,
+          memoryWidth == .i32 || memoryWidth == .i64
+        else { return fallback(instruction, reason: .interpreter) }
+        switch sourceOperand {
+        case .register(let register):
+          guard register.bank == "x86.gpr", register.index < 16,
+            register.width == memoryWidth
+          else { return fallback(instruction, reason: .interpreter) }
+        case .immediate(_, let width):
+          guard width == memoryWidth else { return fallback(instruction, reason: .interpreter) }
+        case .memory:
+          return fallback(instruction, reason: .interpreter)
+        }
+        return ([.atomicBinary(
+          loweredOperation,
+          destination: destinationOperand,
+          source: sourceOperand
+        )], .next(instruction.nextInstructionAddress))
+      }
       return (
         [
           .binary(
@@ -660,6 +697,12 @@ public struct DoryX86IRTranslator: Sendable {
   private func supportsNativeLockPrefix(_ operation: DoryX86InstructionOperation) -> Bool {
     if case .compareExchange = operation { return true }
     if case .exchangeAdd = operation { return true }
+    if case .alu(let operation, let destination, _) = operation,
+      [.add, .subtract, .and, .or, .xor].contains(operation),
+      case .memory = destination
+    {
+      return true
+    }
     return false
   }
 
@@ -806,6 +849,19 @@ public struct DoryX86IRTranslator: Sendable {
         }
         guard case .register = destination else { return false }
         return width == targetWidth && isJITMemoryAddress(address)
+      }
+    case .atomicBinary(let operation, let destination, let source):
+      guard [.add, .subtract, .and, .or, .xor].contains(operation),
+        case .memory(let address, let width) = destination,
+        (width == .i32 || width == .i64), isJITMemoryAddress(address)
+      else { return false }
+      switch source {
+      case .register(let register):
+        return register.width == width && isJITGeneralRegister(register)
+      case .immediate(_, let sourceWidth):
+        return sourceWidth == width
+      case .memory:
+        return false
       }
     case .unary(let operation, let operand):
       switch operand {
@@ -1009,6 +1065,8 @@ public struct DoryX86IRTranslator: Sendable {
     case .binary(_, let destination, let source, let writesDestination):
       if isMemory(destination) { return writesDestination ? .write : .read }
       return isMemory(source) ? .read : .none
+    case .atomicBinary:
+      return .write
     case .unary(_, let operand):
       return isMemory(operand) ? .write : .none
     case .shift(_, let destination, _):

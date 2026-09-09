@@ -38,6 +38,13 @@ typedef enum dory_jit_atomic_resolution_status {
     DORY_JIT_ATOMIC_RESOLUTION_FALLBACK = 2,
     DORY_JIT_ATOMIC_RESOLUTION_ERROR = 3,
 } dory_jit_atomic_resolution_status;
+typedef enum dory_jit_atomic_rmw_operation {
+    DORY_JIT_ATOMIC_RMW_ADD = 0,
+    DORY_JIT_ATOMIC_RMW_SUBTRACT = 1,
+    DORY_JIT_ATOMIC_RMW_AND = 2,
+    DORY_JIT_ATOMIC_RMW_OR = 3,
+    DORY_JIT_ATOMIC_RMW_XOR = 4,
+} dory_jit_atomic_rmw_operation;
 typedef uint64_t (*dory_jit_memory_read_function)(
     void *memory_context,
     uint64_t address,
@@ -158,6 +165,16 @@ int dory_jit_atomic_fetch_add_from_context(
     uint64_t *observed_out
 );
 uintptr_t dory_jit_atomic_fetch_add_from_context_address(void);
+int dory_jit_atomic_rmw_from_context(
+    const uint64_t *context,
+    void *memory_context,
+    uint64_t linear_address,
+    uint64_t value,
+    uint32_t byte_count,
+    uint32_t operation,
+    uint64_t *observed_out
+);
+uintptr_t dory_jit_atomic_rmw_from_context_address(void);
 
 // Implemented by DoryDBTX86 and called only through dory_jit_tlb_resolve's C boundary.
 int32_t dory_x86_jit_translate(

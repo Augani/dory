@@ -1416,7 +1416,6 @@ import Testing
     #if arch(arm64)
       let cases: [[UInt8]] = [
         [0xF0, 0x80, 0x20, 0xFD],  // lock and byte ptr [rax],0xfd
-        [0xF0, 0x01, 0x08],  // lock add dword ptr [rax],ecx
         [0xF0, 0x48, 0xFF, 0x00],  // lock inc qword ptr [rax]
       ]
       let initial = try DoryX86ArchitecturalState(
@@ -3440,6 +3439,163 @@ import Testing
         #expect(state.registers.rcx == 0xFFFF_FFFE)
         #expect(state.rflags.contains(.carry))
         #expect(state.rflags.contains(.zero))
+      }
+    #endif
+  }
+
+  @Test func alignedLockedBinaryRMWMatchesInterpreterAcrossOperationsAndWidths() throws {
+    #if arch(arm64)
+      struct OperationCase {
+        let opcode: UInt8
+        let destination: UInt64
+        let source: UInt64
+      }
+      let cases: [OperationCase] = [
+        .init(opcode: 0x01, destination: 0xFFFF_FFFE_FFFF_FFFE, source: 2),
+        .init(opcode: 0x09, destination: 0x8000_0000_8000_0000, source: 0x10),
+        .init(opcode: 0x21, destination: 0xFFFF_0000_FFFF_0000, source: 0x8000_0010),
+        .init(opcode: 0x29, destination: 0, source: 1),
+        .init(opcode: 0x31, destination: 0x8000_0000_8000_0000, source: 0x8000_0000),
+      ]
+      let instructionAddress: UInt64 = 0x3900
+      for is64Bit in [false, true] {
+        for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+          for (index, testCase) in cases.enumerated() {
+            let bytes = [UInt8(0xF0)] + (is64Bit ? [0x48] : [])
+              + [testCase.opcode, 0x0A]
+            let byteCount = is64Bit ? 8 : 4
+            let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: Int(getpagesize()))
+            let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+            let paging = DoryX86PagingUnit()
+            let initial = try DoryX86ArchitecturalState(
+              registers: .init(rcx: testCase.source, rdx: 0x80),
+              rip: instructionAddress,
+              rflags: [.reservedOne, .carry, .direction, .overflow]
+            )
+            var expected = initial
+            var state = initial
+            try interpretedMemory.write(at: instructionAddress, bytes: bytes)
+            try interpretedMemory.writeScalar(
+              at: 0x80,
+              value: testCase.destination,
+              byteCount: byteCount
+            )
+            try physical.writeScalar(
+              at: 0x80,
+              value: testCase.destination,
+              byteCount: byteCount
+            )
+            _ = DoryX86Interpreter().step(
+              state: &expected,
+              memory: interpretedMemory,
+              mode: .long64
+            )
+            let translated = DoryX86TranslatedMemory(
+              physicalMemory: physical,
+              pagingUnit: paging,
+              context: .init(state: state, mode: .long64)
+            )
+            let execution = try #require(DoryARM64BaselineExecutor(
+              maximumCodeBytes: 4_096,
+              optimization: optimization
+            ).execute(
+              bytes: bytes,
+              at: instructionAddress,
+              mode: .long64,
+              addressSpaceID: UInt64(100 + index + (is64Bit ? 10 : 0)),
+              maximumInstructions: 1,
+              state: &state,
+              memory: translated
+            ))
+
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(state == expected)
+            #expect(
+              try physical.readScalar(at: 0x80, byteCount: byteCount)
+                == interpretedMemory.readScalar(at: 0x80, byteCount: byteCount)
+            )
+            #expect(paging.diagnostics.translationRequests == 1)
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func lockedImmediateRMWStaysNativeWhileUnalignedRMWDeclinesPrecisely() throws {
+    #if arch(arm64)
+      let instructionAddress: UInt64 = 0x3A00
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let immediateBytes: [UInt8] = [0xF0, 0x48, 0x83, 0x02, 0xFF]
+        let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: Int(getpagesize()))
+        let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+        let paging = DoryX86PagingUnit()
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(rdx: 0x80),
+          rip: instructionAddress,
+          rflags: [.reservedOne, .direction]
+        )
+        var expected = initial
+        var state = initial
+        try interpretedMemory.write(at: instructionAddress, bytes: immediateBytes)
+        try interpretedMemory.writeScalar(at: 0x80, value: 0, byteCount: 8)
+        try physical.writeScalar(at: 0x80, value: 0, byteCount: 8)
+        _ = DoryX86Interpreter().step(
+          state: &expected,
+          memory: interpretedMemory,
+          mode: .long64
+        )
+        let translated = DoryX86TranslatedMemory(
+          physicalMemory: physical,
+          pagingUnit: paging,
+          context: .init(state: state, mode: .long64)
+        )
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4_096,
+          optimization: optimization
+        )
+        let immediateExecution = try #require(executor.execute(
+          bytes: immediateBytes,
+          at: instructionAddress,
+          mode: .long64,
+          addressSpaceID: UInt64(optimization == .baseline ? 130 : 131),
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+        #expect(immediateExecution.block.tier.rawValue == optimization.rawValue)
+        #expect(state == expected)
+        #expect(try physical.readScalar(at: 0x80, byteCount: 8) == UInt64.max)
+        #expect(paging.diagnostics.translationRequests == 1)
+
+        let unalignedBytes: [UInt8] = [0xF0, 0x48, 0x31, 0x0A]
+        let unalignedInitial = try DoryX86ArchitecturalState(
+          registers: .init(rcx: 0xFF00_FF00_FF00_FF00, rdx: 0x81),
+          rip: instructionAddress,
+          rflags: [.reservedOne, .carry, .direction, .overflow]
+        )
+        var unalignedState = unalignedInitial
+        try physical.writeScalar(
+          at: 0x81,
+          value: 0x00FF_00FF_00FF_00FF,
+          byteCount: 8
+        )
+        translated.updateContext(.init(state: unalignedState, mode: .long64))
+        let unalignedExecution = try #require(executor.execute(
+          bytes: unalignedBytes,
+          at: instructionAddress,
+          mode: .long64,
+          addressSpaceID: UInt64(optimization == .baseline ? 132 : 133),
+          maximumInstructions: 1,
+          state: &unalignedState,
+          memory: translated
+        ))
+        #expect(unalignedExecution.block.tier.rawValue == optimization.rawValue)
+        #expect(unalignedExecution.exitCode == .interpreter)
+        #expect(unalignedState == unalignedInitial)
+        #expect(
+          try physical.readScalar(at: 0x81, byteCount: 8)
+            == 0x00FF_00FF_00FF_00FF
+        )
       }
     #endif
   }
@@ -6659,6 +6815,7 @@ import Testing
     #expect(words[DoryJITExecutableRegion.atomicCompareExchangeWordIndex] != 0)
     #expect(words[DoryJITExecutableRegion.atomicExchangeWordIndex] != 0)
     #expect(words[DoryJITExecutableRegion.atomicFetchAddWordIndex] != 0)
+    #expect(words[DoryJITExecutableRegion.atomicRMWWordIndex] != 0)
 
     words.withUnsafeMutableBufferPointer { context in
       DoryARM64BaselineExecutor.populateExecutionContext(
@@ -6680,6 +6837,7 @@ import Testing
     #expect(words[DoryJITExecutableRegion.atomicCompareExchangeWordIndex] == 0)
     #expect(words[DoryJITExecutableRegion.atomicExchangeWordIndex] == 0)
     #expect(words[DoryJITExecutableRegion.atomicFetchAddWordIndex] == 0)
+    #expect(words[DoryJITExecutableRegion.atomicRMWWordIndex] == 0)
   }
 
   @Test func executorAdvancesTLBGenerationAndScopesPageInvalidation() throws {

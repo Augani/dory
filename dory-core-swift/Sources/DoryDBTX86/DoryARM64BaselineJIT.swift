@@ -87,6 +87,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let atomicCompareExchangeOffset = 38 * 8
   private static let atomicExchangeOffset = 39 * 8
   private static let atomicFetchAddOffset = 40 * 8
+  private static let atomicRMWOffset = 41 * 8
   private static let rspOffset = 4 * 8
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
@@ -196,6 +197,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination) || isFSOrGS(source)
       case .binary(_, let destination, let source, _):
         return isFSOrGS(destination) || isFSOrGS(source)
+      case .atomicBinary(_, let destination, let source):
+        return isFSOrGS(destination) || isFSOrGS(source)
       case .unary(_, let operand), .shift(_, let operand, _), .byteSwap(let operand),
         .stackPush(let operand), .stackPop(let operand):
         return isFSOrGS(operand)
@@ -238,7 +241,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func writesMemory(_ statement: DoryIRStatement) -> Bool {
     switch statement {
-    case .copy(.memory, _), .binary(_, .memory, _, true), .unary(_, .memory),
+    case .copy(.memory, _), .binary(_, .memory, _, true), .atomicBinary(_, .memory, _),
+      .unary(_, .memory),
       .shift(_, .memory, _), .stackPush, .stackPushFlags, .compareExchange(.memory, _),
       .exchangeMemory(.memory, _), .exchangeAddMemory(.memory, _): true
     case .bitTestMemoryImmediate(let operation, .memory, _): operation != .test
@@ -284,6 +288,13 @@ public struct DoryARM64BaselineEmitter: Sendable {
         destination: destination,
         source: source,
         writesDestination: writesDestination,
+        into: &words
+      )
+    case .atomicBinary(let operation, let destination, let source):
+      return emitAtomicBinary(
+        operation,
+        destination: destination,
+        source: source,
         into: &words
       )
     case .unary(let operation, let operand):
@@ -782,6 +793,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       if case .memory = destination { return writesDestination ? 2 : 1 }
       if case .memory = source { return 1 }
       return 0
+    case .atomicBinary:
+      return 1
     case .unary(let operation, let operand):
       _ = operation
       if case .memory = operand { return 2 }
@@ -2128,6 +2141,75 @@ public struct DoryARM64BaselineEmitter: Sendable {
       into: &words
     )
     words.append(encodeStore64(register: 9, base: 19, byteOffset: Int(source.index) * 8))
+    return true
+  }
+
+  private func emitAtomicBinary(
+    _ operation: DoryIRBinaryOperation,
+    destination: DoryIROperand,
+    source: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    let operationCode: UInt16
+    switch operation {
+    case .add: operationCode = 0
+    case .subtract: operationCode = 1
+    case .and: operationCode = 2
+    case .or: operationCode = 3
+    case .xor: operationCode = 4
+    default: return false
+    }
+    guard case .memory(let address, let width) = destination,
+      width == .i32 || width == .i64,
+      emitMemoryAddress(address, into: 12, words: &words),
+      load(source, matching: width, into: 10, words: &words)
+    else { return false }
+
+    words.append(encodeStore64(register: 10, base: 31, byteOffset: 64))
+    words.append(encodeStore64(register: 12, base: 31, byteOffset: 88))
+    words.append(encodeLoad64(register: 16, base: 19, byteOffset: Self.atomicRMWOffset))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 31, 31))
+    emitInterpreterUnless(condition: .notEqual, usesMemory: true, into: &words)
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    words.append(encodeLogical(.or, left: 31, right: 20, destination: 1))
+    words.append(encodeLoad64(register: 2, base: 31, byteOffset: 88))
+    words.append(encodeLoad64(register: 3, base: 31, byteOffset: 64))
+    words.append(encodeMoveWideZero32(register: 4, immediate: UInt16(width.rawValue / 8)))
+    words.append(encodeMoveWideZero32(register: 5, immediate: operationCode))
+    words.append(encodeAddImmediate64(left: 31, immediate: 80, destination: 6))
+    words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C translated atomic RMW)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
+    emitInterpreterUnless(condition: .equal, usesMemory: true, into: &words)
+
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    words.append(encodeLoad64(register: 9, base: 31, byteOffset: 80))
+    words.append(encodeLoad64(register: 10, base: 31, byteOffset: 64))
+    let is64Bit = width == .i64
+    switch operation {
+    case .add:
+      words.append(encodeAddSubtractSetFlags(add: true, is64Bit: is64Bit, 9, 10, 11))
+    case .subtract:
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 9, 10, 11))
+    case .and:
+      words.append(encodeLogical(.andSetFlags, is64Bit: is64Bit, 9, 10, 11))
+    case .or, .xor:
+      words.append(encodeLogical(
+        operation == .or ? .or : .xor,
+        is64Bit: is64Bit,
+        9,
+        10,
+        11
+      ))
+      words.append(encodeLogical(.andSetFlags, is64Bit: is64Bit, 11, 11, 31))
+    default:
+      return false
+    }
+    emitX86ArithmeticFlags(
+      subtraction: operation == .subtract,
+      includesAuxiliaryCarry: operation == .add || operation == .subtract,
+      resultRegister: 11,
+      into: &words
+    )
     return true
   }
 
@@ -3668,7 +3750,8 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
   public static let atomicCompareExchangeWordIndex = 38
   public static let atomicExchangeWordIndex = 39
   public static let atomicFetchAddWordIndex = 40
-  public static let contextWordCount = 41
+  public static let atomicRMWWordIndex = 41
+  public static let contextWordCount = 42
 
   private let lock = NSLock()
   private let region: OpaquePointer
@@ -5507,6 +5590,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       translationTLB == nil ? 0 : UInt64(dory_jit_atomic_exchange_from_context_address())
     context[DoryJITExecutableRegion.atomicFetchAddWordIndex] =
       translationTLB == nil ? 0 : UInt64(dory_jit_atomic_fetch_add_from_context_address())
+    context[DoryJITExecutableRegion.atomicRMWWordIndex] =
+      translationTLB == nil ? 0 : UInt64(dory_jit_atomic_rmw_from_context_address())
   }
 
   private static func apply(

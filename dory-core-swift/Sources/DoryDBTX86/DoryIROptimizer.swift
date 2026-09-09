@@ -71,6 +71,15 @@ public struct DoryIROptimizer: Sendable {
         )
         if writesDestination { invalidate(destination, knownConstants: &knownConstants) }
 
+      case .atomicBinary(let operation, let destination, let source):
+        let optimizedSource = substitute(source, knownConstants: knownConstants)
+        if optimizedSource != source { propagated &+= 1 }
+        statements.append(.atomicBinary(
+          operation,
+          destination: destination,
+          source: optimizedSource
+        ))
+
       case .unary(_, let operand):
         statements.append(statement)
         invalidate(operand, knownConstants: &knownConstants)
