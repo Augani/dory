@@ -23,6 +23,7 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredAtomicMemoryBitSetStandaloneRIP: UInt64 = 0xFFFF_FFFF_8133_CB12
   private static let measuredCR3WriteRAXRIP: UInt64 = 0xFFFF_FFFF_8100_1B43
   private static let measuredCR3WriteRDIRIP: UInt64 = 0xFFFF_FFFF_8100_17B7
+  private static let measuredSlabFreeWordSubtractStoreRIP: UInt64 = 0xFFFF_FFFF_815E_3559
   private let boundary = DoryARM64Tier1BoundaryEmitter()
   private let alu = DoryARM64Tier1ALUEmitter()
 
@@ -40,7 +41,11 @@ struct DoryARM64Tier1Emitter: Sendable {
         requiresMemoryCallbacks = true
         wroteMemory = true
       case .copy(.memory, _):
-        guard previousWasQwordMemoryAccumulatorMultiply, !wroteMemory else { return nil }
+        guard
+          (previousWasQwordMemoryAccumulatorMultiply
+            || Self.isMeasuredSlabFreeWordSubtractStoreBlock(block)),
+          !wroteMemory
+        else { return nil }
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
         wroteMemory = true
@@ -742,6 +747,43 @@ struct DoryARM64Tier1Emitter: Sendable {
       return false
     }
     return address == expectedAddress
+  }
+
+  private static func isMeasuredSlabFreeWordSubtractStoreBlock(
+    _ block: DoryIRBasicBlock
+  ) -> Bool {
+    guard block.guestStart == measuredSlabFreeWordSubtractStoreRIP,
+      block.guestByteCount == 11,
+      block.guestInstructionCount == 2,
+      block.statements.count == 2,
+      case .binary(
+        .subtract,
+        .register(let subtractDestination),
+        .memory(let subtractAddress, let subtractWidth),
+        writesDestination: true
+      ) = block.statements[0],
+      case .copy(
+        .memory(let storeAddress, let storeWidth),
+        .register(let storeSource)
+      ) = block.statements[1]
+    else { return false }
+    return subtractDestination
+      == .init(bank: "x86.gpr", index: 12, width: .i16)
+      && subtractWidth == .i16
+      && subtractAddress
+        == .init(
+          base: .init(bank: "x86.gpr", index: 4, width: .i64),
+          displacement: 0x14,
+          addressWidth: .i64
+        )
+      && storeWidth == .i64
+      && storeAddress
+        == .init(
+          base: .init(bank: "x86.gpr", index: 4, width: .i64),
+          displacement: 0x58,
+          addressWidth: .i64
+        )
+      && storeSource == .init(bank: "x86.gpr", index: 1, width: .i64)
   }
 
   private static func isMeasuredMemoryBitTestBlock(_ block: DoryIRBasicBlock) -> Bool {
