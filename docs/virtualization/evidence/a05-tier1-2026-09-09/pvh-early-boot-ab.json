@@ -1,0 +1,187 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-early-boot-ab",
+  "observedAt": "2026-09-09T10:56:08Z",
+  "status": "engineering-evidence",
+  "qualification": "bounded local early-boot measurement; not userspace, workload, hardware, or release qualification",
+  "source": {
+    "commit": "f212995c0ca3cb9ce4871393f65e0af1c022e23c",
+    "admissionTelemetryCommit": "9ad4d2374ecd1cc93093ed617053532f461bee65",
+    "machineMeasurementToggleCommit": "61e06e9113d1571471e05b92b50899c64c8d9e49",
+    "runnerSHA256": "79a880fcb49e95ecf76c17318f24878c31fe5eea1799e2a7f3582038149a6aa1",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "initrdManifestSHA256": "7b6d3a0a2f611a516a6fbe000d7288f9097c3177bb491632584f26a70ad8a105",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "commandLine": "console=ttyS0 rdinit=/init panic=-1 plus a unique runner-owned dory.pvh_run_id",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "guestClock": "deterministic",
+    "maximumInstructions": 100000000,
+    "wallSeconds": 300,
+    "diagnostics": "enabled",
+    "workloadsRequested": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ]
+  },
+  "method": {
+    "order": [
+      "disabled",
+      "enabled",
+      "enabled",
+      "disabled",
+      "disabled",
+      "enabled"
+    ],
+    "description": "Six fresh runner processes used identical verified inputs and limits. Only tier-one baseline-compiler admission and the mandatory unique run ID differed. Each run deliberately stopped at exactly 100,000,000 retired instructions; medians compare three samples per setting.",
+    "rawLocalDirectory": ".dory-build/a05-pvh-tier1-ab-20260909"
+  },
+  "trials": [
+    {
+      "name": "0-disabled",
+      "runID": "402bf51e-2648-475b-a90a-beb7f8b3c0ed",
+      "tier1Enabled": false,
+      "elapsedNanoseconds": 59974610792,
+      "retiredInstructions": 100000000,
+      "outcome": "instruction-budget",
+      "baselineJITInstructions": 92030968,
+      "baselineJITBlocks": 27455059,
+      "interpreterInstructions": 7969032,
+      "compiledBlocks": 16022,
+      "declinedCompilations": 542513
+    },
+    {
+      "name": "1-enabled",
+      "runID": "ac432f8b-8b9a-4c61-a111-9c5e39bc0b1c",
+      "tier1Enabled": true,
+      "elapsedNanoseconds": 36222989416,
+      "retiredInstructions": 100000000,
+      "outcome": "instruction-budget",
+      "baselineJITInstructions": 98591599,
+      "baselineJITBlocks": 36763406,
+      "interpreterInstructions": 1408401,
+      "compiledBlocks": 5981,
+      "declinedCompilations": 1183,
+      "tier1CompilationAttempts": 7164,
+      "tier1CompilationDeclines": 4238,
+      "tier1CompiledBlocks": 2926,
+      "lazyFlagMaterializations": 5318303
+    },
+    {
+      "name": "2-enabled",
+      "runID": "fe55ee83-a770-4c0e-9e68-1056819bab90",
+      "tier1Enabled": true,
+      "elapsedNanoseconds": 36624191083,
+      "retiredInstructions": 100000000,
+      "outcome": "instruction-budget",
+      "baselineJITInstructions": 98591599,
+      "baselineJITBlocks": 36763406,
+      "interpreterInstructions": 1408401,
+      "compiledBlocks": 5981,
+      "declinedCompilations": 1183,
+      "tier1CompilationAttempts": 7164,
+      "tier1CompilationDeclines": 4238,
+      "tier1CompiledBlocks": 2926,
+      "lazyFlagMaterializations": 5318303
+    },
+    {
+      "name": "3-disabled",
+      "runID": "144275b0-b8f3-41b2-9167-cc4d28fde8b3",
+      "tier1Enabled": false,
+      "elapsedNanoseconds": 62519233042,
+      "retiredInstructions": 100000000,
+      "outcome": "instruction-budget",
+      "baselineJITInstructions": 92033579,
+      "baselineJITBlocks": 27491263,
+      "interpreterInstructions": 7966421,
+      "compiledBlocks": 16033,
+      "declinedCompilations": 543367
+    },
+    {
+      "name": "4-disabled",
+      "runID": "4b86c331-8795-4a61-9f09-810f81de46aa",
+      "tier1Enabled": false,
+      "elapsedNanoseconds": 60625746625,
+      "retiredInstructions": 100000000,
+      "outcome": "instruction-budget",
+      "baselineJITInstructions": 92033579,
+      "baselineJITBlocks": 27491263,
+      "interpreterInstructions": 7966421,
+      "compiledBlocks": 16033,
+      "declinedCompilations": 543367
+    },
+    {
+      "name": "5-enabled",
+      "runID": "b1ed9394-556c-4c07-91da-5d89bc64d3b2",
+      "tier1Enabled": true,
+      "elapsedNanoseconds": 36844037208,
+      "retiredInstructions": 100000000,
+      "outcome": "instruction-budget",
+      "baselineJITInstructions": 98591599,
+      "baselineJITBlocks": 36763406,
+      "interpreterInstructions": 1408401,
+      "compiledBlocks": 5981,
+      "declinedCompilations": 1183,
+      "tier1CompilationAttempts": 7164,
+      "tier1CompilationDeclines": 4238,
+      "tier1CompiledBlocks": 2926,
+      "lazyFlagMaterializations": 5318303
+    }
+  ],
+  "aggregate": {
+    "disabledElapsedNanoseconds": [
+      59974610792,
+      62519233042,
+      60625746625
+    ],
+    "enabledElapsedNanoseconds": [
+      36222989416,
+      36624191083,
+      36844037208
+    ],
+    "disabledMedianNanoseconds": 60625746625,
+    "enabledMedianNanoseconds": 36624191083,
+    "disabledMedianInstructionsPerSecond": 1649464.222165363,
+    "enabledMedianInstructionsPerSecond": 2730435.7323107515,
+    "elapsedReductionPercent": 39.589707142843785,
+    "speedupRatio": 1.6553470488291795,
+    "throughputUpliftPercent": 65.53470488291795,
+    "tier1AdmissionPercentOfAttempts": 40.84310441094361,
+    "tier1DeclinePercentOfAttempts": 59.15689558905639,
+    "tier1PercentOfPublishedBlocks": 48.92158501922756,
+    "lazyFlagMaterializationsPer100RetiredInstructions": 5.318303,
+    "lazyFlagMaterializationsPer100NativeInstructions": 5.394276037657123,
+    "nativeInstructionPercentWithTier1Enabled": 98.591599
+  },
+  "verification": {
+    "focusedRunnerAndToggleTests": "passed",
+    "dbtAndPCGate": "1,413 tests in 171 suites passed; pinned PVH environment test skipped before the fixture was downloaded",
+    "enabledCounterStability": "All three enabled trials reported identical execution and JIT counters.",
+    "inputHashesReverifiedAfterRun": true
+  },
+  "interpretation": "On this bounded early-boot workload, production tier-one admission materially improves the complete baseline-JIT path even though the compiler still declines 59.16% of unique attempted sites. The materialization rate is 5.39 per 100 native-retired instructions. The result measures the whole admitted tier-one implementation, not lazy flags in isolation.",
+  "limitations": [
+    "Every run intentionally exhausted its 100,000,000-instruction budget before console output or userspace; no requested guest workload ran and no boot-success claim is made.",
+    "The Linux command line retained the fixture's default address randomization, and the bounded final architectural states were not used as a cross-setting equivalence proof.",
+    "Three samples per setting on one Apple M2 Pro do not establish a cross-host confidence interval or any G1-G5 release target.",
+    "Elapsed time includes verified-input loading, VM initialization, execution, and bounded diagnostic sampling; both settings used the same method.",
+    "The baseline-only UEFI smoke path was considered first, but current-source enabled and disabled controls both failed at the same reset-vector unmapped fetch. Those failed pilots are excluded; the repository-pinned direct-PVH fixture supplies this measurement.",
+    "Raw run receipts remain in an ignored local build directory and are not release evidence."
+  ]
+}
