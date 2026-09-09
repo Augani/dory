@@ -291,6 +291,20 @@ struct DoryARM64Tier1Emitter: Sendable {
           )
         else { return nil }
 
+      case .bitScan(let reverse, let destination, let source):
+        guard let destination = lowRegister(destination),
+          let source = lowRegister(source),
+          destination.width == source.width,
+          alu.emitBitScan(
+            reverse: reverse,
+            width: destination.width,
+            destinationGuestRegister: Int(destination.index),
+            sourceGuestRegister: Int(source.index),
+            into: &body
+          )
+        else { return nil }
+        nativeFlags = nil
+
       default:
         return nil
       }

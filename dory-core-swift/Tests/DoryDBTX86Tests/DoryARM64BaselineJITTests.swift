@@ -5858,10 +5858,19 @@ import Testing
       let values = [UInt64(0), UInt64.max] + (0..<64).map { UInt64(1) << $0 }
       let flags: DoryX86RFLAGS = [.reservedOne, .zero, .carry, .parity, .auxiliaryCarry,
         .sign, .overflow, .direction, .interruptEnable]
-      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+      let configurations: [(DoryARM64JITOptimization, Bool, DoryARM64CompilationTier)] = [
+        (.baseline, false, .baseline),
+        (.baseline, true, .tier1),
+        (.optimizing, false, .optimizing),
+      ]
+      for (configurationIndex, configuration) in configurations.enumerated() {
+        let (optimization, tier1Enabled, expectedTier) = configuration
         let executor = try DoryARM64BaselineExecutor(
-          maximumCodeBytes: 16 * 1024, optimization: optimization)
-        var addressSpaceID = UInt64(optimization == .baseline ? 0x1_0000 : 0x2_0000)
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: tier1Enabled,
+          optimization: optimization
+        )
+        var addressSpaceID = UInt64(configurationIndex + 1) << 16
         for value in values {
           let cases: [Case] = [
             .init(
@@ -5901,7 +5910,7 @@ import Testing
             let execution = try #require(try executor.execute(
               bytes: testCase.bytes, at: 0, mode: .long64, addressSpaceID: addressSpaceID,
               maximumInstructions: 1, state: &translated))
-            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(execution.block.tier == expectedTier)
             #expect(translated == interpreted)
           }
         }
@@ -5919,9 +5928,17 @@ import Testing
         [0x48, 0x0F, 0xBD, 0xC0], // bsr rax,rax
         [0x49, 0x0F, 0xBD, 0xDC], // bsr rbx,r12: measured kernel instruction
       ]
-      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+      let configurations: [(DoryARM64JITOptimization, Bool, DoryARM64CompilationTier)] = [
+        (.baseline, false, .baseline),
+        (.baseline, true, .tier1),
+        (.optimizing, false, .optimizing),
+      ]
+      for (optimization, tier1Enabled, expectedTier) in configurations {
         let executor = try DoryARM64BaselineExecutor(
-          maximumCodeBytes: 16 * 1024, optimization: optimization)
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: tier1Enabled,
+          optimization: optimization
+        )
         for bytes in encodings {
           for value in values {
             let initial = try DoryX86ArchitecturalState(
@@ -5939,7 +5956,7 @@ import Testing
             let execution = try #require(executor.execute(
               bytes: bytes, at: 0, mode: .long64, addressSpaceID: 0,
               maximumInstructions: 1, state: &translated))
-            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(execution.block.tier == expectedTier)
             #expect(translated == interpreted)
           }
         }

@@ -241,6 +241,65 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Emits register-source BSF/BSR. The legacy deterministic policy preserves all undefined
+  /// status bits and leaves the entire destination unchanged for a zero source, including the
+  /// upper half of a dword destination. A prior lazy producer is therefore materialized first.
+  func emitBitScan(
+    reverse: Bool,
+    width: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    sourceGuestRegister: Int,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard width == .i32 || width == .i64,
+      (0..<16).contains(destinationGuestRegister),
+      (0..<16).contains(sourceGuestRegister)
+    else { return false }
+
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    let is64Bit = width == .i64
+    let source = UInt32(sourceGuestRegister)
+    if reverse {
+      fragment.append(
+        Self.encodeCountLeadingZeros(is64Bit: is64Bit, source: source, destination: 16))
+      Self.emitImmediate(is64Bit ? 63 : 31, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .xor, is64Bit: is64Bit, left: 17, right: 16, destination: 16))
+    } else {
+      fragment.append(
+        Self.encodeReverseBits(is64Bit: is64Bit, source: source, destination: 16))
+      fragment.append(
+        Self.encodeCountLeadingZeros(is64Bit: is64Bit, source: 16, destination: 16))
+    }
+    fragment.append(
+      Self.encodeAddSubtractSetFlags(
+        add: false, is64Bit: is64Bit, left: source, right: 31, destination: 31))
+    fragment.append(Self.encodeConditionalSet(register: 17, condition: .equal))
+    Self.emitImmediate(~DoryX86RFLAGS.zero.rawValue, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(.and, is64Bit: true, left: 25, right: 26, destination: 25))
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 25, right: 17, shiftAmount: 6, destination: 25))
+    fragment.append(Self.encodeMove(destination: 26, source: 31, is64Bit: true))
+    let zeroBranch = fragment.count
+    fragment.append(0)
+    fragment.append(
+      Self.encodeMove(
+        destination: UInt32(destinationGuestRegister),
+        source: 16,
+        is64Bit: is64Bit
+      ))
+    fragment[zeroBranch] = Self.encodeConditionalBranch(
+      condition: .equal,
+      wordOffset: fragment.count - zeroBranch
+    )
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Exchanges two pinned qword registers without changing NZCV or lazy flags.
   func emitExchangeRegisters(
     lhsGuestRegister: Int,
@@ -1953,6 +2012,22 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     destination: UInt32
   ) -> UInt32 {
     (is64Bit ? 0xDAC0_0C00 : 0x5AC0_0800) | source << 5 | destination
+  }
+
+  private static func encodeReverseBits(
+    is64Bit: Bool,
+    source: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    (is64Bit ? 0xDAC0_0000 : 0x5AC0_0000) | source << 5 | destination
+  }
+
+  private static func encodeCountLeadingZeros(
+    is64Bit: Bool,
+    source: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    (is64Bit ? 0xDAC0_1000 : 0x5AC0_1000) | source << 5 | destination
   }
 
   private static func encodeStore64(
