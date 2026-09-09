@@ -216,6 +216,7 @@ public protocol DoryX86PageTableWriteTrackingMemory: DoryX86Memory {
 /// affected code-generation tokens so resident translations fail validation synchronously.
 public protocol DoryX86TranslatedCodeProtectionMemory: DoryX86Memory {
   func protectTranslatedCode(at address: UInt64, byteCount: Int) throws
+  func invalidateTranslatedCode(at address: UInt64, byteCount: Int) throws
   var protectedTranslatedCodePageCount: Int { get }
 }
 

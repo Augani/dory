@@ -603,6 +603,18 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     try protector.protectTranslatedCode(at: resolved.backingAddress, byteCount: byteCount)
   }
 
+  public func invalidateTranslatedCode(at address: UInt64, byteCount: Int) throws {
+    guard let protector = ram as? any DoryX86TranslatedCodeProtectionMemory else { return }
+    let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .write)
+    try protector.invalidateTranslatedCode(at: resolved.backingAddress, byteCount: byteCount)
+  }
+
+  /// Explicit SMC hook for a device or exported host mapping that will mutate RAM without calling
+  /// this bus's write APIs. Ordinary DMA writes already cross the same invalidation boundary.
+  public func invalidateCodePage(gpa: UInt64, byteCount: Int = 1) throws {
+    try invalidateTranslatedCode(at: gpa, byteCount: byteCount)
+  }
+
   public var protectedTranslatedCodePageCount: Int {
     (ram as? any DoryX86TranslatedCodeProtectionMemory)?.protectedTranslatedCodePageCount ?? 0
   }

@@ -158,6 +158,12 @@ import Testing
         == VM_PROT_READ | VM_PROT_WRITE)
     #expect(try memory.read(at: 0, byteCount: 1) == [0xCC])
     #expect(try memory.codeGeneration(at: 0, byteCount: 1) != generation)
+
+    try memory.protectTranslatedCode(at: 0, byteCount: 1)
+    let protectedGeneration = try #require(try memory.codeGeneration(at: 0, byteCount: 1))
+    try memory.invalidateTranslatedCode(at: 0, byteCount: 1)
+    #expect(memory.protectedTranslatedCodePageCount == 0)
+    #expect(try memory.codeGeneration(at: 0, byteCount: 1) != protectedGeneration)
   }
 
   @Test func sparseReservationRejectsReadOnlyOverlapAndOverflow() throws {

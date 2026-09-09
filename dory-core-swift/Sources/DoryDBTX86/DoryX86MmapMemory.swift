@@ -408,6 +408,14 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     }
   }
 
+  public func invalidateTranslatedCode(at address: UInt64, byteCount: Int) throws {
+    guard byteCount > 0 else { return }
+    try lock.withLock {
+      let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
+      try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: byteCount)
+    }
+  }
+
   private func prepareTranslatedCodePagesForWrite(offset: Int, byteCount: Int) throws {
     guard byteCount > 0, !protectedCodePagesByHostPage.isEmpty else { return }
     let hostPageByteCount = Int(getpagesize())
