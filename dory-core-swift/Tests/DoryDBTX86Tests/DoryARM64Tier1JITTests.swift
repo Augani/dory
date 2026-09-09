@@ -3782,9 +3782,13 @@ import Testing
   }
 
   @Test func measuredAdditionalMemorySetEqualSitesAreExactAndMatchInterpreter() throws {
-    let bytes: [UInt8] = [0x0F, 0x94, 0x44, 0x24, 0x22]
-    let codeAddresses: [UInt64] = [0xFFFF_FFFF_815C_AB87, 0xFFFF_FFFF_8138_8B5D]
-    for codeAddress in codeAddresses {
+    let fixtures: [(codeAddress: UInt64, stackOffset: UInt8)] = [
+      (0xFFFF_FFFF_815C_AB87, 0x22),
+      (0xFFFF_FFFF_8138_8B5D, 0x22),
+      (0xFFFF_FFFF_814E_2090, 0x0B),
+    ]
+    for (codeAddress, stackOffset) in fixtures {
+      let bytes: [UInt8] = [0x0F, 0x94, 0x44, 0x24, stackOffset]
       let block = try DoryX86IRTranslator().translate(bytes, at: codeAddress, mode: .long64)
       let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
       #expect(compiled.tier == .tier1)
@@ -3800,6 +3804,14 @@ import Testing
         mode: .long64
       )
       #expect(DoryARM64Tier1Emitter().compile(sameOperationElsewhere) == nil)
+      var wrongDisplacementBytes = bytes
+      wrongDisplacementBytes[4] &+= 1
+      let wrongDisplacement = try DoryX86IRTranslator().translate(
+        wrongDisplacementBytes,
+        at: codeAddress,
+        mode: .long64
+      )
+      #expect(DoryARM64Tier1Emitter().compile(wrongDisplacement) == nil)
 
       #if arch(arm64)
         let stackAddress = codeAddress + 0x1000
@@ -3814,7 +3826,7 @@ import Testing
           )
           for memory in [interpretedMemory, tier1Memory] {
             try memory.write(at: codeAddress, bytes: bytes)
-            try memory.write(at: stackAddress + 0x22, bytes: [0xAA])
+            try memory.write(at: stackAddress + UInt64(stackOffset), bytes: [0xAA])
           }
           var flags: DoryX86RFLAGS = [.reservedOne, .carry, .direction, .overflow]
           if zeroIsSet { flags.insert(.zero) }
@@ -3853,7 +3865,10 @@ import Testing
           #expect(tier1 == interpreted)
           #expect(tier1Memory.snapshot() == interpretedMemory.snapshot())
           #expect(
-            try tier1Memory.read(at: stackAddress + 0x22, byteCount: 1) == [zeroIsSet ? 1 : 0]
+            try tier1Memory.read(
+              at: stackAddress + UInt64(stackOffset),
+              byteCount: 1
+            ) == [zeroIsSet ? 1 : 0]
           )
         }
       #endif

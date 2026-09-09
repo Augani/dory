@@ -10,6 +10,7 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredMemorySetEqualFreePageStack22RIP: UInt64 = 0xFFFF_FFFF_815C_AB87
   private static let measuredMemorySetEqualFreePageStack23RIP: UInt64 = 0xFFFF_FFFF_815C_AB95
   private static let measuredMemorySetEqualPrintkStack22RIP: UInt64 = 0xFFFF_FFFF_8138_8B5D
+  private static let measuredMemorySetEqualBTFStack0BRIP: UInt64 = 0xFFFF_FFFF_814E_2090
   private static let measuredMemorySetNotEqualRIP: UInt64 = 0xFFFF_FFFF_812D_F36A
   private static let measuredMemorySetNotEqualSecondaryRIP: UInt64 = 0xFFFF_FFFF_812D_F23D
   private static let measuredMemoryBitTestRIP: UInt64 = 0xFFFF_FFFF_81E1_C883
@@ -702,19 +703,42 @@ struct DoryARM64Tier1Emitter: Sendable {
     guard
       block.guestInstructionCount == 1,
       block.statements.count == 1,
-      case .setCondition(let condition, .memory(_, let width)) = block.statements[0]
+      case .setCondition(let condition, .memory(let address, let width)) = block.statements[0]
     else { return false }
     guard width == .i8 else { return false }
+    let expectedAddress: DoryIRMemoryAddress
     switch block.guestStart {
-    case measuredMemorySetEqualFreePageStack22RIP,
-      measuredMemorySetEqualFreePageStack23RIP,
-      measuredMemorySetEqualPrintkStack22RIP:
-      return block.guestByteCount == 5 && condition == .equal
+    case measuredMemorySetEqualFreePageStack22RIP, measuredMemorySetEqualPrintkStack22RIP:
+      guard block.guestByteCount == 5, condition == .equal else { return false }
+      expectedAddress = .init(
+        base: .init(bank: "x86.gpr", index: 4, width: .i64),
+        displacement: 0x22,
+        addressWidth: .i64
+      )
+    case measuredMemorySetEqualFreePageStack23RIP:
+      guard block.guestByteCount == 5, condition == .equal else { return false }
+      expectedAddress = .init(
+        base: .init(bank: "x86.gpr", index: 4, width: .i64),
+        displacement: 0x23,
+        addressWidth: .i64
+      )
+    case measuredMemorySetEqualBTFStack0BRIP:
+      guard block.guestByteCount == 5, condition == .equal else { return false }
+      expectedAddress = .init(
+        base: .init(bank: "x86.gpr", index: 4, width: .i64),
+        displacement: 0x0B,
+        addressWidth: .i64
+      )
     case measuredMemorySetNotEqualRIP, measuredMemorySetNotEqualSecondaryRIP:
-      return block.guestByteCount == 3 && condition == .notEqual
+      guard block.guestByteCount == 3, condition == .notEqual else { return false }
+      expectedAddress = .init(
+        base: .init(bank: "x86.gpr", index: 3, width: .i64),
+        addressWidth: .i64
+      )
     default:
       return false
     }
+    return address == expectedAddress
   }
 
   private static func isMeasuredMemoryBitTestBlock(_ block: DoryIRBasicBlock) -> Bool {
