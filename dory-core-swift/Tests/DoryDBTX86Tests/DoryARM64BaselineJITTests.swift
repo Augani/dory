@@ -701,6 +701,62 @@ import Testing
     #endif
   }
 
+  @Test func executorProtectsCompiledGuestCodeAndRecompilesAfterCheckedSMCWrite() throws {
+    #if arch(arm64)
+      let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+      let paging = DoryX86PagingUnit()
+      var state = try DoryX86ArchitecturalState(rip: 0x100)
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: state, mode: .long64)
+      )
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+
+      try physical.write(at: 0x100, bytes: [0xB8, 1, 0, 0, 0])
+      _ = try #require(
+        executor.executeSummary(
+          byteProvider: { count in
+            try translated.instructionBytes(at: 0x100, maximumCount: count)
+          },
+          codeGenerationProvider: { count in
+            try translated.codeGeneration(at: 0x100, byteCount: count)
+          },
+          at: 0x100,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(state.registers.rax == 1)
+      #expect(physical.protectedTranslatedCodePageCount == 1)
+
+      try physical.write(at: 0x100, bytes: [0xB8, 2, 0, 0, 0])
+      #expect(physical.protectedTranslatedCodePageCount == 0)
+      state.rip = 0x100
+      translated.updateContext(.init(state: state, mode: .long64))
+      _ = try #require(
+        executor.executeSummary(
+          byteProvider: { count in
+            try translated.instructionBytes(at: 0x100, maximumCount: count)
+          },
+          codeGenerationProvider: { count in
+            try translated.codeGeneration(at: 0x100, byteCount: count)
+          },
+          at: 0x100,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(state.registers.rax == 2)
+      #expect(executor.diagnostics.codeGenerationMismatches == 1)
+      #expect(physical.protectedTranslatedCodePageCount == 1)
+    #endif
+  }
+
   @Test func nativePageTableWriteInvalidatesAnEarlierInlineReadBeforeBlockContinues() throws {
     #if arch(arm64)
       let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)

@@ -4800,6 +4800,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       using: codeGenerationProvider,
       byteCount: guestBytes.count
     )
+    if memoryCodeGeneration != nil,
+      let translatedMemory = memory as? DoryX86TranslatedMemory
+    {
+      try translatedMemory.protectTranslatedCode(
+        at: guestStart,
+        byteCount: guestBytes.count
+      )
+    } else if memoryCodeGeneration != nil,
+      let protector = memory as? any DoryX86TranslatedCodeProtectionMemory
+    {
+      try protector.protectTranslatedCode(at: guestStart, byteCount: guestBytes.count)
+    }
     let resident = ResidentBlock(
       block: compiled,
       offset: offset,

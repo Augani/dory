@@ -838,6 +838,32 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
       .consumePendingPageTableWrite() ?? false
   }
 
+  /// Protects every physical RAM page backing one translated linear instruction span. The same
+  /// instruction-fetch translations used by decoding preserve execute permissions and fault
+  /// identity; non-RAM/device fetches simply retain generation validation.
+  public func protectTranslatedCode(at address: UInt64, byteCount: Int) throws {
+    guard byteCount > 0,
+      let protector = physicalMemory as? any DoryX86TranslatedCodeProtectionMemory
+    else { return }
+    var linearAddress = address
+    var remaining = byteCount
+    while remaining > 0 {
+      let translation = try pagingUnit.translate(
+        linearAddress: linearAddress,
+        access: .instructionFetch,
+        context: context,
+        physicalMemory: physicalMemory
+      )
+      let chunk = min(remaining, 4_096 - Int(linearAddress & 0xfff))
+      try protector.protectTranslatedCode(
+        at: translation.physicalAddress,
+        byteCount: chunk
+      )
+      linearAddress &+= UInt64(chunk)
+      remaining -= chunk
+    }
+  }
+
   /// Permission-checks one generated-code miss through the architectural walker. Backing access
   /// remains separate: the C slow path uses the physical result only to construct a host address
   /// inside the reserved guest-physical region.
