@@ -4214,6 +4214,7 @@ import Testing
       (0xFFFF_FFFF_815C_AB87, 0x22),
       (0xFFFF_FFFF_8138_8B5D, 0x22),
       (0xFFFF_FFFF_814E_2090, 0x0B),
+      (0xFFFF_FFFF_815E_357A, 0x2F),
     ]
     for (codeAddress, stackOffset) in fixtures {
       let bytes: [UInt8] = [0x0F, 0x94, 0x44, 0x24, stackOffset]
