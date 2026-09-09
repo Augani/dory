@@ -235,14 +235,6 @@ byte read followed by a final transactional byte write, then publishes the same
 logical lazy record. Failure at either callback rolls the complete instruction
 back; all other non-atomic memory-writing ALU forms remain outside tier 1.
 
-The measured five-byte `sete 0x23(%rsp)` block at pinned-fixture RIP
-`0xffffffff815cab95` is the sole memory-destination SETcc admission. Tier 1
-materializes any pending record, computes the predicate from `x25`, forms the
-complete stack-relative address, and commits one byte through the transactional
-write callback. The operation preserves architectural flags, clears condition
-scratch before exit, and rolls the context back if the callback fails. Other
-conditions, addresses, instruction shapes, and RIPs remain outside tier 1.
-
 ## Helper-call shim
 
 A C helper may clobber `x0`...`x18` and NZCV. A generated shim therefore:
