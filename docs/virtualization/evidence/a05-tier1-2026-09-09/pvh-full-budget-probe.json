@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-full-budget-probe",
+  "observedAt": "2026-09-09T11:07:12Z",
+  "status": "diagnostic-evidence",
+  "qualification": "failed instruction-budget probe; not userspace, workload, hardware, or release qualification",
+  "source": {
+    "commit": "f212995c0ca3cb9ce4871393f65e0af1c022e23c",
+    "runnerSHA256": "79a880fcb49e95ecf76c17318f24878c31fe5eea1799e2a7f3582038149a6aa1",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "commandLine": "console=ttyS0 rdinit=/init panic=-1 dory.pvh_run_id=81f62727-e553-4f00-a553-08ea1edca110",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "diagnostics": "enabled"
+  },
+  "outcome": {
+    "passed": false,
+    "reason": "instruction-budget",
+    "exitCode": 1,
+    "elapsedNanoseconds": 417763303334,
+    "retiredInstructions": 1000000000,
+    "instructionsPerSecond": 2393699.954063472,
+    "consoleBytes": 0,
+    "guestReceiptSeen": false
+  },
+  "execution": {
+    "baselineJITInstructions": 983353994,
+    "baselineJITBlocks": 381730746,
+    "interpreterInstructions": 16646006,
+    "retiredInterruptReturns": 6823,
+    "deliveredMaskableInterrupts": 0,
+    "deliveredNonMaskableInterrupts": 0,
+    "finalRIP": 18446744071593712869,
+    "finalTSC": 100000000000,
+    "nearestTerminalSymbol": "delay_tsc+69"
+  },
+  "jit": {
+    "compiledBlocks": 5981,
+    "declinedCompilations": 1183,
+    "tier1CompilationAttempts": 7164,
+    "tier1CompilationDeclines": 4238,
+    "tier1CompiledBlocks": 2926,
+    "lazyFlagMaterializations": 63916314,
+    "lazyFlagMaterializationsPer100RetiredInstructions": 6.3916314,
+    "lazyFlagMaterializationsPer100NativeInstructions": 6.499827568707674
+  },
+  "raw": {
+    "localDirectory": ".dory-build/a05-pvh-tier1-full-20260909",
+    "diagnosticSHA256": "5573af119c7e2239a07b2ae3827644dbe7ee717aa52436af0b630f3b892127d2",
+    "summarySHA256": "af771414e8fc358c170a5ff822fa6b9fe957998f1babb3859c406c675cc444ed"
+  },
+  "interpretation": "The runner remained stable for one billion retired instructions, but the guest produced no console receipt and ended in delay_tsc at the instruction limit. Stable admission totals match the shorter tier-one trials; this probe does not establish userspace correctness and leaves the no-console boot path unresolved.",
+  "limitations": [
+    "This is one run on one host and has no tier-one-disabled control at the one-billion-instruction limit.",
+    "The run exhausted the instruction budget before userspace or any requested workload produced a receipt.",
+    "The terminal delay_tsc location and zero delivered interrupts identify the observed state but do not prove its root cause.",
+    "Raw diagnostics remain in an ignored local build directory and are not release evidence."
+  ]
+}
