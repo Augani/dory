@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-measured-memory-alu",
+  "observedAt": "2026-09-09T14:11:43Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture userspace and workload evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "implementationCommit": "a650ce35e",
+    "boundedAdmissionCommit": "37e46187e5d196c669a16e18a196a7559e0e2bce",
+    "runnerSHA256": "fd88c3526ace849f0394185c8de9aacbdf6f6eae9486cc631a0c53b77a88a76f",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "commandLine": "console=ttyS0 earlycon=uart,io,0x3f8,115200 panic=-1 rdinit=/init plus a unique runner-owned dory.pvh_run_id",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "registerDestination": "ADD/ADC/SUB/SBB/CMP/AND/TEST/OR/XOR with byte, word, dword, or qword scalar memory source",
+    "memoryDestination": "only the measured read-only word TEST-immediate family",
+    "deferred": "all other memory-destination, memory-writing, and atomic ALU forms",
+    "measuredBlocks": [
+      {
+        "guestRIP": "0xffffffff81a07ccd",
+        "symbol": "io_serial_in+13",
+        "instructions": "addw 0x8(%rdi),%si; movl %esi,%edx"
+      },
+      {
+        "guestRIP": "0xffffffff812fbf71",
+        "symbol": "__irq_exit_rcu+33",
+        "instructions": "testw $0xffff,%gs:disp32(%rip); jne"
+      }
+    ]
+  },
+  "verification": {
+    "tier1Suite": "34 tests passed",
+    "dbtAndPCGate": "1,432 tests in 171 suites passed; one pinned PVH environment test skipped because its environment variables were absent",
+    "differentialCoverage": "All four scalar widths and register-destination ADD/ADC/SUB/SBB/CMP/AND/OR/XOR match the interpreter; the exact GS-relative word TEST-immediate block covers both branch outcomes; failed reads leave architectural state restartable.",
+    "negativeAdmissionCoverage": "Qword memory CMP-immediate, qword memory TEST-register, and byte memory TEST-immediate remain explicit tier-one declines.",
+    "inputHashesReverifiedByEveryRunnerInvocation": true
+  },
+  "broadAdmissionRejection": {
+    "sourceCommit": "a650ce35e",
+    "runnerSHA256": "100c141dde06d5d0617bc8b19fd24bd1f2afb352f5115ccf528aa613705dd8ba",
+    "runID": "03b47494-3015-480e-a97e-8a9b1beaf9d9",
+    "retiredInstructions": 630220286,
+    "elapsedNanoseconds": 113656720666,
+    "outcome": "guest-reset",
+    "failure": "The kernel executed an NX-protected freed init-text page during a timer interrupt and panicked before the userspace receipt.",
+    "isolation": "A temporary release build that retained register-destination memory ALU but declined every memory-destination form passed all seven workloads and powered off after 736,834,005 instructions in 140.826 seconds.",
+    "decision": "The production boundary admits only the independently exercised measured word TEST-immediate family; broader memory-destination lowering remains unavailable."
+  },
+  "boundedFullRun": {
+    "runID": "bf1630d2-60c5-4606-86a4-e6bdff966f17",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 134193528792,
+    "retiredInstructions": 737898802,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19247,
+    "baselineJITInstructions": 734956118,
+    "interpreterInstructions": 2942684,
+    "deliveredMaskableInterrupts": 58388,
+    "retiredInterruptReturns": 146528,
+    "compiledBlocks": 185071,
+    "tier1CompiledBlocks": 98444,
+    "tier1CompilationAttempts": 231022,
+    "tier1CompilationDeclines": 132578,
+    "lazyFlagMaterializations": 60559483,
+    "nativeTraceAttempts": 664184,
+    "nativeTraceReplays": 459095
+  },
+  "comparisonToMixedTierRecovery": {
+    "priorReceipt": "pvh-mixed-tier-flags-recovery.json",
+    "priorElapsedNanoseconds": 146319906500,
+    "elapsedReductionPercent": 8.287578907112,
+    "speedupRatio": 1.09036484707691,
+    "tier1DeclineReduction": 14199,
+    "tier1DeclineReductionPercent": 9.673858983355704,
+    "tier1CompiledBlockIncrease": 3807,
+    "interpreterInstructionReduction": 206003,
+    "note": "This is a single run before and after the slice. It demonstrates direction and correctness, not statistical performance."
+  },
+  "interpretation": "The bounded memory-ALU slice removes both selected measured decline sites while preserving a complete userspace boot and workload pass. It does not close A05.2: 132,578 of 231,022 tier-one attempts still declined, so the legacy baseline remains required.",
+  "limitations": [
+    "The successful comparison contains one local full run per source state on one Apple M2 Pro; no confidence interval or cross-host conclusion is claimed.",
+    "The rejected broad-admission run is retained as negative engineering evidence and must not be treated as a passing result.",
+    "The diagnostic runner marks all records releaseQualified=false; this receipt does not satisfy the later G1-G5 qualification gates.",
+    "Raw runner diagnostics remain in the ignored local .dory-build directory."
+  ]
+}
