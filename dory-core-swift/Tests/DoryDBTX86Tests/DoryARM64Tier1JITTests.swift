@@ -3099,6 +3099,80 @@ import Testing
       #expect(rejectedWriteMemory.writeAttempts == 1)
     #endif
   }
+
+  @Test func measuredMemorySetNotEqualIsExactAndMatchesInterpreter() throws {
+    let codeAddress: UInt64 = 0xFFFF_FFFF_812D_F36A
+    let bytes: [UInt8] = [0x0F, 0x95, 0x03]  // setne (%rbx)
+    let block = try DoryX86IRTranslator().translate(bytes, at: codeAddress, mode: .long64)
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+    #expect(compiled.tier == .tier1)
+    #expect(compiled.guestByteCount == 3)
+    #expect(compiled.guestInstructionCount == 1)
+    #expect(compiled.requiresMemoryCallbacks)
+    #expect(compiled.mayExitToInterpreter)
+
+    let adjacent = try DoryX86IRTranslator().translate(
+      bytes,
+      at: codeAddress + 1,
+      mode: .long64
+    )
+    #expect(DoryARM64Tier1Emitter().compile(adjacent) == nil)
+
+    #if arch(arm64)
+      let dataAddress = codeAddress + 0x100
+      for zeroIsSet in [false, true] {
+        let interpretedMemory = try DoryX86ByteArrayMemory(
+          baseAddress: codeAddress,
+          byteCount: 0x1000
+        )
+        let tier1Memory = try DoryX86ByteArrayMemory(
+          baseAddress: codeAddress,
+          byteCount: 0x1000
+        )
+        for memory in [interpretedMemory, tier1Memory] {
+          try memory.write(at: codeAddress, bytes: bytes)
+          try memory.write(at: dataAddress, bytes: [0xAA])
+        }
+        var flags: DoryX86RFLAGS = [.reservedOne, .carry, .direction, .overflow]
+        if zeroIsSet { flags.insert(.zero) }
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(rbx: dataAddress),
+          rip: codeAddress,
+          rflags: flags
+        )
+        var interpreted = initial
+        guard
+          case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: interpretedMemory,
+            mode: .long64
+          )
+        else {
+          Issue.record("interpreter did not retire measured memory SETNE")
+          return
+        }
+
+        var tier1 = initial
+        let execution = try #require(
+          DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024,
+            tier1Enabled: true
+          ).execute(
+            bytes: bytes,
+            at: codeAddress,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &tier1,
+            memory: tier1Memory
+          ))
+        #expect(execution.block.tier == .tier1)
+        #expect(tier1 == interpreted)
+        #expect(tier1Memory.snapshot() == interpretedMemory.snapshot())
+        #expect(try tier1Memory.read(at: dataAddress, byteCount: 1) == [zeroIsSet ? 0 : 1])
+      }
+    #endif
+  }
 }
 
 private final class Tier1AtomicResults: @unchecked Sendable {

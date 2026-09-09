@@ -8,6 +8,7 @@ import Foundation
 struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredPatchedByteXORRIP: UInt64 = 0xFFFF_FFFF_8153_A159
   private static let measuredMemorySetEqualRIP: UInt64 = 0xFFFF_FFFF_815C_AB95
+  private static let measuredMemorySetNotEqualRIP: UInt64 = 0xFFFF_FFFF_812D_F36A
   private static let measuredMemoryBitTestRIP: UInt64 = 0xFFFF_FFFF_81E1_C883
   private static let measuredMemoryBitResetRIP: UInt64 = 0xFFFF_FFFF_81E1_B3A6
   private static let measuredCR3WriteRAXRIP: UInt64 = 0xFFFF_FFFF_8100_1B43
@@ -41,7 +42,7 @@ struct DoryARM64Tier1Emitter: Sendable {
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
-      case .setCondition where Self.isMeasuredMemorySetEqualBlock(block):
+      case .setCondition where Self.isMeasuredMemorySetConditionBlock(block):
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
@@ -295,7 +296,7 @@ struct DoryARM64Tier1Emitter: Sendable {
 
       case .setCondition(let condition, let destination):
         if case .memory(let address, let width) = destination {
-          guard Self.isMeasuredMemorySetEqualBlock(block), condition == .equal, width == .i8,
+          guard Self.isMeasuredMemorySetConditionBlock(block), width == .i8,
             alu.emitMeasuredMemorySetCondition(condition, address: address, into: &body)
           else { return nil }
           nativeFlags = nil
@@ -640,14 +641,21 @@ struct DoryARM64Tier1Emitter: Sendable {
     return isMeasuredPatchedByteXOR(statement)
   }
 
-  private static func isMeasuredMemorySetEqualBlock(_ block: DoryIRBasicBlock) -> Bool {
-    guard block.guestStart == measuredMemorySetEqualRIP,
-      block.guestByteCount == 5,
+  private static func isMeasuredMemorySetConditionBlock(_ block: DoryIRBasicBlock) -> Bool {
+    guard
       block.guestInstructionCount == 1,
       block.statements.count == 1,
-      case .setCondition(.equal, .memory(_, let width)) = block.statements[0]
+      case .setCondition(let condition, .memory(_, let width)) = block.statements[0]
     else { return false }
-    return width == .i8
+    guard width == .i8 else { return false }
+    switch block.guestStart {
+    case measuredMemorySetEqualRIP:
+      return block.guestByteCount == 5 && condition == .equal
+    case measuredMemorySetNotEqualRIP:
+      return block.guestByteCount == 3 && condition == .notEqual
+    default:
+      return false
+    }
   }
 
   private static func isMeasuredMemoryBitTestBlock(_ block: DoryIRBasicBlock) -> Bool {
