@@ -3807,6 +3807,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var currentTLBAddressSpaceID: UInt64?
   private var translationTLBGeneration: UInt64 = 1
   private var translationTLBInvalidationCount: UInt64 = 0
+  private var pagingInvalidationSequences: [ObjectIdentifier: UInt64] = [:]
 
   public init(
     maximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
@@ -3903,6 +3904,31 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       codeCacheEpoch &+= 1
       nextOffset = 0
       invalidateAllTranslations()
+    }
+  }
+
+  /// Imports invalidations issued by the architectural paging unit between native dispatches.
+  /// One observed INVLPG can evict its direct-mapped slot; a missed, global, or wrapped event
+  /// advances the generation and flushes the complete native table.
+  public func synchronizeTranslationCache(with pagingUnit: DoryX86PagingUnit) {
+    let snapshot = pagingUnit.invalidationSnapshot
+    let identity = ObjectIdentifier(pagingUnit)
+    lock.withLock {
+      guard pagingInvalidationSequences[identity] != snapshot.sequence else { return }
+      defer { pagingInvalidationSequences[identity] = snapshot.sequence }
+      guard let previous = pagingInvalidationSequences[identity] else {
+        if snapshot.sequence != 0 { invalidateAllTranslations() }
+        return
+      }
+      let next = previous.addingReportingOverflow(1)
+      if !next.overflow, next.partialValue == snapshot.sequence,
+        let linearAddress = snapshot.linearAddress
+      {
+        translationTLB.invalidate(linearAddress: linearAddress)
+        translationTLBInvalidationCount &+= 1
+      } else {
+        invalidateAllTranslations()
+      }
     }
   }
 

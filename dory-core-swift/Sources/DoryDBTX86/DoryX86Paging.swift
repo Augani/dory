@@ -78,6 +78,14 @@ public struct DoryX86PagingDiagnostics: Sendable, Hashable {
   public let cachedTranslations: Int
 }
 
+/// Monotonic coherence state shared with native translation caches. A linear address is present
+/// only when the immediately preceding event was one targeted invalidation; consumers that miss
+/// any event conservatively perform a full flush.
+public struct DoryX86PagingInvalidationSnapshot: Sendable, Hashable {
+  public let sequence: UInt64
+  public let linearAddress: UInt64?
+}
+
 /// Architectural x86 paging walker. The TLB is an implementation cache only: its key contains all
 /// guest-visible permission inputs and every invalidation operation removes lookup visibility
 /// synchronously before returning.
@@ -115,6 +123,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
   private var entries: [TLBKey: TLBValue] = [:]
   private var recentEntries: [TLBEntry?] = [nil, nil, nil]
   private var generation: UInt64 = 0
+  private var invalidationSequence: UInt64 = 0
+  private var lastInvalidatedLinearAddress: UInt64?
   private var translationRequestCount: UInt64 = 0
   private var pagingDisabledBypassCount: UInt64 = 0
   private var recentTLBHitCount: UInt64 = 0
@@ -142,6 +152,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 
   public func invalidate(linearAddress: UInt64) {
     lock.lock()
+    invalidationSequence &+= 1
+    lastInvalidatedLinearAddress = linearAddress
     if diagnosticsEnabled, linearInvalidationCount < .max { linearInvalidationCount += 1 }
     // A large translation may occupy several 4 KiB cache slots. INVLPG must remove
     // every slot belonging to the large page, including the hot lookup entries.
@@ -160,6 +172,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 
   public func invalidateAll() {
     lock.lock()
+    invalidationSequence &+= 1
+    lastInvalidatedLinearAddress = nil
     if diagnosticsEnabled, globalInvalidationCount < .max { globalInvalidationCount += 1 }
     generation &+= 1
     entries.removeAll(keepingCapacity: true)
@@ -171,6 +185,15 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     return entries.count
+  }
+
+  public var invalidationSnapshot: DoryX86PagingInvalidationSnapshot {
+    lock.withLock {
+      .init(
+        sequence: invalidationSequence,
+        linearAddress: lastInvalidatedLinearAddress
+      )
+    }
   }
 
   public var diagnostics: DoryX86PagingDiagnostics {

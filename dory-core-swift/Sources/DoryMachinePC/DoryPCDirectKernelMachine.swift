@@ -1324,6 +1324,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       !state.rflags.contains(.trap),
       state.interruptShadow == nil
     {
+      jit.synchronizeTranslationCache(with: pagingUnits[processor])
       let budget = jitInstructionBudget ?? 1
       let translatedMemory = translatedMemories[processor]
       translatedMemory.updateContext(.init(state: state, mode: mode, profile: interpreter.profile))

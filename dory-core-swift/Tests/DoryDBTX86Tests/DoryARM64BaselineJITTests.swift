@@ -6150,6 +6150,32 @@ import Testing
     #endif
   }
 
+  @Test func executorImportsTargetedAndGlobalPagingInvalidations() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+      let paging = DoryX86PagingUnit()
+
+      executor.synchronizeTranslationCache(with: paging)
+      #expect(executor.diagnostics.translationCacheInvalidations == 0)
+
+      paging.invalidate(linearAddress: 0x1234)
+      executor.synchronizeTranslationCache(with: paging)
+      #expect(executor.diagnostics.translationCacheInvalidations == 1)
+      #expect(executor.diagnostics.translationCacheAddressSpaceGeneration == 1)
+
+      paging.invalidate(linearAddress: 0x2000)
+      paging.invalidate(linearAddress: 0x3000)
+      executor.synchronizeTranslationCache(with: paging)
+      #expect(executor.diagnostics.translationCacheInvalidations == 2)
+      #expect(executor.diagnostics.translationCacheAddressSpaceGeneration == 2)
+
+      paging.invalidateAll()
+      executor.synchronizeTranslationCache(with: paging)
+      #expect(executor.diagnostics.translationCacheInvalidations == 3)
+      #expect(executor.diagnostics.translationCacheAddressSpaceGeneration == 3)
+    #endif
+  }
+
   @Test func nativeBatchReplaysGuardedCallbackFreeBlocksUntilTerminalExit() throws {
     #if arch(arm64)
       let emitter = DoryARM64BaselineEmitter()
