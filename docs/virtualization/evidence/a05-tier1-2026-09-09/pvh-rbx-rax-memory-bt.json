@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-rbx-rax-memory-bt",
+  "observedAt": "2026-09-09T23:50:25Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "8200dbed19641c4b083f0d2a153289bae219c65c",
+    "candidateRunnerSHA256": "4cab9da6f2e8cf27abb6c469b6234485721353c058ca23e1f799766102ad8c28",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "guestRIP": "0xffffffff81e1c104",
+    "symbol": "__radix_tree_delete+0xb4",
+    "guestByteCount": 10,
+    "guestInstructionCount": 2,
+    "instructionBytes": [
+      72,
+      15,
+      163,
+      152,
+      40,
+      2,
+      0,
+      0,
+      115,
+      219
+    ],
+    "instruction": "btq %rbx,0x228(%rax); jae -37",
+    "lowering": "The exact block reuses the production-qualified signed bit-string read path and feeds its CF-only lazy descriptor into the backward above-or-equal branch.",
+    "boundedRule": "The measured RIP, complete ten-byte two-instruction block, RAX+0x228 memory base, qword width, RBX index, JAE condition, and both branch targets must all match. An adjacent RIP or changed condition declines.",
+    "priorNegativeCacheHits": 3124,
+    "remainsInCandidateRunNegativeCache": false
+  },
+  "verification": {
+    "focusedGate": "The exact RBX/RAX memory-BT block passes its tier-one differential and failed-read matrix.",
+    "dbtPCAndRunnerGate": "1,498 tests in 175 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Signed indices 0, 64, and -1, both old-bit states, complete state, unchanged memory, CF, and backward/forward branch destinations match the interpreter.",
+    "faultCoverage": "An unmapped source read preserves complete block-entry state.",
+    "negativeCoverage": "An adjacent RIP and a changed branch condition both decline tier one.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "32f51be7-1ce5-4c89-a099-70918055c78a",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 148071112292,
+    "retiredInstructions": 733786075,
+    "throughputMIPS": 4.955632895854494,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731430493,
+    "interpreterInstructions": 2355582,
+    "deliveredMaskableInterrupts": 57965,
+    "retiredInterruptReturns": 146178,
+    "compiledBlocks": 185670,
+    "tier1CompilationAttempts": 217580,
+    "tier1CompilationDeclines": 115699,
+    "tier1DeclinePercentOfAttempts": 53.17538376689034,
+    "tier1CompiledBlocks": 101881,
+    "lazyFlagMaterializations": 55890673,
+    "translationCacheInvalidations": 239488
+  },
+  "unmatchedPriorRunComparison": {
+    "rcxMemorySETNEElapsedNanoseconds": 135829677500,
+    "rbxRaxMemoryBTElapsedNanoseconds": 148071112292,
+    "directionalElapsedIncreasePercent": 9.012341792536466,
+    "tier1AttemptDecrease": 1319,
+    "tier1DeclineDecrease": 1209,
+    "tier1CompiledBlockDecrease": 110,
+    "interpreterInstructionIncrease": 11273,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. Exact-site absence establishes production use; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleSites": [
+    {
+      "guestRIP": "0xffffffff815e357a",
+      "symbol": "__slab_free+0x8a",
+      "instructionBytes": [
+        15,
+        148,
+        68,
+        36,
+        47
+      ],
+      "instruction": "sete 0x2f(%rsp)",
+      "hitCount": 8252,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff81987bf7",
+      "instructionBytes": [
+        128,
+        69,
+        48,
+        1
+      ],
+      "instruction": "addb $1,0x30(%rbp)",
+      "hitCount": 1463,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff810001b8",
+      "instructionBytes": [
+        15,
+        34,
+        223
+      ],
+      "instruction": "movq %rdi,%cr3",
+      "hitCount": 1263,
+      "declineReason": "nativeEmitter"
+    }
+  ],
+  "interpretation": "The exact 3,124-hit RBX/RAX memory-BT block is absent from the candidate's capped live negative-cache sample. A05.2 remains open because 115,699 of 217,580 tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
