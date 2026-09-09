@@ -196,10 +196,15 @@ import Testing
             }, at: state.rip, mode: .long64, addressSpaceID: 0x9000,
             maximumInstructions: 16, state: &state, memory: translated)
           let summary = try #require(execution)
-          #expect(targetFetchCounts.count == 1)
           if warmTarget {
-            #expect(targetFetchCounts.first == 3) // Resident byte revalidation.
+            // A failed resident-byte revalidation invalidates the cached block, after which
+            // the same dispatch attempt performs one bounded cold-compilation fetch.
+            #expect(targetFetchCounts.count == 2)
+            #expect(targetFetchCounts.first == 3)
+            let coldFetchCount = try #require(targetFetchCounts.last)
+            #expect(coldFetchCount > 3)
           } else {
+            #expect(targetFetchCounts.count == 1)
             let coldFetchCount = try #require(targetFetchCounts.first)
             #expect(coldFetchCount > 3) // Cold compilation fetch.
           }
