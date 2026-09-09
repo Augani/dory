@@ -249,8 +249,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination)
       case .effectiveAddress:
         return false
-      case .stackPushFlags, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
-        .signExtendAccumulatorHigh, .memoryFence, .helper:
+      case .stackPushFlags, .loadFlagsIntoAH, .storeAHIntoFlags, .clearInterruptFlag,
+        .setDirectionFlag, .readTimestampCounter, .signExtendAccumulatorHigh, .memoryFence,
+        .helper:
         return false
       }
     }
@@ -353,6 +354,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitStackPushFlags(into: &words)
     case .stackPop(let destination):
       return emitStackPop(destination: destination, into: &words)
+    case .loadFlagsIntoAH:
+      return emitLoadFlagsIntoAH(into: &words)
+    case .storeAHIntoFlags:
+      return emitStoreAHIntoFlags(into: &words)
     case .clearInterruptFlag:
       return emitClearInterruptFlag(into: &words)
     case .setDirectionFlag(let enabled):
@@ -442,6 +447,38 @@ public struct DoryARM64BaselineEmitter: Sendable {
     emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 11, into: &words)
     words.append(encodeLogical(.or, left: 10, right: 11, destination: 10))
     return emitStackPushLoadedValue(register: 10, into: &words)
+  }
+
+  private func emitLoadFlagsIntoAH(into words: inout [UInt32]) -> Bool {
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
+    emitImmediate(0xD5, register: 10, into: &words)
+    words.append(encodeLogical(.and, left: 9, right: 10, destination: 10))
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 11, into: &words)
+    words.append(encodeLogical(.or, left: 10, right: 11, destination: 10))
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: 0))
+    emitImmediate(~UInt64(0xFF00), register: 11, into: &words)
+    words.append(encodeLogical(.and, left: 9, right: 11, destination: 9))
+    words.append(encodeLogical(.or, left: 9, right: 10, shiftAmount: 8, destination: 9))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: 0))
+    return true
+  }
+
+  private func emitStoreAHIntoFlags(into words: inout [UInt32]) -> Bool {
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: 0))
+    words.append(
+      encodeLogical(
+        .or, left: 31, right: 9,
+        shiftAmount: 8, logicalRightShift: true, destination: 10))
+    emitImmediate(0xD5, register: 11, into: &words)
+    words.append(encodeLogical(.and, left: 10, right: 11, destination: 10))
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
+    emitImmediate(~UInt64(0xD5), register: 11, into: &words)
+    words.append(encodeLogical(.and, left: 9, right: 11, destination: 9))
+    words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 10, into: &words)
+    words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
+    return true
   }
 
   private func emitStackPushLoadedValue(
@@ -997,8 +1034,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .readSegment(_, let destination):
       if case .memory = destination { return 1 }
       return 0
-    case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
-      .signExtendAccumulatorHigh, .helper:
+    case .effectiveAddress, .loadFlagsIntoAH, .storeAHIntoFlags, .clearInterruptFlag,
+      .setDirectionFlag, .readTimestampCounter, .signExtendAccumulatorHigh, .helper:
       return 0
     }
   }
@@ -5526,6 +5563,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       }
     }
     let block = optimization == .optimizing ? optimizer.optimize(translated).block : translated
+    if mode == .long64,
+      block.statements.contains(where: {
+        switch $0 {
+        case .loadFlagsIntoAH, .storeAHIntoFlags: true
+        default: false
+        }
+      }),
+      !profile.supports(.lahf64)
+    {
+      // The interpreter owns the precise #UD path when LAHF/SAHF is not advertised in long mode.
+      return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
+    }
     // The native context carries GPRs/RIP/flags, but cannot raise a privileged
     // instruction fault. Let the interpreter deliver #GP at the original HLT.
     // Both resident and shared-code lookup keys include this privilege level.

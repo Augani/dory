@@ -311,6 +311,129 @@ import Testing
     #endif
   }
 
+  @Test func loadFlagsIntoAHMaterializesThePendingTier1Producer() throws {
+    #if arch(arm64)
+      let address: UInt64 = 0x5800
+      let bytes: [UInt8] = [
+        0x48, 0x01, 0xD8,  // add rax, rbx
+        0x9F,  // lahf
+      ]
+      let translated = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
+      #expect(translated.statements.last == .loadFlagsIntoAH)
+
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x0100, rbx: UInt64.max),
+        rip: address,
+        rflags: [.reservedOne, .direction]
+      )
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x6000)
+      try memory.write(at: address, bytes: bytes)
+      var interpreted = initial
+      for _ in 0..<2 {
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: memory,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire tier-1 LAHF fixture")
+          return
+        }
+      }
+
+      var tier1 = initial
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        tier1Enabled: true
+      )
+      let execution = try #require(executor.execute(
+        bytes: bytes,
+        at: address,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 2,
+        state: &tier1
+      ))
+
+      #expect(execution.block.tier == .tier1)
+      #expect(tier1 == interpreted)
+      #expect(executor.diagnostics.lazyFlagMaterializations == 1)
+    #endif
+  }
+
+  @Test func SAHFAndLAHFRoundTripAcrossLegacyBaselineAndTier1() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x9E, 0x9F]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0xA5A5_A5A5_A5A5_D500),
+        rip: 0x5900,
+        rflags: [.reservedOne, .overflow, .direction]
+      )
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x6000)
+      try memory.write(at: initial.rip, bytes: bytes)
+      var interpreted = initial
+      for _ in 0..<2 {
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: memory,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire SAHF/LAHF fixture")
+          return
+        }
+      }
+
+      for tier1Enabled in [false, true] {
+        var state = initial
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: tier1Enabled
+        )
+        let execution = try #require(executor.execute(
+          bytes: bytes,
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &state
+        ))
+
+        #expect(execution.block.tier == (tier1Enabled ? .tier1 : .baseline))
+        #expect(state == interpreted)
+      }
+    #endif
+  }
+
+  @Test func longModeFlagByteInstructionsHonorTheAdvertisedFeatureGate() throws {
+    #if arch(arm64)
+      let base = DoryX86CPUProfile.compatibleV1
+      let profile = DoryX86CPUProfile(
+        identifier: "test.tier1.no-lahf64",
+        features: base.features.subtracting([.lahf64]),
+        physicalAddressBits: base.physicalAddressBits,
+        linearAddressBits: base.linearAddressBits,
+        virtualTSCFrequencyHz: base.virtualTSCFrequencyHz
+      )
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        cpuProfileIdentifier: profile.identifier,
+        physicalAddressBits: profile.physicalAddressBits,
+        profile: profile,
+        tier1Enabled: true
+      )
+      var state = try DoryX86ArchitecturalState(rip: 0x5A00)
+
+      #expect(try executor.execute(
+        bytes: [0x9F],
+        at: state.rip,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &state
+      ) == nil)
+      #expect(state.rip == 0x5A00)
+    #endif
+  }
+
   @Test func pushFlagsMaterializesWritesAndPublishesStackPointerAtomically() throws {
     #if arch(arm64)
       let address: UInt64 = 0x600

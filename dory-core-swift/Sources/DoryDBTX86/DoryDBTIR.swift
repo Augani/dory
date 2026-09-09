@@ -104,6 +104,8 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case stackPush(source: DoryIROperand)
   case stackPushFlags
   case stackPop(destination: DoryIROperand)
+  case loadFlagsIntoAH
+  case storeAHIntoFlags
   case clearInterruptFlag
   case memoryFence(DoryX86MemoryFence)
   case readSegment(DoryX86SegmentRegister, destination: DoryIROperand)
@@ -495,6 +497,8 @@ public struct DoryX86IRTranslator: Sendable {
       )
     case .pushFlags(.quadword) where mode == .long64:
       return ([.stackPushFlags], nil)
+    case .flagByte(let load):
+      return ([load ? .loadFlagsIntoAH : .storeAHIntoFlags], nil)
     case .pop(let destination) where mode == .long64:
       return (
         [
@@ -1105,7 +1109,8 @@ public struct DoryX86IRTranslator: Sendable {
       }
     case .signExtendAccumulatorHigh(let width):
       return width == .i32 || width == .i64
-    case .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .memoryFence:
+    case .loadFlagsIntoAH, .storeAHIntoFlags, .clearInterruptFlag, .setDirectionFlag,
+      .readTimestampCounter, .memoryFence:
       return true
     case .helper:
       return false
@@ -1200,8 +1205,9 @@ public struct DoryX86IRTranslator: Sendable {
       return .none
     case .readSegment(_, let destination):
       return isMemory(destination) ? .write : .none
-    case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
-      .signExtendAccumulatorHigh, .memoryFence, .helper:
+    case .effectiveAddress, .loadFlagsIntoAH, .storeAHIntoFlags, .clearInterruptFlag,
+      .setDirectionFlag, .readTimestampCounter, .signExtendAccumulatorHigh, .memoryFence,
+      .helper:
       return .none
     }
   }

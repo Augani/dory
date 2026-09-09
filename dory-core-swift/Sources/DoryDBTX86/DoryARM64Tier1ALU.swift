@@ -1270,6 +1270,32 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     words.append(contentsOf: fragment)
   }
 
+  /// Materializes an older record and applies SAHF's AH image to the five writable status flags.
+  func emitStoreAHIntoFlags(into words: inout [UInt32]) {
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 31, right: 0,
+        shiftAmount: 8, logicalRightShift: true, destination: 16))
+    Self.emitImmediate(0xD5, register: 17, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .and, is64Bit: true, left: 16, right: 17, destination: 16))
+    Self.emitImmediate(~UInt64(0xD5), register: 17, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .and, is64Bit: true, left: 25, right: 17, destination: 25))
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 25, right: 16, destination: 25))
+    Self.emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 17, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 25, right: 17, destination: 25))
+    words.append(contentsOf: fragment)
+  }
+
   /// Materializes and stages the architecturally sanitized PUSHF image in a pinned register.
   /// The tier-1 memory lowering consumes this value when it emits the stack write.
   func emitPushedFlagsImage(

@@ -173,6 +173,14 @@ struct DoryARM64Tier1Emitter: Sendable {
         nativeFlags = nil
         requiresMemoryCallbacks = true
 
+      case .loadFlagsIntoAH:
+        alu.emitLoadFlagsIntoAH(into: &body)
+        nativeFlags = nil
+
+      case .storeAHIntoFlags:
+        alu.emitStoreAHIntoFlags(into: &body)
+        nativeFlags = nil
+
       default:
         return nil
       }

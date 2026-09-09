@@ -116,6 +116,15 @@ public struct DoryIROptimizer: Sendable {
         invalidate(destination, knownConstants: &knownConstants)
         invalidateStackPointer(knownConstants: &knownConstants)
 
+      case .loadFlagsIntoAH:
+        statements.append(statement)
+        invalidate(
+          .register(.init(bank: "x86.gpr", index: 0, width: .i64)),
+          knownConstants: &knownConstants)
+
+      case .storeAHIntoFlags:
+        statements.append(statement)
+
       case .signedMultiply(let destination, _, _):
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
