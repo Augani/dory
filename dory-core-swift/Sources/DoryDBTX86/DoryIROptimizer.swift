@@ -158,6 +158,10 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(.register(source), knownConstants: &knownConstants)
 
+      case .exchangeAddMemory(_, let source):
+        statements.append(statement)
+        invalidate(.register(source), knownConstants: &knownConstants)
+
       case .compareExchange:
         statements.append(statement)
         knownConstants.removeAll(keepingCapacity: true)

@@ -106,6 +106,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case doubleShiftRightImmediate(destination: DoryIROperand, source: DoryIROperand, count: UInt8)
   case compareExchange(destination: DoryIROperand, source: DoryIROperand)
   case exchangeMemory(destination: DoryIROperand, source: DoryIRRegister)
+  case exchangeAddMemory(destination: DoryIROperand, source: DoryIRRegister)
   case exchangeRegisters(lhs: DoryIRRegister, rhs: DoryIRRegister)
   case signedMultiply(destination: DoryIROperand, lhs: DoryIROperand, rhs: DoryIROperand)
   case extendMove(destination: DoryIROperand, source: DoryIROperand, signed: Bool)
@@ -552,6 +553,25 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         .next(instruction.nextInstructionAddress)
       )
+    case .exchangeAdd(let destination, let source) where mode == .long64:
+      let destinationOperand = operand(
+        destination,
+        instructionRelativeBase: instruction.nextInstructionAddress
+      )
+      let sourceOperand = operand(
+        source,
+        instructionRelativeBase: instruction.nextInstructionAddress
+      )
+      guard case .memory(_, let memoryWidth) = destinationOperand,
+        memoryWidth == .i32 || memoryWidth == .i64,
+        case .register(let sourceRegister) = sourceOperand,
+        sourceRegister.bank == "x86.gpr", sourceRegister.index < 16,
+        sourceRegister.width == memoryWidth
+      else { return fallback(instruction, reason: .interpreter) }
+      return (
+        [.exchangeAddMemory(destination: destinationOperand, source: sourceRegister)],
+        .next(instruction.nextInstructionAddress)
+      )
     case .signedMultiply(let destination, let lhs, let rhs):
       return (
         [
@@ -639,6 +659,7 @@ public struct DoryX86IRTranslator: Sendable {
 
   private func supportsNativeLockPrefix(_ operation: DoryX86InstructionOperation) -> Bool {
     if case .compareExchange = operation { return true }
+    if case .exchangeAdd = operation { return true }
     return false
   }
 
@@ -925,6 +946,12 @@ public struct DoryX86IRTranslator: Sendable {
         source.width == width && isJITGeneralRegister(source)
       else { return false }
       return true
+    case .exchangeAddMemory(let destination, let source):
+      guard case .memory(let address, let width) = destination,
+        (width == .i32 || width == .i64) && isJITMemoryAddress(address),
+        source.width == width && isJITGeneralRegister(source)
+      else { return false }
+      return true
     case .compareExchange(let destination, let source):
       guard case .memory(let address, let width) = destination,
         (width == .i32 || width == .i64) && isJITMemoryAddress(address),
@@ -1019,7 +1046,7 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(source) ? .read : .none
     case .compareExchange:
       return .write
-    case .exchangeMemory:
+    case .exchangeMemory, .exchangeAddMemory:
       return .write
     case .exchangeRegisters:
       return .none

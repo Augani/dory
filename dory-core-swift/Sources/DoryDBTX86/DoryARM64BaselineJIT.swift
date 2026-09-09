@@ -86,6 +86,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let writeTLBHitCounterOffset = 37 * 8
   private static let atomicCompareExchangeOffset = 38 * 8
   private static let atomicExchangeOffset = 39 * 8
+  private static let atomicFetchAddOffset = 40 * 8
   private static let rspOffset = 4 * 8
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
@@ -222,6 +223,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination) || isFSOrGS(source)
       case .exchangeMemory(let destination, _):
         return isFSOrGS(destination)
+      case .exchangeAddMemory(let destination, _):
+        return isFSOrGS(destination)
       case .readSegment(_, let destination):
         return isFSOrGS(destination)
       case .effectiveAddress:
@@ -237,7 +240,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     switch statement {
     case .copy(.memory, _), .binary(_, .memory, _, true), .unary(_, .memory),
       .shift(_, .memory, _), .stackPush, .stackPushFlags, .compareExchange(.memory, _),
-      .exchangeMemory(.memory, _): true
+      .exchangeMemory(.memory, _), .exchangeAddMemory(.memory, _): true
     case .bitTestMemoryImmediate(let operation, .memory, _): operation != .test
     default: false
     }
@@ -337,6 +340,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitCompareExchange(destination: destination, source: source, into: &words)
     case .exchangeMemory(let destination, let source):
       return emitExchangeMemory(destination: destination, source: source, into: &words)
+    case .exchangeAddMemory(let destination, let source):
+      return emitExchangeAddMemory(destination: destination, source: source, into: &words)
     case .signedMultiply(let destination, let lhs, let rhs):
       return emitSignedMultiply(destination: destination, lhs: lhs, rhs: rhs, into: &words)
     case .extendMove(let destination, let source, let signed):
@@ -813,7 +818,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .extendMove(_, let source, _):
       if case .memory = source { return 1 }
       return 0
-    case .compareExchange, .exchangeMemory, .memoryFence:
+    case .compareExchange, .exchangeMemory, .exchangeAddMemory, .memoryFence:
       return 1
     case .readSegment(_, let destination):
       if case .memory = destination { return 1 }
@@ -2075,6 +2080,54 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeLoad64(register: 10, base: 31, byteOffset: 80))
     words.append(encodeStore64(register: 10, base: 19, byteOffset: Int(source.index) * 8))
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    return true
+  }
+
+  private func emitExchangeAddMemory(
+    destination: DoryIROperand,
+    source: DoryIRRegister,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard case .memory(let address, let width) = destination,
+      width == .i32 || width == .i64,
+      source.bank == "x86.gpr", source.index < 16, source.width == width,
+      emitMemoryAddress(address, into: 12, words: &words),
+      load(source, into: 10, words: &words)
+    else { return false }
+
+    words.append(encodeStore64(register: 10, base: 31, byteOffset: 64))
+    words.append(encodeStore64(register: 12, base: 31, byteOffset: 88))
+    words.append(encodeLoad64(register: 16, base: 19, byteOffset: Self.atomicFetchAddOffset))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 31, 31))
+    emitInterpreterUnless(condition: .notEqual, usesMemory: true, into: &words)
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    words.append(encodeLogical(.or, left: 31, right: 20, destination: 1))
+    words.append(encodeLoad64(register: 2, base: 31, byteOffset: 88))
+    words.append(encodeLoad64(register: 3, base: 31, byteOffset: 64))
+    words.append(encodeMoveWideZero32(register: 4, immediate: UInt16(width.rawValue / 8)))
+    words.append(encodeAddImmediate64(left: 31, immediate: 80, destination: 5))
+    words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C translated atomic fetch-add)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
+    emitInterpreterUnless(condition: .equal, usesMemory: true, into: &words)
+
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    words.append(encodeLoad64(register: 9, base: 31, byteOffset: 80))
+    words.append(encodeLoad64(register: 10, base: 31, byteOffset: 64))
+    words.append(
+      encodeAddSubtractSetFlags(
+        add: true,
+        is64Bit: width == .i64,
+        9,
+        10,
+        11
+      ))
+    emitX86ArithmeticFlags(
+      subtraction: false,
+      includesAuxiliaryCarry: true,
+      resultRegister: 11,
+      into: &words
+    )
+    words.append(encodeStore64(register: 9, base: 19, byteOffset: Int(source.index) * 8))
     return true
   }
 
@@ -3614,7 +3667,8 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
   public static let writeTLBHitCounterWordIndex = 37
   public static let atomicCompareExchangeWordIndex = 38
   public static let atomicExchangeWordIndex = 39
-  public static let contextWordCount = 40
+  public static let atomicFetchAddWordIndex = 40
+  public static let contextWordCount = 41
 
   private let lock = NSLock()
   private let region: OpaquePointer
@@ -5451,6 +5505,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       ? 0 : UInt64(dory_jit_atomic_compare_exchange_from_context_address())
     context[DoryJITExecutableRegion.atomicExchangeWordIndex] =
       translationTLB == nil ? 0 : UInt64(dory_jit_atomic_exchange_from_context_address())
+    context[DoryJITExecutableRegion.atomicFetchAddWordIndex] =
+      translationTLB == nil ? 0 : UInt64(dory_jit_atomic_fetch_add_from_context_address())
   }
 
   private static func apply(
