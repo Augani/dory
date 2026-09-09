@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-memory-cmov-ab",
+  "observedAt": "2026-09-09T12:42:15Z",
+  "status": "engineering-evidence",
+  "qualification": "bounded local early-boot measurement; not userspace, workload, hardware, or release qualification",
+  "source": {
+    "commit": "b4e8e2019a53c65389f36502c64dc292bb7f1034",
+    "memoryCMOVImplementationCommit": "b7cc8ea8c982533eb19f44edcc89060f40044e3f",
+    "semanticRegressionCommit": "18704dc9d1a2b3160382c140d6ed916773f57ae8",
+    "runnerSHA256": "27d9c1e0a67aa464cb3e7af770c1ec1780dad71386a023e8b0ac45da733248df",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "commandLine": "console=ttyS0 rdinit=/init panic=-1 plus a unique runner-owned dory.pvh_run_id",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "guestClock": "deterministic",
+    "maximumInstructions": 100000000,
+    "wallSeconds": 120
+  },
+  "method": {
+    "description": "Six fresh runner processes used the same verified inputs, release binary, limits, and requested workloads. Three tier-one-enabled runs were followed by three disabled controls; every run deliberately stopped at exactly 100,000,000 retired instructions.",
+    "rawLocalDirectory": ".dory-build/a05-pvh-tier1-cmov-20260909"
+  },
+  "trials": [
+    {
+      "name": "enabled-1",
+      "runID": "90b9cea5-402f-445b-9d0e-9f45eeb06404",
+      "tier1Enabled": true,
+      "elapsedNanoseconds": 8284175459,
+      "retiredInstructions": 100000000,
+      "outcome": "instruction-budget"
+    },
+    {
+      "name": "enabled-2",
+      "runID": "f37fe544-9b6c-453a-b91b-36fd0edc03c3",
+      "tier1Enabled": true,
+      "elapsedNanoseconds": 8763320709,
+      "retiredInstructions": 100000000,
+      "outcome": "instruction-budget"
+    },
+    {
+      "name": "enabled-3",
+      "runID": "8e4b29cf-39dc-4cc2-ac7c-4ab57dac70c6",
+      "tier1Enabled": true,
+      "elapsedNanoseconds": 8464036042,
+      "retiredInstructions": 100000000,
+      "outcome": "instruction-budget"
+    },
+    {
+      "name": "disabled-1",
+      "runID": "0b6aad3b-e139-49c5-8b8e-43f4174f82ce",
+      "tier1Enabled": false,
+      "elapsedNanoseconds": 60914981041,
+      "retiredInstructions": 100000000,
+      "outcome": "instruction-budget"
+    },
+    {
+      "name": "disabled-2",
+      "runID": "fad896a7-5aa1-41e2-8705-a803a81a911b",
+      "tier1Enabled": false,
+      "elapsedNanoseconds": 60687299292,
+      "retiredInstructions": 100000000,
+      "outcome": "instruction-budget"
+    },
+    {
+      "name": "disabled-3",
+      "runID": "c26ea952-de95-4ba9-b37a-12b47fcb8437",
+      "tier1Enabled": false,
+      "elapsedNanoseconds": 60580124834,
+      "retiredInstructions": 100000000,
+      "outcome": "instruction-budget"
+    }
+  ],
+  "enabledStableCounters": {
+    "baselineJITInstructions": 99916355,
+    "baselineJITBlocks": 46085342,
+    "interpreterInstructions": 83645,
+    "retiredInterruptReturns": 6556,
+    "compiledBlocks": 4128,
+    "declinedCompilations": 496,
+    "tier1CompilationAttempts": 4624,
+    "tier1CompilationDeclines": 2277,
+    "tier1CompiledBlocks": 2347,
+    "lazyFlagMaterializations": 39944352,
+    "negativeCacheHits": 18896,
+    "terminalRIP": "0xffffffff81e2db20",
+    "terminalSymbol": "delay_loop+32",
+    "terminalTSC": 10000000000
+  },
+  "aggregate": {
+    "disabledElapsedNanoseconds": [60914981041, 60687299292, 60580124834],
+    "enabledElapsedNanoseconds": [8284175459, 8763320709, 8464036042],
+    "disabledMedianNanoseconds": 60687299292,
+    "enabledMedianNanoseconds": 8464036042,
+    "disabledMedianInstructionsPerSecond": 1647791.2374852102,
+    "enabledMedianInstructionsPerSecond": 11814694.491349379,
+    "elapsedReductionPercent": 86.05303557623341,
+    "speedupRatio": 7.170019006400635,
+    "throughputUpliftPercent": 617.0019006400635,
+    "tier1AdmissionPercentOfAttempts": 50.75692041522492,
+    "tier1DeclinePercentOfAttempts": 49.24307958477508,
+    "lazyFlagMaterializationsPer100RetiredInstructions": 39.944352,
+    "lazyFlagMaterializationsPer100NativeInstructions": 39.9777914236363,
+    "nativeInstructionPercentWithTier1Enabled": 99.916355
+  },
+  "nextMeasuredDeclines": [
+    {
+      "guestRIP": "0xffffffff8129a809",
+      "symbol": "text_poke_early+89",
+      "guestByteCount": 2,
+      "declineReason": "interpreterHelper",
+      "hitCount": 9488,
+      "instruction": "iretq"
+    },
+    {
+      "guestRIP": "0xffffffff81e27324",
+      "symbol": "vsnprintf+196",
+      "guestByteCount": 21,
+      "declineReason": "nativeEmitter",
+      "hitCount": 1043
+    },
+    {
+      "guestRIP": "0xffffffff81e27309",
+      "symbol": "vsnprintf+169",
+      "guestByteCount": 10,
+      "declineReason": "nativeEmitter",
+      "hitCount": 1035
+    }
+  ],
+  "verification": {
+    "measuredHighCanonicalMemoryCMOV": "passed against the interpreter for true and false predicates",
+    "completeMeasuredDelayTSCBody": "all nine instructions passed against the interpreter for both conditional-memory paths",
+    "dbtAndPCGate": "1,427 tests in 171 suites passed; one pinned PVH environment test skipped because its environment variables were absent",
+    "enabledStateAndCounterStability": "All three enabled trials reported byte-for-byte identical architectural state, execution statistics, and JIT counters.",
+    "inputHashesReverifiedByEveryRunnerInvocation": true
+  },
+  "interpretation": "Admitting the measured scalar-load and memory-CMOV delay_tsc body moves 99.916% of this bounded run's instructions into native blocks and improves median throughput by 7.17x over the unchanged tier-one-disabled control. The result measures the complete current tier-one path, not the memory-CMOV change in isolation.",
+  "limitations": [
+    "Every run intentionally exhausted its 100,000,000-instruction budget before console output or userspace; no requested guest workload ran and no boot-success claim is made.",
+    "The tier-one-enabled endpoint differs from the older pre-memory-CMOV enabled series and from the disabled control because each instruction-budget sample stops wherever its execution path reaches that boundary; the exact measured block has separate interpreter-differential semantic coverage.",
+    "KASLR remained enabled, so disabled runs did not have identical terminal registers or RIPs; they are timing controls, not a cross-setting architectural-equivalence oracle.",
+    "Three samples per setting on one Apple M2 Pro do not establish a cross-host confidence interval or any G1-G5 release target.",
+    "Raw run receipts remain in an ignored local build directory and are not release evidence."
+  ]
+}
