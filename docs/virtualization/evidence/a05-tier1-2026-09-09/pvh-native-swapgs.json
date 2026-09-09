@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-native-swapgs",
+  "observedAt": "2026-09-09T18:40:01Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "30462f24da83216576b6290a8af72f210ea24201",
+    "reprotectionFixCommit": "8277ef0caef092247e5bc873ed591c9e71a60dc1",
+    "candidateRunnerSHA256": "6719f6f5475fa038ab24d67794449acebe698845e9931161ee6291b7ff9b0320",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "measuredSites": [
+      {
+        "guestRIP": "0xffffffff81000084",
+        "symbol": "entry_SYSCALL_64+0x4",
+        "instruction": "swapgs",
+        "bytes": "0f 01 f8",
+        "priorNegativeCacheHits": 10245,
+        "remainsInCandidateRunNegativeCache": false
+      },
+      {
+        "guestRIP": "0xffffffff81001b2d",
+        "symbol": "error_entry+0x4d",
+        "instruction": "swapgs",
+        "bytes": "0f 01 f8",
+        "priorNegativeCacheHits": 10201,
+        "remainsInCandidateRunNegativeCache": false
+      }
+    ],
+    "rule": "Decoded SWAPGS is admitted only for long-mode CPL0 blocks; legacy modes and nonzero CPL decline atomically before native publication.",
+    "implementation": "An explicit flag-neutral IR statement exchanges the visible GS base and IA32_KERNEL_GS_BASE context words in either native tier. An append-only context marker publishes both GS MSRs only after a native SWAPGS, preserving byte-for-byte untouched architectural snapshots.",
+    "deferred": "All other privileged system operations retain their existing interpreter boundaries."
+  },
+  "verification": {
+    "focusedGate": "61 tests in DoryARM64Tier1ABITests, DoryARM64Tier1JITTests, and DoryX86IRTests passed.",
+    "dbtAndPCGate": "1,446 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Both measured sites match the interpreter in the legacy baseline and tier one, including an intentionally inconsistent untouched IA32_GS_BASE image, a CMP to SWAPGS to JNE native-flags path, and atomic user-mode decline.",
+    "abiCoverage": "The stable context layout is 53 words; helper-boundary regression coverage proves that the SWAPGS publication marker does not normalize untouched GS state.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "d2608618-6ba5-437b-bcfe-63fe4fb018a7",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 143046279167,
+    "retiredInstructions": 734270253,
+    "throughputMIPS": 5.133095787432,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731437436,
+    "interpreterInstructions": 2832817,
+    "deliveredMaskableInterrupts": 58026,
+    "retiredInterruptReturns": 146270,
+    "byteValidationHits": 72190,
+    "codeGenerationMismatches": 78089,
+    "sharedCodeHits": 114614,
+    "compiledBlocks": 186131,
+    "tier1CompilationAttempts": 224847,
+    "tier1CompilationDeclines": 125890,
+    "tier1DeclinePercentOfAttempts": 55.989183756065,
+    "tier1CompiledBlocks": 98957,
+    "lazyFlagMaterializations": 59505669,
+    "translationCacheInvalidations": 231885
+  },
+  "unmatchedPriorRunComparison": {
+    "memorySETccElapsedNanoseconds": 145370171292,
+    "nativeSWAPGSElapsedNanoseconds": 143046279167,
+    "directionalElapsedReductionPercent": 1.598603141446,
+    "interpretation": "The executions have different interrupt, compilation, trace, and instruction totals. The elapsed difference is reported for completeness and is not a performance claim."
+  },
+  "nextVisibleKernelHelperSites": [
+    {
+      "guestRIP": "0xffffffff81e1c883",
+      "instruction": "btq %rdx,0x228(%r15)",
+      "guestByteCount": 8,
+      "hitCount": 28301,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff813cd9a6",
+      "instruction": "rep movsq (%rsi),%es:(%rdi)",
+      "guestByteCount": 3,
+      "hitCount": 13637,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81e35772",
+      "symbol": "sync_regs+0x22",
+      "instruction": "rep movsq (%rsi),%es:(%rdi)",
+      "guestByteCount": 3,
+      "hitCount": 11653,
+      "declineReason": "interpreterHelper"
+    }
+  ],
+  "interpretation": "The two measured hot kernel SWAPGS sites are absent from the retained negative-cache sample after operation-wide long-mode CPL0 admission, and the authenticated workload completes. A05.2 remains open because 125,890 of 224,847 full-run tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no performance delta and does not satisfy G1-G5."
+  ]
+}
