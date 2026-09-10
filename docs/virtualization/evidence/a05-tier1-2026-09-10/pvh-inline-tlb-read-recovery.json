@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-inline-tlb-read-recovery",
+  "observedAt": "2026-09-10T10:15:28Z",
+  "status": "passed-narrow-local-production-reliability-check",
+  "qualification": "local A05.4 inline-TLB read-fault recovery acceptance; not write/atomic recovery, hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "broadCandidateCommit": "48750d110",
+    "readOnlyCorrectionCommit": "618a00901",
+    "candidateRunnerSHA256": "f24478b441a405710a5002b090bd7604d82b17d86ee1d031f227b8394bd17cb7",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "acceptedBoundary": "A generated inline-TLB read resolver records x30 after the architectural walker returns a page fault. The dispatcher resolves that PC through the instruction side table and publishes only the completed prefix.",
+    "rejectedBoundary": "Publishing the same prefix for generated inline-TLB write and atomic resolver page faults is unsafe. Those paths retain whole-block rollback and interpreter replay.",
+    "hostControlBoundary": "Generated memory epilogues restore incoming FP/LR from append-only context words rather than generated stack storage."
+  },
+  "verification": {
+    "focused": "21 tests in the ABI, metadata-fault, and restartability suites passed.",
+    "deterministicAggregate": "1,548 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the same pinned inputs were executed explicitly.",
+    "writeAtomicFailClosed": "A real MAP_JIT regression proves inline-TLB write and locked compare-exchange page faults publish neither a host PC nor a speculative context image."
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "rejectedBroadRun": {
+    "runID": "3f8a9f92-be26-48e3-a0e0-3cd223771c8d",
+    "runnerSHA256": "d754cd9478c65babba060d7ff793543246e4d2388ca481762b1c3b1d455e31e2",
+    "diagnosticReceiptSHA256": "9e092b25a3675168a8397ec9b39beea7ca6eac2b6c0e9b31d3796f89474312db",
+    "elapsedNanoseconds": 230094351458,
+    "retiredInstructions": 634049219,
+    "outcome": "guest-reset",
+    "guestReceiptSeen": false,
+    "failure": "The init process executed from an invalid user address, raised an NX page fault, panicked the guest, and reset at the same historical boundary as the earlier broad inline-TLB recovery attempt."
+  },
+  "acceptedRuns": [
+    {
+      "runID": "0d742b28-f6a8-458b-a889-29bccc1b0a8a",
+      "diagnosticReceiptSHA256": "2c980cf0e278eb02642a9cd0dd2d7d19d146004fd747f2401d16e0821b5e54b0",
+      "elapsedNanoseconds": 254670519291,
+      "retiredInstructions": 732842779,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 76416,
+      "nativeDispatcherEntries": 189126607,
+      "directlyChainedBlocks": 44914444,
+      "translationCachePageFaults": 2192,
+      "pendingWorkExits": 1,
+      "pendingWorkMaximumRetiredInstructions": 0
+    },
+    {
+      "runID": "53d98c64-d453-4e14-8510-31e0abbb57fe",
+      "diagnosticReceiptSHA256": "a25261fb470ca31427c6b7b361d7ad7ee10304d48cf4e76d1c68e2a078b13084",
+      "elapsedNanoseconds": 253915173916,
+      "retiredInstructions": 733290719,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 76415,
+      "nativeDispatcherEntries": 189115340,
+      "directlyChainedBlocks": 44956286,
+      "translationCachePageFaults": 2217,
+      "pendingWorkExits": 1,
+      "pendingWorkMaximumRetiredInstructions": 0
+    }
+  ],
+  "workloads": [
+    "bootstrap.filesystems",
+    "syscall.identity",
+    "process.creation_exec_wait",
+    "memory.allocation_copy",
+    "signal.handler_return",
+    "timer.sleep_elapsed",
+    "filesystem.write_read_sync"
+  ],
+  "disposition": {
+    "inlineReadPrefixRecoveryAccepted": true,
+    "inlineWritePrefixRecoveryAccepted": false,
+    "inlineAtomicPrefixRecoveryAccepted": false,
+    "reason": "Two independent read-only runs crossed the deterministic broad-candidate reset boundary, four aggregate code-cache wraps, all seven authenticated workloads, and clean ACPI poweroff.",
+    "remainingA05_4Work": "Inline write and atomic page faults need an instruction-entry architectural checkpoint or another production-proven mechanism before precise-prefix publication can replace whole-block replay."
+  },
+  "limitations": [
+    "Two passing local runs are a bounded reliability check, not cross-host qualification.",
+    "The experiment isolates write/atomic publication as a class but does not identify the exact instruction shape that corrupted init state.",
+    "This evidence does not satisfy the greater-than-95-percent dispatcher gate or G1-G5."
+  ]
+}
