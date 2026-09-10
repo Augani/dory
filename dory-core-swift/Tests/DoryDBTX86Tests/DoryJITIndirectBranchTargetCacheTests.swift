@@ -6,6 +6,25 @@ import Testing
   @Test func defaultsToThePlanSizeAndRequiresPowerOfTwoStorage() throws {
     let cache = try DoryJITIndirectBranchTargetCache()
     #expect(cache.entryCount == 4_096)
+    #expect(cache.entryMask == 4_095)
+    #expect(cache.entriesBaseAddress != 0)
+    #expect(cache.entriesBaseAddress.isMultiple(of: UInt64(MemoryLayout<UInt64>.alignment)))
+    var context = [UInt64](repeating: .max, count: DoryARM64Tier1ABI.contextWordCount)
+    context.withUnsafeMutableBufferPointer {
+      DoryARM64BaselineExecutor.populateExecutionContext(
+        $0,
+        from: .reset(),
+        memory: nil,
+        indirectBranchTargetCache: cache,
+        codeCacheGeneration: 7
+      )
+    }
+    #expect(context[DoryARM64Tier1ABI.ContextWord.ibtcEntriesBase.rawValue]
+      == cache.entriesBaseAddress)
+    #expect(context[DoryARM64Tier1ABI.ContextWord.ibtcEntryMask.rawValue] == 4_095)
+    #expect(context[DoryARM64Tier1ABI.ContextWord.ibtcGeneration.rawValue] == 7)
+    #expect(context[DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.rawValue] == 0)
+    #expect(context[DoryARM64Tier1ABI.ContextWord.ibtcInlineMisses.rawValue] == 0)
     #expect(DoryJITIndirectBranchTargetCache.defaultEntryCount == 4_096)
     #expect(throws: DoryJITIndirectBranchTargetCacheError.invalidEntryCount(0)) {
       _ = try DoryJITIndirectBranchTargetCache(entryCount: 0)

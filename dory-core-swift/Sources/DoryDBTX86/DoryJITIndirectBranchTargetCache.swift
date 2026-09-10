@@ -41,6 +41,11 @@ final class DoryJITIndirectBranchTargetCache: @unchecked Sendable {
   }
 
   var entryCount: Int { dory_jit_ibtc_entry_count(storage) }
+  var entryMask: UInt64 { UInt64(entryCount - 1) }
+  var entriesBaseAddress: UInt64 {
+    guard let entries = dory_jit_ibtc_entries(storage) else { return 0 }
+    return UInt64(UInt(bitPattern: entries))
+  }
 
   func index(for guestRIP: UInt64) -> Int {
     dory_jit_ibtc_index(storage, guestRIP)

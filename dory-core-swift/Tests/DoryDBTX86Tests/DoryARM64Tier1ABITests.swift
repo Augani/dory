@@ -41,7 +41,7 @@ import Testing
   }
 
   @Test func stableContextLayoutMatchesTheExecutableBaselineBoundary() {
-    #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<59))
+    #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<64))
     #expect(DoryARM64Tier1ABI.contextWordCount == DoryJITExecutableRegion.contextWordCount)
     #expect(DoryARM64Tier1ABI.ContextWord.hostAddressSpaceBase.rawValue
       == DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex)
@@ -62,6 +62,11 @@ import Testing
     #expect(DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue == 56)
     #expect(DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue == 57)
     #expect(DoryARM64Tier1ABI.ContextWord.chainLastGuestRIP.rawValue == 58)
+    #expect(DoryARM64Tier1ABI.ContextWord.ibtcEntriesBase.rawValue == 59)
+    #expect(DoryARM64Tier1ABI.ContextWord.ibtcEntryMask.rawValue == 60)
+    #expect(DoryARM64Tier1ABI.ContextWord.ibtcGeneration.rawValue == 61)
+    #expect(DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.rawValue == 62)
+    #expect(DoryARM64Tier1ABI.ContextWord.ibtcInlineMisses.rawValue == 63)
     for word in DoryARM64Tier1ABI.ContextWord.allCases {
       #expect(word.byteOffset == word.rawValue * MemoryLayout<UInt64>.stride)
     }

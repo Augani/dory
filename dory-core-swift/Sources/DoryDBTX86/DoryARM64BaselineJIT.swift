@@ -4622,6 +4622,10 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
   public static let atomicRMWWordIndex = DoryARM64Tier1ABI.ContextWord.atomicRMW.rawValue
   public static let atomicCompareExchangePairWordIndex =
     DoryARM64Tier1ABI.ContextWord.atomicCompareExchangePair.rawValue
+  public static let ibtcEntriesBaseWordIndex =
+    DoryARM64Tier1ABI.ContextWord.ibtcEntriesBase.rawValue
+  public static let ibtcEntryMaskWordIndex = DoryARM64Tier1ABI.ContextWord.ibtcEntryMask.rawValue
+  public static let ibtcGenerationWordIndex = DoryARM64Tier1ABI.ContextWord.ibtcGeneration.rawValue
   public static let contextWordCount = DoryARM64Tier1ABI.contextWordCount
 
   private let lock = NSLock()
@@ -5092,6 +5096,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let region: DoryJITExecutableRegion
   private let translationTLB: DoryX86JITTLB
   private let blockCache: DoryJITBlockCache
+  private let indirectBranchTargetCache: DoryJITIndirectBranchTargetCache
   private var residentSlots: [ResidentSlot?] = []
   private var freeResidentSlotIndices: [Int] = []
   private var recentEntries: [RecentResidentBlock?] = .init(repeating: nil, count: 256)
@@ -5160,6 +5165,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     region = try DoryJITExecutableRegion(minimumCapacity: self.maximumCodeBytes)
     translationTLB = try DoryX86JITTLB()
     blockCache = try DoryJITBlockCache()
+    indirectBranchTargetCache = try DoryJITIndirectBranchTargetCache()
   }
 
   public var residentBlockCount: Int { lock.withLock { blockCache.count } }
@@ -5239,6 +5245,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
       negativeEntries = .init(repeating: nil, count: negativeEntries.count)
+      indirectBranchTargetCache.removeAll()
       codeCacheEpoch &+= 1
       nextOffset = 0
       invalidateAllTranslations()
@@ -5489,7 +5496,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             from: state,
             memory: memory,
             translationTLB: translationTLB,
-            addressSpaceGeneration: translationGeneration
+            addressSpaceGeneration: translationGeneration,
+            indirectBranchTargetCache: indirectBranchTargetCache,
+            codeCacheGeneration: codeCacheEpoch &+ 1
           )
           var completed = 0
           var blockCount = 0
@@ -5956,7 +5965,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           from: state,
           memory: memory,
           translationTLB: translationTLB,
-          addressSpaceGeneration: translationGeneration
+          addressSpaceGeneration: translationGeneration,
+          indirectBranchTargetCache: indirectBranchTargetCache,
+          codeCacheGeneration: codeCacheEpoch &+ 1
         )
         guard canExecute(resident, context: context) else { return nil }
         let exit = try region.execute(
@@ -6284,6 +6295,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
       negativeEntries = .init(repeating: nil, count: negativeEntries.count)
+      indirectBranchTargetCache.removeAll()
       codeCacheEpoch &+= 1
       nextOffset = 0
       codeCacheWrapCount &+= 1
@@ -6905,7 +6917,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     from state: DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)?,
     translationTLB: DoryX86JITTLB? = nil,
-    addressSpaceGeneration: UInt64 = 0
+    addressSpaceGeneration: UInt64 = 0,
+    indirectBranchTargetCache: DoryJITIndirectBranchTargetCache? = nil,
+    codeCacheGeneration: UInt64 = 0
   ) {
     precondition(context.count == DoryJITExecutableRegion.contextWordCount)
     context[0] = state.registers.rax
@@ -6988,6 +7002,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.chainLastGuestRIP.rawValue] = 0
+    context[DoryJITExecutableRegion.ibtcEntriesBaseWordIndex] =
+      indirectBranchTargetCache?.entriesBaseAddress ?? 0
+    context[DoryJITExecutableRegion.ibtcEntryMaskWordIndex] =
+      indirectBranchTargetCache?.entryMask ?? 0
+    context[DoryJITExecutableRegion.ibtcGenerationWordIndex] =
+      indirectBranchTargetCache == nil ? 0 : codeCacheGeneration
+    context[DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.ibtcInlineMisses.rawValue] = 0
   }
 
   private func recordLazyFlagMaterializations(
