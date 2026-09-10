@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-inline-tlb-compare-exchange-recovery",
+  "observedAt": "2026-09-10T12:14:49Z",
+  "status": "passed-narrow-local-production-reliability-check",
+  "qualification": "local A05.4 generated compare-exchange page-fault recovery acceptance; not all atomic helpers, hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "d9d9df356",
+    "candidateRunnerSHA256": "db75aec3fd42bf732e9ff992ad9caac06ea769e974798fe72437fc33ccd809bc",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "acceptedBoundary": "The generated direct compare-exchange helper publishes its BLR continuation PC only when its typed result is DORY_JIT_ATOMIC_RESOLUTION_PAGE_FAULT. The existing instruction side table and active write checkpoint then identify and restore the faulting atomic instruction.",
+    "failClosedBoundary": "Compare-exchange fallback and error results do not publish a recovery PC. Exchange, fetch-add, general locked RMW, bit-test RMW, and pair compare-exchange still retain their prior conservative exit paths.",
+    "priorNegativeEvidence": "The earlier broad checkpoint experiment included this one compare-exchange PC publication but was confounded by a missing CALL-terminator checkpoint and one atomic-isolation host signal. This retry runs on top of the accepted terminator-safe checkpoint foundation."
+  },
+  "verification": {
+    "focused": "59 tests in the ABI, metadata-fault, and restartability suites passed.",
+    "deterministicAggregate": "1,552 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the same pinned inputs were executed explicitly.",
+    "targetedCoverage": "A real MAP_JIT absent-page compare-exchange proves exact side-table ownership, an active checkpoint, preserved entry RFLAGS, and preserved RAX."
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "acceptedRuns": [
+    {
+      "runID": "140ca8e8-7107-43ff-af2c-81a72a40dcf8",
+      "diagnosticReceiptSHA256": "e9652c6dcc9736ea898a73481185ba6803fbfc20013e721a76fcf7c97e1f56a1",
+      "elapsedNanoseconds": 245315091875,
+      "retiredInstructions": 733131164,
+      "baselineJITInstructions": 730310018,
+      "interpreterInstructions": 2821146,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 74997,
+      "nativeDispatcherEntries": 190104771,
+      "directlyChainedBlocks": 44915008,
+      "translationCachePageFaults": 732,
+      "pendingWorkExits": 1,
+      "pendingWorkMaximumRetiredInstructions": 0
+    },
+    {
+      "runID": "935220bd-f3a5-49e8-9186-c3de20a41e1e",
+      "diagnosticReceiptSHA256": "6267be7bc5c42c1bf25651baf4e8bd0db5756fe414fce6419179064940b541f3",
+      "elapsedNanoseconds": 231414415458,
+      "retiredInstructions": 733590737,
+      "baselineJITInstructions": 730790731,
+      "interpreterInstructions": 2800006,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 75170,
+      "nativeDispatcherEntries": 189288358,
+      "directlyChainedBlocks": 44918181,
+      "translationCachePageFaults": 741,
+      "pendingWorkExits": 1,
+      "pendingWorkMaximumRetiredInstructions": 0
+    }
+  ],
+  "workloads": [
+    "bootstrap.filesystems",
+    "syscall.identity",
+    "process.creation_exec_wait",
+    "memory.allocation_copy",
+    "signal.handler_return",
+    "timer.sleep_elapsed",
+    "filesystem.write_read_sync"
+  ],
+  "disposition": {
+    "compareExchangePrefixRecoveryAccepted": true,
+    "allAtomicPrefixRecoveryAccepted": false,
+    "reason": "The status-specific MAP_JIT proof and two independent clean runs crossed both prior failure modes, four aggregate code-cache wraps, all seven authenticated workloads, and clean ACPI poweroff.",
+    "remainingA05_4Work": "The other four generated atomic helper families require page-fault-specific PC publication, focused coverage, and production reliability evidence before the atomic class and A05.4 can close."
+  },
+  "limitations": [
+    "Two passing local runs are a bounded reliability check, not cross-host qualification.",
+    "The production fixture proves overall reliability but does not assert that every generated atomic helper faulted during the runs.",
+    "This evidence does not satisfy the greater-than-95-percent dispatcher gate or G1-G5."
+  ]
+}
