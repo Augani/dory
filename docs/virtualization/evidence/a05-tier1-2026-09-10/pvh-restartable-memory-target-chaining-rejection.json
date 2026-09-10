@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-restartable-memory-target-chaining-rejection",
+  "observedAt": "2026-09-10T13:09:36Z",
+  "status": "rejected-and-reverted",
+  "qualification": "negative local A05.3 evidence; the candidate is not retained and does not qualify A05.3, G1-G5, or a release",
+  "source": {
+    "candidateCommit": "a32863d3f",
+    "revertCommit": "6daaad647",
+    "candidateRunnerSHA256": "36e2a35027b77bfcf8db8fd964fce88f0c4e6445255eb28c41aeb28bf24e3f34",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "attemptedBoundary": "An append-only context word let every generated memory-bearing block select its own restartable-read policy on entry, including after a raw direct or indirect link. The runtime target filter then admitted multi-access blocks as well as the separately accepted single-access class.",
+    "focusedResult": "A two-read chained-target regression passed in baseline and tier-one modes, including a second-read decline, exact prefix recovery, preserved destination state, and one dispatcher entry.",
+    "productionFailure": "The frozen fixture reached /init but soft-locked PID 395 in unmap_page_range during execve, emitted no authenticated workload receipt, and exhausted the full one-billion-instruction budget."
+  },
+  "verification": {
+    "targeted": "The ABI, metadata, direct multi-access chain, and existing restartable-read tests passed.",
+    "deterministicAggregate": "1,554 tests in 179 suites passed with test parallelism disabled before the production run.",
+    "productionDisposition": "Rejected despite unit and aggregate success because the pinned production safety gate is authoritative."
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "failedRun": {
+    "runID": "8347504b-dc01-4d74-a77e-b519454c9f40",
+    "diagnosticReceiptSHA256": "cd44e3abdf5785610233ee91f6365a92bfde0a7d079969b2b209337357ffb7e5",
+    "elapsedNanoseconds": 408129991209,
+    "retiredInstructions": 1000000000,
+    "baselineJITInstructions": 996829993,
+    "interpreterInstructions": 3170007,
+    "outcome": "instruction-budget",
+    "exitCode": 1,
+    "guestReceiptSeen": false,
+    "workloadsPassed": false,
+    "terminalSymbol": "unmap_page_range+0x671",
+    "softLockupSymbol": "unmap_page_range+0x683",
+    "softLockupTask": "init:395",
+    "nativeDispatcherEntries": 150643215,
+    "directlyChainedBlocks": 159546695,
+    "withinRunDispatcherReductionPercent": 51.4351659601,
+    "dispatcherEntriesPerMillionInstructions": 150643.215,
+    "directChainPatches": 606899,
+    "directChainUnlinks": 589016,
+    "indirectBranchTargetCacheHits": 331567,
+    "indirectBranchTargetCacheMisses": 19012134,
+    "translationCachePageFaults": 79
+  },
+  "disposition": {
+    "candidateRetained": false,
+    "a05_3DispatcherGatePassed": false,
+    "requiredDispatcherReductionPercent": 95,
+    "measuredDispatcherReductionPercent": 51.4351659601,
+    "nextBoundary": "Retain accepted single-access target chaining. Separate read-only multi-access targets from read-modify/write and stack-memory targets before another production widening."
+  },
+  "limitations": [
+    "The terminal sample establishes a soft lockup but not the exact corrupting instruction or first divergent state.",
+    "The experiment widened all restartable multi-access targets together, so it does not distinguish read-only blocks from read-modify/write or stack-memory blocks.",
+    "The measured dispatcher share is failure-run telemetry and is not a performance acceptance result."
+  ]
+}
