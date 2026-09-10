@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-inline-tlb-write-checkpoint-rejection",
+  "observedAt": "2026-09-10T10:43:48Z",
+  "status": "rejected-production-safety-candidate",
+  "qualification": "local A05.4 negative evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "434c50d5f",
+    "revertCommit": "d6822d4a4",
+    "baselineReadOnlyCommit": "618a00901"
+  },
+  "candidate": {
+    "description": "Baseline memory-writing instructions checkpointed the exact IR-derived GPR write set plus RFLAGS at instruction entry. Inline read, write, and atomic resolver faults published their generated return PC after the architectural walker returned.",
+    "targetedVerification": "A MAP_JIT read-succeeds/write-faults RMW regression proved the checkpoint restored the prior register/flags image, preserved the completed prefix, and left memory unchanged.",
+    "productionDisposition": "Rejected and reverted because the targeted model was insufficient for the pinned workload."
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "runs": [
+    {
+      "variant": "read-write-atomic-with-checkpoint",
+      "runnerSHA256": "23b38daffc0214209eec54350ebbf3fd55f7797c46105d1fb186f513ffea3da5",
+      "runID": "6c2f99f5-81f3-41f6-b5bd-e708c537cb76",
+      "diagnosticReceiptSHA256": "a1d42d42e314b18eed868048860f40e9c47569a5904d267a18cc64265410e755",
+      "elapsedNanoseconds": 202931453041,
+      "retiredInstructions": 634321740,
+      "outcome": "guest-reset",
+      "guestReceiptSeen": false,
+      "failure": "init NX page fault and panic"
+    },
+    {
+      "variant": "read-write-with-checkpoint-atomic-conservative",
+      "runnerSHA256": "c75bf7cb65557ded18cf12844357c3c690519f3bdd06f2a2968d6f3718654d92",
+      "runID": "777912b9-b5b7-469e-8091-757e0d2a2b66",
+      "diagnosticReceiptSHA256": "f82add90c9d84f2a28330e81cf5f75e0359df99dac426e273c5c74bc4de74198",
+      "elapsedNanoseconds": 187885645208,
+      "retiredInstructions": 634297720,
+      "outcome": "guest-reset",
+      "guestReceiptSeen": false,
+      "failure": "init NX page fault and panic"
+    },
+    {
+      "variant": "read-atomic-with-checkpoint-write-conservative",
+      "runnerSHA256": "0d46e69799008e1dcdc9106f805ae5ba298d04f4ca9a5c2f2b7e0e387162ab62",
+      "runID": "8620b6dc-a8a9-4cdd-81f4-ef013ed89f9d",
+      "outcome": "host-signal-exit-138",
+      "guestReceiptSeen": false,
+      "diagnosticReceiptWritten": false
+    }
+  ],
+  "disposition": {
+    "checkpointAccepted": false,
+    "writePrefixRecoveryAccepted": false,
+    "atomicPrefixRecoveryAccepted": false,
+    "readPrefixRecoveryRemainsAccepted": true,
+    "reason": "Write-only recovery reproduced the same deterministic init NX panic, while atomic-only recovery terminated the host runner with a native signal. The context checkpoint model therefore does not cover all externally visible state or handoff invariants.",
+    "remainingA05_4Work": "Write and atomic resolver page faults remain on whole-block rollback. Further work requires tracing the exact production faulting host/guest instruction and all side effects, not a broader speculative checkpoint."
+  }
+}
