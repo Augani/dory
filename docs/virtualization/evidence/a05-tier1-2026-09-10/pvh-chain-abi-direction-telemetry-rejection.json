@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-chain-abi-direction-telemetry-rejection",
+  "observedAt": "2026-09-10T14:25:07Z",
+  "status": "production-reliability-failed-reverted",
+  "qualification": "local A05.3 rejected directional diagnostics experiment; not A05.3 closure, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "9dd66d6c1",
+    "revertCommit": "61f81fd91",
+    "candidateRunnerSHA256": "9a0765fe2b413737d1d5b04d9859b48ebd0aa064885db90789cd4b4bcc026c5e",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "scope": "Split the existing compiler-ABI rejection counter into legacy-to-tier-one, tier-one-to-legacy, and other directional counters without changing chain-target admission policy.",
+    "behavioralIntent": "Diagnostics-only refinement of the already accepted coarse chain-target rejection histogram.",
+    "productionFinding": "Two runs of the identical release binary terminated before emitting terminal output or a diagnostic receipt. Because admission policy was unchanged and the deterministic aggregate passed, this is a reproducible layout-sensitive host-side reliability failure, not evidence that either directional count is safe to retain or infer."
+  },
+  "verification": {
+    "deterministicAggregate": "1,555 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the frozen fixture was executed explicitly.",
+    "productionAttempts": 2,
+    "diagnosticReceiptsProduced": 0,
+    "elapsedTimeAvailable": false,
+    "exitStatusAvailable": false
+  },
+  "failedRuns": [
+    {
+      "runID": "5735caa3-b576-44d0-9cbf-6c3a523a5c29",
+      "intendedDiagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-chain-abi-directions-first.json",
+      "diagnosticReceiptPresent": false,
+      "terminalOutputCaptured": false
+    },
+    {
+      "runID": "7df89fae-daf0-4794-bbeb-70c9e4424e28",
+      "intendedDiagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-chain-abi-directions-second.json",
+      "diagnosticReceiptPresent": false,
+      "terminalOutputCaptured": false
+    }
+  ],
+  "retainedBaseline": {
+    "instrumentationCommit": "3e9cc82b7",
+    "evidence": "pvh-chain-target-rejection-ranking.json",
+    "compilerABIRejections": 56066297,
+    "percentOfAttempts": 52.32637699651099,
+    "reason": "The coarser instrumentation completed the pinned workload and reconciled all target attempts; it remains the production-safe ranking."
+  },
+  "disposition": {
+    "candidateAccepted": false,
+    "a05_3DispatcherGatePassed": false,
+    "requiredDispatcherReductionPercent": 95,
+    "lastAcceptedMeasuredDispatcherReductionPercent": 50.26310931351201,
+    "reason": "The directional counters do not survive the production reliability gate and are fully reverted. Directionality must be measured out of process or through an otherwise binary-layout-neutral mechanism before it can guide a bridge implementation."
+  },
+  "limitations": [
+    "No diagnostic receipt or terminal output survived either attempt, so elapsed time, instruction count, and exact termination status are intentionally not fabricated.",
+    "The repeated failure establishes candidate unreliability but does not identify its underlying mechanism.",
+    "The accepted coarse histogram ranks compiler-ABI mismatch first but does not reveal direction."
+  ]
+}
