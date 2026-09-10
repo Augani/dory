@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-exact-mask-reliability-failure",
+  "observedAt": "2026-09-10T08:58:00Z",
+  "status": "failed-local-production-gate",
+  "qualification": "local pinned-fixture reliability investigation; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "33c5a0f70",
+    "revertCommit": "84f2e96db",
+    "candidateRunnerSHA256": "ad3d41a28fd84033c269bcd0149276c2943ab68d705d2836f7661c00ccc014f8",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "candidateChange": {
+    "description": "Publish exact Tier-one live-in and cumulative-dirty register masks while forcing the analysis helpers out of the already-large emitter body.",
+    "machineCodeEffect": "The masks are side-table values and do not alter the compiled block's machineWords.",
+    "focusedVerification": "80 tests in the metadata and Tier-one suites passed.",
+    "aggregateVerification": "The 1,545-test/179-suite aggregate passed twice after one non-reproducing concurrent-suite issue."
+  },
+  "runs": [
+    {
+      "runID": "c395ad24-a914-4fbd-82c1-74c05b64df6d",
+      "passed": false,
+      "reason": "host-generated-code-crash",
+      "elapsedNanosecondsApproximate": 208763000000,
+      "diagnosticReceiptWritten": false,
+      "macOSCrashReportSHA256": "a25ed8aaf4ce89daa1211dd4b8c5234908a912dff4ad075b881b959d8c83faf5",
+      "exception": "EXC_BAD_ACCESS / SIGBUS / EXC_ARM_DA_ALIGN",
+      "faultAddress": 110,
+      "hostPC": 110,
+      "hostLinkRegister": 110,
+      "executorFrame": "executeChainedSummary generated-region execution at DoryARM64BaselineJIT.swift:6388"
+    },
+    {
+      "runID": "4045d0bd-1c51-41c9-80f3-9cba5f44af0d",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "elapsedNanoseconds": 283315789542,
+      "retiredInstructions": 733795557,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "diagnosticReceiptSHA256": "59f9491c67607e98e35a3e161a3d697d0dce52957e7893f84e08dd310cc51207",
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 79775,
+      "nativeDispatcherEntries": 190275234,
+      "directlyChainedBlocks": 44931136,
+      "pendingWorkExits": 1,
+      "pendingWorkMaximumRetiredInstructions": 0
+    }
+  ],
+  "disposition": {
+    "candidateAccepted": false,
+    "reason": "One pass and one generated-code crash do not meet the production reliability gate.",
+    "safeState": "Tier-one recovery masks remain conservative all-GPR values.",
+    "nextInvestigation": "Treat the invalid generated return address as a layout-sensitive native chain, trace, predictor, or memory-prologue lifecycle defect; isolate it independently before re-enabling exact metadata."
+  },
+  "limitations": [
+    "The crash occurred before the runner could publish its terminal diagnostic receipt, so the exact guest instruction count and JIT counters for the failed run are unavailable.",
+    "The candidate's side-table values do not alter emitted guest machine words, so this evidence does not by itself prove that mask analysis caused the invalid return address.",
+    "The successful second run does not override the failed reliability result."
+  ]
+}
