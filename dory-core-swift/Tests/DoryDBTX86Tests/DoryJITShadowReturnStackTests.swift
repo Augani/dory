@@ -9,6 +9,25 @@ import Testing
     #expect(stack.entryMask == 63)
     #expect(stack.entriesBaseAddress != 0)
     #expect(stack.topAddress != 0)
+    var context = [UInt64](repeating: .max, count: DoryARM64Tier1ABI.contextWordCount)
+    context.withUnsafeMutableBufferPointer {
+      DoryARM64BaselineExecutor.populateExecutionContext(
+        $0,
+        from: .reset(),
+        memory: nil,
+        shadowReturnStack: stack,
+        codeCacheGeneration: 7
+      )
+    }
+    #expect(context[DoryARM64Tier1ABI.ContextWord.shadowReturnEntriesBase.rawValue]
+      == stack.entriesBaseAddress)
+    #expect(context[DoryARM64Tier1ABI.ContextWord.shadowReturnEntryMask.rawValue] == 63)
+    #expect(context[DoryARM64Tier1ABI.ContextWord.shadowReturnTopAddress.rawValue]
+      == stack.topAddress)
+    #expect(context[DoryARM64Tier1ABI.ContextWord.shadowReturnGeneration.rawValue] == 7)
+    #expect(context[DoryARM64Tier1ABI.ContextWord.shadowReturnHits.rawValue] == 0)
+    #expect(context[DoryARM64Tier1ABI.ContextWord.shadowReturnMisses.rawValue] == 0)
+    #expect(context[DoryARM64Tier1ABI.ContextWord.shadowReturnPushes.rawValue] == 0)
     #expect(throws: DoryJITShadowReturnStackError.invalidEntryCount(0)) {
       _ = try DoryJITShadowReturnStack(entryCount: 0)
     }

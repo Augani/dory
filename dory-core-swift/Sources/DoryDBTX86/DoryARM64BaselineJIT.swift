@@ -4729,6 +4729,14 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     DoryARM64Tier1ABI.ContextWord.ibtcEntriesBase.rawValue
   public static let ibtcEntryMaskWordIndex = DoryARM64Tier1ABI.ContextWord.ibtcEntryMask.rawValue
   public static let ibtcGenerationWordIndex = DoryARM64Tier1ABI.ContextWord.ibtcGeneration.rawValue
+  public static let shadowReturnEntriesBaseWordIndex =
+    DoryARM64Tier1ABI.ContextWord.shadowReturnEntriesBase.rawValue
+  public static let shadowReturnEntryMaskWordIndex =
+    DoryARM64Tier1ABI.ContextWord.shadowReturnEntryMask.rawValue
+  public static let shadowReturnTopAddressWordIndex =
+    DoryARM64Tier1ABI.ContextWord.shadowReturnTopAddress.rawValue
+  public static let shadowReturnGenerationWordIndex =
+    DoryARM64Tier1ABI.ContextWord.shadowReturnGeneration.rawValue
   public static let contextWordCount = DoryARM64Tier1ABI.contextWordCount
 
   private let lock = NSLock()
@@ -5209,6 +5217,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let translationTLB: DoryX86JITTLB
   private let blockCache: DoryJITBlockCache
   private let indirectBranchTargetCache: DoryJITIndirectBranchTargetCache
+  private let shadowReturnStack: DoryJITShadowReturnStack
   private var residentSlots: [ResidentSlot?] = []
   private var freeResidentSlotIndices: [Int] = []
   private var recentEntries: [RecentResidentBlock?] = .init(repeating: nil, count: 256)
@@ -5280,6 +5289,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     translationTLB = try DoryX86JITTLB()
     blockCache = try DoryJITBlockCache()
     indirectBranchTargetCache = try DoryJITIndirectBranchTargetCache()
+    shadowReturnStack = try DoryJITShadowReturnStack()
   }
 
   public var residentBlockCount: Int { lock.withLock { blockCache.count } }
@@ -5369,6 +5379,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
       negativeEntries = .init(repeating: nil, count: negativeEntries.count)
       indirectBranchTargetCache.removeAll()
+      shadowReturnStack.removeAll()
       codeCacheEpoch &+= 1
       nextOffset = 0
       invalidateAllTranslations()
@@ -5621,6 +5632,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             translationTLB: translationTLB,
             addressSpaceGeneration: translationGeneration,
             indirectBranchTargetCache: indirectBranchTargetCache,
+            shadowReturnStack: shadowReturnStack,
             codeCacheGeneration: codeCacheEpoch &+ 1
           )
           var completed = 0
@@ -6433,6 +6445,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
       negativeEntries = .init(repeating: nil, count: negativeEntries.count)
       indirectBranchTargetCache.removeAll()
+      shadowReturnStack.removeAll()
       codeCacheEpoch &+= 1
       nextOffset = 0
       codeCacheWrapCount &+= 1
@@ -6999,6 +7012,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     // Indirect entries contain raw host addresses rather than resident ownership links. Clearing
     // the small per-vCPU table makes every possible reference to retired code miss immediately.
     indirectBranchTargetCache.removeAll()
+    shadowReturnStack.removeAll()
   }
 
   private func publish(_ resident: ResidentBlock, for key: LookupKey) throws {
@@ -7081,6 +7095,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     translationTLB: DoryX86JITTLB? = nil,
     addressSpaceGeneration: UInt64 = 0,
     indirectBranchTargetCache: DoryJITIndirectBranchTargetCache? = nil,
+    shadowReturnStack: DoryJITShadowReturnStack? = nil,
     codeCacheGeneration: UInt64 = 0
   ) {
     precondition(context.count == DoryJITExecutableRegion.contextWordCount)
@@ -7172,6 +7187,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       indirectBranchTargetCache == nil ? 0 : codeCacheGeneration
     context[DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.ibtcInlineMisses.rawValue] = 0
+    context[DoryJITExecutableRegion.shadowReturnEntriesBaseWordIndex] =
+      shadowReturnStack?.entriesBaseAddress ?? 0
+    context[DoryJITExecutableRegion.shadowReturnEntryMaskWordIndex] =
+      shadowReturnStack?.entryMask ?? 0
+    context[DoryJITExecutableRegion.shadowReturnTopAddressWordIndex] =
+      shadowReturnStack?.topAddress ?? 0
+    context[DoryJITExecutableRegion.shadowReturnGenerationWordIndex] =
+      shadowReturnStack == nil ? 0 : codeCacheGeneration
+    context[DoryARM64Tier1ABI.ContextWord.shadowReturnHits.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.shadowReturnMisses.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.shadowReturnPushes.rawValue] = 0
   }
 
   private func recordLazyFlagMaterializations(

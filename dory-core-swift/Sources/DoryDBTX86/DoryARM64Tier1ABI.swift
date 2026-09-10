@@ -91,6 +91,13 @@ enum DoryARM64Tier1ABI {
     case ibtcGeneration
     case ibtcInlineHits
     case ibtcInlineMisses
+    case shadowReturnEntriesBase
+    case shadowReturnEntryMask
+    case shadowReturnTopAddress
+    case shadowReturnGeneration
+    case shadowReturnHits
+    case shadowReturnMisses
+    case shadowReturnPushes
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }
