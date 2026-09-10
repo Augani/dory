@@ -5958,7 +5958,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   }
 
   /// Restores the architectural prefix published immediately before a failed memory callback.
-  /// Native-NZCV boundaries remain on whole-block rollback until their host flags can be captured.
+  /// Tier 1 writes its complete lazy-flags descriptor to the context alongside native NZCV, so
+  /// both metadata flag states are recoverable from the captured context image.
   private func restoreFailedMemoryCallbackPrefix(
     _ execution: DoryJITPreparedExecution,
     resident: ResidentBlock,
@@ -5979,7 +5980,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       })
     else { return nil }
     let metadata = resident.block.instructionMetadata[metadataIndex]
-    guard metadata.flagsState == .context else { return nil }
     for index in context.indices { context[index] = failedContext[index] }
     context[DoryARM64Tier1ABI.ContextWord.rip.rawValue] = metadata.guestRIP
     context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 0

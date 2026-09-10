@@ -150,6 +150,48 @@ import Testing
     #endif
   }
 
+  @Test func tier1NativeFlagsBoundaryRecoversThroughTheLazyContextRecord() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [
+        0x48, 0x83, 0xC1, 1,  // add rcx,1
+        0x48, 0x8B, 0x03,  // mov rax,[rbx]
+      ]
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: true,
+        optimization: .optimizing
+      )
+      let memory = try DoryX86ByteArrayMemory(baseAddress: 0x6000, bytes: bytes)
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0xAAAA, rcx: .max, rbx: 0x7000),
+        rip: 0x6000,
+        rflags: [.reservedOne, .interruptEnable],
+        cs: .init(selector: 0, attributes: 0xA09B, limit: .max)
+      )
+
+      let summary = try #require(executor.executeChainedSummary(
+        byteProvider: { address, maximumCount in
+          (try? memory.instructionBytes(at: address, maximumCount: maximumCount)) ?? []
+        },
+        at: state.rip,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 2,
+        state: &state,
+        memory: memory
+      ))
+      #expect(summary.guestInstructionCount == 1)
+      #expect(summary.tier == .tier1)
+      #expect(summary.exitCode == .dispatch)
+      #expect(state.rip == 0x6004)
+      #expect(state.registers.rcx == 0)
+      #expect(state.registers.rax == 0xAAAA)
+      #expect(state.rflags == [
+        .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .interruptEnable,
+      ])
+    #endif
+  }
+
   @Test func revokedCachedTargetPublishesCompletedStorePrefixBeforePrecisePageFault() throws {
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
