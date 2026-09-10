@@ -3127,6 +3127,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
       condition: .equal,
       wordOffset: pageFaultStart - directPageFaultBranch
     )
+    // The direct helper has classified this return as an architectural #PF. x30 is the
+    // generated BLR continuation, so the side table can restore this atomic instruction's
+    // entry checkpoint without treating fallback/error returns as recoverable faults.
+    words.append(
+      encodeStore64(register: 30, base: 19, byteOffset: Self.inlineTLBFaultHostPCOffset))
     emitMemoryEpilogue(into: &words)
     words.append(
       encodeMoveWideZero32(

@@ -701,11 +701,11 @@ import Testing
     #endif
   }
 
-  @Test func baselineInlineTLBWriteFaultPublishesPCWhileAtomicRemainsConservative() throws {
+  @Test func baselineInlineTLBWriteAndCompareExchangeFaultsPublishExactCheckpoint() throws {
     #if arch(arm64)
-      for (capturesPC, bytes) in [
-        (true, [UInt8](arrayLiteral: 0x48, 0x89, 0x03)),
-        (false, [UInt8](arrayLiteral: 0xF0, 0x48, 0x0F, 0xB1, 0x13)),
+      for bytes in [
+        [UInt8](arrayLiteral: 0x48, 0x89, 0x03),
+        [UInt8](arrayLiteral: 0xF0, 0x48, 0x0F, 0xB1, 0x13),
       ] {
         let physical = try mmapMemory()
         try physical.write(at: 0x1000, bytes: bytes)
@@ -744,16 +744,21 @@ import Testing
           )
         }
         #expect(execution.exitCode == .interpreter)
-        if capturesPC {
-          let entryAddress = try #require(region.entryAddress(at: 0))
-          let faultHostPC = try #require(execution.failedCallbackHostPC)
-          let hostOffset = try #require(UInt32(exactly: faultHostPC - entryAddress))
-          #expect(execution.failedExecutionContext != nil)
-          #expect(compiled.instructionMetadata(atHostOffset: hostOffset)?.guestRIP == 0x1000)
-        } else {
-          #expect(execution.failedCallbackHostPC == nil)
-          #expect(execution.failedExecutionContext == nil)
+        let entryAddress = try #require(region.entryAddress(at: 0))
+        let faultHostPC = try #require(execution.failedCallbackHostPC)
+        let hostOffset = try #require(UInt32(exactly: faultHostPC - entryAddress))
+        let failedContext = try #require(execution.failedExecutionContext)
+        #expect(
+          failedContext[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointActive.rawValue] == 1)
+        #expect(
+          failedContext[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRFlags.rawValue]
+            == initial.rflags.rawValue)
+        if bytes.first == 0xF0 {
+          #expect(
+            failedContext[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRAX.rawValue]
+              == initial.registers.rax)
         }
+        #expect(compiled.instructionMetadata(atHostOffset: hostOffset)?.guestRIP == 0x1000)
         #expect(tlb.diagnostics.pageFaults == 1)
       }
     #endif
