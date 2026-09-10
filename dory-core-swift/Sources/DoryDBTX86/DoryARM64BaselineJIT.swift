@@ -5821,7 +5821,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let emitter: DoryARM64BaselineEmitter
   private let tier1Emitter: DoryARM64Tier1Emitter
   private let tier1Enabled: Bool
-  private let nativeTraceEnabled: Bool
   private let optimization: DoryARM64JITOptimization
   private let optimizer: DoryIROptimizer
   private let region: DoryJITExecutableRegion
@@ -5897,7 +5896,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     profile: DoryX86CPUProfile = .compatibleV1,
     emitter: DoryARM64BaselineEmitter = .init(),
     tier1Enabled: Bool = false,
-    nativeTraceEnabled: Bool = true,
     optimization: DoryARM64JITOptimization = .baseline,
     optimizer: DoryIROptimizer = .init()
   ) throws {
@@ -5912,7 +5910,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     self.emitter = emitter
     self.tier1Emitter = .init()
     self.tier1Enabled = tier1Enabled
-    self.nativeTraceEnabled = nativeTraceEnabled
     self.optimization = optimization
     self.optimizer = optimizer
     executionContextStorage = .init()
@@ -6401,9 +6398,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             state: state
           )
           let traceIndex = nativeTraceIndex(for: traceKey)
-          var recordedTrace = nativeTraceEnabled
-            ? nativeTraces[traceIndex].flatMap { $0.key == traceKey ? $0 : nil }
-            : nil
+          var recordedTrace = nativeTraces[traceIndex].flatMap {
+            $0.key == traceKey ? $0 : nil
+          }
           if recordedTrace != nil { nativeTraceAttemptCount &+= 1 }
           if let trace = recordedTrace {
             let replayResult = try replayNativeTrace(
@@ -6436,7 +6433,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             }
           }
           var newTrace: [NativeTraceEntry] = []
-          var recordsTrace = nativeTraceEnabled && recordedTrace == nil && completed == 0
+          var recordsTrace = recordedTrace == nil && completed == 0
           var pendingLink:
             (source: ResidentBlock, destinationGuestRIP: UInt64, usesIndirectCache: Bool)?
           while completed < maximumInstructions {
