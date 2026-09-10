@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-single-read-legacy-to-tier1-chain-rejection",
+  "observedAt": "2026-09-10T15:53:50Z",
+  "status": "production-host-crash-reverted",
+  "qualification": "local A05.3 rejected mixed-compiler edge experiment; not A05.3 closure, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "40ceddca62f9103f24dfc92c47cbc6df51599a63",
+    "revertCommit": "dca0a175e3726e38185296e8bcf0ee68bc1bef37",
+    "candidateRunnerSHA256": "fed779937b6fa251726970169a09cd8a3353c5888a1eeed02d60f1f4ae1636a3",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "scope": "Admit only legacy-to-tier-one edges whose source performs exactly one memory read, performs no memory write, has no guarded interpreter exit, and restores the existing canonical x0-x5 entry tuple. Multi-access reads, every writer, guarded sources, callback-free sources, and tier-one-to-legacy edges remained separated.",
+    "behavioralIntent": "Isolate the smallest rollback-free legacy memory source class without changing emitted machine code or storing host pointers in guest context.",
+    "regressionCoverage": "A legacy-only memory bit-test and conditional branch fed carry into tier-one ADC with exact state and one fewer warm dispatcher entry. A legacy direct CALL stack writer into a tier-one target remained separated and recorded the expected compiler-ABI rejection.",
+    "productionFinding": "Both runs of the identical release binary crashed in generated execution before the runner could serialize a diagnostic receipt. The first jumped to unaligned address 0x1d3 and the second to null. Restricting the source to one read therefore does not repair the underlying mixed-compiler control-flow defect."
+  },
+  "verification": {
+    "focused": "2 mixed-compiler admission tests passed after the negative fixture was isolated to one source-target edge.",
+    "deterministicAggregate": "1,557 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the frozen fixture was executed explicitly.",
+    "productionAttempts": 2,
+    "diagnosticReceiptsProduced": 0
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ]
+  },
+  "failedRuns": [
+    {
+      "runID": "0946276a-64ac-47da-a4bf-945669c3d3de",
+      "intendedDiagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-safe-single-read-bridge-first.json",
+      "diagnosticReceiptPresent": false,
+      "terminalOutputCaptured": false,
+      "processExitStatus": 138,
+      "signal": "SIGBUS",
+      "exceptionSubtype": "EXC_ARM_DA_ALIGN",
+      "faultAddress": "0x1d3",
+      "programCounter": "0x1d3",
+      "linkRegister": "0x1d3",
+      "crashReportSHA256": "ed680577beed88b96415954e4a45632d8b0de23fb22b0b43ad2bc4f1adf5d4e9"
+    },
+    {
+      "runID": "83709f78-a03c-4e37-be0f-ab5819c9ef8e",
+      "intendedDiagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-safe-single-read-bridge-second.json",
+      "diagnosticReceiptPresent": false,
+      "terminalOutputCaptured": false,
+      "processExitStatus": 139,
+      "signal": "SIGSEGV",
+      "exceptionSubtype": "KERN_INVALID_ADDRESS",
+      "faultAddress": "0x0",
+      "programCounter": "0x0",
+      "linkRegister": "0x0",
+      "crashReportSHA256": "ec2045a60f9d99bc68e9a86e797d8e52a9ed0d924f2aba43a1cd89dc565c2b88"
+    }
+  ],
+  "retainedBaseline": {
+    "evidence": "pvh-chain-target-rejection-ranking.json",
+    "withinRunDispatcherReductionPercent": 50.26310931351201,
+    "compilerABIRejections": 56066297,
+    "reason": "The behavior-neutral coarse instrumentation remains the last production-safe measurement."
+  },
+  "disposition": {
+    "candidateAccepted": false,
+    "a05_3DispatcherGatePassed": false,
+    "requiredDispatcherReductionPercent": 95,
+    "lastAcceptedMeasuredDispatcherReductionPercent": 50.26310931351201,
+    "reason": "Even the smallest one-read legacy source class reproducibly corrupts generated control flow when linked into tier one. The candidate is fully reverted. Future work must trace the first mixed edge and compare architectural and host-control state at that edge rather than admit another source family by static block properties."
+  },
+  "limitations": [
+    "Neither run produced a diagnostic receipt, so guest progress, retired instructions, dispatcher counters, and elapsed execution are unavailable and are not inferred.",
+    "The crash reports establish corrupted generated control flow but do not identify the first corrupting edge or the register that supplied the invalid target.",
+    "The directed two-block tests do not reproduce production cache rotation, predictor history, interrupts, or long mixed-edge sequences."
+  ]
+}
