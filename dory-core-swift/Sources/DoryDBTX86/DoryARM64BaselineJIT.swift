@@ -7691,6 +7691,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       && (!resident.block.mayExitToInterpreter || resident.block.tier == .tier1)
   }
 
+  private func canChainCompilerABI(from source: ResidentBlock, to target: ResidentBlock) -> Bool {
+    // Legacy baseline/optimizing code always leaves a materialized RFLAGS image and a
+    // materialized lazy-state tag. Tier one can consume that state directly. The reverse
+    // transition still needs a generated materialization shim when tier one carries a pending
+    // arithmetic descriptor, so keep it dispatcher-separated for now.
+    source.block.tier != .tier1 || target.block.tier == .tier1
+  }
+
   private func residentForExecutedChainSource(
     guestRIP: UInt64,
     entryResident: ResidentBlock,
@@ -7721,7 +7729,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   ) {
     guard canInitiateRuntimeChain(source),
       canBeRuntimeChainTarget(target, memoryCallbacksAvailable: memoryCallbacksAvailable),
-      source.block.tier == target.block.tier,
+      canChainCompilerABI(from: source, to: target),
       let slot = source.block.chainSlots?.first(where: {
         $0.targetGuestRIP == destinationGuestRIP
       })
@@ -7746,7 +7754,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   ) {
     guard source.block.chainSlots?.isEmpty == true,
       canBeRuntimeChainTarget(target, memoryCallbacksAvailable: memoryCallbacksAvailable),
-      source.block.tier == target.block.tier,
+      canChainCompilerABI(from: source, to: target),
       target.block.guestStart == destinationGuestRIP,
       let hostAddress = region.entryAddress(at: target.offset)
     else { return }
