@@ -1664,47 +1664,6 @@ uintptr_t dory_jit_current_memory_callback_return_pc(void) {
     return dory_jit_memory_callback_return_pc;
 }
 
-static void dory_jit_snapshot_entry_arguments(
-    uint64_t *context,
-    void *memory_context,
-    dory_jit_memory_read_function memory_read,
-    dory_jit_memory_write_function memory_write,
-    dory_jit_memory_compare_exchange_function memory_compare_exchange,
-    dory_jit_memory_synchronize_function memory_synchronize
-) {
-    union {
-        dory_jit_memory_read_function function;
-        uintptr_t bits;
-    } read = {.function = memory_read};
-    union {
-        dory_jit_memory_write_function function;
-        uintptr_t bits;
-    } write = {.function = memory_write};
-    union {
-        dory_jit_memory_compare_exchange_function function;
-        uintptr_t bits;
-    } compare_exchange = {.function = memory_compare_exchange};
-    union {
-        dory_jit_memory_synchronize_function function;
-        uintptr_t bits;
-    } synchronize = {.function = memory_synchronize};
-    _Static_assert(sizeof(read.function) == sizeof(read.bits), "read callback must fit a word");
-    _Static_assert(sizeof(write.function) == sizeof(write.bits), "write callback must fit a word");
-    _Static_assert(
-        sizeof(compare_exchange.function) == sizeof(compare_exchange.bits),
-        "compare-exchange callback must fit a word"
-    );
-    _Static_assert(
-        sizeof(synchronize.function) == sizeof(synchronize.bits),
-        "synchronize callback must fit a word"
-    );
-    context[DORY_JIT_CONTEXT_MEMORY_CONTEXT_WORD] = (uint64_t)(uintptr_t)memory_context;
-    context[DORY_JIT_CONTEXT_MEMORY_READ_WORD] = (uint64_t)read.bits;
-    context[DORY_JIT_CONTEXT_MEMORY_WRITE_WORD] = (uint64_t)write.bits;
-    context[DORY_JIT_CONTEXT_MEMORY_COMPARE_EXCHANGE_WORD] = (uint64_t)compare_exchange.bits;
-    context[DORY_JIT_CONTEXT_MEMORY_SYNCHRONIZE_WORD] = (uint64_t)synchronize.bits;
-}
-
 int dory_jit_region_execute(
     const dory_jit_region *region,
     size_t offset,
@@ -1741,14 +1700,6 @@ int dory_jit_region_execute(
     dory_jit_memory_callback_return_pc = 0;
     dory_jit_tracked_memory_callbacks *previous_callbacks = dory_jit_active_memory_callbacks;
     dory_jit_active_memory_callbacks = &callbacks;
-    dory_jit_snapshot_entry_arguments(
-        context,
-        memory_context,
-        dory_jit_tracked_memory_read,
-        dory_jit_tracked_memory_write,
-        dory_jit_tracked_memory_compare_exchange,
-        dory_jit_tracked_memory_synchronize
-    );
     *exit_code_out = callable.function(
         context,
         memory_context,
@@ -1789,7 +1740,6 @@ int dory_jit_region_execute_batch(
     uint32_t executed = 0;
     uint32_t instructions = 0;
     uint32_t exit_code = 0;
-    dory_jit_snapshot_entry_arguments(context, NULL, NULL, NULL, NULL, NULL);
     for (size_t index = 0; index < block_count; index++) {
         if (context[16] != expected_guest_rips[index]) {
             break;

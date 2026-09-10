@@ -130,13 +130,6 @@ enum DoryARM64Tier1ABI {
     /// Selected by each generated memory-bearing block on entry so a raw chain target does not
     /// inherit the dispatcher entry block's replay policy.
     case requiresRestartableMemoryReads
-    /// Exact generated-function arguments captured by the C entry trampoline. A chained target
-    /// reloads these words instead of trusting caller-saved x1...x5 from its predecessor.
-    case memoryContext
-    case memoryReadCallback
-    case memoryWriteCallback
-    case memoryCompareExchangeCallback
-    case memorySynchronizeCallback
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }

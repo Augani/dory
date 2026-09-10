@@ -27,14 +27,14 @@ host `xn`. Partial-register writes are normalized before the value becomes live
 again: 32-bit writes zero-extend, 8/16-bit writes merge, and AH/CH/DH/BH forms
 are never represented as independent pinned values.
 
-`x19`...`x28` are callee-saved by the Darwin ARM64 ABI. Every full tier-1 entry
-saves the incoming host values before installing its own state and restores them
-at its chain or final exit. Current raw chains cross this normalized full-entry
-boundary; they do not inherit a predecessor's pinned bank.
+`x19`...`x28` are callee-saved by the Darwin ARM64 ABI. The dispatcher saves the
+incoming host values once before installing its own state and restores them on
+the final return to Swift/C. A chained block inherits all pinned values without
+a prologue or epilogue.
 
 ## Stable vCPU context
 
-The context is an array of 100 little-endian `UInt64` words. It is not a Swift
+The context is an array of 95 little-endian `UInt64` words. It is not a Swift
 struct ABI. The word layout is:
 
 | Words | Contents |
@@ -57,19 +57,12 @@ struct ABI. The word layout is:
 | 74 | generated BLR return PC for an architectural inline-TLB page fault |
 | 75...93 | active memory-write checkpoint, exact GPR mask, entry RFLAGS, and RAX...R15 images |
 | 94 | block-local restartable-read policy selected before the first memory callback |
-| 95...99 | C-trampoline snapshot of memory context, read, write, compare-exchange, and synchronize entry arguments |
 
 The context pointer remains stable for a dispatch. TLB bases and helper
 addresses are derived from it; generated code must not retain them beyond that
 dispatch. New words append at the end so an older index never changes meaning.
 Any persisted machine state contains architectural fields, not these host
 pointers.
-
-The C entry trampoline snapshots the exact generated-function `x1`...`x5`
-arguments into words 95...99 before calling the first resident. Every
-memory-capable baseline entry and every tier-1 entry reloads its callback bank
-from those words. A raw predecessor may therefore use caller-saved registers
-without silently changing a later target's callback authority.
 
 The dispatcher clears words 54...58 for ordinary single-block calls. Before a
 native-chain call it sets word 54, publishes the instruction budget in word 55,
@@ -96,23 +89,17 @@ architectural spill at each guest instruction.
 
 ## Entry, exit, and chaining
 
-The C dispatcher initially calls an entry shim using the Darwin C ABI and
-snapshots its callback arguments in context words 95...99. The shim reloads
-those values into `x19`...`x23`, then loads
+The C dispatcher initially calls an entry shim using the Darwin C ABI. The shim
+preserves the memory context and callback arguments in `x19`...`x23`, then loads
 guest GPRs into `x0`...`x15`, RIP into `x27`, the last materialized RFLAGS
 image into `x25`, the pending operation/count descriptor into `x26`, and installs
-`x28`. Current direct chains publish the source state, restore the generated
-function boundary, and tail-branch to the target's full block entry. A
-legacy-to-tier-1 edge is admitted only because legacy state has materialized
-flags and the target reconstructs the snapshotted callback bank; the reverse
-direction remains dispatcher-separated until it has an in-code lazy-flags
-materialization bridge.
+`x28`. Direct chains branch to a tier-1 block entry after this setup and therefore
+cannot target the C entry shim.
 
 `DoryARM64Tier1BoundaryEmitter` is the executable implementation of these
 boundaries. Its entry saves `x19`...`x30` in one 96-byte, 16-byte-aligned host
-frame before installing pinned state. Its chain exit writes architectural state,
-restores that frame, and enters another full block boundary; its final exit does
-the same before returning a `DoryJITExitCode` through `w0`.
+frame before installing pinned state. Its exit writes architectural state,
+restores that frame, and returns a `DoryJITExitCode` through `w0`.
 
 `DoryARM64Tier1Emitter` is admitted through the executor's `tier1Enabled`
 feature flag. The PC machine enables it for the production baseline executor;
@@ -137,10 +124,9 @@ run loop delivers pending interrupts only before the next processor execution,
 after the preceding native return has crossed this publication boundary; an
 interrupt consumer therefore never observes a tier-1-private lazy descriptor.
 Interpreter, exception, interrupt, and code-cache exits must publish the precise
-RIP of the next instruction to execute. A tier-1 direct-chain source also
-publishes its complete state before the normalized target entry reloads it.
-Patched chain slots consult context word 54 and remain block-local dispatcher
-exits while chaining is disabled.
+RIP of the next instruction to execute. A direct chain publishes nothing solely
+for the chain; its target consumes the pinned state. Patched chain slots consult
+context word 54 and remain block-local dispatcher exits while chaining is disabled.
 This keeps one-block execution and recorded native-trace replay independent of
 runtime link state. The chained dispatcher enables the slots only after validating
 the complete reachable resident set against generation tokens or current bytes.

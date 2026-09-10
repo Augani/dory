@@ -389,15 +389,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
     DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRAX.byteOffset
   private static let requiresRestartableMemoryReadsOffset =
     DoryARM64Tier1ABI.ContextWord.requiresRestartableMemoryReads.byteOffset
-  private static let memoryContextOffset = DoryARM64Tier1ABI.ContextWord.memoryContext.byteOffset
-  private static let memoryReadCallbackOffset =
-    DoryARM64Tier1ABI.ContextWord.memoryReadCallback.byteOffset
-  private static let memoryWriteCallbackOffset =
-    DoryARM64Tier1ABI.ContextWord.memoryWriteCallback.byteOffset
-  private static let memoryCompareExchangeCallbackOffset =
-    DoryARM64Tier1ABI.ContextWord.memoryCompareExchangeCallback.byteOffset
-  private static let memorySynchronizeCallbackOffset =
-    DoryARM64Tier1ABI.ContextWord.memorySynchronizeCallback.byteOffset
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
@@ -2774,11 +2765,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
       encodeStore64(register: 29, base: 19, byteOffset: Self.hostFramePointerOffset),
       encodeStore64(register: 30, base: 19, byteOffset: Self.hostReturnAddressOffset),
       0x9100_03FD,  // mov x29,sp
-      encodeLoad64(register: 20, base: 19, byteOffset: Self.memoryContextOffset),
-      encodeLoad64(register: 21, base: 19, byteOffset: Self.memoryReadCallbackOffset),
-      encodeLoad64(register: 22, base: 19, byteOffset: Self.memoryWriteCallbackOffset),
-      encodeLoad64(register: 23, base: 19, byteOffset: Self.memoryCompareExchangeCallbackOffset),
-      encodeLoad64(register: 24, base: 19, byteOffset: Self.memorySynchronizeCallbackOffset),
+      0xAA01_03F4,  // mov x20,x1 (memory context)
+      0xAA02_03F5,  // mov x21,x2 (read callback)
+      0xAA03_03F6,  // mov x22,x3 (write callback)
+      0xAA04_03F7,  // mov x23,x4 (atomic compare-exchange callback)
+      0xAA05_03F8,  // mov x24,x5 (synchronize callback)
     ]
   }
 
@@ -5247,14 +5238,7 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     DoryARM64Tier1ABI.ContextWord.shadowReturnTopAddress.rawValue
   public static let shadowReturnGenerationWordIndex =
     DoryARM64Tier1ABI.ContextWord.shadowReturnGeneration.rawValue
-  public static let memoryContextWordIndex = Int(DORY_JIT_CONTEXT_MEMORY_CONTEXT_WORD)
-  public static let memoryReadCallbackWordIndex = Int(DORY_JIT_CONTEXT_MEMORY_READ_WORD)
-  public static let memoryWriteCallbackWordIndex = Int(DORY_JIT_CONTEXT_MEMORY_WRITE_WORD)
-  public static let memoryCompareExchangeCallbackWordIndex =
-    Int(DORY_JIT_CONTEXT_MEMORY_COMPARE_EXCHANGE_WORD)
-  public static let memorySynchronizeCallbackWordIndex =
-    Int(DORY_JIT_CONTEXT_MEMORY_SYNCHRONIZE_WORD)
-  public static let contextWordCount = Int(DORY_JIT_CONTEXT_WORD_COUNT)
+  public static let contextWordCount = DoryARM64Tier1ABI.contextWordCount
 
   private let lock = NSLock()
   private let region: OpaquePointer
@@ -7747,21 +7731,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       chainTargetInterpreterGuardRejectionCount &+= 1
       return false
     }
-    guard canChainCompilerABI(from: source, to: target) else {
+    guard source.block.tier == target.block.tier else {
       chainTargetCompilerABIRejectionCount &+= 1
       return false
     }
     return true
-  }
-
-  private func canChainCompilerABI(from source: ResidentBlock, to target: ResidentBlock) -> Bool {
-    if source.block.tier == target.block.tier { return true }
-    // Legacy blocks publish materialized RFLAGS and the C trampoline snapshots the complete
-    // generated-function x1...x5 authority into append-only context words. Tier one reloads that
-    // snapshot at its full entry, so this direction has an explicit edge contract. The reverse
-    // direction remains separated because a tier-one source may publish a lazy descriptor that a
-    // legacy target cannot consume without a generated materialization bridge.
-    return source.block.tier != .tier1 && target.block.tier == .tier1
   }
 
   private func residentForExecutedChainSource(
