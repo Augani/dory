@@ -5635,6 +5635,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let exitCode: DoryJITExitCode
   }
 
+  private struct RecoveredExecutionPrefix {
+    let guestInstructionCount: Int
+    let residentBlockCount: Int
+    let directlyChainedBlockCount: UInt64
+  }
+
   public let maximumCodeBytes: Int
   private let lock = NSLock()
   private let decoder: DoryX86Decoder
@@ -6052,24 +6058,39 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   /// both metadata flag states are recoverable from the captured context image.
   private func restoreFailedMemoryCallbackPrefix(
     _ execution: DoryJITPreparedExecution,
-    resident: ResidentBlock,
+    entryResident: ResidentBlock,
     context: UnsafeMutableBufferPointer<UInt64>
-  ) -> Int? {
+  ) -> RecoveredExecutionPrefix? {
     guard execution.exitCode == .interpreter,
       let callbackHostPC = execution.failedCallbackHostPC,
       let failedContext = execution.failedExecutionContext,
-      failedContext.count == context.count,
-      let entryAddress = region.entryAddress(at: resident.offset),
-      callbackHostPC >= entryAddress
+      failedContext.count == context.count
     else { return nil }
+    let faultResident: ResidentBlock?
+    if resident(entryResident, containsHostPC: callbackHostPC) {
+      faultResident = entryResident
+    } else {
+      faultResident = residentSlots.lazy.compactMap(\.?.resident).first(where: {
+        resident($0, containsHostPC: callbackHostPC)
+      })
+    }
+    guard let faultResident, let entryAddress = region.entryAddress(at: faultResident.offset) else {
+      return nil
+    }
     let relativeHostPC = callbackHostPC - entryAddress
-    guard relativeHostPC < UInt64(resident.block.machineBytes.count),
+    guard relativeHostPC < UInt64(faultResident.block.machineBytes.count),
       let hostOffset = UInt32(exactly: relativeHostPC),
-      let metadataIndex = resident.block.instructionMetadata.lastIndex(where: {
+      let metadataIndex = faultResident.block.instructionMetadata.lastIndex(where: {
         $0.hostOffsetStart <= hostOffset
       })
     else { return nil }
-    let metadata = resident.block.instructionMetadata[metadataIndex]
+    let metadata = faultResident.block.instructionMetadata[metadataIndex]
+    guard
+      let chainInstructionCount = Int(exactly:
+        failedContext[DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue]),
+      let chainBlockCount = Int(exactly:
+        failedContext[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue])
+    else { return nil }
     for index in context.indices
     where index != DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue
     {
@@ -6077,7 +6098,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }
     context[DoryARM64Tier1ABI.ContextWord.rip.rawValue] = metadata.guestRIP
     context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 0
-    return metadataIndex
+    return RecoveredExecutionPrefix(
+      guestInstructionCount: chainInstructionCount + metadataIndex,
+      residentBlockCount: chainBlockCount + (metadataIndex > 0 ? 1 : 0),
+      directlyChainedBlockCount: UInt64(chainBlockCount)
+    )
+  }
+
+  private func resident(_ resident: ResidentBlock, containsHostPC hostPC: UInt64) -> Bool {
+    guard let entryAddress = region.entryAddress(at: resident.offset), hostPC >= entryAddress else {
+      return false
+    }
+    return hostPC - entryAddress < UInt64(resident.block.machineBytes.count)
   }
 
   /// Runs consecutive resident basic blocks while the machine's interrupt deadline permits it.
@@ -6333,10 +6365,16 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             if hasCheckpoint {
               for index in context.indices { checkpoint[index] = context[index] }
             }
-            if resident.block.requiresMemoryCallbacks, memoryCapabilities == nil {
+            let usesGeneratedChainAccounting = canInitiateRuntimeChain(resident)
+            // A callback-free entry may jump directly to a callback-bearing resident. Install one
+            // callback context for the whole native chain rather than inheriting only the entry
+            // block's capabilities. Targets requiring replay proof stay ineligible below because
+            // that policy is fixed when this dispatcher entry creates the callback context.
+            if (resident.block.requiresMemoryCallbacks || usesGeneratedChainAccounting),
+              memoryCapabilities == nil
+            {
               memoryCapabilities = memory.map { DoryJITMemoryCapabilities(memory: $0) }
             }
-            let usesGeneratedChainAccounting = canInitiateRuntimeChain(resident)
             context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] =
               usesGeneratedChainAccounting ? 1 : 0
             context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] =
@@ -6348,7 +6386,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             let execution = try region.executePreparedWithRecovery(
               at: resident.offset,
               context: context,
-              memoryCapabilities: resident.block.requiresMemoryCallbacks ? memoryCapabilities : nil,
+              memoryCapabilities:
+                (resident.block.requiresMemoryCallbacks || usesGeneratedChainAccounting)
+                ? memoryCapabilities : nil,
               requiresRestartableReads: resident.block.requiresRestartableMemoryReads,
               translationTLB: translationTLB
             )
@@ -6356,14 +6396,16 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             recordLazyFlagMaterializations(in: context)
             recordIndirectBranchTargetCacheLookups(in: context)
             recordShadowReturnStackActivity(in: context)
-            if exit == .interpreter, hasCheckpoint {
+            if exit == .interpreter,
+              hasCheckpoint || execution.failedCallbackHostPC != nil
+            {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
-              if let recoveredPrefixInstructionCount = restoreFailedMemoryCallbackPrefix(
+              if let recoveredPrefix = restoreFailedMemoryCallbackPrefix(
                 execution,
-                resident: resident,
+                entryResident: resident,
                 context: context
               ) {
-                if recoveredPrefixInstructionCount == 0 {
+                if recoveredPrefix.guestInstructionCount == 0 {
                   // The captured callback image may contain speculative state produced inside the
                   // first instruction (for example flags computed before a rejected RMW store).
                   // Its exact entry state is the dispatcher checkpoint.
@@ -6373,8 +6415,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                     context[index] = checkpoint[index]
                   }
                 }
-                completed += recoveredPrefixInstructionCount
-                if recoveredPrefixInstructionCount > 0 { blockCount += 1 }
+                completed += recoveredPrefix.guestInstructionCount
+                blockCount += recoveredPrefix.residentBlockCount
+                directlyChainedBlockCount &+= recoveredPrefix.directlyChainedBlockCount
                 guard completed > 0 else { return nil }
                 chainedRetiredInstructionCount &+= UInt64(completed)
                 publishExecutionContext(context, to: &state, memory: memory)
@@ -6692,17 +6735,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         if exit == .interpreter,
           resident.block.requiresMemoryCallbacks || resident.block.mayExitToInterpreter
         {
-          if let recoveredPrefixInstructionCount = restoreFailedMemoryCallbackPrefix(
+          if let recoveredPrefix = restoreFailedMemoryCallbackPrefix(
             execution,
-            resident: resident,
+            entryResident: resident,
             context: context
           ) {
-            if recoveredPrefixInstructionCount > 0 {
+            if recoveredPrefix.guestInstructionCount > 0 {
               publishExecutionContext(context, to: &state, memory: memory)
             }
             return ResidentExecution(
               resident: resident,
-              guestInstructionCount: UInt32(recoveredPrefixInstructionCount),
+              guestInstructionCount: UInt32(recoveredPrefix.guestInstructionCount),
               exitCode: exit
             )
           }
@@ -7462,8 +7505,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
 
   private func canBeRuntimeChainTarget(_ resident: ResidentBlock) -> Bool {
     canInitiateRuntimeChain(resident)
-      && !resident.block.requiresMemoryCallbacks
-      && !resident.block.mayExitToInterpreter
+      // Callback failures carry an exact host PC and context snapshot, so the side table can
+      // recover a chained target's completed prefix. Tier one marks every callback block as
+      // interpreter-capable even though its generated interpreter exit is that captured failure.
+      && !resident.block.requiresRestartableMemoryReads
+      && (!resident.block.mayExitToInterpreter || resident.block.tier == .tier1)
   }
 
   private func residentForExecutedChainSource(

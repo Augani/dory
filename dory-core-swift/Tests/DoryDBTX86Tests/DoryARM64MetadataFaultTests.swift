@@ -171,6 +171,87 @@ import Testing
     #endif
   }
 
+  @Test func directChainedTargetCallbackFaultPublishesBothCompletedPrefixes() throws {
+    #if arch(arm64)
+      let source: [UInt8] = [
+        0x48, 0xFF, 0xC1,  // inc rcx
+        0xE9, 0xF8, 0x0F, 0, 0,  // jmp 0x2000
+      ]
+      let target: [UInt8] = [
+        0x48, 0xFF, 0xC2,  // inc rdx
+        0x48, 0x8B, 0x03,  // mov rax,[rbx]
+        0xE9, 0xF5, 0x0F, 0, 0,  // jmp 0x3000
+      ]
+      let halt: [UInt8] = [0xF4]
+      for (tier1Enabled, optimization) in [
+        (false, DoryARM64JITOptimization.baseline),
+        (true, DoryARM64JITOptimization.optimizing),
+      ] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: tier1Enabled,
+          optimization: optimization
+        )
+        let memory = try ToggleReadFaultMemory(byteCount: 0x100)
+        try memory.writeScalar(at: 0, value: 0x1234, byteCount: 8)
+        func bytes(at address: UInt64, maximumCount: Int) -> [UInt8] {
+          let block: [UInt8]
+          switch address {
+          case 0x1000: block = source
+          case 0x2000: block = target
+          case 0x3000: block = halt
+          default: return []
+          }
+          return Array(block.prefix(maximumCount))
+        }
+
+        var cold = try DoryX86ArchitecturalState(
+          registers: .init(rbx: 0),
+          rip: 0x1000,
+          cs: .init(selector: 0, attributes: 0xA09B, limit: .max)
+        )
+        let coldSummary = try #require(executor.executeChainedSummary(
+          byteProvider: bytes,
+          at: cold.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 8,
+          state: &cold,
+          memory: memory
+        ))
+        #expect(coldSummary.guestInstructionCount == 6)
+        #expect(cold.rip == 0x3001)
+        #expect(cold.registers.rax == 0x1234)
+
+        let directBefore = executor.diagnostics.directlyChainedBlocks
+        memory.rejectReads = true
+        var state = try DoryX86ArchitecturalState(
+          registers: .init(rax: 0xAAAA, rbx: 0x1000),
+          rip: 0x1000,
+          cs: .init(selector: 0, attributes: 0xA09B, limit: .max)
+        )
+        let summary = try #require(executor.executeChainedSummary(
+          byteProvider: bytes,
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 8,
+          state: &state,
+          memory: memory
+        ))
+
+        #expect(summary.guestInstructionCount == 3)
+        #expect(summary.residentBlockCount == 2)
+        #expect(summary.exitCode == .dispatch)
+        #expect(state.rip == 0x2003)
+        #expect(state.registers.rcx == 1)
+        #expect(state.registers.rdx == 1)
+        #expect(state.registers.rax == 0xAAAA)
+        #expect(executor.diagnostics.directlyChainedBlocks > directBefore)
+      }
+    #endif
+  }
+
   @Test func nonChainedExecutionReportsAndPublishesOnlyTheCompletedPrefix() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [
@@ -476,5 +557,55 @@ import Testing
       cs: .init(selector: 3, attributes: 0xA0FB, limit: .max),
       control: .init(cr0: 0x8001_0011, cr3: 0x9000, cr4: 1 << 5,
         efer: (1 << 10) | (1 << 11)))
+  }
+}
+
+private final class ToggleReadFaultMemory: DoryX86ScalarMemory,
+  DoryX86RestartableScalarMemory, @unchecked Sendable
+{
+  let backing: DoryX86ByteArrayMemory
+  var rejectReads = false
+
+  init(byteCount: Int) throws {
+    backing = try DoryX86ByteArrayMemory(byteCount: byteCount)
+  }
+
+  func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    try backing.instructionBytes(at: address, maximumCount: maximumCount)
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    if rejectReads { throw DoryX86MemoryError.pageFault(address: address, errorCode: 0) }
+    return try backing.read(at: address, byteCount: byteCount)
+  }
+
+  func validateRead(at address: UInt64, byteCount: Int) throws {
+    if rejectReads { throw DoryX86MemoryError.pageFault(address: address, errorCode: 0) }
+    try backing.validateRead(at: address, byteCount: byteCount)
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    try backing.write(at: address, bytes: bytes)
+  }
+
+  func validateWrite(at address: UInt64, byteCount: Int) throws {
+    try backing.validateWrite(at: address, byteCount: byteCount)
+  }
+
+  func synchronize() {
+    backing.synchronize()
+  }
+
+  func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
+    if rejectReads { throw DoryX86MemoryError.pageFault(address: address, errorCode: 0) }
+    return try backing.readScalar(at: address, byteCount: byteCount)
+  }
+
+  func readRestartableScalar(at address: UInt64, byteCount: Int) throws -> UInt64? {
+    try readScalar(at: address, byteCount: byteCount)
+  }
+
+  func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
+    try backing.writeScalar(at: address, value: value, byteCount: byteCount)
   }
 }
