@@ -8,6 +8,7 @@ typedef struct dory_jit_region dory_jit_region;
 typedef struct dory_jit_tlb dory_jit_tlb;
 typedef struct dory_jit_block_cache dory_jit_block_cache;
 typedef struct dory_jit_ibtc dory_jit_ibtc;
+typedef struct dory_jit_shadow_return_stack dory_jit_shadow_return_stack;
 
 typedef struct dory_jit_block_key {
     uint64_t physical_rip;
@@ -67,6 +68,39 @@ void dory_jit_ibtc_clear(dory_jit_ibtc *cache);
 uint64_t dory_jit_ibtc_hit_count(const dory_jit_ibtc *cache);
 uint64_t dory_jit_ibtc_miss_count(const dory_jit_ibtc *cache);
 uint64_t dory_jit_ibtc_fill_count(const dory_jit_ibtc *cache);
+
+typedef struct dory_jit_shadow_return_entry {
+    uint64_t guest_rsp;
+    uint64_t guest_rip;
+    uint64_t host_address;
+    uint64_t generation;
+} dory_jit_shadow_return_entry;
+
+int dory_jit_shadow_return_stack_create(
+    size_t entry_count,
+    dory_jit_shadow_return_stack **stack_out
+);
+void dory_jit_shadow_return_stack_destroy(dory_jit_shadow_return_stack *stack);
+size_t dory_jit_shadow_return_stack_entry_count(const dory_jit_shadow_return_stack *stack);
+dory_jit_shadow_return_entry *dory_jit_shadow_return_stack_entries(
+    dory_jit_shadow_return_stack *stack
+);
+uint64_t *dory_jit_shadow_return_stack_top(dory_jit_shadow_return_stack *stack);
+int dory_jit_shadow_return_stack_push(
+    dory_jit_shadow_return_stack *stack,
+    uint64_t guest_rsp,
+    uint64_t guest_rip,
+    uint64_t host_address,
+    uint64_t generation
+);
+int dory_jit_shadow_return_stack_lookup_and_pop(
+    dory_jit_shadow_return_stack *stack,
+    uint64_t guest_rsp,
+    uint64_t guest_rip,
+    uint64_t generation,
+    uint64_t *host_address_out
+);
+void dory_jit_shadow_return_stack_clear(dory_jit_shadow_return_stack *stack);
 
 typedef enum dory_jit_tlb_access {
     DORY_JIT_TLB_ACCESS_READ = 0,

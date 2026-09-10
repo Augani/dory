@@ -18,6 +18,7 @@ enum {
     dory_jit_block_cache_occupied = 1,
     dory_jit_block_cache_tombstone = 2,
     dory_jit_ibtc_magic = 0x49425431,
+    dory_jit_shadow_return_stack_magic = 0x52534231,
 };
 
 static const uint64_t dory_jit_tlb_maximum_generation = (UINT64_C(1) << 28) - 1;
@@ -57,9 +58,20 @@ struct dory_jit_ibtc {
     uint64_t fill_count;
 };
 
+struct dory_jit_shadow_return_stack {
+    uint32_t magic;
+    size_t entry_count;
+    dory_jit_shadow_return_entry *entries;
+    uint64_t top;
+};
+
 _Static_assert(sizeof(dory_jit_tlb_entry) == 16, "JIT TLB entries must remain two words");
 _Static_assert(sizeof(dory_jit_block_key) == 16, "JIT block keys must remain two words");
 _Static_assert(sizeof(dory_jit_ibtc_entry) == 32, "IBTC entries must remain four words");
+_Static_assert(
+    sizeof(dory_jit_shadow_return_entry) == 32,
+    "shadow return entries must remain four words"
+);
 _Static_assert(sizeof(dory_jit_tlb_resolution) == 24, "JIT TLB resolution ABI changed");
 _Static_assert(sizeof(dory_jit_atomic_pair_values) == 48, "atomic pair ABI changed");
 
@@ -221,6 +233,117 @@ uint64_t dory_jit_ibtc_miss_count(const dory_jit_ibtc *cache) {
 
 uint64_t dory_jit_ibtc_fill_count(const dory_jit_ibtc *cache) {
     return cache != NULL && cache->magic == dory_jit_ibtc_magic ? cache->fill_count : 0;
+}
+
+int dory_jit_shadow_return_stack_create(
+    size_t entry_count,
+    dory_jit_shadow_return_stack **stack_out
+) {
+    if (stack_out == NULL) {
+        return EINVAL;
+    }
+    *stack_out = NULL;
+    if (entry_count == 0 ||
+        (entry_count & (entry_count - 1)) != 0 ||
+        entry_count > SIZE_MAX / sizeof(dory_jit_shadow_return_entry)) {
+        return EINVAL;
+    }
+    dory_jit_shadow_return_stack *stack = calloc(1, sizeof(*stack));
+    if (stack == NULL) {
+        return ENOMEM;
+    }
+    stack->entries = calloc(entry_count, sizeof(*stack->entries));
+    if (stack->entries == NULL) {
+        free(stack);
+        return ENOMEM;
+    }
+    stack->magic = dory_jit_shadow_return_stack_magic;
+    stack->entry_count = entry_count;
+    *stack_out = stack;
+    return 0;
+}
+
+void dory_jit_shadow_return_stack_destroy(dory_jit_shadow_return_stack *stack) {
+    if (stack == NULL || stack->magic != dory_jit_shadow_return_stack_magic) {
+        return;
+    }
+    stack->magic = 0;
+    free(stack->entries);
+    free(stack);
+}
+
+size_t dory_jit_shadow_return_stack_entry_count(const dory_jit_shadow_return_stack *stack) {
+    return stack != NULL && stack->magic == dory_jit_shadow_return_stack_magic
+        ? stack->entry_count
+        : 0;
+}
+
+dory_jit_shadow_return_entry *dory_jit_shadow_return_stack_entries(
+    dory_jit_shadow_return_stack *stack
+) {
+    return stack != NULL && stack->magic == dory_jit_shadow_return_stack_magic
+        ? stack->entries
+        : NULL;
+}
+
+uint64_t *dory_jit_shadow_return_stack_top(dory_jit_shadow_return_stack *stack) {
+    return stack != NULL && stack->magic == dory_jit_shadow_return_stack_magic
+        ? &stack->top
+        : NULL;
+}
+
+int dory_jit_shadow_return_stack_push(
+    dory_jit_shadow_return_stack *stack,
+    uint64_t guest_rsp,
+    uint64_t guest_rip,
+    uint64_t host_address,
+    uint64_t generation
+) {
+    if (stack == NULL || stack->magic != dory_jit_shadow_return_stack_magic ||
+        generation == 0) {
+        return EINVAL;
+    }
+    const size_t index = (size_t)stack->top & (stack->entry_count - 1);
+    dory_jit_shadow_return_entry *entry = &stack->entries[index];
+    entry->guest_rsp = guest_rsp;
+    entry->guest_rip = guest_rip;
+    entry->host_address = host_address;
+    entry->generation = generation;
+    stack->top++;
+    return 0;
+}
+
+int dory_jit_shadow_return_stack_lookup_and_pop(
+    dory_jit_shadow_return_stack *stack,
+    uint64_t guest_rsp,
+    uint64_t guest_rip,
+    uint64_t generation,
+    uint64_t *host_address_out
+) {
+    if (stack == NULL || stack->magic != dory_jit_shadow_return_stack_magic ||
+        generation == 0 || host_address_out == NULL) {
+        return EINVAL;
+    }
+    if (stack->top == 0) {
+        return ENOENT;
+    }
+    stack->top--;
+    const dory_jit_shadow_return_entry *entry =
+        &stack->entries[(size_t)stack->top & (stack->entry_count - 1)];
+    if (entry->guest_rsp != guest_rsp || entry->guest_rip != guest_rip ||
+        entry->generation != generation || entry->host_address == 0) {
+        return ENOENT;
+    }
+    *host_address_out = entry->host_address;
+    return 0;
+}
+
+void dory_jit_shadow_return_stack_clear(dory_jit_shadow_return_stack *stack) {
+    if (stack == NULL || stack->magic != dory_jit_shadow_return_stack_magic) {
+        return;
+    }
+    memset(stack->entries, 0, stack->entry_count * sizeof(*stack->entries));
+    stack->top = 0;
 }
 
 static int dory_jit_block_cache_insert_without_resize(
