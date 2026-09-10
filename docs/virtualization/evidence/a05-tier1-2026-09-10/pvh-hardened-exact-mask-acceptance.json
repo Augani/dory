@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-hardened-exact-mask-acceptance",
+  "observedAt": "2026-09-10T09:37:28Z",
+  "status": "passed-local-production-reliability-check",
+  "qualification": "local A05.4 exact-recovery-mask acceptance; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "exactMaskCommit": "204d86889",
+    "hostControlStateCommit": "6112055b4",
+    "candidateRunnerSHA256": "b7abfe0c4ee53d99d863286a0781a907c6d076796f49279c8e0870d6ce27255e",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "candidate": {
+    "description": "Tier-one publishes per-instruction live-in and cumulative-dirty GPR masks derived from optimized IR. Opaque helpers remain all-register conservative.",
+    "hostControlBoundary": "Memory-capable generated blocks restore incoming FP/LR from append-only context words rather than generated stack storage.",
+    "machineCodeEffectOfMasks": "The mask values are side-table metadata and do not alter compiled block machineWords."
+  },
+  "verification": {
+    "focused": "80 tests in the metadata and Tier-one suites passed.",
+    "deterministicAggregate": "1,546 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the same pinned inputs were executed explicitly twice.",
+    "parallelHarnessObservations": [
+      "One parallel aggregate failed only concurrentPendingWorkRequestStopsBeforeTheFirstNativeInstruction; the test passed immediately in isolation.",
+      "A second parallel aggregate passed that test and failed only lockedNativeCompareExchangeSharesGateAcrossTranslatedBusViews; that test passed immediately in isolation.",
+      "The failures affected distinct internally concurrent timing tests and did not occur in the exact-mask or recovery suites."
+    ]
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "runs": [
+    {
+      "runID": "691677fd-103a-43ad-9fb4-194391b647f7",
+      "diagnosticReceiptSHA256": "8512ab63c8f3f67ad837f7e6136e5a50255a49ff5f52862213be91d1a9e577e4",
+      "elapsedNanoseconds": 283473524333,
+      "retiredInstructions": 732226271,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 76536,
+      "nativeDispatcherEntries": 189058866,
+      "directlyChainedBlocks": 44888157,
+      "translationCachePageFaults": 2267,
+      "pendingWorkExits": 1,
+      "pendingWorkMaximumRetiredInstructions": 0
+    },
+    {
+      "runID": "deed6a62-f013-4dd5-81ab-3314f527c021",
+      "diagnosticReceiptSHA256": "349aeb525421a1630c08fd06379a272567e684ce77e4d39e2ea9ba9735d74f10",
+      "elapsedNanoseconds": 248700006125,
+      "retiredInstructions": 733949993,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 76445,
+      "nativeDispatcherEntries": 189341838,
+      "directlyChainedBlocks": 44937525,
+      "translationCachePageFaults": 2287,
+      "pendingWorkExits": 1,
+      "pendingWorkMaximumRetiredInstructions": 0
+    }
+  ],
+  "workloads": [
+    "bootstrap.filesystems",
+    "syscall.identity",
+    "process.creation_exec_wait",
+    "memory.allocation_copy",
+    "signal.handler_return",
+    "timer.sleep_elapsed",
+    "filesystem.write_read_sync"
+  ],
+  "disposition": {
+    "exactMasksAccepted": true,
+    "reason": "Both independent runs crossed the former approximate 208.8-second failure window, four aggregate code-cache wraps, all seven authenticated workloads, and clean ACPI poweroff without an invalid generated return.",
+    "remainingA05_4Work": "Baseline inline-TLB page faults still use whole-block rollback and interpreter replay; their production-safe precise-prefix recovery remains open."
+  },
+  "limitations": [
+    "Two passing local runs are a bounded reliability check, not proof of the former overwrite mechanism.",
+    "Parallel aggregate scheduling remains noisy for two unrelated internally concurrent tests; both pass in isolation and the full deterministic aggregate passes.",
+    "This evidence does not satisfy the greater-than-95-percent dispatcher gate or G1-G5."
+  ]
+}
