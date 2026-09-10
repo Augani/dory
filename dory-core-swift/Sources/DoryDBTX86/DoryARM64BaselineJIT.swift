@@ -7512,9 +7512,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
 
   private func canBeRuntimeChainTarget(_ resident: ResidentBlock) -> Bool {
     canInitiateRuntimeChain(resident)
-      // Callback failures carry an exact host PC and context snapshot, so the side table can
-      // recover a chained target's completed prefix. Tier one marks every callback block as
-      // interpreter-capable even though its generated interpreter exit is that captured failure.
+      // A dispatcher entry owns one recoverable callback context. Keep callback-bearing and
+      // restartable-read blocks off raw links until that context is valid across resident targets.
       && !resident.block.requiresRestartableMemoryReads
       && !resident.block.requiresMemoryCallbacks
       && (!resident.block.mayExitToInterpreter || resident.block.tier == .tier1)
