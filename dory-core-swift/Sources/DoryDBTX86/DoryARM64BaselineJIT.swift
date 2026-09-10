@@ -5409,6 +5409,11 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let chainedExecutionCalls: UInt64
   public let chainedRequestedInstructions: UInt64
   public let chainedRetiredInstructions: UInt64
+  /// Native chain entries that observed the executor's pending-work byte.
+  public let pendingWorkExits: UInt64
+  /// Largest conservative in-entry retirement count observed before a pending-work exit. Work may
+  /// have retired before the request was published, so this is an upper bound rather than a clock.
+  public let pendingWorkMaximumRetiredInstructions: UInt64
   /// Host-to-generated-code entries made by the chained dispatcher. One entry may now retire
   /// several resident blocks after direct links have warmed.
   public let nativeDispatcherEntries: UInt64
@@ -5687,6 +5692,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var chainedExecutionCallCount: UInt64 = 0
   private var chainedRequestedInstructionCount: UInt64 = 0
   private var chainedRetiredInstructionCount: UInt64 = 0
+  private var pendingWorkExitCount: UInt64 = 0
+  private var pendingWorkMaximumRetiredInstructionCount: UInt64 = 0
   private var nativeDispatcherEntryCount: UInt64 = 0
   private var directChainPatchCount: UInt64 = 0
   private var directChainUnlinkCount: UInt64 = 0
@@ -5816,6 +5823,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         chainedExecutionCalls: chainedExecutionCallCount,
         chainedRequestedInstructions: chainedRequestedInstructionCount,
         chainedRetiredInstructions: chainedRetiredInstructionCount,
+        pendingWorkExits: pendingWorkExitCount,
+        pendingWorkMaximumRetiredInstructions: pendingWorkMaximumRetiredInstructionCount,
         nativeDispatcherEntries: nativeDispatcherEntryCount,
         directChainPatches: directChainPatchCount,
         directChainUnlinks: directChainUnlinkCount,
@@ -6442,6 +6451,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               usesGeneratedChainAccounting
               ? context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] : 0
             context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 0
+            if usesGeneratedChainAccounting, exit == .pendingWork {
+              pendingWorkExitCount &+= 1
+              pendingWorkMaximumRetiredInstructionCount = max(
+                pendingWorkMaximumRetiredInstructionCount,
+                generatedInstructionCount
+              )
+            }
             if usesGeneratedChainAccounting, generatedBlockCount == 0, exit == .pendingWork {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               guard completed > 0 else { return nil }

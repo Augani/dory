@@ -8603,6 +8603,8 @@ import Testing
       #expect(snapshot.summary == nil)
       #expect(snapshot.state == snapshot.initialState)
       #expect(executor.hasPendingWork)
+      #expect(executor.diagnostics.pendingWorkExits == 1)
+      #expect(executor.diagnostics.pendingWorkMaximumRetiredInstructions == 0)
       executor.clearPendingWork()
     #endif
   }

@@ -101,7 +101,8 @@ import Testing
       "negativeCacheHits", "negativeCacheMisses", "negativeGenerationMismatches",
       "codeCacheWraps", "nativeTraceAttempts", "nativeTraceReplays", "codeGenerationChecks",
       "codeGenerationMismatches", "chainedExecutionCalls", "chainedRequestedInstructions",
-      "chainedRetiredInstructions",
+      "chainedRetiredInstructions", "pendingWorkExits",
+      "pendingWorkMaximumRetiredInstructions",
     ]
     let counters = Dictionary(
       uniqueKeysWithValues: counterNames.enumerated().map {

@@ -647,6 +647,8 @@ struct PVHJITCacheSnapshot: Codable, Sendable {
         "chainedExecutionCalls": source.chainedExecutionCalls,
         "chainedRequestedInstructions": source.chainedRequestedInstructions,
         "chainedRetiredInstructions": source.chainedRetiredInstructions,
+        "pendingWorkExits": source.pendingWorkExits,
+        "pendingWorkMaximumRetiredInstructions": source.pendingWorkMaximumRetiredInstructions,
         "nativeDispatcherEntries": source.nativeDispatcherEntries,
         "directChainPatches": source.directChainPatches,
         "directChainUnlinks": source.directChainUnlinks,

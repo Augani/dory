@@ -374,6 +374,8 @@ private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
     "chainedExecutionCalls": diagnostics.chainedExecutionCalls,
     "chainedRequestedInstructions": diagnostics.chainedRequestedInstructions,
     "chainedRetiredInstructions": diagnostics.chainedRetiredInstructions,
+    "pendingWorkExits": diagnostics.pendingWorkExits,
+    "pendingWorkMaximumRetiredInstructions": diagnostics.pendingWorkMaximumRetiredInstructions,
     "nativeDispatcherEntries": diagnostics.nativeDispatcherEntries,
     "directChainPatches": diagnostics.directChainPatches,
     "directChainUnlinks": diagnostics.directChainUnlinks,

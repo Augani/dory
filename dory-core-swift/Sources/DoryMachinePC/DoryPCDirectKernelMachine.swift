@@ -233,6 +233,8 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let chainedExecutionCalls: UInt64
   public let chainedRequestedInstructions: UInt64
   public let chainedRetiredInstructions: UInt64
+  public let pendingWorkExits: UInt64
+  public let pendingWorkMaximumRetiredInstructions: UInt64
   public let nativeDispatcherEntries: UInt64
   public let directChainPatches: UInt64
   public let directChainUnlinks: UInt64
@@ -303,6 +305,9 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     chainedExecutionCalls = sum(\.chainedExecutionCalls)
     chainedRequestedInstructions = sum(\.chainedRequestedInstructions)
     chainedRetiredInstructions = sum(\.chainedRetiredInstructions)
+    pendingWorkExits = sum(\.pendingWorkExits)
+    pendingWorkMaximumRetiredInstructions =
+      sources.map(\.pendingWorkMaximumRetiredInstructions).max() ?? 0
     nativeDispatcherEntries = sum(\.nativeDispatcherEntries)
     directChainPatches = sum(\.directChainPatches)
     directChainUnlinks = sum(\.directChainUnlinks)
