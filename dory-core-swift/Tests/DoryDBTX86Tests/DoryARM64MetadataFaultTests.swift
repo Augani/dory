@@ -52,6 +52,44 @@ import Testing
     })
   }
 
+  @Test func failedMemoryCallbackHostPCSelectsTheFaultingGuestInstruction() throws {
+    #if arch(arm64)
+      let block = try DoryX86IRTranslator().translate(
+        [
+          0x48, 0xB9, 1, 0, 0, 0, 0, 0, 0, 0,  // mov rcx,1
+          0x48, 0x8B, 0x03,  // mov rax,[rbx]
+        ],
+        at: 0x6000,
+        mode: .long64
+      )
+      let compiled = DoryARM64BaselineEmitter().compile(block)
+      let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+      try region.publish(compiled, at: 0)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x80)
+      var context = Array(
+        repeating: UInt64(0),
+        count: DoryJITExecutableRegion.contextWordCount
+      )
+      context[3] = 0x100
+      context[16] = 0x6000
+
+      let execution = try context.withUnsafeMutableBufferPointer { buffer in
+        try region.executePreparedWithRecovery(
+          at: 0,
+          context: buffer,
+          memoryCapabilities: .init(memory: memory),
+          requiresRestartableReads: false
+        )
+      }
+      let entryAddress = try #require(region.entryAddress(at: 0))
+      let callbackHostPC = try #require(execution.failedCallbackHostPC)
+      #expect(execution.exitCode == .interpreter)
+      #expect(callbackHostPC >= entryAddress)
+      let hostOffset = try #require(UInt32(exactly: callbackHostPC - entryAddress))
+      #expect(compiled.instructionMetadata(atHostOffset: hostOffset)?.guestRIP == 0x600A)
+    #endif
+  }
+
   @Test func revokedCachedTargetPublishesCompletedStorePrefixBeforePrecisePageFault() throws {
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {

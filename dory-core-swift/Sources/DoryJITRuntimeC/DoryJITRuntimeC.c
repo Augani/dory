@@ -1580,6 +1580,81 @@ int dory_jit_region_patch_branch(
     );
 }
 
+typedef struct dory_jit_tracked_memory_callbacks {
+    dory_jit_memory_read_function read;
+    dory_jit_memory_write_function write;
+    dory_jit_memory_compare_exchange_function compare_exchange;
+    dory_jit_memory_synchronize_function synchronize;
+} dory_jit_tracked_memory_callbacks;
+
+static _Thread_local uintptr_t dory_jit_memory_callback_return_pc = 0;
+static _Thread_local dory_jit_tracked_memory_callbacks *dory_jit_active_memory_callbacks = NULL;
+
+#define DORY_JIT_CAPTURE_CALLBACK_RETURN_PC() \
+    ((uintptr_t)__builtin_extract_return_addr(__builtin_return_address(0)))
+
+__attribute__((noinline))
+static uint64_t dory_jit_tracked_memory_read(
+    void *opaque,
+    uint64_t address,
+    uint32_t byte_count
+) {
+    dory_jit_memory_callback_return_pc = DORY_JIT_CAPTURE_CALLBACK_RETURN_PC();
+    dory_jit_tracked_memory_callbacks *callbacks = dory_jit_active_memory_callbacks;
+    return callbacks == NULL ? 0 : callbacks->read(opaque, address, byte_count);
+}
+
+__attribute__((noinline))
+static void dory_jit_tracked_memory_write(
+    void *opaque,
+    uint64_t address,
+    uint64_t value,
+    uint32_t byte_count
+) {
+    dory_jit_memory_callback_return_pc = DORY_JIT_CAPTURE_CALLBACK_RETURN_PC();
+    dory_jit_tracked_memory_callbacks *callbacks = dory_jit_active_memory_callbacks;
+    if (callbacks != NULL) {
+        callbacks->write(opaque, address, value, byte_count);
+    }
+}
+
+__attribute__((noinline))
+static int32_t dory_jit_tracked_memory_compare_exchange(
+    void *opaque,
+    uint64_t address,
+    uint64_t expected,
+    uint64_t desired,
+    uint32_t byte_count,
+    uint64_t *observed_out
+) {
+    dory_jit_memory_callback_return_pc = DORY_JIT_CAPTURE_CALLBACK_RETURN_PC();
+    dory_jit_tracked_memory_callbacks *callbacks = dory_jit_active_memory_callbacks;
+    if (callbacks == NULL) {
+        return 0;
+    }
+    return callbacks->compare_exchange(
+        opaque,
+        address,
+        expected,
+        desired,
+        byte_count,
+        observed_out
+    );
+}
+
+__attribute__((noinline))
+static void dory_jit_tracked_memory_synchronize(void *opaque) {
+    dory_jit_memory_callback_return_pc = DORY_JIT_CAPTURE_CALLBACK_RETURN_PC();
+    dory_jit_tracked_memory_callbacks *callbacks = dory_jit_active_memory_callbacks;
+    if (callbacks != NULL) {
+        callbacks->synchronize(opaque);
+    }
+}
+
+uintptr_t dory_jit_current_memory_callback_return_pc(void) {
+    return dory_jit_memory_callback_return_pc;
+}
+
 int dory_jit_region_execute(
     const dory_jit_region *region,
     size_t offset,
@@ -1607,7 +1682,24 @@ int dory_jit_region_execute(
         void *pointer;
         dory_jit_function function;
     } callable = {.pointer = entry};
-    *exit_code_out = callable.function(context, memory_context, memory_read, memory_write, memory_compare_exchange, memory_synchronize);
+    dory_jit_tracked_memory_callbacks callbacks = {
+        .read = memory_read,
+        .write = memory_write,
+        .compare_exchange = memory_compare_exchange,
+        .synchronize = memory_synchronize,
+    };
+    dory_jit_memory_callback_return_pc = 0;
+    dory_jit_tracked_memory_callbacks *previous_callbacks = dory_jit_active_memory_callbacks;
+    dory_jit_active_memory_callbacks = &callbacks;
+    *exit_code_out = callable.function(
+        context,
+        memory_context,
+        dory_jit_tracked_memory_read,
+        dory_jit_tracked_memory_write,
+        dory_jit_tracked_memory_compare_exchange,
+        dory_jit_tracked_memory_synchronize
+    );
+    dory_jit_active_memory_callbacks = previous_callbacks;
     return 0;
 }
 
@@ -1732,6 +1824,9 @@ int dory_jit_region_execute(
     (void)memory_synchronize;
     (void)exit_code_out;
     return ENOTSUP;
+}
+uintptr_t dory_jit_current_memory_callback_return_pc(void) {
+    return 0;
 }
 int dory_jit_region_execute_batch(
     const dory_jit_region *region,

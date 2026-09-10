@@ -4851,7 +4851,17 @@ struct DoryJITMemoryCallbackContext {
   let requiresRestartableReads: Bool
   var translationTLB: DoryX86JITTLB?
   var failed = false
+  var failedCallbackHostPC: UInt64?
   var pageTableWriteObserved = false
+}
+
+private func doryJITRecordMemoryFailure(
+  _ context: UnsafeMutablePointer<DoryJITMemoryCallbackContext>
+) {
+  guard !context.pointee.failed else { return }
+  context.pointee.failed = true
+  let returnPC = dory_jit_current_memory_callback_return_pc()
+  context.pointee.failedCallbackHostPC = returnPC == 0 ? nil : UInt64(returnPC)
 }
 
 private func doryJITInvalidatePageTableWrite(
@@ -4933,7 +4943,7 @@ private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address
           byteCount: Int(byteCount)
         )
       else {
-        context.pointee.failed = true
+        doryJITRecordMemoryFailure(context)
         return 0
       }
       return value
@@ -4948,7 +4958,7 @@ private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
     }
   } catch {
-    context.pointee.failed = true
+    doryJITRecordMemoryFailure(context)
     return 0
   }
 }
@@ -4971,7 +4981,7 @@ private let doryJITMemoryWrite: dory_jit_memory_write_function = {
     try context.pointee.capabilities.memory.write(at: address, bytes: bytes)
     doryJITInvalidatePageTableWrite(context)
   } catch {
-    context.pointee.failed = true
+    doryJITRecordMemoryFailure(context)
   }
 }
 
@@ -4981,7 +4991,7 @@ private let doryJITMemoryCompareExchange: dory_jit_memory_compare_exchange_funct
   let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
   guard !context.pointee.failed, let atomicMemory = context.pointee.capabilities.atomicScalarMemory
   else {
-    context.pointee.failed = true
+    doryJITRecordMemoryFailure(context)
     return 0
   }
   do {
@@ -4995,16 +5005,21 @@ private let doryJITMemoryCompareExchange: dory_jit_memory_compare_exchange_funct
         )
       })
     else {
-      context.pointee.failed = true
+      doryJITRecordMemoryFailure(context)
       return 0
     }
     observedOut.pointee = observed
     doryJITInvalidatePageTableWrite(context)
     return 1
   } catch {
-    context.pointee.failed = true
+    doryJITRecordMemoryFailure(context)
     return 0
   }
+}
+
+struct DoryJITPreparedExecution: Sendable, Hashable {
+  let exitCode: DoryJITExitCode
+  let failedCallbackHostPC: UInt64?
 }
 
 public final class DoryJITExecutableRegion: @unchecked Sendable {
@@ -5136,6 +5151,22 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     requiresRestartableReads: Bool,
     translationTLB: DoryX86JITTLB? = nil
   ) throws -> DoryJITExitCode {
+    try executePreparedWithRecovery(
+      at: offset,
+      context: context,
+      memoryCapabilities: memoryCapabilities,
+      requiresRestartableReads: requiresRestartableReads,
+      translationTLB: translationTLB
+    ).exitCode
+  }
+
+  func executePreparedWithRecovery(
+    at offset: Int,
+    context: UnsafeMutableBufferPointer<UInt64>,
+    memoryCapabilities: DoryJITMemoryCapabilities?,
+    requiresRestartableReads: Bool,
+    translationTLB: DoryX86JITTLB? = nil
+  ) throws -> DoryJITPreparedExecution {
     guard offset >= 0, offset.isMultiple(of: 4), offset < capacity else {
       throw DoryJITRuntimeError.invalidOffset(offset)
     }
@@ -5145,6 +5176,7 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     var rawExit: UInt32 = 0
     let result: Int32
     var memoryFailed = false
+    var failedCallbackHostPC: UInt64?
     if let memoryCapabilities {
       var memoryContext = DoryJITMemoryCallbackContext(
         capabilities: memoryCapabilities,
@@ -5165,6 +5197,7 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
         )
       }
       memoryFailed = memoryContext.failed
+      failedCallbackHostPC = memoryContext.failedCallbackHostPC
     } else {
       result = dory_jit_region_execute(
         region,
@@ -5179,11 +5212,13 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
       )
     }
     guard result == 0 else { throw DoryJITRuntimeError.executionFailed(result) }
-    if memoryFailed { return .interpreter }
+    if memoryFailed {
+      return .init(exitCode: .interpreter, failedCallbackHostPC: failedCallbackHostPC)
+    }
     guard let exit = DoryJITExitCode(rawValue: rawExit) else {
       throw DoryJITRuntimeError.invalidExitCode(rawExit)
     }
-    return exit
+    return .init(exitCode: exit, failedCallbackHostPC: nil)
   }
 
   /// Replays an already validated sequence of callback-free resident blocks without crossing the

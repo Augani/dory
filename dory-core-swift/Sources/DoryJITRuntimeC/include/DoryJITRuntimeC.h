@@ -171,6 +171,10 @@ typedef int32_t (*dory_jit_memory_compare_exchange_function)(
 
 typedef void (*dory_jit_memory_synchronize_function)(void *memory_context);
 
+// Valid only while one of the memory callbacks above is executing. The returned host PC is the
+// generated instruction immediately following the callback branch, or zero outside that path.
+uintptr_t dory_jit_current_memory_callback_return_pc(void);
+
 int dory_jit_tlb_create(size_t entry_count, dory_jit_tlb **tlb_out);
 void dory_jit_tlb_destroy(dory_jit_tlb *tlb);
 size_t dory_jit_tlb_entry_count(const dory_jit_tlb *tlb);
