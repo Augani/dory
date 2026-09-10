@@ -1579,6 +1579,7 @@ enum DoryPCMode {
             }.joined(separator: ",")
             return "jit progress tier=\(tier) "
                 + "recent-hits=\(diagnostics.recentLookupHits) "
+                + "block-cache-hits=\(diagnostics.blockCacheLookupHits) "
                 + "dictionary-hits=\(diagnostics.dictionaryLookupHits) "
                 + "misses=\(diagnostics.lookupMisses) "
                 + "generation-hits=\(diagnostics.memoryGenerationHits) "

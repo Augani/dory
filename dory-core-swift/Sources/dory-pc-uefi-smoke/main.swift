@@ -348,6 +348,7 @@ private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
   }
   return [
     "recentLookupHits": diagnostics.recentLookupHits,
+    "blockCacheLookupHits": diagnostics.blockCacheLookupHits,
     "dictionaryLookupHits": diagnostics.dictionaryLookupHits,
     "lookupMisses": diagnostics.lookupMisses,
     "memoryGenerationHits": diagnostics.memoryGenerationHits,

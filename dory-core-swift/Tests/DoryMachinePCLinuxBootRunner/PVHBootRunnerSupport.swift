@@ -623,6 +623,7 @@ struct PVHJITCacheSnapshot: Codable, Sendable {
     self.init(
       cumulativeCounters: [
         "recentLookupHits": source.recentLookupHits,
+        "blockCacheLookupHits": source.blockCacheLookupHits,
         "dictionaryLookupHits": source.dictionaryLookupHits,
         "lookupMisses": source.lookupMisses,
         "memoryGenerationHits": source.memoryGenerationHits,

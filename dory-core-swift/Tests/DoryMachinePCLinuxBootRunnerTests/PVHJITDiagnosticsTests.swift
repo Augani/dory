@@ -93,7 +93,8 @@ import Testing
 
   @Test func serializationRetainsCountersAndCapsSitesWithConfirmedInstructionBytes() throws {
     let counterNames = [
-      "recentLookupHits", "dictionaryLookupHits", "lookupMisses", "memoryGenerationHits",
+      "recentLookupHits", "blockCacheLookupHits", "dictionaryLookupHits", "lookupMisses",
+      "memoryGenerationHits",
       "byteValidationHits", "sharedCodeHits", "compiledBlocks", "declinedCompilations",
       "tier1CompilationAttempts", "tier1CompilationDeclines", "tier1CompiledBlocks",
       "lazyFlagMaterializations",

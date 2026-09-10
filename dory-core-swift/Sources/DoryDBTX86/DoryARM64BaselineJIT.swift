@@ -4517,6 +4517,9 @@ public struct DoryARM64NegativeCacheHotSite: Sendable, Hashable {
 /// daemons to a newer helper's telemetry schema.
 public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let recentLookupHits: UInt64
+  public let blockCacheLookupHits: UInt64
+  /// Compatibility field retained for existing diagnostic consumers. Production resident lookup
+  /// no longer uses a Swift dictionary, so new records report zero here.
   public let dictionaryLookupHits: UInt64
   public let lookupMisses: UInt64
   public let memoryGenerationHits: UInt64
@@ -4720,7 +4723,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var negativeEntries: [NegativeEntry?] = .init(repeating: nil, count: 4_096)
   private var nativeBatchExecutionCountValue: UInt64 = 0
   private var recentLookupHitCount: UInt64 = 0
-  private var dictionaryLookupHitCount: UInt64 = 0
+  private var blockCacheLookupHitCount: UInt64 = 0
   private var lookupMissCount: UInt64 = 0
   private var memoryGenerationHitCount: UInt64 = 0
   private var byteValidationHitCount: UInt64 = 0
@@ -4805,7 +4808,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       }.sorted(by: Self.negativeHotSitePrecedes)
       return .init(
         recentLookupHits: recentLookupHitCount,
-        dictionaryLookupHits: dictionaryLookupHitCount,
+        blockCacheLookupHits: blockCacheLookupHitCount,
+        dictionaryLookupHits: 0,
         lookupMisses: lookupMissCount,
         memoryGenerationHits: memoryGenerationHitCount,
         byteValidationHits: byteValidationHitCount,
@@ -6207,7 +6211,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       lookupMissCount &+= 1
       return nil
     }
-    dictionaryLookupHitCount &+= 1
+    blockCacheLookupHitCount &+= 1
     recentEntries[index] = .init(key: key, resident: slot.resident)
     return slot.resident
   }

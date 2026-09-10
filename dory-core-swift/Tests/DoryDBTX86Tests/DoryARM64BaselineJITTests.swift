@@ -8033,7 +8033,8 @@ import Testing
       #expect(try run(guestRIP: 0x1000, physicalRIP: 0xA000, addressSpaceID: 2) == 0x1007)
       #expect(executor.residentBlockCount == 1)
       #expect(executor.diagnostics.compiledBlocks == 1)
-      #expect(executor.diagnostics.dictionaryLookupHits == 1)
+      #expect(executor.diagnostics.blockCacheLookupHits == 1)
+      #expect(executor.diagnostics.dictionaryLookupHits == 0)
 
       #expect(try run(guestRIP: 0x2000, physicalRIP: 0xA000, addressSpaceID: 3) == 0x2007)
       #expect(executor.residentBlockCount == 1)

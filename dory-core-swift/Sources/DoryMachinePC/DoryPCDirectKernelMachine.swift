@@ -207,6 +207,7 @@ public struct DoryPCHostExecutionDiagnostics: Sendable, Hashable {
 
 public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let recentLookupHits: UInt64
+  public let blockCacheLookupHits: UInt64
   public let dictionaryLookupHits: UInt64
   public let lookupMisses: UInt64
   public let memoryGenerationHits: UInt64
@@ -255,6 +256,7 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
       }
     }
     recentLookupHits = sum(\.recentLookupHits)
+    blockCacheLookupHits = sum(\.blockCacheLookupHits)
     dictionaryLookupHits = sum(\.dictionaryLookupHits)
     lookupMisses = sum(\.lookupMisses)
     memoryGenerationHits = sum(\.memoryGenerationHits)
