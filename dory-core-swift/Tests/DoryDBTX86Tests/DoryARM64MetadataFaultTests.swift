@@ -99,9 +99,13 @@ import Testing
         0x48, 0xB9, 1, 0, 0, 0, 0, 0, 0, 0,  // mov rcx,1
         0x48, 0x8B, 0x03,  // mov rax,[rbx]
       ]
-      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+      for (tier1Enabled, optimization) in [
+        (false, DoryARM64JITOptimization.baseline),
+        (true, DoryARM64JITOptimization.optimizing),
+      ] {
         let executor = try DoryARM64BaselineExecutor(
           maximumCodeBytes: 16 * 1024,
+          tier1Enabled: tier1Enabled,
           optimization: optimization
         )
         let memory = try DoryX86ByteArrayMemory(baseAddress: 0x6000, bytes: bytes)
