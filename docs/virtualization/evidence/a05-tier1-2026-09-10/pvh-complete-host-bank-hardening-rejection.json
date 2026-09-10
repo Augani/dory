@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-complete-host-bank-hardening-rejection",
+  "observedAt": "2026-09-10T16:42:50Z",
+  "status": "production-guest-corruption-reverted",
+  "qualification": "local A05.3 reliability investigation; not A05.3 closure, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "64fd7e60ae74672caf7981e3092810bd3465865c",
+    "revertCommit": "0682012f7ad57609c618f07775dc6377c1d5b12b",
+    "candidateRunnerSHA256": "f2625b3c34a14ed7a18412acbc118f76edbbce6e0f5efd035b204de90a95c924",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "scope": "Append ten stable context words for incoming Darwin x19 through x28, combine them with the existing FP/LR words, and make both memory-capable baseline blocks and all tier-one blocks restore the complete x19 through x30 bank from context storage instead of generated stack memory. Direct mixed-compiler chaining remained disabled.",
+    "behavioralIntent": "Contain the positively observed x20 corruption and the earlier FP/LR corruption by removing the complete Darwin callee-saved bank from generated-frame authority.",
+    "regressionCoverage": "Twenty-eight focused ABI, helper, chain, and metadata tests passed. A new real MAP_JIT regression overwrote every qword of a live tier-one scratch frame before exit and still returned cleanly with the context-backed host bank. The deterministic aggregate passed 1,556 tests in 179 suites.",
+    "productionFinding": "The candidate prevented a host return crash but did not preserve guest correctness. Early kernel console strings contained repeated NUL insertion and duplicated fragments, /init never emitted its authenticated receipt, and the guest exhausted one billion instructions while cycling through page-table, spin-lock, scheduler-clock paths. The broader host save bank therefore does not repair the underlying layout-sensitive generated-execution defect."
+  },
+  "verification": {
+    "focused": "28 tests in 3 suites passed.",
+    "deterministicAggregate": "1,556 tests in 179 suites passed with test parallelism disabled.",
+    "productionAttempts": 1,
+    "diagnosticReceiptsProduced": 1,
+    "secondAttemptSkipped": "The complete one-billion-instruction run produced deterministic guest-visible corruption and no authenticated receipt; a second run cannot turn a correctness failure into acceptance."
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ]
+  },
+  "failedRun": {
+    "runID": "f67be0d3-bd01-402f-933a-e97114e3c7e0",
+    "diagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-complete-host-bank-first.json",
+    "diagnosticReceiptSHA256": "05093e0eb39ab9c40955e5c3cc51a8f2ea30e23c1ac89a3722a381f3efd66cfc",
+    "exitCode": 1,
+    "outcome": "instruction-budget",
+    "elapsedNanoseconds": 443186068250,
+    "retiredInstructions": 1000000000,
+    "guestReceiptSeen": false,
+    "workloadsPassed": false,
+    "consoleBytes": 16826,
+    "consoleCorruption": [
+      "Tasks RCU trampoline line contains six embedded NUL bytes and a duplicated suffix",
+      "PCI ECAM domain line contains six embedded NUL bytes and duplicated text",
+      "X.509 asymmetric-key parser line contains six embedded NUL bytes and a duplicated suffix"
+    ],
+    "terminalGuestRIP": "0xffffffff8129d430",
+    "terminalNearestSymbol": "sched_clock+16",
+    "nativeDispatcherEntries": 165242349,
+    "directlyChainedBlocks": 142007148,
+    "failureRunWithinRunAvoidancePercent": 46.21883823621036,
+    "codeCacheWraps": 1,
+    "translationCachePageFaults": 80
+  },
+  "retainedBaseline": {
+    "evidence": "pvh-chain-target-rejection-ranking.json",
+    "withinRunDispatcherReductionPercent": 50.26310931351201,
+    "compilerABIRejections": 56066297,
+    "reason": "The behavior-neutral coarse instrumentation remains the last production-safe measurement."
+  },
+  "disposition": {
+    "candidateAccepted": false,
+    "a05_3DispatcherGatePassed": false,
+    "requiredDispatcherReductionPercent": 95,
+    "lastAcceptedMeasuredDispatcherReductionPercent": 50.26310931351201,
+    "reason": "The candidate is fully reverted. Context-backing the complete callee-saved bank contains the observed host return corruption but neither prevents nor explains the correlated guest-memory corruption. Future work must isolate the first generated write or state divergence with binary-layout-neutral tracing rather than expand the in-process context again."
+  },
+  "limitations": [
+    "The diagnostic samples only completed 1,000-instruction quanta and does not identify the first corrupting guest instruction.",
+    "The failure run's 46.22-percent avoidance is rejected correctness data and is not comparable performance evidence.",
+    "The experiment changed emitted block boundaries and the execution-context allocation size; it does not distinguish which layout change exposed the latent defect."
+  ]
+}
