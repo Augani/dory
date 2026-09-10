@@ -4577,17 +4577,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
 
   private struct LookupKey: Hashable {
     let guestStart: UInt64
+    let physicalStart: UInt64
     let addressSpaceID: UInt64
-    let executionMode: DoryX86ExecutionMode
-    let privilegeLevel: UInt8
-    let pagingEnabled: Bool
-  }
-
-  /// Emitted host code depends on the virtual RIP and architectural execution context, but not on
-  /// the guest page-table root. Per-address-space entries still own byte-generation validation;
-  /// this key only lets an exact byte match reuse already-published ARM64 code after a CR3 change.
-  private struct SharedCodeKey: Hashable {
-    let guestStart: UInt64
     let executionMode: DoryX86ExecutionMode
     let privilegeLevel: UInt8
     let pagingEnabled: Bool
@@ -4619,6 +4610,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   }
 
   private struct RecentResidentBlock {
+    let key: LookupKey
+    let resident: ResidentBlock
+  }
+
+  private struct ResidentSlot {
     let key: LookupKey
     let resident: ResidentBlock
   }
@@ -4716,8 +4712,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let optimizer: DoryIROptimizer
   private let region: DoryJITExecutableRegion
   private let translationTLB: DoryX86JITTLB
-  private var entries: [LookupKey: ResidentBlock] = [:]
-  private var sharedCodeEntries: [SharedCodeKey: ResidentBlock] = [:]
+  private let blockCache: DoryJITBlockCache
+  private var residentSlots: [ResidentSlot?] = []
+  private var freeResidentSlotIndices: [Int] = []
   private var recentEntries: [RecentResidentBlock?] = .init(repeating: nil, count: 256)
   private var nativeTraces: [NativeTrace?] = .init(repeating: nil, count: 4_096)
   private var negativeEntries: [NegativeEntry?] = .init(repeating: nil, count: 4_096)
@@ -4779,9 +4776,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     self.optimizer = optimizer
     region = try DoryJITExecutableRegion(minimumCapacity: self.maximumCodeBytes)
     translationTLB = try DoryX86JITTLB()
+    blockCache = try DoryJITBlockCache()
   }
 
-  public var residentBlockCount: Int { lock.withLock { entries.count } }
+  public var residentBlockCount: Int { lock.withLock { blockCache.count } }
   public var residentByteCount: Int { lock.withLock { nextOffset } }
   public var nativeBatchExecutionCount: UInt64 {
     lock.withLock { nativeBatchExecutionCountValue }
@@ -4847,8 +4845,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
 
   public func invalidateAll() {
     lock.withLock {
-      entries.removeAll(keepingCapacity: true)
-      sharedCodeEntries.removeAll(keepingCapacity: true)
+      blockCache.removeAll()
+      residentSlots.removeAll(keepingCapacity: true)
+      freeResidentSlotIndices.removeAll(keepingCapacity: true)
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
       negativeEntries = .init(repeating: nil, count: negativeEntries.count)
@@ -4888,12 +4887,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   /// every execution using the prior generation has quiesced.
   public func invalidate(addressSpaceID: UInt64, guestRange: Range<UInt64>) {
     lock.withLock {
-      let victims = entries.filter { key, resident in
-        guard key.addressSpaceID == addressSpaceID else { return false }
-        let blockRange = key.guestStart..<(key.guestStart &+ UInt64(resident.block.guestByteCount))
-        return blockRange.overlaps(guestRange)
-      }.map(\.key)
-      for key in victims { entries.removeValue(forKey: key) }
+      let victims = residentSlots.compactMap { slot -> LookupKey? in
+        guard let slot, slot.key.addressSpaceID == addressSpaceID else { return nil }
+        let blockRange = slot.key.guestStart..<(
+          slot.key.guestStart &+ UInt64(slot.resident.block.guestByteCount))
+        return blockRange.overlaps(guestRange) ? slot.key : nil
+      }
+      for key in victims { removeResident(for: key) }
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
       for index in negativeEntries.indices {
@@ -4980,6 +4980,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   public func execute(
     byteProvider: (_ maximumCount: Int) throws -> [UInt8],
     codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)? = nil,
+    physicalRIPProvider: ((_ guestStart: UInt64) throws -> UInt64?)? = nil,
     at guestStart: UInt64,
     mode: DoryX86ExecutionMode,
     addressSpaceID: UInt64,
@@ -4991,6 +4992,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       let execution = try executeResident(
         byteProvider: byteProvider,
         codeGenerationProvider: codeGenerationProvider,
+        physicalRIPProvider: physicalRIPProvider,
         at: guestStart,
         mode: mode,
         addressSpaceID: addressSpaceID,
@@ -5008,6 +5010,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   public func executeSummary(
     byteProvider: (_ maximumCount: Int) throws -> [UInt8],
     codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)? = nil,
+    physicalRIPProvider: ((_ guestStart: UInt64) throws -> UInt64?)? = nil,
     at guestStart: UInt64,
     mode: DoryX86ExecutionMode,
     addressSpaceID: UInt64,
@@ -5019,6 +5022,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       let execution = try executeResident(
         byteProvider: byteProvider,
         codeGenerationProvider: codeGenerationProvider,
+        physicalRIPProvider: physicalRIPProvider,
         at: guestStart,
         mode: mode,
         addressSpaceID: addressSpaceID,
@@ -5042,6 +5046,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   public func executeChainedSummary(
     byteProvider: (_ guestStart: UInt64, _ maximumCount: Int) throws -> [UInt8],
     codeGenerationProvider: ((_ guestStart: UInt64, _ byteCount: Int) throws -> UInt64?)? = nil,
+    physicalRIPProvider: ((_ guestStart: UInt64) throws -> UInt64?)? = nil,
     at guestStart: UInt64,
     mode: DoryX86ExecutionMode,
     addressSpaceID: UInt64,
@@ -5100,8 +5105,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           )
           var completed = 0
           var blockCount = 0
+          guard let tracePhysicalStart = resolvePhysicalStart(
+            at: guestStart,
+            using: physicalRIPProvider
+          ) else { return nil }
           let traceKey = makeLookupKey(
             guestStart: guestStart,
+            physicalStart: tracePhysicalStart,
             addressSpaceID: addressSpaceID,
             mode: mode,
             state: state
@@ -5154,6 +5164,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 codeGenerationProvider: codeGenerationProvider.map { provider in
                   { try provider(currentRIP, $0) }
                 },
+                physicalRIPProvider: physicalRIPProvider,
                 at: currentRIP,
                 mode: mode,
                 addressSpaceID: addressSpaceID,
@@ -5456,6 +5467,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private func executeResident(
     byteProvider: (_ maximumCount: Int) throws -> [UInt8],
     codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)?,
+    physicalRIPProvider: ((_ guestStart: UInt64) throws -> UInt64?)?,
     at guestStart: UInt64,
     mode: DoryX86ExecutionMode,
     addressSpaceID: UInt64,
@@ -5477,6 +5489,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         let resident = try resolveResident(
           byteProvider: byteProvider,
           codeGenerationProvider: codeGenerationProvider,
+          physicalRIPProvider: physicalRIPProvider,
           at: guestStart,
           mode: mode,
           addressSpaceID: addressSpaceID,
@@ -5522,6 +5535,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private func resolveResident(
     byteProvider: (_ maximumCount: Int) throws -> [UInt8],
     codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)?,
+    physicalRIPProvider: ((_ guestStart: UInt64) throws -> UInt64?)?,
     at guestStart: UInt64,
     mode: DoryX86ExecutionMode,
     addressSpaceID: UInt64,
@@ -5529,8 +5543,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state: DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)?
   ) throws -> ResidentBlock? {
+    guard let physicalStart = resolvePhysicalStart(
+      at: guestStart,
+      using: physicalRIPProvider
+    ) else { return nil }
     let key = makeLookupKey(
       guestStart: guestStart,
+      physicalStart: physicalStart,
       addressSpaceID: addressSpaceID,
       mode: mode,
       state: state
@@ -5578,7 +5597,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           endsTimeBoundary: cached.endsTimeBoundary,
           cr3WriteSourceRegister: cached.cr3WriteSourceRegister
         )
-        publish(resident, for: key)
+        try publish(resident, for: key)
         return resident
       }
       removeResident(for: key)
@@ -5591,39 +5610,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }
     let bytes = try speculativeInstructionBytes(
       using: byteProvider, maximumCount: maximumInstructions * 15)
-    if let shared = sharedCodeEntries[makeSharedCodeKey(from: key)],
-      shared.block.guestInstructionCount <= maximumInstructions,
-      !shared.block.requiresMemoryCallbacks || memory != nil
-    {
-      let byteCount = Int(shared.block.guestByteCount)
-      if bytes.count >= byteCount {
-        let guestBytes = Array(bytes.prefix(byteCount))
-        let generation = Self.fingerprint(bytes: guestBytes, mode: mode)
-        if generation == shared.codeGeneration {
-          sharedCodeHitCount &+= 1
-          let memoryCodeGeneration = readCodeGeneration(
-            using: codeGenerationProvider,
-            byteCount: byteCount
-          )
-          try protectValidatedGuestCode(
-            at: guestStart,
-            byteCount: byteCount,
-            memoryCodeGeneration: memoryCodeGeneration,
-            memory: memory
-          )
-          let resident = ResidentBlock(
-            block: shared.block,
-            offset: shared.offset,
-            codeGeneration: shared.codeGeneration,
-            memoryCodeGeneration: memoryCodeGeneration,
-            endsTimeBoundary: shared.endsTimeBoundary,
-            cr3WriteSourceRegister: shared.cr3WriteSourceRegister
-          )
-          publish(resident, for: key)
-          return resident
-        }
-      }
-    }
     let compilation = try compileResident(
       key: key,
       bytes: bytes,
@@ -5818,8 +5804,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
     if nextOffset > region.capacity - byteCount {
-      entries.removeAll(keepingCapacity: true)
-      sharedCodeEntries.removeAll(keepingCapacity: true)
+      blockCache.removeAll()
+      residentSlots.removeAll(keepingCapacity: true)
+      freeResidentSlotIndices.removeAll(keepingCapacity: true)
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
       negativeEntries = .init(repeating: nil, count: negativeEntries.count)
@@ -5849,7 +5836,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       endsTimeBoundary: Self.endsTimeBoundary(block),
       cr3WriteSourceRegister: Self.cr3WriteSourceRegister(block)
     )
-    publish(resident, for: key)
+    try publish(resident, for: key)
     compiledBlockCount &+= 1
     if compiled.tier == .tier1 { tier1CompiledBlockCount &+= 1 }
     return .init(resident: resident, emitterDeclineByteCount: nil, declineReason: nil)
@@ -5956,12 +5943,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
 
   private func makeLookupKey(
     guestStart: UInt64,
+    physicalStart: UInt64,
     addressSpaceID: UInt64,
     mode: DoryX86ExecutionMode,
     state: DoryX86ArchitecturalState
   ) -> LookupKey {
     LookupKey(
       guestStart: guestStart,
+      physicalStart: physicalStart,
       addressSpaceID: addressSpaceID,
       executionMode: mode,
       privilegeLevel: UInt8(state.cs.selector & 3),
@@ -5969,9 +5958,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     )
   }
 
-  private func makeSharedCodeKey(from key: LookupKey) -> SharedCodeKey {
-    SharedCodeKey(
-      guestStart: key.guestStart,
+  private func resolvePhysicalStart(
+    at guestStart: UInt64,
+    using provider: ((_ guestStart: UInt64) throws -> UInt64?)?
+  ) -> UInt64? {
+    guard let provider else { return guestStart }
+    do { return try provider(guestStart) } catch { return nil }
+  }
+
+  private func blockCacheKey(from key: LookupKey) -> DoryJITBlockCacheKey {
+    .init(
+      physicalRIP: key.physicalStart,
       executionMode: key.executionMode,
       privilegeLevel: key.privilegeLevel,
       pagingEnabled: key.pagingEnabled
@@ -6193,23 +6190,73 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       recentLookupHitCount &+= 1
       return recent.resident
     }
-    guard let resident = entries[key] else {
+    let slotValue: UInt64?
+    do {
+      slotValue = try blockCache.lookup(blockCacheKey(from: key))
+    } catch {
+      lookupMissCount &+= 1
+      return nil
+    }
+    guard let slotValue, slotValue <= UInt64(residentSlots.count),
+      let slot = residentSlots[Int(slotValue - 1)],
+      // Existing emitters still encode virtual RIP-relative semantics. Physical identity permits
+      // CR3 reuse for the same virtual mapping; a differently based alias must be recompiled until
+      // A05.4 side tables make emitted blocks fully relocatable.
+      slot.resident.block.guestStart == key.guestStart
+    else {
       lookupMissCount &+= 1
       return nil
     }
     dictionaryLookupHitCount &+= 1
-    recentEntries[index] = .init(key: key, resident: resident)
-    return resident
+    recentEntries[index] = .init(key: key, resident: slot.resident)
+    return slot.resident
   }
 
-  private func publish(_ resident: ResidentBlock, for key: LookupKey) {
-    entries[key] = resident
-    sharedCodeEntries[makeSharedCodeKey(from: key)] = resident
+  private func publish(_ resident: ResidentBlock, for key: LookupKey) throws {
+    let slot = ResidentSlot(key: key, resident: resident)
+    let slotIndex: Int
+    let appended: Bool
+    if let recycled = freeResidentSlotIndices.popLast() {
+      precondition(residentSlots[recycled] == nil)
+      residentSlots[recycled] = slot
+      slotIndex = recycled
+      appended = false
+    } else {
+      slotIndex = residentSlots.count
+      residentSlots.append(slot)
+      appended = true
+    }
+    let slotValue = UInt64(slotIndex + 1)
+    do {
+      if let replaced = try blockCache.insert(blockCacheKey(from: key), value: slotValue),
+        replaced <= UInt64(residentSlots.count)
+      {
+        let replacedIndex = Int(replaced - 1)
+        if replacedIndex != slotIndex {
+          residentSlots[replacedIndex] = nil
+          freeResidentSlotIndices.append(replacedIndex)
+        }
+      }
+    } catch {
+      if appended {
+        residentSlots.removeLast()
+      } else {
+        residentSlots[slotIndex] = nil
+        freeResidentSlotIndices.append(slotIndex)
+      }
+      throw error
+    }
     recentEntries[recentIndex(for: key)] = .init(key: key, resident: resident)
   }
 
   private func removeResident(for key: LookupKey) {
-    entries.removeValue(forKey: key)
+    if let removed = try? blockCache.remove(blockCacheKey(from: key)),
+      removed <= UInt64(residentSlots.count)
+    {
+      let removedIndex = Int(removed - 1)
+      residentSlots[removedIndex] = nil
+      freeResidentSlotIndices.append(removedIndex)
+    }
     let index = recentIndex(for: key)
     if recentEntries[index]?.key == key { recentEntries[index] = nil }
   }

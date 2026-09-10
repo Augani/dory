@@ -13,6 +13,10 @@
 enum {
     dory_jit_tlb_magic = 0x544c4231,
     dory_jit_tlb_access_count = 3,
+    dory_jit_block_cache_magic = 0x424c4b31,
+    dory_jit_block_cache_empty = 0,
+    dory_jit_block_cache_occupied = 1,
+    dory_jit_block_cache_tombstone = 2,
 };
 
 static const uint64_t dory_jit_tlb_maximum_generation = (UINT64_C(1) << 28) - 1;
@@ -29,7 +33,22 @@ struct dory_jit_tlb {
     uint64_t fallback_counts[dory_jit_tlb_access_count];
 };
 
+typedef struct dory_jit_block_cache_entry {
+    dory_jit_block_key key;
+    uint64_t value;
+    uint8_t state;
+} dory_jit_block_cache_entry;
+
+struct dory_jit_block_cache {
+    uint32_t magic;
+    size_t count;
+    size_t tombstone_count;
+    size_t capacity;
+    dory_jit_block_cache_entry *entries;
+};
+
 _Static_assert(sizeof(dory_jit_tlb_entry) == 16, "JIT TLB entries must remain two words");
+_Static_assert(sizeof(dory_jit_block_key) == 16, "JIT block keys must remain two words");
 _Static_assert(sizeof(dory_jit_tlb_resolution) == 24, "JIT TLB resolution ABI changed");
 _Static_assert(sizeof(dory_jit_atomic_pair_values) == 48, "atomic pair ABI changed");
 
@@ -52,6 +71,260 @@ static uint64_t dory_jit_tlb_tag(
     const uint64_t virtual_page_number_mask = (UINT64_C(1) << 36) - 1;
     const uint64_t virtual_page_number = (linear_address >> 12) & virtual_page_number_mask;
     return (virtual_page_number << 28) | address_space_generation;
+}
+
+static int dory_jit_block_key_is_valid(dory_jit_block_key key) {
+    return key.execution_mode <= 3 && key.privilege_level <= 3 && key.paging_enabled <= 1;
+}
+
+static int dory_jit_block_key_equal(dory_jit_block_key lhs, dory_jit_block_key rhs) {
+    return lhs.physical_rip == rhs.physical_rip &&
+        lhs.execution_mode == rhs.execution_mode &&
+        lhs.privilege_level == rhs.privilege_level &&
+        lhs.paging_enabled == rhs.paging_enabled;
+}
+
+static uint64_t dory_jit_block_key_hash(dory_jit_block_key key) {
+    uint64_t value = key.physical_rip;
+    value ^= (uint64_t)key.execution_mode << 56;
+    value ^= (uint64_t)key.privilege_level << 60;
+    value ^= (uint64_t)key.paging_enabled << 63;
+    value ^= value >> 30;
+    value *= UINT64_C(0xbf58476d1ce4e5b9);
+    value ^= value >> 27;
+    value *= UINT64_C(0x94d049bb133111eb);
+    value ^= value >> 31;
+    return value;
+}
+
+static int dory_jit_block_cache_insert_without_resize(
+    dory_jit_block_cache *cache,
+    dory_jit_block_key key,
+    uint64_t value,
+    uint64_t *replaced_value_out
+) {
+    const size_t mask = cache->capacity - 1;
+    size_t index = (size_t)dory_jit_block_key_hash(key) & mask;
+    size_t tombstone = SIZE_MAX;
+    for (size_t probe = 0; probe < cache->capacity; probe++) {
+        dory_jit_block_cache_entry *entry = &cache->entries[index];
+        if (entry->state == dory_jit_block_cache_empty) {
+            const size_t destination = tombstone == SIZE_MAX ? index : tombstone;
+            entry = &cache->entries[destination];
+            if (entry->state == dory_jit_block_cache_tombstone) {
+                cache->tombstone_count--;
+            }
+            entry->key = key;
+            entry->value = value;
+            entry->state = dory_jit_block_cache_occupied;
+            cache->count++;
+            return 0;
+        }
+        if (entry->state == dory_jit_block_cache_tombstone) {
+            if (tombstone == SIZE_MAX) {
+                tombstone = index;
+            }
+        } else if (dory_jit_block_key_equal(entry->key, key)) {
+            if (replaced_value_out != NULL) {
+                *replaced_value_out = entry->value;
+            }
+            entry->value = value;
+            return 0;
+        }
+        index = (index + 1) & mask;
+    }
+    if (tombstone != SIZE_MAX) {
+        dory_jit_block_cache_entry *entry = &cache->entries[tombstone];
+        entry->key = key;
+        entry->value = value;
+        entry->state = dory_jit_block_cache_occupied;
+        cache->count++;
+        cache->tombstone_count--;
+        return 0;
+    }
+    return ENOSPC;
+}
+
+static int dory_jit_block_cache_resize(dory_jit_block_cache *cache, size_t capacity) {
+    if (capacity < 16) {
+        capacity = 16;
+    }
+    if ((capacity & (capacity - 1)) != 0 ||
+        capacity > SIZE_MAX / sizeof(dory_jit_block_cache_entry)) {
+        return EOVERFLOW;
+    }
+    dory_jit_block_cache_entry *replacement = calloc(capacity, sizeof(*replacement));
+    if (replacement == NULL) {
+        return ENOMEM;
+    }
+    dory_jit_block_cache_entry *previous_entries = cache->entries;
+    const size_t previous_capacity = cache->capacity;
+    cache->entries = replacement;
+    cache->capacity = capacity;
+    cache->count = 0;
+    cache->tombstone_count = 0;
+    for (size_t index = 0; index < previous_capacity; index++) {
+        const dory_jit_block_cache_entry entry = previous_entries[index];
+        if (entry.state == dory_jit_block_cache_occupied) {
+            const int result = dory_jit_block_cache_insert_without_resize(
+                cache,
+                entry.key,
+                entry.value,
+                NULL
+            );
+            if (result != 0) {
+                free(previous_entries);
+                return result;
+            }
+        }
+    }
+    free(previous_entries);
+    return 0;
+}
+
+int dory_jit_block_cache_create(size_t initial_capacity, dory_jit_block_cache **cache_out) {
+    if (cache_out == NULL || initial_capacity == 0) {
+        return EINVAL;
+    }
+    *cache_out = NULL;
+    size_t capacity = 16;
+    while (capacity < initial_capacity) {
+        if (capacity > SIZE_MAX / 2) {
+            return EOVERFLOW;
+        }
+        capacity *= 2;
+    }
+    dory_jit_block_cache *cache = calloc(1, sizeof(*cache));
+    if (cache == NULL) {
+        return ENOMEM;
+    }
+    cache->entries = calloc(capacity, sizeof(*cache->entries));
+    if (cache->entries == NULL) {
+        free(cache);
+        return ENOMEM;
+    }
+    cache->magic = dory_jit_block_cache_magic;
+    cache->capacity = capacity;
+    *cache_out = cache;
+    return 0;
+}
+
+void dory_jit_block_cache_destroy(dory_jit_block_cache *cache) {
+    if (cache == NULL || cache->magic != dory_jit_block_cache_magic) {
+        return;
+    }
+    cache->magic = 0;
+    free(cache->entries);
+    free(cache);
+}
+
+size_t dory_jit_block_cache_count(const dory_jit_block_cache *cache) {
+    return cache != NULL && cache->magic == dory_jit_block_cache_magic ? cache->count : 0;
+}
+
+size_t dory_jit_block_cache_capacity(const dory_jit_block_cache *cache) {
+    return cache != NULL && cache->magic == dory_jit_block_cache_magic ? cache->capacity : 0;
+}
+
+int dory_jit_block_cache_lookup(
+    const dory_jit_block_cache *cache,
+    dory_jit_block_key key,
+    uint64_t *value_out
+) {
+    if (cache == NULL || cache->magic != dory_jit_block_cache_magic ||
+        value_out == NULL || !dory_jit_block_key_is_valid(key)) {
+        return EINVAL;
+    }
+    const size_t mask = cache->capacity - 1;
+    size_t index = (size_t)dory_jit_block_key_hash(key) & mask;
+    for (size_t probe = 0; probe < cache->capacity; probe++) {
+        const dory_jit_block_cache_entry entry = cache->entries[index];
+        if (entry.state == dory_jit_block_cache_empty) {
+            return ENOENT;
+        }
+        if (entry.state == dory_jit_block_cache_occupied &&
+            dory_jit_block_key_equal(entry.key, key)) {
+            *value_out = entry.value;
+            return 0;
+        }
+        index = (index + 1) & mask;
+    }
+    return ENOENT;
+}
+
+int dory_jit_block_cache_insert(
+    dory_jit_block_cache *cache,
+    dory_jit_block_key key,
+    uint64_t value,
+    uint64_t *replaced_value_out
+) {
+    if (cache == NULL || cache->magic != dory_jit_block_cache_magic || value == 0 ||
+        !dory_jit_block_key_is_valid(key)) {
+        return EINVAL;
+    }
+    if (replaced_value_out != NULL) {
+        *replaced_value_out = 0;
+    }
+    if (cache->count + cache->tombstone_count + 1 > (cache->capacity * 7) / 10) {
+        if (cache->capacity > SIZE_MAX / 2) {
+            return EOVERFLOW;
+        }
+        const int resize = dory_jit_block_cache_resize(cache, cache->capacity * 2);
+        if (resize != 0) {
+            return resize;
+        }
+    }
+    return dory_jit_block_cache_insert_without_resize(
+        cache,
+        key,
+        value,
+        replaced_value_out
+    );
+}
+
+int dory_jit_block_cache_remove(
+    dory_jit_block_cache *cache,
+    dory_jit_block_key key,
+    uint64_t *removed_value_out
+) {
+    if (cache == NULL || cache->magic != dory_jit_block_cache_magic ||
+        !dory_jit_block_key_is_valid(key)) {
+        return EINVAL;
+    }
+    if (removed_value_out != NULL) {
+        *removed_value_out = 0;
+    }
+    const size_t mask = cache->capacity - 1;
+    size_t index = (size_t)dory_jit_block_key_hash(key) & mask;
+    for (size_t probe = 0; probe < cache->capacity; probe++) {
+        dory_jit_block_cache_entry *entry = &cache->entries[index];
+        if (entry->state == dory_jit_block_cache_empty) {
+            return ENOENT;
+        }
+        if (entry->state == dory_jit_block_cache_occupied &&
+            dory_jit_block_key_equal(entry->key, key)) {
+            if (removed_value_out != NULL) {
+                *removed_value_out = entry->value;
+            }
+            memset(&entry->key, 0, sizeof(entry->key));
+            entry->value = 0;
+            entry->state = dory_jit_block_cache_tombstone;
+            cache->count--;
+            cache->tombstone_count++;
+            return 0;
+        }
+        index = (index + 1) & mask;
+    }
+    return ENOENT;
+}
+
+void dory_jit_block_cache_clear(dory_jit_block_cache *cache) {
+    if (cache == NULL || cache->magic != dory_jit_block_cache_magic) {
+        return;
+    }
+    memset(cache->entries, 0, cache->capacity * sizeof(*cache->entries));
+    cache->count = 0;
+    cache->tombstone_count = 0;
 }
 
 int dory_jit_tlb_create(size_t entry_count, dory_jit_tlb **tlb_out) {

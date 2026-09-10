@@ -85,6 +85,23 @@ import Testing
     #expect(try physical.readScalar(at: 0x4008, byteCount: 8) == 0xA027)
   }
 
+  @Test func translatedMemoryExposesPermissionCheckedPhysicalInstructionIdentity() throws {
+    let physical = try memory(
+      secondPTE: 0xA007,
+      secondPhysicalAddress: 0xA000,
+      bytes: [0x90, 0x90]
+    )
+    let architecturalState = try state(cpl: 3)
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: physical,
+      pagingUnit: .init(),
+      context: .init(state: architecturalState, mode: .long64)
+    )
+
+    #expect(try translated.physicalInstructionAddress(at: 0x400FFF) == 0x8FFF)
+    #expect(try translated.physicalInstructionAddress(at: 0x401000) == 0xA000)
+  }
+
   private func memory(
     firstPTE: UInt64 = 0x8007,
     secondPTE: UInt64,

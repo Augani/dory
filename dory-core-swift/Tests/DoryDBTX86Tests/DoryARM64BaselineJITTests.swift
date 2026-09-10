@@ -1132,7 +1132,7 @@ import Testing
     #endif
   }
 
-  @Test func sharedCodeReuseReprotectsAnUnchangedGuestPage() throws {
+  @Test func physicalCacheReuseReprotectsAnUnchangedGuestPage() throws {
     #if arch(arm64)
       let memory = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
       let targetAddress: UInt64 = 0x100
@@ -1179,7 +1179,8 @@ import Testing
           state: &state,
           memory: memory
         ))
-      #expect(executor.diagnostics.sharedCodeHits == 1)
+      #expect(executor.diagnostics.byteValidationHits == 1)
+      #expect(executor.diagnostics.compiledBlocks == 1)
       #expect(memory.protectedTranslatedCodePageCount == 1)
       #expect(state.registers.rax == 1)
     #endif
@@ -7955,7 +7956,7 @@ import Testing
           maximumInstructions: 1,
           state: &state
         ))
-      #expect(executor.residentBlockCount == 3)
+      #expect(executor.residentBlockCount == 2)
 
       executor.invalidate(addressSpaceID: 1, guestRange: 0x8FFF..<0x9001)
       #expect(executor.residentBlockCount == 2)
@@ -7970,7 +7971,7 @@ import Testing
           maximumInstructions: 1,
           state: &state
         ))
-      #expect(executor.residentBlockCount == 3)
+      #expect(executor.residentBlockCount == 2)
     #endif
   }
 
@@ -8001,9 +8002,65 @@ import Testing
           state: &state
         ))
 
-      #expect(executor.residentBlockCount == 2)
       #expect(executor.residentByteCount == publishedBytes)
+      #expect(executor.residentBlockCount == 1)
       #expect(state.registers.rax == 1)
+    #endif
+  }
+
+  @Test func physicalCacheIdentityReusesAcrossCR3ButNotVirtualAliases() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024)
+      let program: [UInt8] = [0x48, 0x8D, 0x05, 0, 0, 0, 0]  // lea rax,[rip]
+
+      func run(guestRIP: UInt64, physicalRIP: UInt64, addressSpaceID: UInt64) throws -> UInt64 {
+        var state = try DoryX86ArchitecturalState(rip: guestRIP)
+        _ = try #require(
+          executor.execute(
+            byteProvider: { count in Array(program.prefix(count)) },
+            codeGenerationProvider: { _ in 1 },
+            physicalRIPProvider: { _ in physicalRIP },
+            at: guestRIP,
+            mode: .long64,
+            addressSpaceID: addressSpaceID,
+            maximumInstructions: 1,
+            state: &state
+          ))
+        return state.registers.rax
+      }
+
+      #expect(try run(guestRIP: 0x1000, physicalRIP: 0xA000, addressSpaceID: 1) == 0x1007)
+      #expect(try run(guestRIP: 0x1000, physicalRIP: 0xA000, addressSpaceID: 2) == 0x1007)
+      #expect(executor.residentBlockCount == 1)
+      #expect(executor.diagnostics.compiledBlocks == 1)
+      #expect(executor.diagnostics.dictionaryLookupHits == 1)
+
+      #expect(try run(guestRIP: 0x2000, physicalRIP: 0xA000, addressSpaceID: 3) == 0x2007)
+      #expect(executor.residentBlockCount == 1)
+      #expect(executor.diagnostics.compiledBlocks == 2)
+
+      #expect(try run(guestRIP: 0x2000, physicalRIP: 0xB000, addressSpaceID: 4) == 0x2007)
+      #expect(executor.residentBlockCount == 2)
+      #expect(executor.diagnostics.compiledBlocks == 3)
+    #endif
+  }
+
+  @Test func unavailablePhysicalInstructionIdentityDeclinesBeforeCompilation() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+      var state = try DoryX86ArchitecturalState(rip: 0x1000)
+      let execution = try executor.execute(
+        byteProvider: { count in Array([0x90].prefix(count)) },
+        physicalRIPProvider: { _ in nil },
+        at: state.rip,
+        mode: .long64,
+        addressSpaceID: 1,
+        maximumInstructions: 1,
+        state: &state
+      )
+      #expect(execution == nil)
+      #expect(executor.residentBlockCount == 0)
+      #expect(executor.diagnostics.compiledBlocks == 0)
     #endif
   }
 

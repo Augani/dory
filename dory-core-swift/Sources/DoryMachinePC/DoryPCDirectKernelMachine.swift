@@ -1389,6 +1389,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           // the interpreter after any already-completed native chain has been published.
           try? translatedMemory.codeGeneration(at: address, byteCount: byteCount)
         },
+        physicalRIPProvider: { address in
+          // Cache compiled code by the permission-checked physical instruction address so the
+          // same mapping can survive CR3 switches. A failed speculative walk leaves the precise
+          // instruction-fetch fault to the interpreter.
+          try? translatedMemory.physicalInstructionAddress(at: address)
+        },
         at: guestRIP,
         mode: mode,
         addressSpaceID: state.control.cr3,

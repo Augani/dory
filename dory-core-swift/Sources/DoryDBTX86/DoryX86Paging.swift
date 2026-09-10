@@ -910,6 +910,19 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
       at: address, byteCount: maximumCount, access: .instructionFetch, allowShortRead: true)
   }
 
+  /// Resolves the first byte of a linear instruction fetch for physical translation-cache
+  /// identity. Permission and reserved-bit checks are exactly the same as an architectural fetch;
+  /// callers treat failure as a speculative JIT decline and leave precise fault delivery to the
+  /// interpreter.
+  public func physicalInstructionAddress(at address: UInt64) throws -> UInt64 {
+    try pagingUnit.translate(
+      linearAddress: address,
+      access: .instructionFetch,
+      context: context,
+      physicalMemory: physicalMemory
+    ).physicalAddress
+  }
+
   public func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
     try readLinear(at: address, byteCount: byteCount, access: .read, allowShortRead: false)
   }

@@ -6,6 +6,37 @@
 
 typedef struct dory_jit_region dory_jit_region;
 typedef struct dory_jit_tlb dory_jit_tlb;
+typedef struct dory_jit_block_cache dory_jit_block_cache;
+
+typedef struct dory_jit_block_key {
+    uint64_t physical_rip;
+    uint8_t execution_mode;
+    uint8_t privilege_level;
+    uint8_t paging_enabled;
+    uint8_t reserved[5];
+} dory_jit_block_key;
+
+int dory_jit_block_cache_create(size_t initial_capacity, dory_jit_block_cache **cache_out);
+void dory_jit_block_cache_destroy(dory_jit_block_cache *cache);
+size_t dory_jit_block_cache_count(const dory_jit_block_cache *cache);
+size_t dory_jit_block_cache_capacity(const dory_jit_block_cache *cache);
+int dory_jit_block_cache_lookup(
+    const dory_jit_block_cache *cache,
+    dory_jit_block_key key,
+    uint64_t *value_out
+);
+int dory_jit_block_cache_insert(
+    dory_jit_block_cache *cache,
+    dory_jit_block_key key,
+    uint64_t value,
+    uint64_t *replaced_value_out
+);
+int dory_jit_block_cache_remove(
+    dory_jit_block_cache *cache,
+    dory_jit_block_key key,
+    uint64_t *removed_value_out
+);
+void dory_jit_block_cache_clear(dory_jit_block_cache *cache);
 
 typedef enum dory_jit_tlb_access {
     DORY_JIT_TLB_ACCESS_READ = 0,
