@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-legacy-memory-to-tier1-chain-rejection",
+  "observedAt": "2026-09-10T15:19:39Z",
+  "status": "production-correctness-failed-reverted",
+  "qualification": "local A05.3 rejected narrow mixed-compiler edge experiment; not A05.3 closure, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "50a4f65d51bdc72db638ba80c664421df7018425",
+    "revertCommit": "7b81d8238",
+    "candidateRunnerSHA256": "9e63126f6738aab43c2830f63d3caad3063166ecdd092367f9574ca28dff1298",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "scope": "Admit only legacy-memory to tier-one targets because the existing legacy memory chain epilogue restores the canonical x0-x5 generated-function entry tuple. Callback-free legacy sources and every tier-one-to-legacy edge remained separated.",
+    "behavioralIntent": "Reuse the already-generated callback-preserving epilogue without adding host pointers to guest context or changing emitted machine code.",
+    "productionFinding": "The guest corrupted kernel console strings before userspace, then busybox faulted during exec and the kernel repeatedly reported scheduling-while-atomic failures. Execution remained live in page-table and scheduler code until the full instruction budget expired without an authenticated guest receipt."
+  },
+  "verification": {
+    "focused": "3 mixed-compiler and chain-slot tests passed.",
+    "deterministicAggregate": "1,557 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the frozen fixture was executed explicitly.",
+    "productionAttempts": 1,
+    "diagnosticReceiptsProduced": 1,
+    "reasonSecondAttemptSkipped": "The complete failure receipt reproduces the same pre-userspace string corruption and scheduler/page-table loop as the earlier broad legacy-to-tier-one admission. A second one-billion-instruction run cannot establish acceptance and was not used to manufacture additional evidence."
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "failedRun": {
+    "runID": "700687ad-5314-4eb8-9a6c-30d68922548c",
+    "diagnosticReceiptSHA256": "0cf23394d036d8b1bc9da4c1c5d6c26a6a4ddae8318fede1be4979c35d9a6be1",
+    "elapsedNanoseconds": 412187749666,
+    "retiredInstructions": 1000000000,
+    "outcome": "instruction-budget",
+    "exitCode": 1,
+    "guestReceiptSeen": false,
+    "nativeDispatcherEntries": 107703367,
+    "directlyChainedBlocks": 200145395,
+    "withinRunDispatcherReductionPercent": 65.01419518458222,
+    "dispatcherEntriesPerMillionInstructions": 107703.367,
+    "chainTargetAttempts": 98513772,
+    "chainTargetAccepts": 1082611,
+    "chainTargetCompilerABIRejections": 19234225,
+    "terminalSymbols": [
+      "__pte_offset_map_lock",
+      "___pte_offset_map",
+      "__cond_resched",
+      "_raw_spin_lock"
+    ],
+    "corruptionMarkers": [
+      "NUL bytes inside the RCU trampoline line",
+      "NUL bytes inside the PCI ECAM/domain line",
+      "NUL bytes inside the refined TSC max-cycles line",
+      "busybox segmentation faults during exec",
+      "repeated scheduling while atomic warnings"
+    ]
+  },
+  "retainedBaseline": {
+    "evidence": "pvh-chain-target-rejection-ranking.json",
+    "withinRunDispatcherReductionPercent": 50.26310931351201,
+    "reason": "It remains the last behavior-neutral mixed-compiler-separated production measurement."
+  },
+  "disposition": {
+    "candidateAccepted": false,
+    "a05_3DispatcherGatePassed": false,
+    "requiredDispatcherReductionPercent": 95,
+    "lastAcceptedMeasuredDispatcherReductionPercent": 50.26310931351201,
+    "reason": "Even a legacy memory source that restores x0-x5 is not sufficient to make the compiler boundary safe. The failure-run 65.01 percent avoidance is invalid for performance acceptance because guest correctness failed. The admission is fully reverted."
+  },
+  "limitations": [
+    "The failure receipt identifies the corrupted workload phase and terminal loop but not the exact mixed-compiler edge that first corrupts architectural state.",
+    "Because correctness failed, none of the candidate's performance counters are accepted as progress toward the dispatcher gate.",
+    "The directed two-block regression does not cover live flag descriptors, block-local checkpoint metadata, or every memory instruction family at a mixed compiler boundary."
+  ]
+}
