@@ -183,21 +183,6 @@ import Testing
     #endif
   }
 
-  @Test func emittedTier1BoundariesRestoreHostControlStateFromTheContext() {
-    var words: [UInt32] = []
-    let emitter = DoryARM64Tier1BoundaryEmitter()
-    emitter.emitEntry(into: &words)
-    emitter.emitExit(.dispatch, into: &words)
-
-    #expect(words.contains(0xF901_239D))  // str x29,[x28,#576]
-    #expect(words.contains(0xF901_279E))  // str x30,[x28,#584]
-    #expect(words.contains(0xF941_2390))  // ldr x16,[x28,#576]
-    #expect(words.contains(0xF941_2791))  // ldr x17,[x28,#584]
-    #expect(words.contains(0xAA10_03FD))  // mov x29,x16
-    #expect(words.contains(0xAA11_03FE))  // mov x30,x17
-    #expect(!words.contains(0xA945_7BFD))  // no ldp x29,x30,[sp,#80]
-  }
-
   @Test func emittedHelperShimAddsOnlyDeclaredLiveGuestSpillsAndReloads() {
     let emitter = DoryARM64Tier1BoundaryEmitter()
     func emittedWords(mask: UInt16) -> [UInt32] {

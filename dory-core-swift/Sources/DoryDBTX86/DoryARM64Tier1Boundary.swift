@@ -64,17 +64,6 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
           byteOffset: pairIndex * 16))
     }
     words.append(Self.encodeMove(destination: 28, source: 0))
-    // Keep host control state outside the generated stack frame. Guest execution and helper
-    // shims can use that frame for temporaries, but a damaged frame must never supply FP/LR at
-    // the final RET or at a chained target entry.
-    words.append(
-      Self.encodeStore64(
-        register: 29, base: 28,
-        byteOffset: DoryARM64Tier1ABI.ContextWord.hostFramePointer.byteOffset))
-    words.append(
-      Self.encodeStore64(
-        register: 30, base: 28,
-        byteOffset: DoryARM64Tier1ABI.ContextWord.hostReturnAddress.byteOffset))
     // Preserve the remaining generated-function ABI arguments in the dispatcher-owned
     // callee-saved bank before x1...x15 become pinned guest registers.
     for (destination, source) in zip(19...23, 1...5) {
@@ -566,17 +555,7 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
   }
 
   private func emitHostFrameRestore(into words: inout [UInt32]) {
-    // Load the trusted values before restoring x28, which owns the context pointer. The x29/x30
-    // pair remains reserved in the frame layout but is deliberately not a control-flow source.
-    words.append(
-      Self.encodeLoad64(
-        register: 16, base: DoryARM64Tier1ABI.contextRegister,
-        byteOffset: DoryARM64Tier1ABI.ContextWord.hostFramePointer.byteOffset))
-    words.append(
-      Self.encodeLoad64(
-        register: 17, base: DoryARM64Tier1ABI.contextRegister,
-        byteOffset: DoryARM64Tier1ABI.ContextWord.hostReturnAddress.byteOffset))
-    for (pairIndex, first) in stride(from: 19, through: 27, by: 2).enumerated() {
+    for (pairIndex, first) in stride(from: 19, through: 29, by: 2).enumerated() {
       words.append(
         Self.encodeLoadPair(
           first: UInt32(first), second: UInt32(first + 1), base: 31,
@@ -585,8 +564,6 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
     words.append(
       Self.encodeAddImmediate(
         left: 31, immediate: Self.hostFrameByteCount, destination: 31))
-    words.append(Self.encodeMove(destination: 29, source: 16))
-    words.append(Self.encodeMove(destination: 30, source: 17))
   }
 
   private static func emitImmediate(
