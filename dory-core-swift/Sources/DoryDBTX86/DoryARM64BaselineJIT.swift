@@ -5588,9 +5588,6 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let chainTargetMissingMemoryRejections: UInt64
   public let chainTargetInterpreterGuardRejections: UInt64
   public let chainTargetCompilerABIRejections: UInt64
-  public let chainTargetLegacyToTier1Rejections: UInt64
-  public let chainTargetTier1ToLegacyRejections: UInt64
-  public let chainTargetOtherCompilerABIRejections: UInt64
   public let chainTargetPublicationRejections: UInt64
   public let indirectBranchTargetCacheHits: UInt64
   public let indirectBranchTargetCacheMisses: UInt64
@@ -5876,9 +5873,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var chainTargetMissingMemoryRejectionCount: UInt64 = 0
   private var chainTargetInterpreterGuardRejectionCount: UInt64 = 0
   private var chainTargetCompilerABIRejectionCount: UInt64 = 0
-  private var chainTargetLegacyToTier1RejectionCount: UInt64 = 0
-  private var chainTargetTier1ToLegacyRejectionCount: UInt64 = 0
-  private var chainTargetOtherCompilerABIRejectionCount: UInt64 = 0
   private var chainTargetPublicationRejectionCount: UInt64 = 0
   private var indirectBranchTargetCacheHitCount: UInt64 = 0
   private var indirectBranchTargetCacheMissCount: UInt64 = 0
@@ -6019,9 +6013,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         chainTargetMissingMemoryRejections: chainTargetMissingMemoryRejectionCount,
         chainTargetInterpreterGuardRejections: chainTargetInterpreterGuardRejectionCount,
         chainTargetCompilerABIRejections: chainTargetCompilerABIRejectionCount,
-        chainTargetLegacyToTier1Rejections: chainTargetLegacyToTier1RejectionCount,
-        chainTargetTier1ToLegacyRejections: chainTargetTier1ToLegacyRejectionCount,
-        chainTargetOtherCompilerABIRejections: chainTargetOtherCompilerABIRejectionCount,
         chainTargetPublicationRejections: chainTargetPublicationRejectionCount,
         indirectBranchTargetCacheHits: indirectBranchTargetCacheHitCount,
         indirectBranchTargetCacheMisses: indirectBranchTargetCacheMissCount,
@@ -7742,14 +7733,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }
     guard source.block.tier == target.block.tier else {
       chainTargetCompilerABIRejectionCount &+= 1
-      switch (source.block.tier, target.block.tier) {
-      case (.tier1, _):
-        chainTargetTier1ToLegacyRejectionCount &+= 1
-      case (_, .tier1):
-        chainTargetLegacyToTier1RejectionCount &+= 1
-      default:
-        chainTargetOtherCompilerABIRejectionCount &+= 1
-      }
       return false
     }
     return true
