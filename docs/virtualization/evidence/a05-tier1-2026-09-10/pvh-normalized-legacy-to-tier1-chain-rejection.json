@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-normalized-legacy-to-tier1-chain-rejection",
+  "observedAt": "2026-09-10T14:58:42Z",
+  "status": "production-host-crash-reverted",
+  "qualification": "local A05.3 rejected mixed-compiler ABI bridge; not A05.3 closure, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "7ea5baa988fba1cff1b67a98a60f8147a9c6944f",
+    "revertCommit": "2128478b9",
+    "candidateRunnerSHA256": "f98d06e593f51fb706800f45fa150667bbbeedfe10af60bb7263bbe5cf8f1c4c",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "scope": "Append the active memory callback argument bank to the generated context, reload it at every legacy and tier-one memory entry, and admit only legacy-to-tier-one direct links while retaining the tier-one-to-legacy lazy-flags boundary.",
+    "behavioralIntent": "Make a mixed-compiler edge independent of whichever caller-saved x1-x5 values happened to survive the source block.",
+    "regressionCoverage": "A low-level tier-one memory target poisoned x1-x5 before a patched tail branch and reloaded the snapshotted callback bank successfully. A legacy memory bit-test/branch into tier-one ADC preserved exact state with one fewer warm dispatcher entry. The reverse tier-one-to-legacy memory edge remained rejected.",
+    "productionFinding": "Both runs of the identical release binary crashed in generated execution before the runner could serialize a diagnostic receipt. The first jumped to unaligned address 0x1c6 and the second to invalid address 0x64 while the memory callback bank was live. The differing low program counters indicate corrupted control-flow state; they do not prove which edge or context write caused it."
+  },
+  "verification": {
+    "focused": "10 tests in 3 suites passed.",
+    "deterministicAggregate": "1,558 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the frozen fixture was executed explicitly.",
+    "productionAttempts": 2,
+    "diagnosticReceiptsProduced": 0
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ]
+  },
+  "failedRuns": [
+    {
+      "runID": "97b798aa-41a7-4dcb-951f-c94d5e481c57",
+      "intendedDiagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-normalized-legacy-to-tier1-chain-first.json",
+      "diagnosticReceiptPresent": false,
+      "terminalOutputCaptured": false,
+      "processExitStatus": 138,
+      "signal": "SIGBUS",
+      "exceptionSubtype": "EXC_ARM_DA_ALIGN",
+      "faultAddress": "0x1c6",
+      "crashReportSHA256": "677e571ee8bd36baf2330893cf54e634009369bfe2753096b536698882cf8264"
+    },
+    {
+      "runID": "7bba65e2-679d-4b7f-85bc-2e3c7f5da068",
+      "intendedDiagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-normalized-legacy-to-tier1-chain-second.json",
+      "diagnosticReceiptPresent": false,
+      "terminalOutputCaptured": false,
+      "processExitStatus": 139,
+      "signal": "SIGSEGV",
+      "exceptionSubtype": "KERN_INVALID_ADDRESS",
+      "faultAddress": "0x64",
+      "crashReportSHA256": "1ee92c618b6ab4fa3fa4c71dcfc81287044d66bff54cf7e88641ec98e39daae3"
+    }
+  ],
+  "retainedBaseline": {
+    "evidence": "pvh-chain-target-rejection-ranking.json",
+    "withinRunDispatcherReductionPercent": 50.26310931351201,
+    "compilerABIRejections": 56066297,
+    "reason": "The behavior-neutral coarse instrumentation remains the last production-safe measurement."
+  },
+  "disposition": {
+    "candidateAccepted": false,
+    "a05_3DispatcherGatePassed": false,
+    "requiredDispatcherReductionPercent": 95,
+    "lastAcceptedMeasuredDispatcherReductionPercent": 50.26310931351201,
+    "reason": "The normalized one-way bridge passes directed and aggregate correctness gates but reproducibly corrupts production host control flow before guest qualification. It is fully reverted. A future bridge must avoid extending mutable guest context with host callback pointers and must obtain two clean frozen-fixture runs before admission."
+  },
+  "limitations": [
+    "Neither run produced a diagnostic receipt, so guest progress, retired instructions, and dispatcher counters are unavailable and are not inferred.",
+    "The crash reports establish corrupted generated control flow but do not isolate the responsible mixed-compiler edge.",
+    "The test-only ABI poison case did not reproduce production context lifetime, cache rotation, or all chained callback combinations."
+  ]
+}
