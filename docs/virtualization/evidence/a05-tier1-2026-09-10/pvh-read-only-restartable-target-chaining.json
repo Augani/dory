@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-read-only-restartable-target-chaining",
+  "observedAt": "2026-09-10T13:28:45Z",
+  "status": "correctness-passed-dispatcher-gate-failed",
+  "qualification": "local A05.3 read-only multi-access target chaining measurement; not A05.3 closure, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "9f607577e",
+    "candidateRunnerSHA256": "be595b62e8ff1ae0b3aa1902736907c7f12c2e6db3e8c9ba2900f22981cda30b",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "boundary": "Each generated memory block publishes its own restartable-read policy before its first callback. Direct-chain and IBTC admission includes multi-access targets only when compiled metadata proves that the target does not write guest memory.",
+    "conservativeExclusions": "Multi-access targets that may write guest memory remain dispatcher-separated after the all-target production soft-lock. Baseline targets with interpreter guards also remain excluded.",
+    "regressionCoverage": "A callback-free source chains into a two-read target whose second access declines and recovers the exact two-block prefix. A load/store target is separately proven to retain two dispatcher entries and zero direct-chain bypasses. Both tests execute in baseline and tier-one modes."
+  },
+  "verification": {
+    "focused": "Four replay-policy, target-admission, and ABI-layout tests passed.",
+    "deterministicAggregate": "1,555 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the frozen fixture was executed explicitly.",
+    "diffCheck": "git diff --check passed before the focused implementation commit."
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "reference": {
+    "receipt": "pvh-single-access-memory-chain-first.json",
+    "retiredInstructions": 723050284,
+    "elapsedNanoseconds": 337255423959,
+    "nativeDispatcherEntries": 124998112,
+    "directlyChainedBlocks": 105743598,
+    "dispatcherEntriesPerMillionInstructions": 172876.0983379,
+    "withinRunDispatcherReductionPercent": 45.8276910577
+  },
+  "measuredRun": {
+    "runID": "ca45b3e4-07a9-4709-b245-f4180305ee88",
+    "diagnosticReceiptSHA256": "8832b119188319f48c603c763d778751f419b825a29e11dae3a556a96959b02d",
+    "elapsedNanoseconds": 315850436417,
+    "retiredInstructions": 721880626,
+    "baselineJITInstructions": 719106718,
+    "interpreterInstructions": 2773908,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "codeCacheWraps": 2,
+    "codeCacheEvictedBlocks": 74648,
+    "nativeDispatcherEntries": 114241773,
+    "directlyChainedBlocks": 116941374,
+    "dispatcherEntriesPerMillionInstructions": 158255.76817738282,
+    "chainedBypassesPerMillionInstructions": 161995.44604484233,
+    "withinRunDispatcherReductionPercent": 50.58386630579088,
+    "directChainPatches": 599191,
+    "directChainUnlinks": 593924,
+    "indirectBranchTargetCacheHits": 135966,
+    "indirectBranchTargetCacheMisses": 13516246,
+    "shadowReturnStackHits": 1922883,
+    "shadowReturnStackMisses": 12787197,
+    "translationCachePageFaults": 725,
+    "pendingWorkExits": 1,
+    "pendingWorkMaximumRetiredInstructions": 0
+  },
+  "comparison": {
+    "normalizedDispatcherReductionVersusSingleAccessPercent": 8.457114938655897,
+    "withinRunAvoidancePointGain": 4.75617524809088,
+    "directBypassIncreasePercent": 10.589554556295688,
+    "wallDirectionalChangePercent": -6.346817877894884
+  },
+  "workloads": [
+    "bootstrap.filesystems",
+    "syscall.identity",
+    "process.creation_exec_wait",
+    "memory.allocation_copy",
+    "signal.handler_return",
+    "timer.sleep_elapsed",
+    "filesystem.write_read_sync"
+  ],
+  "disposition": {
+    "correctnessAcceptedForNextIteration": true,
+    "a05_3DispatcherGatePassed": false,
+    "requiredDispatcherReductionPercent": 95,
+    "measuredDispatcherReductionPercent": 50.58386630579088,
+    "reason": "Read-only multi-access targets improve normalized dispatcher entries by 8.46 percent over the accepted single-access target slice and pass the pinned production workload, but within-run avoidance remains far below the strict greater-than-95-percent gate. The card stays open."
+  },
+  "limitations": [
+    "This is one local measurement, sufficient to reject gate closure but not to make a stable wall-time comparison.",
+    "Retired instruction totals differ from the reference run, so normalized and within-run dispatcher ratios are reported instead of an unmatched raw-count claim.",
+    "Multi-access write, RMW, stack-memory, and guarded baseline targets remain dispatcher-separated."
+  ]
+}
