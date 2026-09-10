@@ -1221,14 +1221,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         completed += execution.instructionCount
         switch execution.jitTier {
         case .baseline, .tier1:
-          baselineJITInstructionCount &+= execution.instructionCount
+          baselineJITInstructionCount &+= execution.jitInstructionCount
           baselineJITBlockCount &+= execution.jitBlockCount
         case .optimizing:
-          optimizingJITInstructionCount &+= execution.instructionCount
+          optimizingJITInstructionCount &+= execution.jitInstructionCount
           optimizingJITBlockCount &+= execution.jitBlockCount
         case .interpreterFallback, nil:
-          interpreterInstructionCount &+= execution.instructionCount
+          break
         }
+        interpreterInstructionCount &+= execution.interpreterInstructionCount
         if instrumentationEnabled {
           let sample = hostTimeSample()
           if clockSource.monotonicNanoseconds != nil {
@@ -1419,6 +1420,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     let result: ProcessorResult
     let instructionCount: UInt64
     let jitTier: DoryARM64CompilationTier?
+    let jitInstructionCount: UInt64
+    let interpreterInstructionCount: UInt64
     let jitBlockCount: UInt64
   }
 
@@ -1432,6 +1435,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       for pagingUnit in pagingUnits { pagingUnit.invalidateAll() }
     }
     let mode = executionMode(state)
+    var deoptimizedPrefix: DoryARM64ExecutionSummary?
     if let jit = selectedJIT(forProcessor: processor, state: state, mode: mode),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0),
       !state.rflags.contains(.trap),
@@ -1475,6 +1479,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             result: .retired,
             instructionCount: count,
             jitTier: execution.tier,
+            jitInstructionCount: count,
+            interpreterInstructionCount: 0,
             jitBlockCount: UInt64(execution.residentBlockCount)
           )
         case .pendingWork:
@@ -1482,6 +1488,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             result: .yielded,
             instructionCount: count,
             jitTier: execution.tier,
+            jitInstructionCount: count,
+            interpreterInstructionCount: 0,
             jitBlockCount: UInt64(execution.residentBlockCount)
           )
         case .halt:
@@ -1489,14 +1497,25 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             result: .halted,
             instructionCount: count,
             jitTier: execution.tier,
+            jitInstructionCount: count,
+            interpreterInstructionCount: 0,
             jitBlockCount: UInt64(execution.residentBlockCount)
           )
-        case .interpreter, .system, .portIO:
+        case .interpreter:
+          if execution.guestInstructionCount > 0 { deoptimizedPrefix = execution }
+        case .system, .portIO:
           break
         }
       }
       if jit.hasPendingWork {
-        return .init(result: .yielded, instructionCount: 0, jitTier: nil, jitBlockCount: 0)
+        return .init(
+          result: .yielded,
+          instructionCount: 0,
+          jitTier: nil,
+          jitInstructionCount: 0,
+          interpreterInstructionCount: 0,
+          jitBlockCount: 0
+        )
       }
     }
 
@@ -1522,7 +1541,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     case .exception(let exception):
       machineResult = .exception(exception)
     }
-    return .init(result: machineResult, instructionCount: 1, jitTier: nil, jitBlockCount: 0)
+    let nativePrefixCount = UInt64(deoptimizedPrefix?.guestInstructionCount ?? 0)
+    return .init(
+      result: machineResult,
+      instructionCount: nativePrefixCount + 1,
+      jitTier: deoptimizedPrefix?.tier,
+      jitInstructionCount: nativePrefixCount,
+      interpreterInstructionCount: 1,
+      jitBlockCount: UInt64(deoptimizedPrefix?.residentBlockCount ?? 0)
+    )
   }
 
   private func selectedJIT(

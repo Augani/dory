@@ -1228,20 +1228,23 @@ struct DoryARM64Tier1Emitter: Sendable {
   // Keep the complete usage walk out of the already-large emitter body. This is a cold
   // publication-time pass; forcing it inline inflated the production compiler hot path.
   @inline(never)
-  private static func instructionRegisterMasks(
+  static func instructionRegisterMasks(
     for block: DoryIRBasicBlock
-  ) -> (liveIn: [UInt16], dirty: [UInt16]) {
+  ) -> (liveIn: [UInt16], dirty: [UInt16], writes: [UInt16]) {
     var liveIn: [UInt16] = []
     var dirtyAtEntry: [UInt16] = []
+    var writes: [UInt16] = []
     var cumulativeDirty: UInt16 = 0
     liveIn.reserveCapacity(block.instructionBoundaries.count)
     dirtyAtEntry.reserveCapacity(block.instructionBoundaries.count)
+    writes.reserveCapacity(block.instructionBoundaries.count)
     for boundary in block.instructionBoundaries {
       let start = Int(boundary.statementStartIndex)
       let end = start + Int(boundary.statementCount)
       guard start <= end, end <= block.statements.count else {
         liveIn.append(.max)
         dirtyAtEntry.append(.max)
+        writes.append(.max)
         cumulativeDirty = .max
         continue
       }
@@ -1254,9 +1257,10 @@ struct DoryARM64Tier1Emitter: Sendable {
       }
       liveIn.append(liveAtEntry)
       dirtyAtEntry.append(cumulativeDirty)
+      writes.append(writtenWithinInstruction)
       cumulativeDirty |= writtenWithinInstruction
     }
-    return (liveIn, dirtyAtEntry)
+    return (liveIn, dirtyAtEntry, writes)
   }
 
   @inline(never)

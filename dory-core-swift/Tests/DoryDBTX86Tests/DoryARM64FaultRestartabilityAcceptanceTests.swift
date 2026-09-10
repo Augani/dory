@@ -62,7 +62,7 @@ import Testing
 
       #expect(summary.guestInstructionCount == 1)
       #expect(summary.residentBlockCount == 1)
-      #expect(summary.exitCode == .dispatch)
+      #expect(summary.exitCode == .interpreter)
       #expect(state.rip == 0x1003)
       #expect(state.registers.rcx == 1)
       #expect(state.registers.rax == 0xAAAA)

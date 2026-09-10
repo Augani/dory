@@ -41,7 +41,7 @@ import Testing
   }
 
   @Test func stableContextLayoutMatchesTheExecutableBaselineBoundary() {
-    #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<75))
+    #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<94))
     #expect(DoryARM64Tier1ABI.contextWordCount == DoryJITExecutableRegion.contextWordCount)
     #expect(DoryARM64Tier1ABI.ContextWord.hostAddressSpaceBase.rawValue
       == DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex)
@@ -78,6 +78,9 @@ import Testing
     #expect(DoryARM64Tier1ABI.ContextWord.hostFramePointer.rawValue == 72)
     #expect(DoryARM64Tier1ABI.ContextWord.hostReturnAddress.rawValue == 73)
     #expect(DoryARM64Tier1ABI.ContextWord.inlineTLBFaultHostPC.rawValue == 74)
+    #expect(DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointActive.rawValue == 75)
+    #expect(DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRSP.rawValue == 82)
+    #expect(DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointR15.rawValue == 93)
     for word in DoryARM64Tier1ABI.ContextWord.allCases {
       #expect(word.byteOffset == word.rawValue * MemoryLayout<UInt64>.stride)
     }
