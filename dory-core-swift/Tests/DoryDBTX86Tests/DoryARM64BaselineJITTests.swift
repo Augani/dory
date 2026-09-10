@@ -8079,6 +8079,41 @@ import Testing
     #endif
   }
 
+  @Test func directBranchSlotPatchesAndUnpatchesThroughTheMAPJITRuntime() throws {
+    #if arch(arm64)
+      let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+      let block = DoryARM64CompiledBlock(
+        guestStart: 0,
+        guestByteCount: 1,
+        guestInstructionCount: 1,
+        machineWords: [
+          0x1400_0001,  // slot: b dispatcher return
+          0x5280_0020,  // mov w0,#1
+          0xD65F_03C0,  // ret
+          0x5280_0040,  // mov w0,#2
+          0xD65F_03C0,  // ret
+        ],
+        tier: .baseline,
+        exitCode: .interpreter
+      )
+      try region.publish(block, at: 0)
+      var context = [UInt64](
+        repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+
+      #expect(try region.execute(at: 0, context: &context) == .interpreter)
+      try region.patchDirectBranch(at: 0, to: 12)
+      #expect(try region.execute(at: 0, context: &context) == .halt)
+      try region.patchDirectBranch(at: 0, to: 4)
+      #expect(try region.execute(at: 0, context: &context) == .interpreter)
+      #expect(throws: DoryJITRuntimeError.invalidOffset(-4)) {
+        try region.patchDirectBranch(at: -4, to: 4)
+      }
+      #expect(throws: DoryJITRuntimeError.branchPatchFailed(EINVAL)) {
+        try region.patchDirectBranch(at: 2, to: 4)
+      }
+    #endif
+  }
+
   @Test func executionContextCarriesTheHostAddressSpaceBase() throws {
     let page = Int(getpagesize())
     let memory = try DoryX86MmapMemory(

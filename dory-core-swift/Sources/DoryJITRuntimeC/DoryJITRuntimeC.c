@@ -1288,6 +1288,49 @@ int dory_jit_region_publish(
     return result;
 }
 
+int dory_jit_region_patch_branch(
+    dory_jit_region *region,
+    size_t slot_offset,
+    size_t target_offset
+) {
+    if (region == NULL || region->magic != dory_jit_region_magic ||
+        (slot_offset & 3) != 0 || (target_offset & 3) != 0 ||
+        slot_offset >= region->capacity || target_offset >= region->capacity) {
+        return EINVAL;
+    }
+    int64_t byte_delta;
+    if (target_offset >= slot_offset) {
+        const size_t magnitude = target_offset - slot_offset;
+        if (magnitude > INT64_MAX) {
+            return ERANGE;
+        }
+        byte_delta = (int64_t)magnitude;
+    } else {
+        const size_t magnitude = slot_offset - target_offset;
+        if (magnitude > (size_t)INT64_MAX + 1) {
+            return ERANGE;
+        }
+        byte_delta = magnitude == (size_t)INT64_MAX + 1
+            ? INT64_MIN
+            : -(int64_t)magnitude;
+    }
+    if ((byte_delta & 3) != 0) {
+        return EINVAL;
+    }
+    const int64_t word_delta = byte_delta / 4;
+    if (word_delta < -(INT64_C(1) << 25) || word_delta >= (INT64_C(1) << 25)) {
+        return ERANGE;
+    }
+    const uint32_t instruction =
+        UINT32_C(0x14000000) | ((uint32_t)word_delta & UINT32_C(0x03ffffff));
+    return dory_jit_region_publish(
+        region,
+        slot_offset,
+        (const uint8_t *)&instruction,
+        sizeof(instruction)
+    );
+}
+
 int dory_jit_region_execute(
     const dory_jit_region *region,
     size_t offset,
@@ -1407,6 +1450,16 @@ int dory_jit_region_publish(
     (void)offset;
     (void)bytes;
     (void)byte_count;
+    return ENOTSUP;
+}
+int dory_jit_region_patch_branch(
+    dory_jit_region *region,
+    size_t slot_offset,
+    size_t target_offset
+) {
+    (void)region;
+    (void)slot_offset;
+    (void)target_offset;
     return ENOTSUP;
 }
 int dory_jit_region_execute(

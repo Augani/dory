@@ -245,6 +245,11 @@ int dory_jit_region_publish(
     const uint8_t *bytes,
     size_t byte_count
 );
+int dory_jit_region_patch_branch(
+    dory_jit_region *region,
+    size_t slot_offset,
+    size_t target_offset
+);
 int dory_jit_region_execute(
     const dory_jit_region *region,
     size_t offset,

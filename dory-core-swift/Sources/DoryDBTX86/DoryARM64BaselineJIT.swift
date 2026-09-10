@@ -4077,6 +4077,7 @@ public final class DoryJITCodeCache: @unchecked Sendable {
 public enum DoryJITRuntimeError: Error, Sendable, Equatable {
   case unavailable(Int32)
   case publicationFailed(Int32)
+  case branchPatchFailed(Int32)
   case invalidOffset(Int)
   case invalidContextWordCount(Int)
   case executionFailed(Int32)
@@ -4321,6 +4322,16 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
       }
     }
     guard result == 0 else { throw DoryJITRuntimeError.publicationFailed(result) }
+  }
+
+  /// Atomically replaces one aligned ARM64 direct-branch slot under the C runtime's MAP_JIT
+  /// publication lock and invalidates the instruction cache for the patched word.
+  public func patchDirectBranch(at slotOffset: Int, to targetOffset: Int) throws {
+    guard slotOffset >= 0, targetOffset >= 0 else {
+      throw DoryJITRuntimeError.invalidOffset(min(slotOffset, targetOffset))
+    }
+    let result = dory_jit_region_patch_branch(region, slotOffset, targetOffset)
+    guard result == 0 else { throw DoryJITRuntimeError.branchPatchFailed(result) }
   }
 
   public func execute(
