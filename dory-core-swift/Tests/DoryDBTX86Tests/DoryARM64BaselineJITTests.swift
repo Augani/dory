@@ -8376,6 +8376,68 @@ import Testing
     #endif
   }
 
+  @Test func baselineIndirectJumpProbesThePerVCPUCacheInline() throws {
+    #if arch(arm64)
+      let sourceIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
+        [0xFF, 0xE0], at: 0x3000, mode: .long64)  // jmp rax
+      let targetIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
+        [0xB9, 0x34, 0x12, 0, 0], at: 0x4000, mode: .long64)
+      let emitter = DoryARM64BaselineEmitter()
+      let source = emitter.compile(sourceIR)
+      let target = emitter.compile(targetIR)
+      #expect(source.chainSlots?.isEmpty == true)
+      #expect(target.chainSlots?.count == 1)
+
+      let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+      let targetOffset = source.machineBytes.count
+      try region.publish(source, at: 0)
+      try region.publish(target, at: targetOffset)
+      let cache = try DoryJITIndirectBranchTargetCache()
+      try cache.fill(
+        guestRIP: 0x4000,
+        generation: 7,
+        hostAddress: try #require(region.entryAddress(at: targetOffset))
+      )
+      var context = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+      context.withUnsafeMutableBufferPointer {
+        DoryARM64BaselineExecutor.populateExecutionContext(
+          $0,
+          from: .reset(),
+          memory: nil,
+          indirectBranchTargetCache: cache,
+          codeCacheGeneration: 7
+        )
+      }
+      context[0] = 0x4000
+      context[16] = 0x3000
+      context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 1
+      context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] = 2
+
+      #expect(try region.execute(at: 0, context: &context) == .dispatch)
+      #expect(context[1] == 0x1234)
+      #expect(context[16] == 0x4005)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue] == 2)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] == 2)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.rawValue] == 1)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.ibtcInlineMisses.rawValue] == 0)
+
+      context[0] = 0x4000
+      context[1] = 0
+      context[16] = 0x3000
+      context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] = 2
+      context[DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue] = 0
+      context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] = 0
+      context[DoryARM64Tier1ABI.ContextWord.ibtcGeneration.rawValue] = 8
+      context[DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.rawValue] = 0
+      #expect(try region.execute(at: 0, context: &context) == .dispatch)
+      #expect(context[1] == 0)
+      #expect(context[16] == 0x4000)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] == 1)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.rawValue] == 0)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.ibtcInlineMisses.rawValue] == 1)
+    #endif
+  }
+
   @Test func baselineMemoryChainRestoresCallbacksBeforeTailCall() throws {
     #if arch(arm64)
       let sourceIR = try DoryX86IRTranslator(instructionBudget: 1).translate(

@@ -52,6 +52,7 @@ public struct DoryARM64ChainSlot: Codable, Sendable, Hashable {
 public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
   private static let directChainMetadataMagic: UInt32 = 0xD05C_A051
   private static let conditionalChainMetadataMagic: UInt32 = 0xD05C_A052
+  private static let indirectChainMetadataMagic: UInt32 = 0xD05C_A053
 
   public let guestStart: UInt64
   public let guestByteCount: UInt32
@@ -131,6 +132,9 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
           fallbackWordIndex: codeEnd - 2
         ),
       ]
+    case Self.indirectChainMetadataMagic:
+      guard machineWords[0] == 0x1400_0002 else { return nil }
+      return []
     default:
       return nil
     }
@@ -169,6 +173,10 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
     default:
       precondition(slots.isEmpty, "unsupported chain-slot metadata shape")
     }
+  }
+
+  static func installIndirectChainMetadata(in words: inout [UInt32]) {
+    words.insert(contentsOf: [0x1400_0002, indirectChainMetadataMagic], at: 0)
   }
 }
 
@@ -218,6 +226,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
     DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.byteOffset
   private static let chainLastGuestRIPOffset =
     DoryARM64Tier1ABI.ContextWord.chainLastGuestRIP.byteOffset
+  private static let ibtcEntriesBaseOffset = DoryARM64Tier1ABI.ContextWord.ibtcEntriesBase.byteOffset
+  private static let ibtcEntryMaskOffset = DoryARM64Tier1ABI.ContextWord.ibtcEntryMask.byteOffset
+  private static let ibtcGenerationOffset = DoryARM64Tier1ABI.ContextWord.ibtcGeneration.byteOffset
+  private static let ibtcInlineHitsOffset = DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.byteOffset
+  private static let ibtcInlineMissesOffset =
+    DoryARM64Tier1ABI.ContextWord.ibtcInlineMisses.byteOffset
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
@@ -292,7 +306,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return fallback(block)
     }
     let hasChainSlots = exit == .dispatch && supportsChainSlots(for: block.terminator)
-    if hasChainSlots {
+    let hasIndirectChain =
+      exit == .dispatch && supportsIndirectBranchTargetCache(for: block.terminator)
+    let hasGeneratedChain = hasChainSlots || hasIndirectChain
+    if hasGeneratedChain {
       emitChainAccounting(
         contextRegister: usesMemory ? 19 : 0,
         guestInstructionCount: block.guestInstructionCount,
@@ -301,7 +318,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       )
     }
     if usesMemory {
-      if hasChainSlots {
+      if hasGeneratedChain {
         emitMemoryChainEpilogue(into: &words)
       } else {
         emitMemoryEpilogue(into: &words)
@@ -310,15 +327,20 @@ public struct DoryARM64BaselineEmitter: Sendable {
     let chainSlots = hasChainSlots
       ? emitChainSlots(for: block.terminator, into: &words)
       : []
+    if hasIndirectChain { emitIndirectBranchTargetCacheLookup(into: &words) }
     words.append(encodeMoveWideZero32(register: 0, immediate: UInt16(exit.rawValue)))
     words.append(0xD65F_03C0)
-    if hasChainSlots {
+    if hasGeneratedChain {
       installChainBudgetGuard(
         guestInstructionCount: block.guestInstructionCount,
         in: &words
       )
     }
-    DoryARM64CompiledBlock.installChainMetadata(chainSlots, in: &words)
+    if hasIndirectChain {
+      DoryARM64CompiledBlock.installIndirectChainMetadata(in: &words)
+    } else {
+      DoryARM64CompiledBlock.installChainMetadata(chainSlots, in: &words)
+    }
     return .init(
       guestStart: block.guestStart,
       guestByteCount: block.guestByteCount,
@@ -511,6 +533,82 @@ public struct DoryARM64BaselineEmitter: Sendable {
     default:
       return false
     }
+  }
+
+  private func supportsIndirectBranchTargetCache(for terminator: DoryIRTerminator) -> Bool {
+    switch terminator {
+    case .indirect, .indirectCall:
+      return true
+    default:
+      return false
+    }
+  }
+
+  /// Probes `{guest RIP, host address, generation, reserved}` directly from the per-vCPU C table.
+  /// The evaluated target already lives in the context RIP word. Every miss reaches the following
+  /// block-local dispatcher return; a hit tail-branches only while chain mode is explicitly active.
+  private func emitIndirectBranchTargetCacheLookup(into words: inout [UInt32]) {
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.chainEnabledOffset))
+    let disabledBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 10, base: 0, byteOffset: Self.ibtcEntriesBaseOffset))
+    let missingBaseBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.ripOffset))
+    words.append(encodeLoad64(register: 11, base: 0, byteOffset: Self.ibtcEntryMaskOffset))
+    words.append(
+      encodeLogical(
+        .and,
+        left: 11,
+        right: 9,
+        shiftAmount: 2,
+        logicalRightShift: true,
+        destination: 11
+      ))
+    words.append(encodeAdd(is64Bit: true, left: 10, right: 11, leftShift: 5, destination: 10))
+    words.append(encodeLoad64(register: 11, base: 10, byteOffset: 0))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 9, 31))
+    let tagMismatchBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 11, base: 10, byteOffset: 16))
+    words.append(encodeLoad64(register: 12, base: 0, byteOffset: Self.ibtcGenerationOffset))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 12, 31))
+    let generationMismatchBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 16, base: 10, byteOffset: 8))
+    let missingTargetBranch = words.count
+    words.append(0)
+    emitIncrementContextWord(byteOffset: Self.ibtcInlineHitsOffset, into: &words)
+    words.append(encodeBranch(register: 16))
+    let miss = words.count
+    emitIncrementContextWord(byteOffset: Self.ibtcInlineMissesOffset, into: &words)
+    let fallback = words.count
+    words[disabledBranch] = encodeCompareBranchZero64(
+      register: 9,
+      wordOffset: fallback - disabledBranch
+    )
+    words[missingBaseBranch] = encodeCompareBranchZero64(
+      register: 10,
+      wordOffset: miss - missingBaseBranch
+    )
+    words[tagMismatchBranch] = encodeConditionalBranch(
+      condition: .notEqual,
+      wordOffset: miss - tagMismatchBranch
+    )
+    words[generationMismatchBranch] = encodeConditionalBranch(
+      condition: .notEqual,
+      wordOffset: miss - generationMismatchBranch
+    )
+    words[missingTargetBranch] = encodeCompareBranchZero64(
+      register: 16,
+      wordOffset: miss - missingTargetBranch
+    )
+  }
+
+  private func emitIncrementContextWord(byteOffset: Int, into words: inout [UInt32]) {
+    words.append(encodeLoad64(register: 11, base: 0, byteOffset: byteOffset))
+    words.append(encodeAddImmediate64(left: 11, immediate: 1, destination: 11))
+    words.append(encodeStore64(register: 11, base: 0, byteOffset: byteOffset))
   }
 
   private func requiresRuntimeAddressGuard(_ terminator: DoryIRTerminator) -> Bool {
@@ -4304,6 +4402,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
     precondition((-33_554_432..<33_554_432).contains(wordOffset))
     return 0x1400_0000 | (UInt32(truncatingIfNeeded: wordOffset) & 0x03ff_ffff)
   }
+
+  private func encodeBranch(register: UInt32) -> UInt32 {
+    precondition(register < 32)
+    return 0xD61F_0000 | register << 5
+  }
 }
 
 public struct DoryJITBlockKey: Codable, Sendable, Hashable {
@@ -4675,6 +4778,11 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     }
     let result = dory_jit_region_patch_branch(region, slotOffset, targetOffset)
     guard result == 0 else { throw DoryJITRuntimeError.branchPatchFailed(result) }
+  }
+
+  func entryAddress(at offset: Int) -> UInt64? {
+    guard offset >= 0, let entry = dory_jit_region_entry(region, offset) else { return nil }
+    return UInt64(UInt(bitPattern: entry))
   }
 
   public func execute(
