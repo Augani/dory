@@ -681,9 +681,6 @@ struct DoryARM64Tier1Emitter: Sendable {
 
     var words: [UInt32] = []
     boundary.emitEntry(into: &words)
-    if requiresMemoryCallbacks {
-      boundary.emitRestartableMemoryReadPolicy(memoryCallbackCount > 1, into: &words)
-    }
     let entryWordCount = words.count
     words.append(contentsOf: body)
     let chainSlots: [DoryARM64ChainSlot]

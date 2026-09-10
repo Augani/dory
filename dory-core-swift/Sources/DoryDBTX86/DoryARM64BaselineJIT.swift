@@ -381,8 +381,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
     DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRFlags.byteOffset
   private static let memoryFaultCheckpointRAXOffset =
     DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRAX.byteOffset
-  private static let requiresRestartableMemoryReadsOffset =
-    DoryARM64Tier1ABI.ContextWord.requiresRestartableMemoryReads.byteOffset
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
@@ -434,8 +432,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
       if case .signedAccumulatorDivide = $0 { return true }
       return false
     }
-    let requiresRestartableMemoryReads =
-      memoryCallbackCount > 1 || (guardsTerminator && usesMemory)
     // Translated writes end a block. Also reject hand-crafted IR that would reach a new
     // address guard after a successful write, since register checkpoints cannot undo RAM/I/O.
     var wroteMemory = false
@@ -449,13 +445,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       wroteMemory = wroteMemory || writesMemory(statement)
     }
     if wroteMemory && guardsTerminator { return fallback(block) }
-    if usesMemory {
-      emitMemoryPrologue(into: &words)
-      emitRestartableMemoryReadPolicy(
-        requiresRestartableMemoryReads,
-        into: &words
-      )
-    }
+    if usesMemory { emitMemoryPrologue(into: &words) }
     let registerMasks = DoryARM64Tier1Emitter.instructionRegisterMasks(for: block)
     var writeCheckpointMasksByStatement: [Int: UInt16] = [:]
     for (boundaryIndex, boundary) in block.instructionBoundaries.enumerated() {
@@ -552,7 +542,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       requiresMemoryCallbacks: usesMemory,
       // RET and memory-indirect JMP can now decline after their read. Such reads must
       // be proven ordinary RAM, just like a read followed by a potentially failing write.
-      requiresRestartableMemoryReads: requiresRestartableMemoryReads,
+      requiresRestartableMemoryReads: memoryCallbackCount > 1 || (guardsTerminator && usesMemory),
       mayExitToInterpreter: guardsTerminator || guardsStack || guardsInterpreterExit,
       instructionMetadata: instructionMetadata
     )
@@ -581,19 +571,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeMoveWideZero32(register: 16, immediate: 1))
     words.append(
       encodeStore64(register: 16, base: 19, byteOffset: Self.memoryFaultCheckpointActiveOffset))
-  }
-
-  private func emitRestartableMemoryReadPolicy(
-    _ required: Bool,
-    into words: inout [UInt32]
-  ) {
-    words.append(encodeMoveWideZero32(register: 16, immediate: required ? 1 : 0))
-    words.append(
-      encodeStore64(
-        register: 16,
-        base: 19,
-        byteOffset: Self.requiresRestartableMemoryReadsOffset
-      ))
   }
 
   private func terminatorWritesMemory(_ terminator: DoryIRTerminator) -> Bool {
@@ -5107,10 +5084,7 @@ private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address
   let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
   guard !context.pointee.failed else { return 0 }
   do {
-    let requiresRestartableReads = context.pointee.executionContext.map {
-      $0[DoryARM64Tier1ABI.ContextWord.requiresRestartableMemoryReads.rawValue] != 0
-    } ?? context.pointee.requiresRestartableReads
-    if requiresRestartableReads {
+    if context.pointee.requiresRestartableReads {
       guard let restartableScalarMemory = context.pointee.capabilities.restartableScalarMemory,
         let value = try restartableScalarMemory.readRestartableScalar(
           at: address,
@@ -5355,8 +5329,6 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     var failedExecutionContext: [UInt64]?
     let inlineTLBFaultHostPCIndex = DoryARM64Tier1ABI.ContextWord.inlineTLBFaultHostPC.rawValue
     context[inlineTLBFaultHostPCIndex] = 0
-    context[DoryARM64Tier1ABI.ContextWord.requiresRestartableMemoryReads.rawValue] =
-      requiresRestartableReads ? 1 : 0
     context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointActive.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRegisterMask.rawValue] = 0
     if let memoryCapabilities {
@@ -7679,8 +7651,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     memoryCallbacksAvailable: Bool
   ) -> Bool {
     canInitiateRuntimeChain(resident)
-      // Every memory-bearing block publishes its own restartable-read policy on entry, including
-      // after a raw link. The shared callback authority and A05.4 side table remain chain-wide.
+      // Multi-access blocks still need a block-local restartable-read policy. Single-access
+      // callback targets share the chain's recovery context and are safe after A05.4.
+      && !resident.block.requiresRestartableMemoryReads
       && (!resident.block.requiresMemoryCallbacks || memoryCallbacksAvailable)
       && (!resident.block.mayExitToInterpreter || resident.block.tier == .tier1)
   }
@@ -8041,7 +8014,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[DoryARM64Tier1ABI.ContextWord.inlineTLBFaultHostPC.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointActive.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRegisterMask.rawValue] = 0
-    context[DoryARM64Tier1ABI.ContextWord.requiresRestartableMemoryReads.rawValue] = 0
   }
 
   private func recordLazyFlagMaterializations(
