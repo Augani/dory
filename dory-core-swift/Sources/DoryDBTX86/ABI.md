@@ -54,7 +54,7 @@ struct ABI. The word layout is:
 | 59...63 | per-vCPU IBTC entry base, entry mask, code-cache generation, inline hits, and inline misses |
 | 64...70 | per-vCPU shadow-return entry base, entry mask, top pointer, code-cache generation, inline hits, misses, and pushes |
 | 71 | atomic pending-work byte in the low eight bits; the remaining bits are reserved |
-| 72...73 | trusted incoming host frame pointer and return address for memory-capable generated blocks |
+| 72...73 | trusted incoming host frame pointer and return address for tier-1 and legacy memory blocks |
 | 74 | generated BLR return PC for an architectural inline-TLB page fault |
 | 75...93 | active memory-write checkpoint, exact GPR mask, entry RFLAGS, and RAX...R15 images |
 | 94 | block-local restartable-read policy selected before the first memory callback |
@@ -100,8 +100,9 @@ body label.
 
 `DoryARM64Tier1BoundaryEmitter` is the executable implementation of these
 boundaries. Its entry saves `x19`...`x30` in one 96-byte, 16-byte-aligned host
-frame before installing pinned state. Its exit writes architectural state,
-restores that frame, and returns a `DoryJITExitCode` through `w0`.
+frame before installing pinned state and copies incoming FP/LR to trusted context
+words. Its exit writes architectural state, restores `x19`...`x28` from the frame,
+restores FP/LR from the trusted words, and returns a `DoryJITExitCode` through `w0`.
 
 `DoryARM64Tier1Emitter` is admitted through the executor's `tier1Enabled`
 feature flag. The PC machine enables it for the production baseline executor;
