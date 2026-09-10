@@ -1645,8 +1645,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeMoveWideZero32(register: 5, immediate: operationCode))
     words.append(encodeAddImmediate64(left: 31, immediate: 80, destination: 6))
     words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C translated atomic RMW)
-    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
-    emitInterpreterUnless(condition: .equal, usesMemory: true, into: &words)
+    emitAtomicResolutionUnlessSuccess(into: &words)
 
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
     words.append(encodeLoad64(register: 9, base: 31, byteOffset: 80))
@@ -3230,8 +3229,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeMoveWideZero32(register: 3, immediate: doubleQuadword ? 16 : 8))
     words.append(encodeAddImmediate64(left: 31, immediate: 64, destination: 4))
     words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C translated pair compare-exchange)
-    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
-    emitInterpreterUnless(condition: .equal, usesMemory: true, into: &words)
+    emitAtomicResolutionUnlessSuccess(into: &words)
 
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
     words.append(encodeLoad64(register: 9, base: 31, byteOffset: 64))
@@ -3297,8 +3295,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeMoveWideZero32(register: 4, immediate: UInt16(width.rawValue / 8)))
     words.append(encodeAddImmediate64(left: 31, immediate: 80, destination: 5))
     words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C translated atomic exchange)
-    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
-    emitInterpreterUnless(condition: .equal, usesMemory: true, into: &words)
+    emitAtomicResolutionUnlessSuccess(into: &words)
     words.append(encodeLoad64(register: 10, base: 31, byteOffset: 80))
     words.append(encodeStore64(register: 10, base: 19, byteOffset: Int(source.index) * 8))
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
@@ -3329,8 +3326,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeMoveWideZero32(register: 4, immediate: UInt16(width.rawValue / 8)))
     words.append(encodeAddImmediate64(left: 31, immediate: 80, destination: 5))
     words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C translated atomic fetch-add)
-    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
-    emitInterpreterUnless(condition: .equal, usesMemory: true, into: &words)
+    emitAtomicResolutionUnlessSuccess(into: &words)
 
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
     words.append(encodeLoad64(register: 9, base: 31, byteOffset: 80))
@@ -3405,8 +3401,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeMoveWideZero32(register: 5, immediate: operationCode))
     words.append(encodeAddImmediate64(left: 31, immediate: 80, destination: 6))
     words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C translated atomic RMW)
-    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
-    emitInterpreterUnless(condition: .equal, usesMemory: true, into: &words)
+    emitAtomicResolutionUnlessSuccess(into: &words)
 
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
     words.append(encodeLoad64(register: 9, base: 31, byteOffset: 80))
@@ -3503,8 +3498,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeMoveWideZero32(register: 5, immediate: operationCode))
     words.append(encodeAddImmediate64(left: 31, immediate: 80, destination: 6))
     words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C translated atomic RMW)
-    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
-    emitInterpreterUnless(condition: .equal, usesMemory: true, into: &words)
+    emitAtomicResolutionUnlessSuccess(into: &words)
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
 
     if operation == .bitwiseNot { return true }
@@ -4385,6 +4379,37 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(0xD65F_03C0)
     words[accepted] = encodeConditionalBranch(
       condition: condition, wordOffset: words.count - accepted)
+  }
+
+  /// Direct atomic helpers return a typed status. Only an architectural page fault owns a
+  /// recoverable generated PC; fallback and internal error exits must not enter the side table.
+  private func emitAtomicResolutionUnlessSuccess(into words: inout [UInt32]) {
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
+    let successBranch = words.count
+    words.append(0)
+    words.append(encodeMoveWideZero32(register: 13, immediate: 1))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 13, 31))
+    let pageFaultBranch = words.count
+    words.append(0)
+
+    emitMemoryEpilogue(into: &words)
+    words.append(
+      encodeMoveWideZero32(register: 0, immediate: UInt16(DoryJITExitCode.interpreter.rawValue)))
+    words.append(0xD65F_03C0)
+
+    let pageFaultStart = words.count
+    words.append(
+      encodeStore64(register: 30, base: 19, byteOffset: Self.inlineTLBFaultHostPCOffset))
+    emitMemoryEpilogue(into: &words)
+    words.append(
+      encodeMoveWideZero32(register: 0, immediate: UInt16(DoryJITExitCode.interpreter.rawValue)))
+    words.append(0xD65F_03C0)
+
+    let successStart = words.count
+    words[successBranch] = encodeConditionalBranch(
+      condition: .equal, wordOffset: successStart - successBranch)
+    words[pageFaultBranch] = encodeConditionalBranch(
+      condition: .equal, wordOffset: pageFaultStart - pageFaultBranch)
   }
 
   private func emitX86Condition(

@@ -701,18 +701,28 @@ import Testing
     #endif
   }
 
-  @Test func baselineInlineTLBWriteAndCompareExchangeFaultsPublishExactCheckpoint() throws {
+  @Test func baselineInlineTLBWriteAndAtomicFaultsPublishExactCheckpoint() throws {
     #if arch(arm64)
-      for bytes in [
-        [UInt8](arrayLiteral: 0x48, 0x89, 0x03),
-        [UInt8](arrayLiteral: 0xF0, 0x48, 0x0F, 0xB1, 0x13),
-      ] {
+      let compareExchangeBytes: [UInt8] = [0xF0, 0x48, 0x0F, 0xB1, 0x13]
+      let cases: [(name: String, bytes: [UInt8])] = [
+        ("write", [0x48, 0x89, 0x03]),
+        ("compare-exchange", compareExchangeBytes),
+        ("exchange", [0x48, 0x87, 0x13]),
+        ("fetch-add", [0xF0, 0x48, 0x0F, 0xC1, 0x13]),
+        ("atomic-add", [0xF0, 0x48, 0x01, 0x13]),
+        ("atomic-increment", [0xF0, 0x48, 0xFF, 0x03]),
+        ("atomic-bit-test", [0xF0, 0x48, 0x0F, 0xAB, 0x13]),
+        ("pair-compare-exchange", [0xF0, 0x48, 0x0F, 0xC7, 0x0B]),
+      ]
+      for testCase in cases {
+        let bytes = testCase.bytes
+        let comment = Comment(rawValue: testCase.name)
         let physical = try mmapMemory()
         try physical.write(at: 0x1000, bytes: bytes)
         var initial = try state(rip: 0x1000)
         initial.registers.rbx = 0x7000
         initial.registers.rax = 0xAAAA
-        initial.registers.rdx = 0xBBBB
+        initial.registers.rdx = 1
         let paging = DoryX86PagingUnit()
         let translated = DoryX86TranslatedMemory(
           physicalMemory: physical,
@@ -743,9 +753,10 @@ import Testing
             translationTLB: tlb
           )
         }
-        #expect(execution.exitCode == .interpreter)
+        #expect(execution.exitCode == .interpreter, comment)
+        guard execution.exitCode == .interpreter else { continue }
         let entryAddress = try #require(region.entryAddress(at: 0))
-        let faultHostPC = try #require(execution.failedCallbackHostPC)
+        let faultHostPC = try #require(execution.failedCallbackHostPC, comment)
         let hostOffset = try #require(UInt32(exactly: faultHostPC - entryAddress))
         let failedContext = try #require(execution.failedExecutionContext)
         #expect(
@@ -753,7 +764,7 @@ import Testing
         #expect(
           failedContext[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRFlags.rawValue]
             == initial.rflags.rawValue)
-        if bytes.first == 0xF0 {
+        if bytes == compareExchangeBytes {
           #expect(
             failedContext[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRAX.rawValue]
               == initial.registers.rax)
@@ -761,6 +772,50 @@ import Testing
         #expect(compiled.instructionMetadata(atHostOffset: hostOffset)?.guestRIP == 0x1000)
         #expect(tlb.diagnostics.pageFaults == 1)
       }
+    #endif
+  }
+
+  @Test func atomicHelperFallbackDoesNotPublishRecoveryContext() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0xF0, 0x48, 0x01, 0x13]  // lock add qword [rbx],rdx
+      let physical = try mmapMemory()
+      try physical.write(at: 0x1000, bytes: bytes)
+      var initial = try state(rip: 0x1000)
+      initial.registers.rbx = 0x0FFC  // qword spans two pages; direct helper returns FALLBACK.
+      initial.registers.rdx = 1
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: DoryX86PagingUnit(),
+        context: .init(state: initial, mode: .long64)
+      )
+      let compiled = DoryARM64BaselineEmitter().compile(
+        try DoryX86IRTranslator().translate(bytes, at: 0x1000, mode: .long64))
+      let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+      try region.publish(compiled, at: 0)
+      let tlb = try DoryX86JITTLB()
+      var context = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+      context.withUnsafeMutableBufferPointer {
+        DoryARM64BaselineExecutor.populateExecutionContext(
+          $0,
+          from: initial,
+          memory: translated,
+          translationTLB: tlb,
+          addressSpaceGeneration: 1
+        )
+      }
+      let execution = try context.withUnsafeMutableBufferPointer {
+        try region.executePreparedWithRecovery(
+          at: 0,
+          context: $0,
+          memoryCapabilities: .init(memory: translated),
+          requiresRestartableReads: compiled.requiresRestartableMemoryReads,
+          translationTLB: tlb
+        )
+      }
+      #expect(execution.exitCode == .interpreter)
+      #expect(execution.failedCallbackHostPC == nil)
+      #expect(execution.failedExecutionContext == nil)
+      #expect(tlb.diagnostics.pageFaults == 0)
     #endif
   }
 
