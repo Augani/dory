@@ -5185,6 +5185,7 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   /// entry through collision, invalidation, generation mismatch, or cache reset discards its count.
   public let negativeCacheHotSites: [DoryARM64NegativeCacheHotSite]
   public let codeCacheWraps: UInt64
+  public let codeCacheEvictedBlocks: UInt64
   public let nativeTraceAttempts: UInt64
   public let nativeTraceReplays: UInt64
   public let codeGenerationChecks: UInt64
@@ -5241,6 +5242,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   static let maximumResidentInstructionBudget = 4_096
   static let instructionPageByteCount = 4_096
   static let maximumRecordedNativeTraceBlocks = 256
+  static let codeCacheGenerationCount = 2
 
   private struct LookupKey: Hashable {
     let guestStart: UInt64
@@ -5418,6 +5420,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var negativeCacheMissCount: UInt64 = 0
   private var negativeGenerationMismatchCount: UInt64 = 0
   private var codeCacheWrapCount: UInt64 = 0
+  private var codeCacheEvictedBlockCount: UInt64 = 0
   private var nativeTraceAttemptCount: UInt64 = 0
   private var nativeTraceReplayCount: UInt64 = 0
   private var codeGenerationCheckCount: UInt64 = 0
@@ -5435,7 +5438,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var shadowReturnStackMissCount: UInt64 = 0
   private var shadowReturnStackPushCount: UInt64 = 0
   private var codeCacheEpoch: UInt64 = 0
-  private var nextOffset = 0
+  private var activeCodeCacheGeneration = 0
+  private var codeCacheGenerationNextOffsets: [Int] = []
   private var currentTLBAddressSpaceID: UInt64?
   private var translationTLBGeneration: UInt64 = 1
   private var translationTLBInvalidationCount: UInt64 = 0
@@ -5466,7 +5470,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     self.tier1Enabled = tier1Enabled
     self.optimization = optimization
     self.optimizer = optimizer
-    region = try DoryJITExecutableRegion(minimumCapacity: self.maximumCodeBytes)
+    let executableRegion = try DoryJITExecutableRegion(minimumCapacity: self.maximumCodeBytes)
+    region = executableRegion
+    codeCacheGenerationNextOffsets = [
+      0,
+      (executableRegion.capacity / Self.codeCacheGenerationCount) & ~3,
+    ]
     translationTLB = try DoryX86JITTLB()
     blockCache = try DoryJITBlockCache()
     indirectBranchTargetCache = try DoryJITIndirectBranchTargetCache()
@@ -5474,7 +5483,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   }
 
   public var residentBlockCount: Int { lock.withLock { blockCache.count } }
-  public var residentByteCount: Int { lock.withLock { nextOffset } }
+  public var residentByteCount: Int {
+    lock.withLock {
+      codeCacheGenerationNextOffsets.enumerated().reduce(0) { total, item in
+        total + item.element - codeCacheGenerationRange(item.offset).lowerBound
+      }
+    }
+  }
   public var nativeBatchExecutionCount: UInt64 {
     lock.withLock { nativeBatchExecutionCountValue }
   }
@@ -5518,6 +5533,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         negativeEntryCount: UInt64(negativeEntries.lazy.compactMap { $0 }.count),
         negativeCacheHotSites: Array(negativeCacheHotSites.prefix(16)),
         codeCacheWraps: codeCacheWrapCount,
+        codeCacheEvictedBlocks: codeCacheEvictedBlockCount,
         nativeTraceAttempts: nativeTraceAttemptCount,
         nativeTraceReplays: nativeTraceReplayCount,
         codeGenerationChecks: codeGenerationCheckCount,
@@ -5569,7 +5585,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       indirectBranchTargetCache.removeAll()
       shadowReturnStack.removeAll()
       codeCacheEpoch &+= 1
-      nextOffset = 0
+      activeCodeCacheGeneration = 0
+      codeCacheGenerationNextOffsets = [0, codeCacheGenerationRange(1).lowerBound]
       invalidateAllTranslations()
     }
   }
@@ -6474,6 +6491,36 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     return min(instructionBudget * 15, bytesUntilPageBoundary)
   }
 
+  private func codeCacheGenerationRange(_ generation: Int) -> Range<Int> {
+    precondition((0..<Self.codeCacheGenerationCount).contains(generation))
+    let boundary = (region.capacity / Self.codeCacheGenerationCount) & ~3
+    return generation == 0 ? 0..<boundary : boundary..<region.capacity
+  }
+
+  /// Switches to the other half of the bounded executable region and retires only blocks whose
+  /// machine code will be overwritten. Retained-generation links remain live; links crossing into
+  /// the recycled range are restored by normal resident retirement before publication resumes.
+  private func rotateCodeCacheGeneration() {
+    let nextGeneration = (activeCodeCacheGeneration + 1) % Self.codeCacheGenerationCount
+    let recycledRange = codeCacheGenerationRange(nextGeneration)
+    let recycledKeys = residentSlots.compactMap { slot -> LookupKey? in
+      guard let slot, recycledRange.contains(slot.resident.offset) else { return nil }
+      return slot.key
+    }
+    for key in recycledKeys { removeResident(for: key) }
+    codeCacheEvictedBlockCount &+= UInt64(recycledKeys.count)
+    codeCacheGenerationNextOffsets[nextGeneration] = recycledRange.lowerBound
+    activeCodeCacheGeneration = nextGeneration
+    // Raw predictor targets and recorded trace offsets are generation-wide derived state. Clear
+    // them on every rotation while preserving resident blocks in the newer half.
+    nativeTraces = .init(repeating: nil, count: nativeTraces.count)
+    negativeEntries = .init(repeating: nil, count: negativeEntries.count)
+    indirectBranchTargetCache.removeAll()
+    shadowReturnStack.removeAll()
+    codeCacheEpoch &+= 1
+    codeCacheWrapCount &+= 1
+  }
+
   private func compileResident(
     key: LookupKey,
     bytes: [UInt8],
@@ -6623,25 +6670,16 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       !compiled.requiresMemoryCallbacks || memory != nil
     else { return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil) }
     let byteCount = compiled.machineBytes.count
-    guard byteCount <= region.capacity else {
+    guard byteCount <= codeCacheGenerationRange(activeCodeCacheGeneration).count else {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
-    if nextOffset > region.capacity - byteCount {
-      blockCache.removeAll()
-      residentSlots.removeAll(keepingCapacity: true)
-      freeResidentSlotIndices.removeAll(keepingCapacity: true)
-      recentEntries = .init(repeating: nil, count: recentEntries.count)
-      nativeTraces = .init(repeating: nil, count: nativeTraces.count)
-      negativeEntries = .init(repeating: nil, count: negativeEntries.count)
-      indirectBranchTargetCache.removeAll()
-      shadowReturnStack.removeAll()
-      codeCacheEpoch &+= 1
-      nextOffset = 0
-      codeCacheWrapCount &+= 1
+    let activeRange = codeCacheGenerationRange(activeCodeCacheGeneration)
+    if codeCacheGenerationNextOffsets[activeCodeCacheGeneration] > activeRange.upperBound - byteCount {
+      rotateCodeCacheGeneration()
     }
-    let offset = nextOffset
+    let offset = codeCacheGenerationNextOffsets[activeCodeCacheGeneration]
     try region.publish(compiled, at: offset)
-    nextOffset += byteCount
+    codeCacheGenerationNextOffsets[activeCodeCacheGeneration] += byteCount
     let guestBytes = Array(bytes.prefix(Int(compiled.guestByteCount)))
     let memoryCodeGeneration = readCodeGeneration(
       using: codeGenerationProvider,

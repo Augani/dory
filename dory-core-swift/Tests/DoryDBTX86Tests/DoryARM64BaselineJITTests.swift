@@ -308,6 +308,67 @@ import Testing
     #endif
   }
 
+  @Test func codeCacheRotationEvictsOnlyTheOldestGeneration() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+      let base: UInt64 = 0x40_000
+      func bytes(at address: UInt64) -> [UInt8] {
+        let value = UInt32(truncatingIfNeeded: address)
+        return [
+          0xB8,
+          UInt8(truncatingIfNeeded: value),
+          UInt8(truncatingIfNeeded: value >> 8),
+          UInt8(truncatingIfNeeded: value >> 16),
+          UInt8(truncatingIfNeeded: value >> 24),
+          0xF4,
+        ]
+      }
+      func run(_ address: UInt64) throws {
+        let code = bytes(at: address)
+        var state = try DoryX86ArchitecturalState(rip: address)
+        let execution = try #require(
+          executor.execute(
+            byteProvider: { count in Array(code.prefix(count)) },
+            codeGenerationProvider: { _ in 1 },
+            physicalRIPProvider: { $0 },
+            at: address,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 2,
+            state: &state
+          ))
+        #expect(execution.exitCode == .halt)
+        #expect(state.registers.rax == UInt64(UInt32(truncatingIfNeeded: address)))
+      }
+
+      let oldestAddress = base
+      try run(oldestAddress)
+      var nextAddress = base + 0x10
+      var newerAddress: UInt64?
+      for _ in 0..<1_000 where executor.diagnostics.codeCacheWraps == 0 {
+        try run(nextAddress)
+        if executor.diagnostics.codeCacheWraps == 1 { newerAddress = nextAddress }
+        nextAddress += 0x10
+      }
+      let retainedAddress = try #require(newerAddress)
+      for _ in 0..<1_000 where executor.diagnostics.codeCacheWraps < 2 {
+        try run(nextAddress)
+        nextAddress += 0x10
+      }
+      #expect(executor.diagnostics.codeCacheWraps == 2)
+      #expect(executor.diagnostics.codeCacheEvictedBlocks > 0)
+      #expect(executor.residentBlockCount > 1)
+      #expect(executor.residentByteCount <= max(executor.maximumCodeBytes, Int(getpagesize())))
+
+      let compiledBeforeRetainedLookup = executor.diagnostics.compiledBlocks
+      try run(retainedAddress)
+      #expect(executor.diagnostics.compiledBlocks == compiledBeforeRetainedLookup)
+
+      try run(oldestAddress)
+      #expect(executor.diagnostics.compiledBlocks == compiledBeforeRetainedLookup + 1)
+    #endif
+  }
+
   @Test func negativeCacheCollisionReplacementDiscardsTheReplacedHitCount() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x0F, 0xA2]
