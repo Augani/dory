@@ -125,8 +125,14 @@ struct DoryARM64Tier1Emitter: Sendable {
     }
     var body: [UInt32] = []
     var nativeFlags: DoryARM64Tier1ALUEmitter.NativeFlags?
+    var statementWordOffsets: [Int] = []
+    var statementFlagsStates: [DoryARM64InstructionFlagsState] = []
+    statementWordOffsets.reserveCapacity(block.statements.count + 1)
+    statementFlagsStates.reserveCapacity(block.statements.count + 1)
 
     for statement in block.statements {
+      statementWordOffsets.append(body.count)
+      statementFlagsStates.append(nativeFlags == nil ? .context : .nativeNZCV)
       switch statement {
       case .copy(let destination, let source):
         if case .memory(let address, let width) = destination {
@@ -642,6 +648,8 @@ struct DoryARM64Tier1Emitter: Sendable {
         return nil
       }
     }
+    statementWordOffsets.append(body.count)
+    statementFlagsStates.append(nativeFlags == nil ? .context : .nativeNZCV)
 
     let exitCode: DoryJITExitCode
     switch block.terminator {
@@ -673,6 +681,7 @@ struct DoryARM64Tier1Emitter: Sendable {
 
     var words: [UInt32] = []
     boundary.emitEntry(into: &words)
+    let entryWordCount = words.count
     words.append(contentsOf: body)
     let chainSlots: [DoryARM64ChainSlot]
     let supportsChainSlots =
@@ -695,7 +704,17 @@ struct DoryARM64Tier1Emitter: Sendable {
         in: &words
       )
     }
+    let wordCountBeforeChainMetadata = words.count
     DoryARM64CompiledBlock.installChainMetadata(chainSlots, in: &words)
+    let chainMetadataWordCount = words.count - wordCountBeforeChainMetadata
+    let instructionMetadata = DoryARM64CompiledBlock.makeInstructionMetadata(
+      for: block,
+      statementWordOffsets: statementWordOffsets,
+      statementFlagsStates: statementFlagsStates,
+      leadingWordCount: chainMetadataWordCount + entryWordCount,
+      liveInRegisterMask: .max,
+      dirtyRegisterMask: .max
+    )
     return .init(
       guestStart: block.guestStart,
       guestByteCount: block.guestByteCount,
@@ -705,7 +724,8 @@ struct DoryARM64Tier1Emitter: Sendable {
       exitCode: exitCode,
       requiresMemoryCallbacks: requiresMemoryCallbacks,
       requiresRestartableMemoryReads: memoryCallbackCount > 1,
-      mayExitToInterpreter: memoryCallbackCount > 0
+      mayExitToInterpreter: memoryCallbackCount > 0,
+      instructionMetadata: instructionMetadata
     )
   }
 

@@ -49,6 +49,40 @@ public struct DoryARM64ChainSlot: Codable, Sendable, Hashable {
   }
 }
 
+public enum DoryARM64InstructionFlagsState: String, Codable, Sendable, Hashable {
+  /// Architectural flags are recoverable from the context's materialized or lazy record.
+  case context
+  /// Tier 1 also has a valid native NZCV image for the immediately preceding producer.
+  case nativeNZCV
+}
+
+/// Recovery metadata for one guest instruction. `hostOffsetStart` is byte-relative to the
+/// beginning of the executable block and is intentionally kept outside generated code.
+public struct DoryARM64InstructionMetadata: Codable, Sendable, Hashable {
+  public let hostOffsetStart: UInt32
+  public let guestRIP: UInt64
+  public let guestByteCount: UInt8
+  public let flagsState: DoryARM64InstructionFlagsState
+  public let liveInRegisterMask: UInt16
+  public let dirtyRegisterMask: UInt16
+
+  public init(
+    hostOffsetStart: UInt32,
+    guestRIP: UInt64,
+    guestByteCount: UInt8,
+    flagsState: DoryARM64InstructionFlagsState,
+    liveInRegisterMask: UInt16,
+    dirtyRegisterMask: UInt16
+  ) {
+    self.hostOffsetStart = hostOffsetStart
+    self.guestRIP = guestRIP
+    self.guestByteCount = guestByteCount
+    self.flagsState = flagsState
+    self.liveInRegisterMask = liveInRegisterMask
+    self.dirtyRegisterMask = dirtyRegisterMask
+  }
+}
+
 public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
   private static let directChainMetadataMagic: UInt32 = 0xD05C_A051
   private static let conditionalChainMetadataMagic: UInt32 = 0xD05C_A052
@@ -65,6 +99,20 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
   /// A runtime address guard can return without retiring this block. Its temporary register
   /// context must be discarded, and it cannot participate in unchecked native batch replay.
   public let mayExitToInterpreter: Bool
+  public let instructionMetadata: [DoryARM64InstructionMetadata]
+
+  private enum CodingKeys: String, CodingKey {
+    case guestStart
+    case guestByteCount
+    case guestInstructionCount
+    case machineWords
+    case tier
+    case exitCode
+    case requiresMemoryCallbacks
+    case requiresRestartableMemoryReads
+    case mayExitToInterpreter
+    case instructionMetadata
+  }
 
   public init(
     guestStart: UInt64,
@@ -75,7 +123,8 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
     exitCode: DoryJITExitCode,
     requiresMemoryCallbacks: Bool = false,
     requiresRestartableMemoryReads: Bool = false,
-    mayExitToInterpreter: Bool = false
+    mayExitToInterpreter: Bool = false,
+    instructionMetadata: [DoryARM64InstructionMetadata] = []
   ) {
     self.guestStart = guestStart
     self.guestByteCount = guestByteCount
@@ -86,11 +135,79 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
     self.requiresMemoryCallbacks = requiresMemoryCallbacks
     self.requiresRestartableMemoryReads = requiresRestartableMemoryReads
     self.mayExitToInterpreter = mayExitToInterpreter
+    self.instructionMetadata = instructionMetadata
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    guestStart = try container.decode(UInt64.self, forKey: .guestStart)
+    guestByteCount = try container.decode(UInt32.self, forKey: .guestByteCount)
+    guestInstructionCount = try container.decode(UInt32.self, forKey: .guestInstructionCount)
+    machineWords = try container.decode([UInt32].self, forKey: .machineWords)
+    tier = try container.decode(DoryARM64CompilationTier.self, forKey: .tier)
+    exitCode = try container.decode(DoryJITExitCode.self, forKey: .exitCode)
+    requiresMemoryCallbacks =
+      try container.decodeIfPresent(Bool.self, forKey: .requiresMemoryCallbacks) ?? false
+    requiresRestartableMemoryReads =
+      try container.decodeIfPresent(Bool.self, forKey: .requiresRestartableMemoryReads) ?? false
+    mayExitToInterpreter =
+      try container.decodeIfPresent(Bool.self, forKey: .mayExitToInterpreter) ?? false
+    instructionMetadata =
+      try container.decodeIfPresent(
+        [DoryARM64InstructionMetadata].self,
+        forKey: .instructionMetadata
+      ) ?? []
   }
 
   public var machineBytes: [UInt8] {
     machineWords.flatMap { word in
       (0..<4).map { UInt8(truncatingIfNeeded: word >> UInt32($0 * 8)) }
+    }
+  }
+
+  /// Returns the last instruction boundary at or before a host byte offset. Duplicate offsets
+  /// are expected when a zero-code instruction precedes emitted work; the later guest boundary
+  /// owns that host instruction.
+  public func instructionMetadata(atHostOffset hostOffset: UInt32)
+    -> DoryARM64InstructionMetadata?
+  {
+    var lowerBound = 0
+    var upperBound = instructionMetadata.count
+    while lowerBound < upperBound {
+      let midpoint = lowerBound + (upperBound - lowerBound) / 2
+      if instructionMetadata[midpoint].hostOffsetStart <= hostOffset {
+        lowerBound = midpoint + 1
+      } else {
+        upperBound = midpoint
+      }
+    }
+    return lowerBound == 0 ? nil : instructionMetadata[lowerBound - 1]
+  }
+
+  static func makeInstructionMetadata(
+    for block: DoryIRBasicBlock,
+    statementWordOffsets: [Int],
+    statementFlagsStates: [DoryARM64InstructionFlagsState],
+    leadingWordCount: Int,
+    liveInRegisterMask: UInt16,
+    dirtyRegisterMask: UInt16
+  ) -> [DoryARM64InstructionMetadata] {
+    guard statementWordOffsets.count == block.statements.count + 1,
+      statementFlagsStates.count == statementWordOffsets.count
+    else { return [] }
+    return block.instructionBoundaries.compactMap { boundary in
+      let statementIndex = Int(boundary.statementStartIndex)
+      guard statementIndex <= block.statements.count else { return nil }
+      let wordOffset = leadingWordCount + statementWordOffsets[statementIndex]
+      guard wordOffset <= Int(UInt32.max) / MemoryLayout<UInt32>.stride else { return nil }
+      return .init(
+        hostOffsetStart: UInt32(wordOffset * MemoryLayout<UInt32>.stride),
+        guestRIP: boundary.guestRIP,
+        guestByteCount: boundary.guestByteCount,
+        flagsState: statementFlagsStates[statementIndex],
+        liveInRegisterMask: liveInRegisterMask,
+        dirtyRegisterMask: dirtyRegisterMask
+      )
     }
   }
 
@@ -311,11 +428,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
     }
     if wroteMemory && guardsTerminator { return fallback(block) }
     if usesMemory { emitMemoryPrologue(into: &words) }
+    var statementWordOffsets: [Int] = []
+    statementWordOffsets.reserveCapacity(block.statements.count + 1)
     for statement in block.statements {
+      statementWordOffsets.append(words.count)
       guard emit(statement, into: &words) else {
         return fallback(block)
       }
     }
+    statementWordOffsets.append(words.count)
     guard let exit = emit(block.terminator, usesMemory: usesMemory, into: &words) else {
       return fallback(block)
     }
@@ -353,11 +474,21 @@ public struct DoryARM64BaselineEmitter: Sendable {
         in: &words
       )
     }
+    let wordCountBeforeChainMetadata = words.count
     if hasIndirectChain {
       DoryARM64CompiledBlock.installIndirectChainMetadata(in: &words)
     } else {
       DoryARM64CompiledBlock.installChainMetadata(chainSlots, in: &words)
     }
+    let leadingWordCount = words.count - wordCountBeforeChainMetadata
+    let instructionMetadata = DoryARM64CompiledBlock.makeInstructionMetadata(
+      for: block,
+      statementWordOffsets: statementWordOffsets,
+      statementFlagsStates: Array(repeating: .context, count: statementWordOffsets.count),
+      leadingWordCount: leadingWordCount,
+      liveInRegisterMask: 0,
+      dirtyRegisterMask: 0
+    )
     return .init(
       guestStart: block.guestStart,
       guestByteCount: block.guestByteCount,
@@ -369,7 +500,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       // RET and memory-indirect JMP can now decline after their read. Such reads must
       // be proven ordinary RAM, just like a read followed by a potentially failing write.
       requiresRestartableMemoryReads: memoryCallbackCount > 1 || (guardsTerminator && usesMemory),
-      mayExitToInterpreter: guardsTerminator || guardsStack || guardsInterpreterExit
+      mayExitToInterpreter: guardsTerminator || guardsStack || guardsInterpreterExit,
+      instructionMetadata: instructionMetadata
     )
   }
 

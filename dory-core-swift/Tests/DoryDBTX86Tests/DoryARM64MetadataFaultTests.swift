@@ -3,6 +3,55 @@ import Testing
 @testable import DoryDBTX86
 
 @Suite struct DoryARM64MetadataFaultTests {
+  @Test func baselineSideTableMapsEmittedOffsetsToExactGuestBoundaries() throws {
+    let block = try DoryX86IRTranslator().translate(
+      [
+        0x90,  // nop
+        0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0,  // mov rax,1
+        0x48, 0x83, 0xC0, 2,  // add rax,2
+      ],
+      at: 0x4000,
+      mode: .long64
+    )
+    let compiled = DoryARM64BaselineEmitter().compile(block)
+
+    #expect(compiled.instructionMetadata.count == 3)
+    #expect(compiled.instructionMetadata.map(\.guestRIP) == [0x4000, 0x4001, 0x400B])
+    #expect(compiled.instructionMetadata[0].hostOffsetStart
+      == compiled.instructionMetadata[1].hostOffsetStart)
+    #expect(compiled.instructionMetadata.allSatisfy { $0.flagsState == .context })
+    #expect(compiled.instructionMetadata.allSatisfy {
+      $0.liveInRegisterMask == 0 && $0.dirtyRegisterMask == 0
+    })
+    #expect(
+      compiled.instructionMetadata(
+        atHostOffset: compiled.instructionMetadata[0].hostOffsetStart
+      )?.guestRIP == 0x4001
+    )
+  }
+
+  @Test func tier1SideTableRecordsLiveNativeFlagsAtFollowingInstruction() throws {
+    let block = try DoryX86IRTranslator().translate(
+      [
+        0x90,  // nop
+        0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0,  // mov rax,1
+        0x48, 0x83, 0xC0, 2,  // add rax,2
+        0x48, 0x89, 0xC3,  // mov rbx,rax
+      ],
+      at: 0x5000,
+      mode: .long64
+    )
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+
+    #expect(compiled.instructionMetadata.count == 4)
+    #expect(compiled.instructionMetadata.map(\.guestRIP) == [0x5000, 0x5001, 0x500B, 0x500F])
+    #expect(compiled.instructionMetadata.map(\.flagsState)
+      == [.context, .context, .context, .nativeNZCV])
+    #expect(compiled.instructionMetadata.allSatisfy {
+      $0.liveInRegisterMask == .max && $0.dirtyRegisterMask == .max
+    })
+  }
+
   @Test func revokedCachedTargetPublishesCompletedStorePrefixBeforePrecisePageFault() throws {
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
