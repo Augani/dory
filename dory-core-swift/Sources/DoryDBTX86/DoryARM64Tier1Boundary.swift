@@ -228,6 +228,102 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
 
   /// Publishes pinned architectural state, restores the host ABI, and returns the dispatcher code.
   func emitExit(_ exitCode: DoryJITExitCode, into words: inout [UInt32]) {
+    emitPublishedState(into: &words)
+    words.append(
+      Self.encodeMoveWideZero32(
+        register: 0, immediate: UInt16(exitCode.rawValue)))
+    emitHostFrameRestore(into: &words)
+    words.append(0xD65F_03C0)  // ret
+  }
+
+  /// Publishes state and restores the generated-function ABI while keeping x0 as the context
+  /// pointer. A following chain slot can tail-branch into any full baseline or tier-1 entry; its
+  /// block-local fallback replaces x0 with the dispatcher exit code before returning.
+  func emitChainExitPrelude(into words: inout [UInt32]) {
+    emitPublishedState(into: &words)
+    words.append(Self.encodeMove(destination: 0, source: DoryARM64Tier1ABI.contextRegister))
+    for (destination, source) in zip(1...5, 19...23) {
+      words.append(Self.encodeMove(destination: UInt32(destination), source: UInt32(source)))
+    }
+    emitHostFrameRestore(into: &words)
+  }
+
+  /// Appends executable branch slots after `emitChainExitPrelude`. Both conditional directions
+  /// get independent words so profiling can patch the taken and not-taken destinations without
+  /// rewriting the condition calculation.
+  func emitChainSlots(
+    for terminator: DoryIRTerminator,
+    into words: inout [UInt32]
+  ) -> [DoryARM64ChainSlot] {
+    switch terminator {
+    case .next(let target), .branch(let target):
+      guard DoryX86ArchitecturalState.isCanonical(target) else { return [] }
+      let slot = words.count
+      words.append(0)
+      let fallback = words.count
+      words[slot] = Self.encodeUnconditionalBranch(wordOffset: fallback - slot)
+      return [
+        .init(
+          kind: .direct,
+          targetGuestRIP: target,
+          machineWordIndex: slot,
+          fallbackWordIndex: fallback
+        )
+      ]
+    case .conditional(_, let taken, let notTaken):
+      guard DoryX86ArchitecturalState.isCanonical(taken),
+        DoryX86ArchitecturalState.isCanonical(notTaken)
+      else { return [] }
+      words.append(
+        Self.encodeLoad64(
+          register: 9,
+          base: 0,
+          byteOffset: DoryARM64Tier1ABI.ContextWord.rip.byteOffset
+        ))
+      Self.emitImmediate(taken, register: 10, into: &words)
+      words.append(Self.encodeCompare64(left: 9, right: 10))
+      let selectTaken = words.count
+      words.append(0)
+      let notTakenSlot = words.count
+      words.append(0)
+      let takenSlot = words.count
+      words.append(0)
+      let fallback = words.count
+      words[selectTaken] = Self.encodeConditionalBranchEqual(
+        wordOffset: takenSlot - selectTaken)
+      words[notTakenSlot] = Self.encodeUnconditionalBranch(
+        wordOffset: fallback - notTakenSlot)
+      words[takenSlot] = Self.encodeUnconditionalBranch(wordOffset: fallback - takenSlot)
+      return [
+        .init(
+          kind: .conditionalTaken,
+          targetGuestRIP: taken,
+          machineWordIndex: takenSlot,
+          fallbackWordIndex: fallback
+        ),
+        .init(
+          kind: .conditionalNotTaken,
+          targetGuestRIP: notTaken,
+          machineWordIndex: notTakenSlot,
+          fallbackWordIndex: fallback
+        ),
+      ]
+    default:
+      return []
+    }
+  }
+
+  func emitChainExitFallback(
+    _ exitCode: DoryJITExitCode,
+    into words: inout [UInt32]
+  ) {
+    words.append(
+      Self.encodeMoveWideZero32(
+        register: 0, immediate: UInt16(exitCode.rawValue)))
+    words.append(0xD65F_03C0)
+  }
+
+  private func emitPublishedState(into words: inout [UInt32]) {
     for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
       words.append(
         Self.encodeStore64(
@@ -249,9 +345,9 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
         register: DoryARM64Tier1ABI.lazyFlagsRegisters[1],
         base: DoryARM64Tier1ABI.contextRegister,
         byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
-    words.append(
-      Self.encodeMoveWideZero32(
-        register: 0, immediate: UInt16(exitCode.rawValue)))
+  }
+
+  private func emitHostFrameRestore(into words: inout [UInt32]) {
     for (pairIndex, first) in stride(from: 19, through: 29, by: 2).enumerated() {
       words.append(
         Self.encodeLoadPair(
@@ -261,7 +357,6 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
     words.append(
       Self.encodeAddImmediate(
         left: 31, immediate: Self.hostFrameByteCount, destination: 31))
-    words.append(0xD65F_03C0)  // ret
   }
 
   private static func emitImmediate(
@@ -348,5 +443,19 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
     return 0xB400_0000
       | (UInt32(truncatingIfNeeded: wordOffset) & 0x7_FFFF) << 5
       | register
+  }
+
+  private static func encodeCompare64(left: UInt32, right: UInt32) -> UInt32 {
+    0xEB00_001F | right << 16 | left << 5
+  }
+
+  private static func encodeConditionalBranchEqual(wordOffset: Int) -> UInt32 {
+    precondition((-262_144..<262_144).contains(wordOffset))
+    return 0x5400_0000 | (UInt32(truncatingIfNeeded: wordOffset) & 0x7_FFFF) << 5
+  }
+
+  private static func encodeUnconditionalBranch(wordOffset: Int) -> UInt32 {
+    precondition((-33_554_432..<33_554_432).contains(wordOffset))
+    return 0x1400_0000 | (UInt32(truncatingIfNeeded: wordOffset) & 0x03FF_FFFF)
   }
 }

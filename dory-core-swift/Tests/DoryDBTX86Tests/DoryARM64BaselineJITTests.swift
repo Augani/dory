@@ -8114,6 +8114,176 @@ import Testing
     #endif
   }
 
+  @Test func emittedChainSlotsTailCallAcrossBothCompilerABIs() throws {
+    #if arch(arm64)
+      let sourceIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
+        [0x90], at: 0x1000, mode: .long64)
+      let targetIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
+        [0x48, 0xB8, 0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0],
+        at: 0x1001,
+        mode: .long64
+      )
+      let baselineEmitter = DoryARM64BaselineEmitter()
+      let tier1Emitter = DoryARM64Tier1Emitter()
+      let baselineSource = baselineEmitter.compile(sourceIR)
+      let tier1Source = try #require(tier1Emitter.compile(sourceIR))
+      let baselineTarget = baselineEmitter.compile(targetIR)
+      let tier1Target = try #require(tier1Emitter.compile(targetIR))
+
+      func run(source: DoryARM64CompiledBlock, target: DoryARM64CompiledBlock) throws {
+        let slots = try #require(source.chainSlots)
+        #expect(slots.count == 1)
+        let slot = try #require(slots.first)
+        #expect(slot.kind == .direct)
+        #expect(slot.targetGuestRIP == 0x1001)
+        #expect(slot.fallbackWordIndex == slot.machineWordIndex + 1)
+        let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+        let targetOffset = source.machineBytes.count
+        try region.publish(source, at: 0)
+        try region.publish(target, at: targetOffset)
+        var context = [UInt64](
+          repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+        context[16] = 0x1000
+
+        #expect(try region.execute(at: 0, context: &context) == .dispatch)
+        #expect(context[0] == 0)
+        #expect(context[16] == 0x1001)
+
+        context[16] = 0x1000
+        try region.patchDirectBranch(
+          at: slot.machineWordIndex * MemoryLayout<UInt32>.stride,
+          to: targetOffset
+        )
+        #expect(try region.execute(at: 0, context: &context) == .dispatch)
+        #expect(context[0] == 0x1234_5678)
+        #expect(context[16] == 0x100B)
+
+        context[0] = 0
+        context[16] = 0x1000
+        try region.patchDirectBranch(
+          at: slot.machineWordIndex * MemoryLayout<UInt32>.stride,
+          to: slot.fallbackWordIndex * MemoryLayout<UInt32>.stride
+        )
+        #expect(try region.execute(at: 0, context: &context) == .dispatch)
+        #expect(context[0] == 0)
+        #expect(context[16] == 0x1001)
+      }
+
+      try run(source: baselineSource, target: tier1Target)
+      try run(source: tier1Source, target: baselineTarget)
+    #endif
+  }
+
+  @Test func conditionalBlocksExposeIndependentTakenAndNotTakenSlots() throws {
+    let block = try DoryX86IRTranslator(instructionBudget: 1).translate(
+      [0x74, 0x02], at: 0x2000, mode: .long64)
+    let compiledBlocks = [
+      DoryARM64BaselineEmitter().compile(block),
+      try #require(DoryARM64Tier1Emitter().compile(block)),
+    ]
+
+    for compiled in compiledBlocks {
+      let slots = try #require(compiled.chainSlots)
+      #expect(slots.count == 2)
+      #expect(slots.map(\.kind) == [.conditionalTaken, .conditionalNotTaken])
+      #expect(slots[0].targetGuestRIP == 0x2004)
+      #expect(slots[1].targetGuestRIP == 0x2002)
+      #expect(slots[0].machineWordIndex != slots[1].machineWordIndex)
+      #expect(slots[0].fallbackWordIndex == slots[1].fallbackWordIndex)
+    }
+  }
+
+  @Test func conditionalChainSlotsPatchBothDirections() throws {
+    #if arch(arm64)
+      let sourceIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
+        [0x74, 0x02], at: 0x2000, mode: .long64)
+      let takenIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
+        [0xB8, 0x11, 0, 0, 0], at: 0x2004, mode: .long64)
+      let notTakenIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
+        [0xB8, 0x22, 0, 0, 0], at: 0x2002, mode: .long64)
+      let baselineEmitter = DoryARM64BaselineEmitter()
+      let sources = [
+        baselineEmitter.compile(sourceIR),
+        try #require(DoryARM64Tier1Emitter().compile(sourceIR)),
+      ]
+      let takenTarget = baselineEmitter.compile(takenIR)
+      let notTakenTarget = baselineEmitter.compile(notTakenIR)
+
+      for source in sources {
+        let slots = try #require(source.chainSlots)
+        let takenSlot = try #require(slots.first { $0.kind == .conditionalTaken })
+        let notTakenSlot = try #require(slots.first { $0.kind == .conditionalNotTaken })
+        let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+        let takenOffset = source.machineBytes.count
+        let notTakenOffset = takenOffset + takenTarget.machineBytes.count
+        try region.publish(source, at: 0)
+        try region.publish(takenTarget, at: takenOffset)
+        try region.publish(notTakenTarget, at: notTakenOffset)
+        try region.patchDirectBranch(
+          at: takenSlot.machineWordIndex * MemoryLayout<UInt32>.stride,
+          to: takenOffset
+        )
+        try region.patchDirectBranch(
+          at: notTakenSlot.machineWordIndex * MemoryLayout<UInt32>.stride,
+          to: notTakenOffset
+        )
+
+        var context = [UInt64](
+          repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+        context[16] = 0x2000
+        context[17] = DoryX86RFLAGS.zero.rawValue
+        #expect(try region.execute(at: 0, context: &context) == .dispatch)
+        #expect(context[0] == 0x11)
+        #expect(context[16] == 0x2009)
+
+        context[0] = 0
+        context[16] = 0x2000
+        context[17] = DoryX86RFLAGS.reservedOne.rawValue
+        #expect(try region.execute(at: 0, context: &context) == .dispatch)
+        #expect(context[0] == 0x22)
+        #expect(context[16] == 0x2007)
+      }
+    #endif
+  }
+
+  @Test func baselineMemoryChainRestoresCallbacksBeforeTailCall() throws {
+    #if arch(arm64)
+      let sourceIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
+        [0xE8, 0xFB, 0, 0, 0], at: 0x3000, mode: .long64)
+      let targetIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
+        [0x48, 0x8B, 0x03], at: 0x3100, mode: .long64)
+      let emitter = DoryARM64BaselineEmitter()
+      let source = emitter.compile(sourceIR)
+      let target = emitter.compile(targetIR)
+      let slot = try #require(source.chainSlots?.first)
+      #expect(source.requiresMemoryCallbacks)
+      #expect(target.requiresMemoryCallbacks)
+
+      let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+      let targetOffset = source.machineBytes.count
+      try region.publish(source, at: 0)
+      try region.publish(target, at: targetOffset)
+      try region.patchDirectBranch(
+        at: slot.machineWordIndex * MemoryLayout<UInt32>.stride,
+        to: targetOffset
+      )
+
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+      try memory.writeScalar(at: 0x40, value: 0x1122_3344_5566_7788, byteCount: 8)
+      var context = [UInt64](
+        repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+      context[3] = 0x40
+      context[4] = 0x100
+      context[16] = 0x3000
+
+      #expect(try region.execute(at: 0, context: &context, memory: memory) == .dispatch)
+      #expect(context[0] == 0x1122_3344_5566_7788)
+      #expect(context[4] == 0xF8)
+      #expect(context[16] == 0x3103)
+      #expect(try memory.readScalar(at: 0xF8, byteCount: 8) == 0x3005)
+    #endif
+  }
+
   @Test func executionContextCarriesTheHostAddressSpaceBase() throws {
     let page = Int(getpagesize())
     let memory = try DoryX86MmapMemory(

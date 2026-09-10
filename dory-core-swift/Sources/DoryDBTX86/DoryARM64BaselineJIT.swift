@@ -21,7 +21,38 @@ public enum DoryARM64JITOptimization: String, Codable, Sendable, Hashable {
   case optimizing
 }
 
+public enum DoryARM64ChainSlotKind: String, Codable, Sendable, Hashable {
+  case direct
+  case conditionalTaken
+  case conditionalNotTaken
+}
+
+/// One executable branch word that initially targets its block-local dispatcher fallback. The
+/// runtime may retarget it to another resident block and can always restore `fallbackWordIndex`
+/// when that target loses lookup visibility.
+public struct DoryARM64ChainSlot: Codable, Sendable, Hashable {
+  public let kind: DoryARM64ChainSlotKind
+  public let targetGuestRIP: UInt64
+  public let machineWordIndex: Int
+  public let fallbackWordIndex: Int
+
+  public init(
+    kind: DoryARM64ChainSlotKind,
+    targetGuestRIP: UInt64,
+    machineWordIndex: Int,
+    fallbackWordIndex: Int
+  ) {
+    self.kind = kind
+    self.targetGuestRIP = targetGuestRIP
+    self.machineWordIndex = machineWordIndex
+    self.fallbackWordIndex = fallbackWordIndex
+  }
+}
+
 public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
+  private static let directChainMetadataMagic: UInt32 = 0xD05C_A051
+  private static let conditionalChainMetadataMagic: UInt32 = 0xD05C_A052
+
   public let guestStart: UInt64
   public let guestByteCount: UInt32
   public let guestInstructionCount: UInt32
@@ -59,6 +90,84 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
   public var machineBytes: [UInt8] {
     machineWords.flatMap { word in
       (0..<4).map { UInt8(truncatingIfNeeded: word >> UInt32($0 * 8)) }
+    }
+  }
+
+  /// Patch descriptors live in a branch-skipped prefix inside the existing machine-word storage.
+  /// This preserves both the compiled block's established value ABI and its terminal `RET` while
+  /// allowing cache residents to recover exact slot offsets.
+  public var chainSlots: [DoryARM64ChainSlot]? {
+    guard machineWords.count >= 2 else { return nil }
+    let magic = machineWords[1]
+    switch magic {
+    case Self.directChainMetadataMagic:
+      guard machineWords.count >= 7, machineWords[0] == 0x1400_0004 else { return nil }
+      let target = UInt64(machineWords[2]) | UInt64(machineWords[3]) << 32
+      let codeEnd = machineWords.count
+      return [
+        .init(
+          kind: .direct,
+          targetGuestRIP: target,
+          machineWordIndex: codeEnd - 3,
+          fallbackWordIndex: codeEnd - 2
+        )
+      ]
+    case Self.conditionalChainMetadataMagic:
+      guard machineWords.count >= 11, machineWords[0] == 0x1400_0006 else { return nil }
+      let taken = UInt64(machineWords[2]) | UInt64(machineWords[3]) << 32
+      let notTaken = UInt64(machineWords[4]) | UInt64(machineWords[5]) << 32
+      let codeEnd = machineWords.count
+      return [
+        .init(
+          kind: .conditionalTaken,
+          targetGuestRIP: taken,
+          machineWordIndex: codeEnd - 3,
+          fallbackWordIndex: codeEnd - 2
+        ),
+        .init(
+          kind: .conditionalNotTaken,
+          targetGuestRIP: notTaken,
+          machineWordIndex: codeEnd - 4,
+          fallbackWordIndex: codeEnd - 2
+        ),
+      ]
+    default:
+      return nil
+    }
+  }
+
+  static func installChainMetadata(
+    _ slots: [DoryARM64ChainSlot],
+    in words: inout [UInt32]
+  ) {
+    switch slots.map(\.kind) {
+    case [.direct]:
+      let target = slots[0].targetGuestRIP
+      words.insert(
+        contentsOf: [
+          0x1400_0004,  // b +4 words, over the descriptor
+          directChainMetadataMagic,
+          UInt32(truncatingIfNeeded: target),
+          UInt32(truncatingIfNeeded: target >> 32),
+        ],
+        at: 0
+      )
+    case [.conditionalTaken, .conditionalNotTaken]:
+      let taken = slots[0].targetGuestRIP
+      let notTaken = slots[1].targetGuestRIP
+      words.insert(
+        contentsOf: [
+          0x1400_0006,  // b +6 words, over the descriptor
+          conditionalChainMetadataMagic,
+          UInt32(truncatingIfNeeded: taken),
+          UInt32(truncatingIfNeeded: taken >> 32),
+          UInt32(truncatingIfNeeded: notTaken),
+          UInt32(truncatingIfNeeded: notTaken >> 32),
+        ],
+        at: 0
+      )
+    default:
+      precondition(slots.isEmpty, "unsupported chain-slot metadata shape")
     }
   }
 }
@@ -173,9 +282,20 @@ public struct DoryARM64BaselineEmitter: Sendable {
     guard let exit = emit(block.terminator, usesMemory: usesMemory, into: &words) else {
       return fallback(block)
     }
-    if usesMemory { emitMemoryEpilogue(into: &words) }
+    let hasChainSlots = exit == .dispatch && supportsChainSlots(for: block.terminator)
+    if usesMemory {
+      if hasChainSlots {
+        emitMemoryChainEpilogue(into: &words)
+      } else {
+        emitMemoryEpilogue(into: &words)
+      }
+    }
+    let chainSlots = hasChainSlots
+      ? emitChainSlots(for: block.terminator, into: &words)
+      : []
     words.append(encodeMoveWideZero32(register: 0, immediate: UInt16(exit.rawValue)))
     words.append(0xD65F_03C0)
+    DoryARM64CompiledBlock.installChainMetadata(chainSlots, in: &words)
     return .init(
       guestStart: block.guestStart,
       guestByteCount: block.guestByteCount,
@@ -189,6 +309,76 @@ public struct DoryARM64BaselineEmitter: Sendable {
       requiresRestartableMemoryReads: memoryCallbackCount > 1 || (guardsTerminator && usesMemory),
       mayExitToInterpreter: guardsTerminator || guardsStack || guardsInterpreterExit
     )
+  }
+
+  private func emitChainSlots(
+    for terminator: DoryIRTerminator,
+    into words: inout [UInt32]
+  ) -> [DoryARM64ChainSlot] {
+    switch terminator {
+    case .next(let target), .branch(let target), .call(let target, _):
+      guard DoryX86ArchitecturalState.isCanonical(target) else { return [] }
+      let slot = words.count
+      words.append(0)
+      let fallback = words.count
+      words[slot] = encodeUnconditionalBranch(wordOffset: fallback - slot)
+      return [
+        .init(
+          kind: .direct,
+          targetGuestRIP: target,
+          machineWordIndex: slot,
+          fallbackWordIndex: fallback
+        )
+      ]
+    case .conditional(_, let taken, let notTaken):
+      guard DoryX86ArchitecturalState.isCanonical(taken),
+        DoryX86ArchitecturalState.isCanonical(notTaken)
+      else { return [] }
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.ripOffset))
+      emitImmediate(taken, register: 10, into: &words)
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 9, 10, 31))
+      let selectTaken = words.count
+      words.append(0)
+      let notTakenSlot = words.count
+      words.append(0)
+      let takenSlot = words.count
+      words.append(0)
+      let fallback = words.count
+      words[selectTaken] = encodeConditionalBranch(
+        condition: .equal,
+        wordOffset: takenSlot - selectTaken
+      )
+      words[notTakenSlot] = encodeUnconditionalBranch(wordOffset: fallback - notTakenSlot)
+      words[takenSlot] = encodeUnconditionalBranch(wordOffset: fallback - takenSlot)
+      return [
+        .init(
+          kind: .conditionalTaken,
+          targetGuestRIP: taken,
+          machineWordIndex: takenSlot,
+          fallbackWordIndex: fallback
+        ),
+        .init(
+          kind: .conditionalNotTaken,
+          targetGuestRIP: notTaken,
+          machineWordIndex: notTakenSlot,
+          fallbackWordIndex: fallback
+        ),
+      ]
+    default:
+      return []
+    }
+  }
+
+  private func supportsChainSlots(for terminator: DoryIRTerminator) -> Bool {
+    switch terminator {
+    case .next(let target), .branch(let target), .call(let target, _):
+      return DoryX86ArchitecturalState.isCanonical(target)
+    case .conditional(_, let taken, let notTaken):
+      return DoryX86ArchitecturalState.isCanonical(taken)
+        && DoryX86ArchitecturalState.isCanonical(notTaken)
+    default:
+      return false
+    }
   }
 
   private func requiresRuntimeAddressGuard(_ terminator: DoryIRTerminator) -> Bool {
@@ -1949,6 +2139,18 @@ public struct DoryARM64BaselineEmitter: Sendable {
       0xA941_53F3,  // ldp x19,x20,[sp,#16]
       0xA8C7_7BFD,  // ldp x29,x30,[sp],#112
     ]
+  }
+
+  private func emitMemoryChainEpilogue(into words: inout [UInt32]) {
+    words += [
+      0xAA13_03E0,  // mov x0,x19 (architectural context)
+      0xAA14_03E1,  // mov x1,x20 (memory context)
+      0xAA15_03E2,  // mov x2,x21 (read callback)
+      0xAA16_03E3,  // mov x3,x22 (write callback)
+      0xAA17_03E4,  // mov x4,x23 (atomic compare-exchange callback)
+      0xAA18_03E5,  // mov x5,x24 (synchronize callback)
+    ]
+    emitMemoryEpilogue(into: &words)
   }
 
   private func emitMemoryRead(
