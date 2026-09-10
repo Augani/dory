@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-native-trace-off-rejection",
+  "observedAt": "2026-09-10T17:04:32Z",
+  "status": "one-pass-one-host-crash-reverted",
+  "qualification": "local A05.3 reliability isolation; not A05.3 closure, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "988f99bb81d1ae19addc279afe6823370f88a001",
+    "revertCommit": "8da92379ee63470cbd8eefd75dc348d0218f8852",
+    "candidateRunnerSHA256": "cfb114dfa895814b65f3441dfafebcf0b886ffcb2846d29f4248af23447c4e53",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "scope": "Make recorded native-trace batch replay independently selectable on an executor and disable it for the production PC machine while leaving ordinary generated execution, direct chaining, IBTC, shadow returns, Tier-one admission, and mixed-compiler rejection unchanged.",
+    "behavioralIntent": "Determine whether the alternate callback-free C batch-call boundary was the source of the layout-sensitive guest corruption and invalid generated returns.",
+    "regressionCoverage": "A trace-off directed chain completed cold and warm with zero batch executions, attempts, and replays; the original trace-on replay test remained green. The focused gate passed 36 tests in two suites and the deterministic aggregate passed 1,556 tests in 179 suites.",
+    "productionFinding": "The first exact-binary run passed all seven workloads and powered off with trace attempts and replays both zero. The second run of the identical binary crashed before a receipt with PC, LR, and FP all zero. Recorded native-trace replay is therefore not the sole source of the reliability defect and disabling it cannot be accepted as containment."
+  },
+  "verification": {
+    "focused": "36 tests in 2 suites passed.",
+    "deterministicAggregate": "1,556 tests in 179 suites passed with test parallelism disabled.",
+    "productionAttempts": 2,
+    "passingDiagnosticReceiptsProduced": 1,
+    "failedDiagnosticReceiptsProduced": 0
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ]
+  },
+  "runs": [
+    {
+      "runID": "06b074a7-449b-4276-82f4-ad477cdb7313",
+      "diagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-native-trace-off-first.json",
+      "diagnosticReceiptSHA256": "2f60d0764468ef74160cb37cfb1da8298045d756d9096c5d9ee932614c857ec1",
+      "exitCode": 0,
+      "outcome": "userspace-workloads-powered-off",
+      "elapsedNanoseconds": 345434015583,
+      "retiredInstructions": 722282618,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "nativeTraceAttempts": 0,
+      "nativeTraceReplays": 0,
+      "nativeDispatcherEntries": 112952355,
+      "directlyChainedBlocks": 117892959,
+      "withinRunAvoidancePercent": 51.07011139069516,
+      "codeCacheWraps": 2
+    },
+    {
+      "runID": "c5e80a86-4bd3-495b-aeb5-32a500f972d9",
+      "intendedDiagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-native-trace-off-second.json",
+      "diagnosticReceiptPresent": false,
+      "terminalOutputCaptured": false,
+      "processExitStatus": 139,
+      "signal": "SIGSEGV",
+      "exceptionSubtype": "KERN_INVALID_ADDRESS",
+      "faultAddress": "0x0",
+      "programCounter": "0x0",
+      "linkRegister": "0x0",
+      "framePointer": "0x0",
+      "crashReportIncidentID": "C5871801-FDCB-48FE-8DE9-00C5395C3E53",
+      "crashReportSHA256": "7e332da759197cf84d0e9e07b1180ab57f0e138e4d5fed9f217cd851386d528f"
+    }
+  ],
+  "retainedBaseline": {
+    "evidence": "pvh-chain-target-rejection-ranking.json",
+    "withinRunDispatcherReductionPercent": 50.26310931351201,
+    "compilerABIRejections": 56066297,
+    "reason": "The behavior-neutral coarse instrumentation remains the last production-safe measurement."
+  },
+  "disposition": {
+    "candidateAccepted": false,
+    "a05_3DispatcherGatePassed": false,
+    "requiredDispatcherReductionPercent": 95,
+    "lastAcceptedMeasuredDispatcherReductionPercent": 50.26310931351201,
+    "reason": "The candidate is fully reverted. One success cannot override an identical-binary null-control-flow crash. The defect also occurs without native batch replay, so future isolation must cover the ordinary generated call and raw chain/predictor paths."
+  },
+  "limitations": [
+    "The failed run produced no receipt, so guest progress, counters, elapsed time, and workload status are unavailable and are not inferred.",
+    "The crash report establishes null host control state but does not identify which ordinary generated edge or stack write first corrupted it.",
+    "The passing run's 51.07-percent avoidance is not accepted performance evidence because the identical candidate failed reliability."
+  ]
+}
