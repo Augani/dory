@@ -7,6 +7,7 @@
 typedef struct dory_jit_region dory_jit_region;
 typedef struct dory_jit_tlb dory_jit_tlb;
 typedef struct dory_jit_block_cache dory_jit_block_cache;
+typedef struct dory_jit_ibtc dory_jit_ibtc;
 
 typedef struct dory_jit_block_key {
     uint64_t physical_rip;
@@ -37,6 +38,35 @@ int dory_jit_block_cache_remove(
     uint64_t *removed_value_out
 );
 void dory_jit_block_cache_clear(dory_jit_block_cache *cache);
+
+typedef struct dory_jit_ibtc_entry {
+    uint64_t guest_rip;
+    uint64_t host_address;
+    uint64_t generation;
+    uint64_t reserved;
+} dory_jit_ibtc_entry;
+
+int dory_jit_ibtc_create(size_t entry_count, dory_jit_ibtc **cache_out);
+void dory_jit_ibtc_destroy(dory_jit_ibtc *cache);
+size_t dory_jit_ibtc_entry_count(const dory_jit_ibtc *cache);
+size_t dory_jit_ibtc_index(const dory_jit_ibtc *cache, uint64_t guest_rip);
+dory_jit_ibtc_entry *dory_jit_ibtc_entries(dory_jit_ibtc *cache);
+int dory_jit_ibtc_lookup(
+    dory_jit_ibtc *cache,
+    uint64_t guest_rip,
+    uint64_t generation,
+    uint64_t *host_address_out
+);
+int dory_jit_ibtc_fill(
+    dory_jit_ibtc *cache,
+    uint64_t guest_rip,
+    uint64_t generation,
+    uint64_t host_address
+);
+void dory_jit_ibtc_clear(dory_jit_ibtc *cache);
+uint64_t dory_jit_ibtc_hit_count(const dory_jit_ibtc *cache);
+uint64_t dory_jit_ibtc_miss_count(const dory_jit_ibtc *cache);
+uint64_t dory_jit_ibtc_fill_count(const dory_jit_ibtc *cache);
 
 typedef enum dory_jit_tlb_access {
     DORY_JIT_TLB_ACCESS_READ = 0,

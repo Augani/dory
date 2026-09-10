@@ -17,6 +17,7 @@ enum {
     dory_jit_block_cache_empty = 0,
     dory_jit_block_cache_occupied = 1,
     dory_jit_block_cache_tombstone = 2,
+    dory_jit_ibtc_magic = 0x49425431,
 };
 
 static const uint64_t dory_jit_tlb_maximum_generation = (UINT64_C(1) << 28) - 1;
@@ -47,8 +48,18 @@ struct dory_jit_block_cache {
     dory_jit_block_cache_entry *entries;
 };
 
+struct dory_jit_ibtc {
+    uint32_t magic;
+    size_t entry_count;
+    dory_jit_ibtc_entry *entries;
+    uint64_t hit_count;
+    uint64_t miss_count;
+    uint64_t fill_count;
+};
+
 _Static_assert(sizeof(dory_jit_tlb_entry) == 16, "JIT TLB entries must remain two words");
 _Static_assert(sizeof(dory_jit_block_key) == 16, "JIT block keys must remain two words");
+_Static_assert(sizeof(dory_jit_ibtc_entry) == 32, "IBTC entries must remain four words");
 _Static_assert(sizeof(dory_jit_tlb_resolution) == 24, "JIT TLB resolution ABI changed");
 _Static_assert(sizeof(dory_jit_atomic_pair_values) == 48, "atomic pair ABI changed");
 
@@ -95,6 +106,121 @@ static uint64_t dory_jit_block_key_hash(dory_jit_block_key key) {
     value *= UINT64_C(0x94d049bb133111eb);
     value ^= value >> 31;
     return value;
+}
+
+int dory_jit_ibtc_create(size_t entry_count, dory_jit_ibtc **cache_out) {
+    if (cache_out == NULL) {
+        return EINVAL;
+    }
+    *cache_out = NULL;
+    if (entry_count == 0 ||
+        (entry_count & (entry_count - 1)) != 0 ||
+        entry_count > SIZE_MAX / sizeof(dory_jit_ibtc_entry)) {
+        return EINVAL;
+    }
+    dory_jit_ibtc *cache = calloc(1, sizeof(*cache));
+    if (cache == NULL) {
+        return ENOMEM;
+    }
+    cache->entries = calloc(entry_count, sizeof(*cache->entries));
+    if (cache->entries == NULL) {
+        free(cache);
+        return ENOMEM;
+    }
+    cache->magic = dory_jit_ibtc_magic;
+    cache->entry_count = entry_count;
+    *cache_out = cache;
+    return 0;
+}
+
+void dory_jit_ibtc_destroy(dory_jit_ibtc *cache) {
+    if (cache == NULL || cache->magic != dory_jit_ibtc_magic) {
+        return;
+    }
+    cache->magic = 0;
+    free(cache->entries);
+    free(cache);
+}
+
+size_t dory_jit_ibtc_entry_count(const dory_jit_ibtc *cache) {
+    return cache != NULL && cache->magic == dory_jit_ibtc_magic
+        ? cache->entry_count
+        : 0;
+}
+
+size_t dory_jit_ibtc_index(const dory_jit_ibtc *cache, uint64_t guest_rip) {
+    if (cache == NULL || cache->magic != dory_jit_ibtc_magic) {
+        return SIZE_MAX;
+    }
+    // Guest instructions are byte aligned. Dropping the two lowest bits avoids concentrating
+    // common aligned branch targets while keeping the generated-code index sequence minimal.
+    return (size_t)(guest_rip >> 2) & (cache->entry_count - 1);
+}
+
+dory_jit_ibtc_entry *dory_jit_ibtc_entries(dory_jit_ibtc *cache) {
+    return cache != NULL && cache->magic == dory_jit_ibtc_magic
+        ? cache->entries
+        : NULL;
+}
+
+int dory_jit_ibtc_lookup(
+    dory_jit_ibtc *cache,
+    uint64_t guest_rip,
+    uint64_t generation,
+    uint64_t *host_address_out
+) {
+    if (cache == NULL || cache->magic != dory_jit_ibtc_magic ||
+        generation == 0 || host_address_out == NULL) {
+        return EINVAL;
+    }
+    const dory_jit_ibtc_entry *entry =
+        &cache->entries[dory_jit_ibtc_index(cache, guest_rip)];
+    if (entry->generation != generation || entry->guest_rip != guest_rip ||
+        entry->host_address == 0) {
+        cache->miss_count++;
+        return ENOENT;
+    }
+    cache->hit_count++;
+    *host_address_out = entry->host_address;
+    return 0;
+}
+
+int dory_jit_ibtc_fill(
+    dory_jit_ibtc *cache,
+    uint64_t guest_rip,
+    uint64_t generation,
+    uint64_t host_address
+) {
+    if (cache == NULL || cache->magic != dory_jit_ibtc_magic ||
+        generation == 0 || host_address == 0) {
+        return EINVAL;
+    }
+    dory_jit_ibtc_entry *entry = &cache->entries[dory_jit_ibtc_index(cache, guest_rip)];
+    entry->guest_rip = guest_rip;
+    entry->host_address = host_address;
+    entry->generation = generation;
+    entry->reserved = 0;
+    cache->fill_count++;
+    return 0;
+}
+
+void dory_jit_ibtc_clear(dory_jit_ibtc *cache) {
+    if (cache == NULL || cache->magic != dory_jit_ibtc_magic) {
+        return;
+    }
+    memset(cache->entries, 0, cache->entry_count * sizeof(*cache->entries));
+}
+
+uint64_t dory_jit_ibtc_hit_count(const dory_jit_ibtc *cache) {
+    return cache != NULL && cache->magic == dory_jit_ibtc_magic ? cache->hit_count : 0;
+}
+
+uint64_t dory_jit_ibtc_miss_count(const dory_jit_ibtc *cache) {
+    return cache != NULL && cache->magic == dory_jit_ibtc_magic ? cache->miss_count : 0;
+}
+
+uint64_t dory_jit_ibtc_fill_count(const dory_jit_ibtc *cache) {
+    return cache != NULL && cache->magic == dory_jit_ibtc_magic ? cache->fill_count : 0;
 }
 
 static int dory_jit_block_cache_insert_without_resize(
