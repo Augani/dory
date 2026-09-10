@@ -52,7 +52,7 @@ import Testing
     #endif
   }
 
-  @Test func measuredHighByteCopyThenMemoryLoadMatchesInterpreterAndRollsBackReadFault() throws {
+  @Test func measuredHighByteCopyThenMemoryLoadPublishesPrefixOnReadFault() throws {
     let codeAddress: UInt64 = 0xFFFF_FFFF_81E1_C6BE
     let bytes: [UInt8] = [
       0x88, 0xCF,  // movb %cl,%bh
@@ -109,6 +109,15 @@ import Testing
       #expect(tier1 == interpreted)
 
       let codeOnly = try DoryX86ByteArrayMemory(baseAddress: codeAddress, bytes: bytes)
+      var expectedPrefix = initial
+      guard case .retired = DoryX86Interpreter().step(
+        state: &expectedPrefix,
+        memory: codeOnly,
+        mode: .long64
+      ) else {
+        Issue.record("interpreter did not retire the high-byte prefix")
+        return
+      }
       var failed = initial
       let failure = try #require(
         DoryARM64BaselineExecutor(
@@ -125,7 +134,8 @@ import Testing
         ))
       #expect(failure.block.tier == .tier1)
       #expect(failure.exitCode == .interpreter)
-      #expect(failed == initial)
+      #expect(failure.guestInstructionCount == 1)
+      #expect(failed == expectedPrefix)
     #endif
   }
 
@@ -1788,6 +1798,15 @@ import Testing
       )
       var failed = failedInitial
       let failedSnapshot = failedMemory.snapshot()
+      var expectedPrefix = failedInitial
+      guard case .retired = DoryX86Interpreter().step(
+        state: &expectedPrefix,
+        memory: failedMemory,
+        mode: .long64
+      ) else {
+        Issue.record("interpreter did not retire the signed-index prefix")
+        return
+      }
       let failure = try #require(
         DoryARM64BaselineExecutor(
           maximumCodeBytes: 4096,
@@ -1803,7 +1822,8 @@ import Testing
         ))
       #expect(failure.block.tier == .tier1)
       #expect(failure.exitCode == .interpreter)
-      #expect(failed == failedInitial)
+      #expect(failure.guestInstructionCount == 1)
+      #expect(failed == expectedPrefix)
       #expect(failedMemory.snapshot() == failedSnapshot)
 
       let workerCount = 8
@@ -1967,6 +1987,15 @@ import Testing
       )
       var rejected = rejectedInitial
       let rejectedSnapshot = rejectedWriteMemory.backing.snapshot()
+      var expectedPrefix = rejectedInitial
+      guard case .retired = DoryX86Interpreter().step(
+        state: &expectedPrefix,
+        memory: rejectedWriteMemory.backing,
+        mode: .long64
+      ) else {
+        Issue.record("interpreter did not retire the alternatives-patched prefix")
+        return
+      }
       let failure = try #require(
         DoryARM64BaselineExecutor(
           maximumCodeBytes: 4096,
@@ -1982,7 +2011,8 @@ import Testing
         ))
       #expect(failure.block.tier == .tier1)
       #expect(failure.exitCode == .interpreter)
-      #expect(rejected == rejectedInitial)
+      #expect(failure.guestInstructionCount == 1)
+      #expect(rejected == expectedPrefix)
       #expect(rejectedWriteMemory.backing.snapshot() == rejectedSnapshot)
       #expect(rejectedWriteMemory.writeAttempts == 1)
     #endif
@@ -3808,10 +3838,22 @@ import Testing
         )
         var state = initial
         let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+        try memory.write(at: initial.rip, bytes: bytes)
         if index == 1 {
           try memory.write(at: 0x208, bytes: Array(repeating: 0x03, count: 8))
         }
         let initialMemory = memory.snapshot()
+        var expectedPrefix = initial
+        if index == 1 {
+          guard case .retired = DoryX86Interpreter().step(
+            state: &expectedPrefix,
+            memory: memory,
+            mode: .long64
+          ) else {
+            Issue.record("interpreter did not retire the multiply prefix")
+            return
+          }
+        }
         let execution = try #require(executor.execute(
           bytes: bytes,
           at: state.rip,
@@ -3824,7 +3866,8 @@ import Testing
 
         #expect(execution.block.tier == .tier1)
         #expect(execution.exitCode == .interpreter)
-        #expect(state == initial)
+        #expect(execution.guestInstructionCount == UInt32(index))
+        #expect(state == expectedPrefix)
         #expect(memory.snapshot() == initialMemory)
       }
     #endif
@@ -4847,6 +4890,15 @@ import Testing
       )
       var rejectedWriteState = initial
       let rejectedWriteSnapshot = rejectedWriteMemory.backing.snapshot()
+      var expectedPrefix = initial
+      guard case .retired = DoryX86Interpreter().step(
+        state: &expectedPrefix,
+        memory: rejectedWriteMemory.backing,
+        mode: .long64
+      ) else {
+        Issue.record("interpreter did not retire the slab-free prefix")
+        return
+      }
       let rejectedWriteExecution = try #require(
         DoryARM64BaselineExecutor(
           maximumCodeBytes: 16 * 1024,
@@ -4862,7 +4914,8 @@ import Testing
         ))
       #expect(rejectedWriteExecution.block.tier == .tier1)
       #expect(rejectedWriteExecution.exitCode == .interpreter)
-      #expect(rejectedWriteState == initial)
+      #expect(rejectedWriteExecution.guestInstructionCount == 1)
+      #expect(rejectedWriteState == expectedPrefix)
       #expect(rejectedWriteMemory.backing.snapshot() == rejectedWriteSnapshot)
       #expect(rejectedWriteMemory.writeAttempts == 1)
     #endif

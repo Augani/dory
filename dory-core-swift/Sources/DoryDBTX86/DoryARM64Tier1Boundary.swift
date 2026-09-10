@@ -135,6 +135,17 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
       wordOffset: words.count - materializedBranch)
   }
 
+  /// Checkpoints the pinned materialized-flags base before an unavoidable C callback. Pending
+  /// lazy descriptors already live in the context when they are created, while x26 is also used
+  /// as local scratch by some callback emitters, so only the authoritative x25 base is written.
+  func emitRecoveryFlagsCheckpoint(into words: inout [UInt32]) {
+    words.append(
+      Self.encodeStore64(
+        register: DoryARM64Tier1ABI.lazyFlagsRegisters[0],
+        base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
+  }
+
   /// Replaces the pinned guest RIP with one statically validated direct target.
   func emitGuestRIP(_ address: UInt64, into words: inout [UInt32]) {
     Self.emitImmediate(address, register: DoryARM64Tier1ABI.guestRIPRegister, into: &words)

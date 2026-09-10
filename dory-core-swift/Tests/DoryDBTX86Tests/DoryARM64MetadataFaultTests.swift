@@ -171,6 +171,63 @@ import Testing
     #endif
   }
 
+  @Test func nonChainedExecutionReportsAndPublishesOnlyTheCompletedPrefix() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [
+        0x48, 0xB9, 1, 0, 0, 0, 0, 0, 0, 0,  // mov rcx,1
+        0x48, 0x8B, 0x03,  // mov rax,[rbx]
+      ]
+      for (tier1Enabled, optimization) in [
+        (false, DoryARM64JITOptimization.baseline),
+        (true, DoryARM64JITOptimization.optimizing),
+      ] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: tier1Enabled,
+          optimization: optimization
+        )
+        let memory = try DoryX86ByteArrayMemory(baseAddress: 0x6000, bytes: bytes)
+        var state = try DoryX86ArchitecturalState(
+          registers: .init(rax: 0xAAAA, rcx: 0, rbx: 0x7000),
+          rip: 0x6000,
+          cs: .init(selector: 0, attributes: 0xA09B, limit: .max)
+        )
+
+        let prefix = try #require(executor.executeSummary(
+          byteProvider: { Array(bytes.prefix($0)) },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &state,
+          memory: memory
+        ))
+        #expect(prefix.guestInstructionCount == 1)
+        #expect(prefix.residentBlockCount == 1)
+        #expect(prefix.exitCode == .interpreter)
+        #expect(state.rip == 0x600A)
+        #expect(state.registers.rcx == 1)
+        #expect(state.registers.rax == 0xAAAA)
+
+        let beforeRetry = state
+        let retry = try #require(executor.executeSummary(
+          byteProvider: { maximumCount in
+            Array(bytes.dropFirst(10).prefix(maximumCount))
+          },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        ))
+        #expect(retry.guestInstructionCount == 0)
+        #expect(retry.exitCode == .interpreter)
+        #expect(state == beforeRetry)
+      }
+    #endif
+  }
+
   @Test func tier1NativeFlagsBoundaryRecoversThroughTheLazyContextRecord() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [

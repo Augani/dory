@@ -5298,10 +5298,16 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
 
 public struct DoryARM64BaselineExecution: Sendable, Hashable {
   public let block: DoryARM64CompiledBlock
+  public let guestInstructionCount: UInt32
   public let exitCode: DoryJITExitCode
 
-  public init(block: DoryARM64CompiledBlock, exitCode: DoryJITExitCode) {
+  public init(
+    block: DoryARM64CompiledBlock,
+    guestInstructionCount: UInt32? = nil,
+    exitCode: DoryJITExitCode
+  ) {
     self.block = block
+    self.guestInstructionCount = guestInstructionCount ?? block.guestInstructionCount
     self.exitCode = exitCode
   }
 }
@@ -5572,6 +5578,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
 
   private struct ResidentExecution {
     let resident: ResidentBlock
+    let guestInstructionCount: UInt32
     let exitCode: DoryJITExitCode
   }
 
@@ -5928,7 +5935,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         memory: memory
       )
     else { return nil }
-    return .init(block: execution.resident.block, exitCode: execution.exitCode)
+    return .init(
+      block: execution.resident.block,
+      guestInstructionCount: execution.guestInstructionCount,
+      exitCode: execution.exitCode
+    )
   }
 
   /// Executes through the same validated resident-block path while returning only the fields a
@@ -5959,7 +5970,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       )
     else { return nil }
     return .init(
-      guestInstructionCount: execution.resident.block.guestInstructionCount,
+      guestInstructionCount: execution.guestInstructionCount,
       residentBlockCount: 1,
       tier: execution.resident.block.tier,
       exitCode: execution.exitCode
@@ -6279,12 +6290,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 resident: resident,
                 context: context
               ) {
+                if recoveredPrefixInstructionCount == 0 {
+                  // The captured callback image may contain speculative state produced inside the
+                  // first instruction (for example flags computed before a rejected RMW store).
+                  // Its exact entry state is the dispatcher checkpoint.
+                  for index in context.indices { context[index] = checkpoint[index] }
+                }
                 completed += recoveredPrefixInstructionCount
                 if recoveredPrefixInstructionCount > 0 { blockCount += 1 }
-                guard completed > 0 else {
-                  publishExecutionContext(context, to: &state, memory: memory)
-                  return nil
-                }
+                guard completed > 0 else { return nil }
                 chainedRetiredInstructionCount &+= UInt64(completed)
                 publishExecutionContext(context, to: &state, memory: memory)
                 return DoryARM64ExecutionSummary(
@@ -6575,20 +6589,41 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           codeCacheGeneration: codeCacheEpoch &+ 1
         )
         guard canExecute(resident, context: context) else { return nil }
-        let exit = try region.execute(
+        let execution = try region.executePreparedWithRecovery(
           at: resident.offset,
           context: context,
-          memory: memory,
-          requiresRestartableReads: resident.block.requiresRestartableMemoryReads
+          memoryCapabilities: memory.map { DoryJITMemoryCapabilities(memory: $0) },
+          requiresRestartableReads: resident.block.requiresRestartableMemoryReads,
+          translationTLB: translationTLB
         )
+        let exit = execution.exitCode
         recordLazyFlagMaterializations(in: context)
         if exit == .interpreter,
           resident.block.requiresMemoryCallbacks || resident.block.mayExitToInterpreter
         {
-          return ResidentExecution(resident: resident, exitCode: exit)
+          if let recoveredPrefixInstructionCount = restoreFailedMemoryCallbackPrefix(
+            execution,
+            resident: resident,
+            context: context
+          ) {
+            if recoveredPrefixInstructionCount > 0 {
+              publishExecutionContext(context, to: &state, memory: memory)
+            }
+            return ResidentExecution(
+              resident: resident,
+              guestInstructionCount: UInt32(recoveredPrefixInstructionCount),
+              exitCode: exit
+            )
+          }
+          // A generated guard without a callback recovery image is an all-or-nothing block exit.
+          return ResidentExecution(resident: resident, guestInstructionCount: 0, exitCode: exit)
         }
         publishExecutionContext(context, to: &state, memory: memory)
-        return ResidentExecution(resident: resident, exitCode: exit)
+        return ResidentExecution(
+          resident: resident,
+          guestInstructionCount: resident.block.guestInstructionCount,
+          exitCode: exit
+        )
       }
     }
   }

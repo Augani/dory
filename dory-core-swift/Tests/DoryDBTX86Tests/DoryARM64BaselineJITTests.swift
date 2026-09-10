@@ -1486,7 +1486,7 @@ import Testing
     #endif
   }
 
-  @Test func failedLaterRestartableReadSuppressesTheRemainingNativeWrite() throws {
+  @Test func failedLaterRestartableReadPublishesThePrefixAndSuppressesTheRemainingWrite() throws {
     #if arch(arm64)
       let memory = try SelectiveRestartableMemory(byteCount: 0x100, declinedAddress: 0x88)
       try memory.backing.writeScalar(at: 0x80, value: 0xA5, byteCount: 8)
@@ -1511,7 +1511,11 @@ import Testing
       )
 
       #expect(execution.exitCode == .interpreter)
-      #expect(state == initial)
+      #expect(execution.guestInstructionCount == 1)
+      var expectedPrefix = initial
+      expectedPrefix.registers.rcx = 0xA5
+      expectedPrefix.rip = 0x3703
+      #expect(state == expectedPrefix)
       #expect(memory.restartableReads == 2)
       #expect(memory.scalarWrites == 0)
       #expect(try memory.backing.readScalar(at: 0x90, byteCount: 8) == 0)
@@ -5378,7 +5382,7 @@ import Testing
     #endif
   }
 
-  @Test func failedPackedNativeReadLeavesTheWholeBlockRestartable() throws {
+  @Test func failedPackedNativeReadPublishesTheCompletedALUPrefix() throws {
     #if arch(arm64)
       let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
@@ -5402,8 +5406,13 @@ import Testing
         )
       )
       #expect(execution.block.guestInstructionCount == 3)
+      #expect(execution.guestInstructionCount == 1)
       #expect(execution.exitCode == .interpreter)
-      #expect(state == initial)
+      var expectedPrefix = initial
+      expectedPrefix.registers.rbx = 0xCAFF
+      expectedPrefix.rip = 0x3004
+      expectedPrefix.rflags = [.reservedOne, .parity]
+      #expect(state == expectedPrefix)
     #endif
   }
 

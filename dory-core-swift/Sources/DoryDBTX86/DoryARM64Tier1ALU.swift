@@ -259,6 +259,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
         immediate: UInt32(DoryARM64Tier1ABI.ContextWord.lazyFlagsSource2.byteOffset),
         destination: 5
       ))
+    DoryARM64Tier1BoundaryEmitter().emitRecoveryFlagsCheckpoint(into: &fragment)
     fragment.append(Self.encodeBranchWithLink(register: 22))
     fragment.append(
       Self.encodeAddSubtractSetFlags(
@@ -383,6 +384,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
         immediate: UInt32(DoryARM64Tier1ABI.ContextWord.lazyFlagsWidth.byteOffset),
         destination: 5
       ))
+    DoryARM64Tier1BoundaryEmitter().emitRecoveryFlagsCheckpoint(into: &fragment)
     fragment.append(Self.encodeBranchWithLink(register: 22))
     fragment.append(
       Self.encodeAddSubtractSetFlags(
@@ -706,6 +708,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
           register: register,
           word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
     }
+    DoryARM64Tier1BoundaryEmitter().emitRecoveryFlagsCheckpoint(into: &words)
     words.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
     words.append(Self.encodeBranchWithLink(register: 23))
     words.append(0xD503_3F9F)  // dsb sy
@@ -2780,6 +2783,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
           register: register,
           word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
     }
+    DoryARM64Tier1BoundaryEmitter().emitRecoveryFlagsCheckpoint(into: &fragment)
     fragment.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
     fragment.append(Self.encodeLoad64(register: 1, word: .lazyFlagsSource1))
     fragment.append(Self.encodeLoad64(register: 2, word: .lazyFlagsSource2))
@@ -2807,6 +2811,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
           register: register,
           word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
     }
+    DoryARM64Tier1BoundaryEmitter().emitRecoveryFlagsCheckpoint(into: &fragment)
     fragment.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
     fragment.append(Self.encodeLoad64(register: 1, word: .lazyFlagsSource1))
     Self.emitImmediate(8, register: 2, into: &fragment)
@@ -2861,6 +2866,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
           register: register,
           word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
     }
+    DoryARM64Tier1BoundaryEmitter().emitRecoveryFlagsCheckpoint(into: &fragment)
     fragment.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
     fragment.append(Self.encodeLoad64(register: 1, word: .lazyFlagsSource1))
     fragment.append(Self.encodeLoad64(register: 2, word: .lazyFlagsSource2))
@@ -2976,6 +2982,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
           register: register,
           word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
     }
+    DoryARM64Tier1BoundaryEmitter().emitRecoveryFlagsCheckpoint(into: &fragment)
     fragment.append(encodeMove(destination: 0, source: 19, is64Bit: true))
     fragment.append(encodeMove(destination: 1, source: 16, is64Bit: true))
     emitImmediate(UInt64(width.rawValue / 8), register: 2, into: &fragment)
