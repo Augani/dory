@@ -24,6 +24,7 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredMemoryBitResetRIP: UInt64 = 0xFFFF_FFFF_81E1_B3A6
   private static let measuredMemoryBitResetR14RIP: UInt64 = 0xFFFF_FFFF_8168_1078
   private static let measuredMemoryBitResetPatchedRIP: UInt64 = 0xFFFF_FFFF_812D_C46A
+  private static let measuredMemoryBitSetPatchedRIP: UInt64 = 0xFFFF_FFFF_8133_CB0F
   private static let measuredAtomicMemoryBitSetRIP: UInt64 = 0xFFFF_FFFF_8133_CB0F
   private static let measuredAtomicMemoryBitSetStandaloneRIP: UInt64 = 0xFFFF_FFFF_8133_CB12
   private static let measuredCR3WriteRAXRIP: UInt64 = 0xFFFF_FFFF_8100_1B43
@@ -987,6 +988,34 @@ struct DoryARM64Tier1Emitter: Sendable {
 
   private static func isMeasuredMemoryBitOperationBlock(_ block: DoryIRBasicBlock) -> Bool {
     isMeasuredMemoryBitTestBlock(block) || isMeasuredMemoryBitResetBlock(block)
+      || isMeasuredPatchedMemoryBitSetBlock(block)
+  }
+
+  private static func isMeasuredPatchedMemoryBitSetBlock(_ block: DoryIRBasicBlock) -> Bool {
+    guard block.guestStart == measuredMemoryBitSetPatchedRIP,
+      block.guestByteCount == 8,
+      block.guestInstructionCount == 2,
+      block.statements.count == 2,
+      case .extendMove(
+        .register(let destination),
+        .register(let source),
+        signed: true
+      ) = block.statements[0],
+      destination == .init(bank: "x86.gpr", index: 0, width: .i64),
+      source == .init(bank: "x86.gpr", index: 1, width: .i32),
+      case .bitTestMemoryRegister(
+        .set,
+        .memory(let address, let width),
+        .register(let index)
+      ) = block.statements[1]
+    else { return false }
+    return width == .i64
+      && address
+        == .init(
+          base: .init(bank: "x86.gpr", index: 6, width: .i64),
+          addressWidth: .i64
+        )
+      && index == .init(bank: "x86.gpr", index: 0, width: .i64)
   }
 
   private static func isMeasuredAtomicMemoryBitSetBlock(_ block: DoryIRBasicBlock) -> Bool {

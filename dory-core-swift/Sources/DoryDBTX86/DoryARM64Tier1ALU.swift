@@ -952,7 +952,8 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     indexGuestRegister: Int,
     into words: inout [UInt32]
   ) -> Bool {
-    guard operation == .test || operation == .reset, width == .i64,
+    guard operation == .test || operation == .set || operation == .reset,
+      width == .i64,
       (0..<16).contains(indexGuestRegister)
     else {
       return false
@@ -996,23 +997,29 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     fragment.append(
       Self.encodeVariableShift(
         .left, is64Bit: true, value: 26, count: 17, destination: 17))
-    if operation == .reset {
+    if operation != .test {
       fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
     }
     fragment.append(
       Self.encodeLogical(
         .andSetFlags, is64Bit: true, left: 16, right: 17, destination: 26))
     fragment.append(Self.encodeConditionalSet(register: 17, condition: .notEqual))
-    if operation == .reset {
+    if operation != .test {
       fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsResult))
       fragment.append(Self.encodeLoad64(register: 17, word: .lazyFlagsSource2))
-      Self.emitImmediate(.max, register: 26, into: &fragment)
-      fragment.append(
-        Self.encodeLogical(
-          .xor, is64Bit: true, left: 17, right: 26, destination: 17))
-      fragment.append(
-        Self.encodeLogical(
-          .and, is64Bit: true, left: 16, right: 17, destination: 16))
+      if operation == .reset {
+        Self.emitImmediate(.max, register: 26, into: &fragment)
+        fragment.append(
+          Self.encodeLogical(
+            .xor, is64Bit: true, left: 17, right: 26, destination: 17))
+        fragment.append(
+          Self.encodeLogical(
+            .and, is64Bit: true, left: 16, right: 17, destination: 16))
+      } else {
+        fragment.append(
+          Self.encodeLogical(
+            .or, is64Bit: true, left: 16, right: 17, destination: 16))
+      }
       fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource2))
       Self.emitStagedMemoryWrite(byteCount: 8, into: &fragment)
       fragment.append(Self.encodeLoad64(register: 17, word: .lazyFlagsResult))
