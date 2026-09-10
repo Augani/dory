@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-fault-latency-acceptance",
+  "observedAt": "2026-09-10T08:35:00Z",
+  "status": "passed-local-acceptance-check",
+  "qualification": "local A05.4 fault-corpus and interrupt-latency evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "86365029c67f385dd0824e21f0f47aa686b836ff",
+    "faultMatrixCommit": "4a98a2878",
+    "candidateRunnerSHA256": "55e1e0763bfab488b40ddf39b4d652ee4e30a0e91ea2bf80385a96d6ebf08568",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "faultRestartabilityMatrix": {
+    "suite": "DoryARM64FaultRestartabilityAcceptanceTests",
+    "tiers": [
+      "baseline",
+      "optimizing"
+    ],
+    "faultPoints": [
+      "RMW read page fault",
+      "RMW write page fault",
+      "cross-page RMW read fault",
+      "MMIO restartable-read decline"
+    ],
+    "combinations": 8,
+    "expectedInvariant": "Only the safe instruction prefix retires; the faulting RMW leaves registers, flags, and memory uncommitted and retries at its exact guest RIP.",
+    "passed": true
+  },
+  "verification": {
+    "focusedPendingAndSerialization": "10 tests in 4 suites passed.",
+    "dbtPCAndRunnerGate": "1,545 tests in 179 suites passed; the environment-driven pinned boot test skipped because its variables were absent, then this runner executed the same pinned inputs explicitly."
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "successfulFullRun": {
+    "runID": "3b89a1d0-d1f9-421f-9b13-f8c9f06bc18d",
+    "elapsedNanoseconds": 234877856584,
+    "retiredInstructions": 732847534,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ],
+    "pendingWorkExits": 1,
+    "pendingWorkMaximumRetiredInstructions": 0,
+    "nativeDispatcherEntries": 188968196,
+    "directlyChainedBlocks": 44925638,
+    "translationCachePageFaults": 2332
+  },
+  "latencyInterpretation": {
+    "pollingContract": "The pending byte is polled at every chain-capable block entry, including patched backward targets.",
+    "measurement": "The one native entry that observed pending work retired zero guest instructions before returning to the dispatcher.",
+    "bound": "0 guest instructions for the observed production request; the design-time worst case remains one natural block, capped at 4,096 guest instructions.",
+    "clockClaim": "No host-time interrupt latency is claimed by this instruction-retirement measurement."
+  },
+  "limitations": [
+    "The production measurement contains one pending-work observation in one run on one local Apple M2 Pro.",
+    "Tier-one recovery metadata remains conservatively all-GPR after the unsafe exact-mask attempt was withdrawn.",
+    "Baseline inline-TLB page faults still use whole-block rollback and interpreter replay, and callback-bearing raw chain targets remain disabled.",
+    "This satisfies the named fault-matrix and bounded interrupt-observation evidence, but does not close the remaining A05.4 precision work or the greater-than-95-percent A05.3 dispatcher gate."
+  ]
+}
