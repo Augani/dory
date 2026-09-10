@@ -34,7 +34,7 @@ a prologue or epilogue.
 
 ## Stable vCPU context
 
-The context is an array of 54 little-endian `UInt64` words. It is not a Swift
+The context is an array of 59 little-endian `UInt64` words. It is not a Swift
 struct ABI. The word layout is:
 
 | Words | Contents |
@@ -49,12 +49,21 @@ struct ABI. The word layout is:
 | 43...47 | lazy-flags operation plus count (low/high byte), width, result, source 1, and source 2 |
 | 48...49 | lazy-flags materializer helper and per-dispatch materialization count |
 | 50...53 | dispatch-entry/current CR3, IA32_KERNEL_GS_BASE, SWAPGS-performed marker, and CR3-write-performed marker |
+| 54...58 | native-chain enable, remaining instruction budget, retired instructions, retired blocks, and last executed block's guest RIP |
 
 The context pointer remains stable for a dispatch. TLB bases and helper
 addresses are derived from it; generated code must not retain them beyond that
 dispatch. New words append at the end so an older index never changes meaning.
 Any persisted machine state contains architectural fields, not these host
 pointers.
+
+The dispatcher clears words 54...58 for ordinary single-block calls. Before a
+native-chain call it sets word 54, publishes the instruction budget in word 55,
+and clears the three result words. Every chainable block checks its own static
+instruction count before entry, then atomically-with-respect-to-that-vCPU
+decrements the remaining budget and increments words 56...57 only after a
+successful architectural exit. Word 58 identifies the last block that retired,
+allowing the dispatcher to extend a chain without guessing which target ran.
 
 ## Entry, exit, and chaining
 

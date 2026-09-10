@@ -209,6 +209,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let kernelGSBaseOffset = DoryARM64Tier1ABI.ContextWord.kernelGSBase.byteOffset
   private static let swapGSPerformedOffset =
     DoryARM64Tier1ABI.ContextWord.swapGSPerformed.byteOffset
+  private static let chainEnabledOffset = DoryARM64Tier1ABI.ContextWord.chainEnabled.byteOffset
+  private static let chainRemainingInstructionsOffset =
+    DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.byteOffset
+  private static let chainRetiredInstructionsOffset =
+    DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.byteOffset
+  private static let chainRetiredBlocksOffset =
+    DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.byteOffset
+  private static let chainLastGuestRIPOffset =
+    DoryARM64Tier1ABI.ContextWord.chainLastGuestRIP.byteOffset
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
@@ -283,6 +292,14 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return fallback(block)
     }
     let hasChainSlots = exit == .dispatch && supportsChainSlots(for: block.terminator)
+    if hasChainSlots {
+      emitChainAccounting(
+        contextRegister: usesMemory ? 19 : 0,
+        guestInstructionCount: block.guestInstructionCount,
+        guestStart: block.guestStart,
+        into: &words
+      )
+    }
     if usesMemory {
       if hasChainSlots {
         emitMemoryChainEpilogue(into: &words)
@@ -295,6 +312,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
       : []
     words.append(encodeMoveWideZero32(register: 0, immediate: UInt16(exit.rawValue)))
     words.append(0xD65F_03C0)
+    if hasChainSlots {
+      installChainBudgetGuard(
+        guestInstructionCount: block.guestInstructionCount,
+        in: &words
+      )
+    }
     DoryARM64CompiledBlock.installChainMetadata(chainSlots, in: &words)
     return .init(
       guestStart: block.guestStart,
@@ -367,6 +390,101 @@ public struct DoryARM64BaselineEmitter: Sendable {
     default:
       return []
     }
+  }
+
+  private func installChainBudgetGuard(
+    guestInstructionCount: UInt32,
+    in words: inout [UInt32]
+  ) {
+    precondition(guestInstructionCount > 0)
+    var guardWords = [
+      encodeLoad64(register: 9, base: 0, byteOffset: Self.chainEnabledOffset),
+      UInt32(0),
+      encodeLoad64(
+        register: 9,
+        base: 0,
+        byteOffset: Self.chainRemainingInstructionsOffset
+      ),
+    ]
+    emitImmediate(UInt64(guestInstructionCount), register: 10, into: &guardWords)
+    guardWords.append(
+      encodeAddSubtractSetFlags(add: false, is64Bit: true, 9, 10, 31))
+    let enoughBudgetBranch = guardWords.count
+    guardWords.append(0)
+    guardWords.append(
+      encodeMoveWideZero32(register: 0, immediate: UInt16(DoryJITExitCode.dispatch.rawValue)))
+    guardWords.append(0xD65F_03C0)
+    let bodyStart = guardWords.count
+    guardWords[1] = encodeCompareBranchZero64(register: 9, wordOffset: bodyStart - 1)
+    guardWords[enoughBudgetBranch] = encodeConditionalBranch(
+      condition: .carrySet,
+      wordOffset: bodyStart - enoughBudgetBranch
+    )
+    words.insert(contentsOf: guardWords, at: 0)
+  }
+
+  private func emitChainAccounting(
+    contextRegister: UInt32,
+    guestInstructionCount: UInt32,
+    guestStart: UInt64,
+    into words: inout [UInt32]
+  ) {
+    words.append(
+      encodeLoad64(register: 9, base: contextRegister, byteOffset: Self.chainEnabledOffset))
+    let disabledBranch = words.count
+    words.append(0)
+    emitImmediate(UInt64(guestInstructionCount), register: 10, into: &words)
+    words.append(
+      encodeLoad64(
+        register: 11,
+        base: contextRegister,
+        byteOffset: Self.chainRemainingInstructionsOffset
+      ))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 10, 11))
+    words.append(
+      encodeStore64(
+        register: 11,
+        base: contextRegister,
+        byteOffset: Self.chainRemainingInstructionsOffset
+      ))
+    words.append(
+      encodeLoad64(
+        register: 11,
+        base: contextRegister,
+        byteOffset: Self.chainRetiredInstructionsOffset
+      ))
+    words.append(encodeAdd(is64Bit: true, left: 11, right: 10, destination: 11))
+    words.append(
+      encodeStore64(
+        register: 11,
+        base: contextRegister,
+        byteOffset: Self.chainRetiredInstructionsOffset
+      ))
+    words.append(
+      encodeLoad64(
+        register: 11,
+        base: contextRegister,
+        byteOffset: Self.chainRetiredBlocksOffset
+      ))
+    words.append(encodeAddImmediate64(left: 11, immediate: 1, destination: 11))
+    words.append(
+      encodeStore64(
+        register: 11,
+        base: contextRegister,
+        byteOffset: Self.chainRetiredBlocksOffset
+      ))
+    emitImmediate(guestStart, register: 10, into: &words)
+    words.append(
+      encodeStore64(
+        register: 10,
+        base: contextRegister,
+        byteOffset: Self.chainLastGuestRIPOffset
+      ))
+    let done = words.count
+    words[disabledBranch] = encodeCompareBranchZero64(
+      register: 9,
+      wordOffset: done - disabledBranch
+    )
   }
 
   private func supportsChainSlots(for terminator: DoryIRTerminator) -> Bool {
@@ -4163,6 +4281,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return 0x5400_0000 | immediate << 5 | condition.rawValue
   }
 
+  private func encodeCompareBranchZero64(register: UInt32, wordOffset: Int) -> UInt32 {
+    precondition((-262_144..<262_144).contains(wordOffset))
+    return 0xB400_0000 | (UInt32(truncatingIfNeeded: wordOffset) & 0x7_FFFF) << 5 | register
+  }
+
   private func encodeUnconditionalBranch(wordOffset: Int) -> UInt32 {
     precondition((-33_554_432..<33_554_432).contains(wordOffset))
     return 0x1400_0000 | (UInt32(truncatingIfNeeded: wordOffset) & 0x03ff_ffff)
@@ -6600,6 +6723,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       state.modelSpecific.kernelGSBase
     context[DoryARM64Tier1ABI.ContextWord.swapGSPerformed.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.cr3WritePerformed.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.chainLastGuestRIP.rawValue] = 0
   }
 
   private func recordLazyFlagMaterializations(

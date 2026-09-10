@@ -81,6 +81,11 @@ enum DoryARM64Tier1ABI {
     case kernelGSBase
     case swapGSPerformed
     case cr3WritePerformed
+    case chainEnabled
+    case chainRemainingInstructions
+    case chainRetiredInstructions
+    case chainRetiredBlocks
+    case chainLastGuestRIP
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }

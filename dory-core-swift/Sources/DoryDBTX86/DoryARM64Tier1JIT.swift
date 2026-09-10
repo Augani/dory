@@ -675,13 +675,25 @@ struct DoryARM64Tier1Emitter: Sendable {
     boundary.emitEntry(into: &words)
     words.append(contentsOf: body)
     let chainSlots: [DoryARM64ChainSlot]
-    if exitCode == .dispatch {
-      boundary.emitChainExitPrelude(into: &words)
+    let supportsChainSlots =
+      exitCode == .dispatch && boundary.supportsChainSlots(for: block.terminator)
+    if supportsChainSlots {
+      boundary.emitChainExitPrelude(
+        guestInstructionCount: block.guestInstructionCount,
+        guestStart: block.guestStart,
+        into: &words
+      )
       chainSlots = boundary.emitChainSlots(for: block.terminator, into: &words)
       boundary.emitChainExitFallback(exitCode, into: &words)
     } else {
       chainSlots = []
       boundary.emitExit(exitCode, into: &words)
+    }
+    if supportsChainSlots {
+      boundary.installChainBudgetGuard(
+        guestInstructionCount: block.guestInstructionCount,
+        in: &words
+      )
     }
     DoryARM64CompiledBlock.installChainMetadata(chainSlots, in: &words)
     return .init(

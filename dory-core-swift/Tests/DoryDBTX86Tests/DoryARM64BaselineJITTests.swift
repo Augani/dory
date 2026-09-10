@@ -8246,6 +8246,65 @@ import Testing
     #endif
   }
 
+  @Test func generatedChainAccountingEnforcesTheSharedInstructionBudget() throws {
+    #if arch(arm64)
+      let sourceIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
+        [0x90], at: 0x2800, mode: .long64)
+      let targetIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
+        [0x48, 0xFF, 0xC0], at: 0x2801, mode: .long64)
+      let baselineEmitter = DoryARM64BaselineEmitter()
+      let tier1Emitter = DoryARM64Tier1Emitter()
+      let compilerPairs = [
+        (baselineEmitter.compile(sourceIR), try #require(tier1Emitter.compile(targetIR))),
+        (try #require(tier1Emitter.compile(sourceIR)), baselineEmitter.compile(targetIR)),
+      ]
+
+      for (source, target) in compilerPairs {
+        let slot = try #require(source.chainSlots?.first)
+        let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+        let targetOffset = source.machineBytes.count
+        try region.publish(source, at: 0)
+        try region.publish(target, at: targetOffset)
+        try region.patchDirectBranch(
+          at: slot.machineWordIndex * MemoryLayout<UInt32>.stride,
+          to: targetOffset
+        )
+        var context = [UInt64](
+          repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+        let enabled = DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue
+        let remaining = DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue
+        let retired = DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue
+        let blocks = DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue
+        let lastRIP = DoryARM64Tier1ABI.ContextWord.chainLastGuestRIP.rawValue
+        context[enabled] = 1
+        context[remaining] = 2
+        context[16] = 0x2800
+
+        #expect(try region.execute(at: 0, context: &context) == .dispatch)
+        #expect(context[0] == 1)
+        #expect(context[16] == 0x2804)
+        #expect(context[remaining] == 0)
+        #expect(context[retired] == 2)
+        #expect(context[blocks] == 2)
+        #expect(context[lastRIP] == 0x2801)
+
+        context[0] = 0
+        context[16] = 0x2800
+        context[remaining] = 1
+        context[retired] = 0
+        context[blocks] = 0
+        context[lastRIP] = 0
+        #expect(try region.execute(at: 0, context: &context) == .dispatch)
+        #expect(context[0] == 0)
+        #expect(context[16] == 0x2801)
+        #expect(context[remaining] == 0)
+        #expect(context[retired] == 1)
+        #expect(context[blocks] == 1)
+        #expect(context[lastRIP] == 0x2800)
+      }
+    #endif
+  }
+
   @Test func baselineMemoryChainRestoresCallbacksBeforeTailCall() throws {
     #if arch(arm64)
       let sourceIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
