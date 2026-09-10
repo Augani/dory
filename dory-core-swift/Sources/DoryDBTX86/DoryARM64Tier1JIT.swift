@@ -709,16 +709,14 @@ struct DoryARM64Tier1Emitter: Sendable {
     let wordCountBeforeChainMetadata = words.count
     DoryARM64CompiledBlock.installChainMetadata(chainSlots, in: &words)
     let chainMetadataWordCount = words.count - wordCountBeforeChainMetadata
+    let registerMasks = Self.instructionRegisterMasks(for: block)
     let instructionMetadata = DoryARM64CompiledBlock.makeInstructionMetadata(
       for: block,
       statementWordOffsets: statementWordOffsets,
       statementFlagsStates: statementFlagsStates,
       leadingWordCount: chainMetadataWordCount + chainBudgetGuardWordCount + entryWordCount,
-      // Recovery currently republishes the complete captured context. Keep the metadata
-      // conservative until the executor consumes a formally validated partial-register
-      // dataflow proof and the layout-sensitive generated-return failure is resolved.
-      liveInRegisterMasks: Array(repeating: .max, count: block.instructionBoundaries.count),
-      dirtyRegisterMasks: Array(repeating: .max, count: block.instructionBoundaries.count)
+      liveInRegisterMasks: registerMasks.liveIn,
+      dirtyRegisterMasks: registerMasks.dirty
     )
     return .init(
       guestStart: block.guestStart,
@@ -1227,6 +1225,9 @@ struct DoryARM64Tier1Emitter: Sendable {
     var writes: UInt16 = 0
   }
 
+  // Keep the complete usage walk out of the already-large emitter body. This is a cold
+  // publication-time pass; forcing it inline inflated the production compiler hot path.
+  @inline(never)
   private static func instructionRegisterMasks(
     for block: DoryIRBasicBlock
   ) -> (liveIn: [UInt16], dirty: [UInt16]) {
@@ -1258,6 +1259,7 @@ struct DoryARM64Tier1Emitter: Sendable {
     return (liveIn, dirtyAtEntry)
   }
 
+  @inline(never)
   private static func registerUsage(of statement: DoryIRStatement) -> RegisterUsage {
     var usage = RegisterUsage()
     switch statement {
