@@ -5018,6 +5018,10 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   /// Resident transitions completed through patched generated branches, excluding the entry
   /// block selected by Swift.
   public let directlyChainedBlocks: UInt64
+  public let indirectBranchTargetCacheHits: UInt64
+  public let indirectBranchTargetCacheMisses: UInt64
+  public let indirectBranchTargetCacheFills: UInt64
+  public let indirectBranchTargetCacheHitRate: Double?
   public let translationCacheEntryCount: UInt64
   public let translationCacheAllocatedBytes: UInt64
   public let translationCacheAddressSpaceGeneration: UInt64
@@ -5238,6 +5242,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var directChainPatchCount: UInt64 = 0
   private var directChainUnlinkCount: UInt64 = 0
   private var directlyChainedBlockCount: UInt64 = 0
+  private var indirectBranchTargetCacheHitCount: UInt64 = 0
+  private var indirectBranchTargetCacheMissCount: UInt64 = 0
   private var codeCacheEpoch: UInt64 = 0
   private var nextOffset = 0
   private var currentTLBAddressSpaceID: UInt64?
@@ -5284,6 +5290,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   public var diagnostics: DoryARM64BaselineExecutorDiagnostics {
     lock.withLock {
       let tlbDiagnostics = translationTLB.diagnostics
+      let ibtcDiagnostics = indirectBranchTargetCache.diagnostics
       let negativeCacheHotSites = negativeEntries.compactMap { entry in
         guard let entry, entry.hitCount > 0 else { return nil }
         let lookup = entry.key.lookupKey
@@ -5331,6 +5338,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         directChainPatches: directChainPatchCount,
         directChainUnlinks: directChainUnlinkCount,
         directlyChainedBlocks: directlyChainedBlockCount,
+        indirectBranchTargetCacheHits: indirectBranchTargetCacheHitCount,
+        indirectBranchTargetCacheMisses: indirectBranchTargetCacheMissCount,
+        indirectBranchTargetCacheFills: ibtcDiagnostics.fills,
+        indirectBranchTargetCacheHitRate: {
+          let lookups = indirectBranchTargetCacheHitCount + indirectBranchTargetCacheMissCount
+          return lookups == 0
+            ? nil : Double(indirectBranchTargetCacheHitCount) / Double(lookups)
+        }(),
         translationCacheEntryCount: UInt64(translationTLB.entryCount),
         translationCacheAllocatedBytes: UInt64(translationTLB.allocatedByteCount),
         translationCacheAddressSpaceGeneration: translationTLBGeneration,
@@ -5658,7 +5673,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           }
           var newTrace: [NativeTraceEntry] = []
           var recordsTrace = recordedTrace == nil && completed == 0
-          var pendingLink: (source: ResidentBlock, destinationGuestRIP: UInt64)?
+          var pendingLink:
+            (source: ResidentBlock, destinationGuestRIP: UInt64, usesIndirectCache: Bool)?
           while completed < maximumInstructions {
             let currentRIP = context[16]
             let remaining = maximumInstructions - completed
@@ -5745,11 +5761,19 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             }
 
             if let pendingLink {
-              installDirectChain(
-                from: pendingLink.source,
-                to: resident,
-                destinationGuestRIP: pendingLink.destinationGuestRIP
-              )
+              if pendingLink.usesIndirectCache {
+                fillIndirectBranchTargetCache(
+                  from: pendingLink.source,
+                  to: resident,
+                  destinationGuestRIP: pendingLink.destinationGuestRIP
+                )
+              } else {
+                installDirectChain(
+                  from: pendingLink.source,
+                  to: resident,
+                  destinationGuestRIP: pendingLink.destinationGuestRIP
+                )
+              }
             }
             pendingLink = nil
             validateDirectChainTargets(
@@ -5782,7 +5806,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             if resident.block.requiresMemoryCallbacks, memoryCapabilities == nil {
               memoryCapabilities = memory.map { DoryJITMemoryCapabilities(memory: $0) }
             }
-            let usesGeneratedChainAccounting = isRuntimeChainEligible(resident)
+            let usesGeneratedChainAccounting = canInitiateRuntimeChain(resident)
             context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] =
               usesGeneratedChainAccounting ? 1 : 0
             context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] =
@@ -5799,6 +5823,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               translationTLB: translationTLB
             )
             recordLazyFlagMaterializations(in: context)
+            recordIndirectBranchTargetCacheLookups(in: context)
             if exit == .interpreter, hasCheckpoint {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               for index in context.indices { context[index] = checkpoint[index] }
@@ -5846,7 +5871,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 state: state
               )
             {
-              pendingLink = (source, context[DoryARM64Tier1ABI.ContextWord.rip.rawValue])
+              pendingLink = (
+                source,
+                context[DoryARM64Tier1ABI.ContextWord.rip.rawValue],
+                source.block.chainSlots?.isEmpty == true
+              )
             }
             guard exit == .dispatch, completed < maximumInstructions, !resident.endsTimeBoundary
             else {
@@ -6806,11 +6835,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     return slot.resident
   }
 
-  private func isRuntimeChainEligible(_ resident: ResidentBlock) -> Bool {
+  private func canInitiateRuntimeChain(_ resident: ResidentBlock) -> Bool {
     resident.block.chainSlots != nil
+      && !resident.endsTimeBoundary
+  }
+
+  private func canBeRuntimeChainTarget(_ resident: ResidentBlock) -> Bool {
+    canInitiateRuntimeChain(resident)
       && !resident.block.requiresMemoryCallbacks
       && !resident.block.mayExitToInterpreter
-      && !resident.endsTimeBoundary
   }
 
   private func residentForExecutedChainSource(
@@ -6840,7 +6873,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     to target: ResidentBlock,
     destinationGuestRIP: UInt64
   ) {
-    guard isRuntimeChainEligible(source), isRuntimeChainEligible(target),
+    guard canInitiateRuntimeChain(source), canBeRuntimeChainTarget(target),
       source.block.tier == target.block.tier,
       let slot = source.block.chainSlots?.first(where: {
         $0.targetGuestRIP == destinationGuestRIP
@@ -6856,6 +6889,24 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     source.outgoingLinks[slot.machineWordIndex] = link
     target.incomingLinks.append(link)
     directChainPatchCount &+= 1
+  }
+
+  private func fillIndirectBranchTargetCache(
+    from source: ResidentBlock,
+    to target: ResidentBlock,
+    destinationGuestRIP: UInt64
+  ) {
+    guard source.block.chainSlots?.isEmpty == true,
+      canBeRuntimeChainTarget(target),
+      source.block.tier == target.block.tier,
+      target.block.guestStart == destinationGuestRIP,
+      let hostAddress = region.entryAddress(at: target.offset)
+    else { return }
+    try? indirectBranchTargetCache.fill(
+      guestRIP: destinationGuestRIP,
+      generation: codeCacheEpoch &+ 1,
+      hostAddress: hostAddress
+    )
   }
 
   /// Validates every already-linked target before the entry block can reach it without another
@@ -6945,6 +6996,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     for link in Array(resident.outgoingLinks.values) { unlinkDirectChain(link) }
     resident.incomingLinks.removeAll(keepingCapacity: false)
     resident.outgoingLinks.removeAll(keepingCapacity: false)
+    // Indirect entries contain raw host addresses rather than resident ownership links. Clearing
+    // the small per-vCPU table makes every possible reference to retired code miss immediately.
+    indirectBranchTargetCache.removeAll()
   }
 
   private func publish(_ resident: ResidentBlock, for key: LookupKey) throws {
@@ -7126,6 +7180,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let index = DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue
     lazyFlagMaterializationCount &+= context[index]
     context[index] = 0
+  }
+
+  private func recordIndirectBranchTargetCacheLookups(
+    in context: UnsafeMutableBufferPointer<UInt64>
+  ) {
+    let hitIndex = DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.rawValue
+    let missIndex = DoryARM64Tier1ABI.ContextWord.ibtcInlineMisses.rawValue
+    indirectBranchTargetCacheHitCount &+= context[hitIndex]
+    indirectBranchTargetCacheMissCount &+= context[missIndex]
+    context[hitIndex] = 0
+    context[missIndex] = 0
   }
 
   /// Publishes a fully materialized architectural state at every Swift/dispatcher boundary. The

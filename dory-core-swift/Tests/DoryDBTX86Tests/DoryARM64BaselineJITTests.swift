@@ -8438,6 +8438,63 @@ import Testing
     #endif
   }
 
+  @Test func chainedExecutorFillsHitsAndInvalidatesTheIndirectTargetCache() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x3500
+      let target = base + 12
+      // mov rax,target; jmp rax; inc ecx; jmp next; hlt
+      let bytes: [UInt8] = [
+        0x48, 0xB8, 0x0C, 0x35, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0,
+        0xFF, 0xC1, 0xEB, 0, 0xF4,
+      ]
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024)
+      func run() throws -> (DoryARM64ExecutionSummary, DoryX86ArchitecturalState, UInt64) {
+        var state = try DoryX86ArchitecturalState(rip: base)
+        let entriesBefore = executor.diagnostics.nativeDispatcherEntries
+        let summary = try #require(
+          executor.executeChainedSummary(
+            byteProvider: { address, count in
+              guard address >= base else { return [] }
+              let offset = Int(address - base)
+              guard bytes.indices.contains(offset) else { return [] }
+              return Array(bytes[offset..<min(bytes.count, offset + count)])
+            },
+            physicalRIPProvider: { $0 },
+            at: base,
+            mode: .long64,
+            addressSpaceID: 4,
+            maximumInstructions: 16,
+            state: &state
+          ))
+        return (summary, state, executor.diagnostics.nativeDispatcherEntries - entriesBefore)
+      }
+
+      let cold = try run()
+      #expect(cold.0.guestInstructionCount == 5)
+      #expect(cold.0.residentBlockCount == 3)
+      #expect(cold.1.registers.rcx == 1)
+      #expect(cold.2 == 3)
+      #expect(executor.diagnostics.indirectBranchTargetCacheMisses == 1)
+      #expect(executor.diagnostics.indirectBranchTargetCacheFills == 1)
+
+      let warm = try run()
+      #expect(warm.0 == cold.0)
+      #expect(warm.1.registers.rcx == 1)
+      #expect(warm.2 == 2)
+      #expect(executor.diagnostics.indirectBranchTargetCacheHits == 1)
+      #expect(executor.diagnostics.indirectBranchTargetCacheMisses == 1)
+      #expect(executor.diagnostics.indirectBranchTargetCacheHitRate == 0.5)
+
+      executor.invalidate(addressSpaceID: 4, guestRange: target..<(target + 4))
+      let invalidated = try run()
+      #expect(invalidated.0 == cold.0)
+      #expect(invalidated.2 == 3)
+      #expect(executor.diagnostics.indirectBranchTargetCacheHits == 1)
+      #expect(executor.diagnostics.indirectBranchTargetCacheMisses == 2)
+      #expect(executor.diagnostics.indirectBranchTargetCacheFills == 2)
+    #endif
+  }
+
   @Test func baselineMemoryChainRestoresCallbacksBeforeTailCall() throws {
     #if arch(arm64)
       let sourceIR = try DoryX86IRTranslator(instructionBudget: 1).translate(
