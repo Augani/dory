@@ -632,7 +632,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     executionTier: DoryPCExecutionTier = .interpreter,
     baselineJITMaximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
     baselineJITTier1Enabled: Bool = true,
-    baselineJITRawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions = [],
+    baselineJITRawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions = [.directChain],
     optimizingJITWarmupDispatches: UInt8 = 8,
     clockSource: DoryPCClockSource = .deterministic,
     instrumentationEnabled: Bool = false
