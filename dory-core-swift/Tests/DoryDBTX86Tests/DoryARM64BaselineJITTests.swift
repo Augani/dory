@@ -8467,7 +8467,7 @@ import Testing
         let enabled = DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue
         let remaining = DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue
         let retired = DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue
-        let retiredBlocks = DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue
+        let blocks = DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue
         let lastRIP = DoryARM64Tier1ABI.ContextWord.chainLastGuestRIP.rawValue
         context[enabled] = 1
         context[remaining] = 2
@@ -8515,7 +8515,7 @@ import Testing
         let enabled = DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue
         let remaining = DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue
         let retired = DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue
-        let blocks = DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue
+        let retiredBlocks = DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue
         let pendingWork = DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue
         context[16] = 0x2A00
         context[enabled] = 1
@@ -8572,6 +8572,38 @@ import Testing
       #expect(execution.guestInstructionCount == 1)
       #expect(state.registers.rax == 1)
       #expect(state.rip == base + 3)
+    #endif
+  }
+
+  @Test func concurrentPendingWorkRequestStopsBeforeTheFirstNativeInstruction() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x2C00
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let enteredTranslation = DispatchSemaphore(value: 0)
+      let releaseTranslation = DispatchSemaphore(value: 0)
+      let completedExecution = DispatchSemaphore(value: 0)
+      let result = PendingWorkExecutionResult(initialState: try .init(rip: base))
+
+      DispatchQueue.global().async {
+        result.run(
+          executor: executor,
+          base: base,
+          enteredTranslation: enteredTranslation,
+          releaseTranslation: releaseTranslation
+        )
+        completedExecution.signal()
+      }
+
+      #expect(enteredTranslation.wait(timeout: .now() + 2) == .success)
+      executor.requestPendingWork()
+      releaseTranslation.signal()
+      #expect(completedExecution.wait(timeout: .now() + 2) == .success)
+      let snapshot = result.snapshot
+      #expect(snapshot.errorDescription == nil)
+      #expect(snapshot.summary == nil)
+      #expect(snapshot.state == snapshot.initialState)
+      #expect(executor.hasPendingWork)
+      executor.clearPendingWork()
     #endif
   }
 
@@ -9998,5 +10030,69 @@ private final class SelectiveRestartableMemory: DoryX86ScalarMemory,
       throw DoryX86MemoryError.pageFault(address: address, errorCode: 3)
     }
     try backing.writeScalar(at: address, value: value, byteCount: byteCount)
+  }
+}
+
+private final class PendingWorkExecutionResult: @unchecked Sendable {
+  struct Snapshot {
+    let initialState: DoryX86ArchitecturalState
+    let state: DoryX86ArchitecturalState
+    let summary: DoryARM64ExecutionSummary?
+    let errorDescription: String?
+  }
+
+  private let lock = NSLock()
+  private let initialState: DoryX86ArchitecturalState
+  private var state: DoryX86ArchitecturalState
+  private var summary: DoryARM64ExecutionSummary?
+  private var errorDescription: String?
+
+  init(initialState: DoryX86ArchitecturalState) {
+    self.initialState = initialState
+    state = initialState
+  }
+
+  func run(
+    executor: DoryARM64BaselineExecutor,
+    base: UInt64,
+    enteredTranslation: DispatchSemaphore,
+    releaseTranslation: DispatchSemaphore
+  ) {
+    var state = initialState
+    do {
+      let summary = try executor.executeChainedSummary(
+        byteProvider: { address, maximumCount in
+          enteredTranslation.signal()
+          _ = releaseTranslation.wait(timeout: .now() + 2)
+          guard address == base else { return [] }
+          return Array([UInt8(0xEB), 0xFE].prefix(maximumCount))
+        },
+        at: base,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: Int.max,
+        state: &state
+      )
+      lock.withLock {
+        self.state = state
+        self.summary = summary
+      }
+    } catch {
+      lock.withLock {
+        self.state = state
+        errorDescription = String(describing: error)
+      }
+    }
+  }
+
+  var snapshot: Snapshot {
+    lock.withLock {
+      .init(
+        initialState: initialState,
+        state: state,
+        summary: summary,
+        errorDescription: errorDescription
+      )
+    }
   }
 }
