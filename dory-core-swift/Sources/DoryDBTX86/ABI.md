@@ -35,7 +35,7 @@ boundaries implicitly.
 
 ## Stable vCPU context
 
-The context is an array of 95 little-endian `UInt64` words. It is not a Swift
+The context is an array of 105 little-endian `UInt64` words. It is not a Swift
 struct ABI. The word layout is:
 
 | Words | Contents |
@@ -58,6 +58,7 @@ struct ABI. The word layout is:
 | 74 | generated BLR return PC for an architectural inline-TLB page fault |
 | 75...93 | active memory-write checkpoint, exact GPR mask, entry RFLAGS, and RAX...R15 images |
 | 94 | block-local restartable-read policy selected before the first memory callback |
+| 95...104 | trusted incoming Darwin `x19`...`x28` values for generated blocks |
 
 The context pointer remains stable for a dispatch. TLB bases and helper
 addresses are derived from it; generated code must not retain them beyond that
@@ -99,9 +100,11 @@ patched edge enters the target through its complete entry rather than a private
 body label.
 
 `DoryARM64Tier1BoundaryEmitter` is the executable implementation of these
-boundaries. Its entry saves `x19`...`x30` in one 96-byte, 16-byte-aligned host
-frame before installing pinned state. Its exit writes architectural state,
-restores that frame, and returns a `DoryJITExitCode` through `w0`.
+boundaries. Its entry reserves one 96-byte, 16-byte-aligned scratch frame and
+saves the incoming `x19`...`x30` bank in context words 95...104 and 72...73
+before installing pinned state. Its exit writes architectural state, restores
+the host bank from the context rather than generated stack memory, and returns
+a `DoryJITExitCode` through `w0`.
 
 `DoryARM64Tier1Emitter` is admitted through the executor's `tier1Enabled`
 feature flag. The PC machine enables it for the production baseline executor;

@@ -23,7 +23,7 @@ import Testing
     #expect(first.machineBytes.count == first.machineWords.count * 4)
   }
 
-  @Test func memoryFramesRestoreHostControlStateFromTheContext() throws {
+  @Test func memoryFramesRestoreEveryCalleeSavedRegisterFromTheContext() throws {
     let block = try DoryX86IRTranslator().translate(
       [0x48, 0x8B, 0x03],  // mov rax,[rbx]
       at: 0x1000,
@@ -32,15 +32,18 @@ import Testing
     let words = DoryARM64BaselineEmitter().compile(block).machineWords
 
     #expect(words.contains(0xD101_C3FF))  // sub sp,sp,#112
-    #expect(words.contains(0xF901_227D))  // str x29,[x19,#576]
-    #expect(words.contains(0xF901_267E))  // str x30,[x19,#584]
-    #expect(words.contains(0xF941_2270))  // ldr x16,[x19,#576]
-    #expect(words.contains(0xF941_2671))  // ldr x17,[x19,#584]
     #expect(words.contains(0x9101_C3FF))  // add sp,sp,#112
-    #expect(words.contains(0xAA10_03FD))  // mov x29,x16
-    #expect(words.contains(0xAA11_03FE))  // mov x30,x17
-    #expect(!words.contains(0xA9B9_7BFD))  // no stack-saved FP/LR prologue
-    #expect(!words.contains(0xA8C7_7BFD))  // no stack-restored FP/LR epilogue
+    for saved in DoryARM64Tier1ABI.hostCalleeSavedRegisterWords {
+      let store =
+        0xF900_0000 | UInt32(saved.word.byteOffset / 8) << 10 | saved.register
+      let load =
+        0xF940_0000 | UInt32(saved.word.byteOffset / 8) << 10
+        | 19 << 5 | saved.register
+      #expect(words.contains(store))
+      #expect(words.contains(load))
+    }
+    #expect(!words.contains(0xA901_53F3))  // no stack-saved x19/x20
+    #expect(!words.contains(0xA941_53F3))  // no stack-restored x19/x20
   }
 
   @Test func unsupportedIRProducesAClosedInterpreterFallbackStub() throws {
