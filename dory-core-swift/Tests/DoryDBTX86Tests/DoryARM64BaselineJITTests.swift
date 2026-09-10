@@ -1112,10 +1112,20 @@ import Testing
           return executor.diagnostics.nativeDispatcherEntries - dispatcherBefore
         }
 
+        let attemptsBefore = executor.diagnostics.chainTargetAttempts
+        let rejectedWritersBefore =
+          executor.diagnostics.chainTargetRestartableWriterRejections
+        let acceptsBefore = executor.diagnostics.chainTargetAccepts
         #expect(try run() == 2)
         let directBefore = executor.diagnostics.directlyChainedBlocks
         #expect(try run() == 2)
         #expect(executor.diagnostics.directlyChainedBlocks == directBefore)
+        #expect(executor.diagnostics.chainTargetAttempts == attemptsBefore + 2)
+        #expect(
+          executor.diagnostics.chainTargetRestartableWriterRejections
+            == rejectedWritersBefore + 2
+        )
+        #expect(executor.diagnostics.chainTargetAccepts == acceptsBefore)
       }
     #endif
   }

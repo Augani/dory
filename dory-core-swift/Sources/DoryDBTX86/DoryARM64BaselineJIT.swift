@@ -5579,6 +5579,16 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   /// Resident transitions completed through patched generated branches, excluding the entry
   /// block selected by Swift.
   public let directlyChainedBlocks: UInt64
+  /// Dispatcher-observed resident edges considered for a direct patch or IBTC fill.
+  public let chainTargetAttempts: UInt64
+  public let chainTargetAccepts: UInt64
+  public let chainTargetSourceShapeRejections: UInt64
+  public let chainTargetBoundaryRejections: UInt64
+  public let chainTargetRestartableWriterRejections: UInt64
+  public let chainTargetMissingMemoryRejections: UInt64
+  public let chainTargetInterpreterGuardRejections: UInt64
+  public let chainTargetCompilerABIRejections: UInt64
+  public let chainTargetPublicationRejections: UInt64
   public let indirectBranchTargetCacheHits: UInt64
   public let indirectBranchTargetCacheMisses: UInt64
   public let indirectBranchTargetCacheFills: UInt64
@@ -5855,6 +5865,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var directChainPatchCount: UInt64 = 0
   private var directChainUnlinkCount: UInt64 = 0
   private var directlyChainedBlockCount: UInt64 = 0
+  private var chainTargetAttemptCount: UInt64 = 0
+  private var chainTargetAcceptCount: UInt64 = 0
+  private var chainTargetSourceShapeRejectionCount: UInt64 = 0
+  private var chainTargetBoundaryRejectionCount: UInt64 = 0
+  private var chainTargetRestartableWriterRejectionCount: UInt64 = 0
+  private var chainTargetMissingMemoryRejectionCount: UInt64 = 0
+  private var chainTargetInterpreterGuardRejectionCount: UInt64 = 0
+  private var chainTargetCompilerABIRejectionCount: UInt64 = 0
+  private var chainTargetPublicationRejectionCount: UInt64 = 0
   private var indirectBranchTargetCacheHitCount: UInt64 = 0
   private var indirectBranchTargetCacheMissCount: UInt64 = 0
   private var shadowReturnStackHitCount: UInt64 = 0
@@ -5986,6 +6005,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         directChainPatches: directChainPatchCount,
         directChainUnlinks: directChainUnlinkCount,
         directlyChainedBlocks: directlyChainedBlockCount,
+        chainTargetAttempts: chainTargetAttemptCount,
+        chainTargetAccepts: chainTargetAcceptCount,
+        chainTargetSourceShapeRejections: chainTargetSourceShapeRejectionCount,
+        chainTargetBoundaryRejections: chainTargetBoundaryRejectionCount,
+        chainTargetRestartableWriterRejections: chainTargetRestartableWriterRejectionCount,
+        chainTargetMissingMemoryRejections: chainTargetMissingMemoryRejectionCount,
+        chainTargetInterpreterGuardRejections: chainTargetInterpreterGuardRejectionCount,
+        chainTargetCompilerABIRejections: chainTargetCompilerABIRejectionCount,
+        chainTargetPublicationRejections: chainTargetPublicationRejectionCount,
         indirectBranchTargetCacheHits: indirectBranchTargetCacheHitCount,
         indirectBranchTargetCacheMisses: indirectBranchTargetCacheMissCount,
         indirectBranchTargetCacheFills: ibtcDiagnostics.fills,
@@ -7679,16 +7707,35 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       && !resident.endsTimeBoundary
   }
 
-  private func canBeRuntimeChainTarget(
-    _ resident: ResidentBlock,
+  private func admitRuntimeChainTarget(
+    from source: ResidentBlock,
+    to target: ResidentBlock,
     memoryCallbacksAvailable: Bool
   ) -> Bool {
-    canInitiateRuntimeChain(resident)
-      // Multi-access read-only targets publish their own restartable-read policy on entry.
-      // Multi-access writers remain isolated after the production soft-lock rejection.
-      && (!resident.block.requiresRestartableMemoryReads || !resident.block.mayWriteMemory)
-      && (!resident.block.requiresMemoryCallbacks || memoryCallbacksAvailable)
-      && (!resident.block.mayExitToInterpreter || resident.block.tier == .tier1)
+    chainTargetAttemptCount &+= 1
+    guard canInitiateRuntimeChain(target) else {
+      chainTargetBoundaryRejectionCount &+= 1
+      return false
+    }
+    // Multi-access read-only targets publish their own restartable-read policy on entry.
+    // Multi-access writers remain isolated after the production soft-lock rejection.
+    guard !target.block.requiresRestartableMemoryReads || !target.block.mayWriteMemory else {
+      chainTargetRestartableWriterRejectionCount &+= 1
+      return false
+    }
+    guard !target.block.requiresMemoryCallbacks || memoryCallbacksAvailable else {
+      chainTargetMissingMemoryRejectionCount &+= 1
+      return false
+    }
+    guard !target.block.mayExitToInterpreter || target.block.tier == .tier1 else {
+      chainTargetInterpreterGuardRejectionCount &+= 1
+      return false
+    }
+    guard source.block.tier == target.block.tier else {
+      chainTargetCompilerABIRejectionCount &+= 1
+      return false
+    }
+    return true
   }
 
   private func residentForExecutedChainSource(
@@ -7720,22 +7767,36 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     memoryCallbacksAvailable: Bool
   ) {
     guard canInitiateRuntimeChain(source),
-      canBeRuntimeChainTarget(target, memoryCallbacksAvailable: memoryCallbacksAvailable),
-      source.block.tier == target.block.tier,
       let slot = source.block.chainSlots?.first(where: {
         $0.targetGuestRIP == destinationGuestRIP
       })
-    else { return }
+    else {
+      chainTargetAttemptCount &+= 1
+      chainTargetSourceShapeRejectionCount &+= 1
+      return
+    }
+    guard admitRuntimeChainTarget(
+      from: source,
+      to: target,
+      memoryCallbacksAvailable: memoryCallbacksAvailable
+    ) else { return }
     if let existing = source.outgoingLinks[slot.machineWordIndex] {
-      if existing.target === target { return }
+      if existing.target === target {
+        chainTargetAcceptCount &+= 1
+        return
+      }
       unlinkDirectChain(existing)
     }
     let slotOffset = source.offset + slot.machineWordIndex * MemoryLayout<UInt32>.size
-    guard (try? region.patchDirectBranch(at: slotOffset, to: target.offset)) != nil else { return }
+    guard (try? region.patchDirectBranch(at: slotOffset, to: target.offset)) != nil else {
+      chainTargetPublicationRejectionCount &+= 1
+      return
+    }
     let link = ChainLink(source: source, target: target, slot: slot)
     source.outgoingLinks[slot.machineWordIndex] = link
     target.incomingLinks.append(link)
     directChainPatchCount &+= 1
+    chainTargetAcceptCount &+= 1
   }
 
   private func fillIndirectBranchTargetCache(
@@ -7745,16 +7806,31 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     memoryCallbacksAvailable: Bool
   ) {
     guard source.block.chainSlots?.isEmpty == true,
-      canBeRuntimeChainTarget(target, memoryCallbacksAvailable: memoryCallbacksAvailable),
-      source.block.tier == target.block.tier,
-      target.block.guestStart == destinationGuestRIP,
-      let hostAddress = region.entryAddress(at: target.offset)
-    else { return }
-    try? indirectBranchTargetCache.fill(
-      guestRIP: destinationGuestRIP,
-      generation: codeCacheEpoch &+ 1,
-      hostAddress: hostAddress
-    )
+      target.block.guestStart == destinationGuestRIP
+    else {
+      chainTargetAttemptCount &+= 1
+      chainTargetSourceShapeRejectionCount &+= 1
+      return
+    }
+    guard admitRuntimeChainTarget(
+      from: source,
+      to: target,
+      memoryCallbacksAvailable: memoryCallbacksAvailable
+    ) else { return }
+    guard let hostAddress = region.entryAddress(at: target.offset) else {
+      chainTargetPublicationRejectionCount &+= 1
+      return
+    }
+    do {
+      try indirectBranchTargetCache.fill(
+        guestRIP: destinationGuestRIP,
+        generation: codeCacheEpoch &+ 1,
+        hostAddress: hostAddress
+      )
+      chainTargetAcceptCount &+= 1
+    } catch {
+      chainTargetPublicationRejectionCount &+= 1
+    }
   }
 
   /// Validates every already-linked target before the entry block can reach it without another

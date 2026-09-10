@@ -239,6 +239,15 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let directChainPatches: UInt64
   public let directChainUnlinks: UInt64
   public let directlyChainedBlocks: UInt64
+  public let chainTargetAttempts: UInt64
+  public let chainTargetAccepts: UInt64
+  public let chainTargetSourceShapeRejections: UInt64
+  public let chainTargetBoundaryRejections: UInt64
+  public let chainTargetRestartableWriterRejections: UInt64
+  public let chainTargetMissingMemoryRejections: UInt64
+  public let chainTargetInterpreterGuardRejections: UInt64
+  public let chainTargetCompilerABIRejections: UInt64
+  public let chainTargetPublicationRejections: UInt64
   public let indirectBranchTargetCacheHits: UInt64
   public let indirectBranchTargetCacheMisses: UInt64
   public let indirectBranchTargetCacheFills: UInt64
@@ -312,6 +321,15 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     directChainPatches = sum(\.directChainPatches)
     directChainUnlinks = sum(\.directChainUnlinks)
     directlyChainedBlocks = sum(\.directlyChainedBlocks)
+    chainTargetAttempts = sum(\.chainTargetAttempts)
+    chainTargetAccepts = sum(\.chainTargetAccepts)
+    chainTargetSourceShapeRejections = sum(\.chainTargetSourceShapeRejections)
+    chainTargetBoundaryRejections = sum(\.chainTargetBoundaryRejections)
+    chainTargetRestartableWriterRejections = sum(\.chainTargetRestartableWriterRejections)
+    chainTargetMissingMemoryRejections = sum(\.chainTargetMissingMemoryRejections)
+    chainTargetInterpreterGuardRejections = sum(\.chainTargetInterpreterGuardRejections)
+    chainTargetCompilerABIRejections = sum(\.chainTargetCompilerABIRejections)
+    chainTargetPublicationRejections = sum(\.chainTargetPublicationRejections)
     indirectBranchTargetCacheHits = sum(\.indirectBranchTargetCacheHits)
     indirectBranchTargetCacheMisses = sum(\.indirectBranchTargetCacheMisses)
     indirectBranchTargetCacheFills = sum(\.indirectBranchTargetCacheFills)
