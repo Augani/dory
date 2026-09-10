@@ -232,6 +232,14 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let chainedExecutionCalls: UInt64
   public let chainedRequestedInstructions: UInt64
   public let chainedRetiredInstructions: UInt64
+  public let nativeDispatcherEntries: UInt64
+  public let directChainPatches: UInt64
+  public let directChainUnlinks: UInt64
+  public let directlyChainedBlocks: UInt64
+  public let indirectBranchTargetCacheHits: UInt64
+  public let indirectBranchTargetCacheMisses: UInt64
+  public let indirectBranchTargetCacheFills: UInt64
+  public let indirectBranchTargetCacheHitRate: Double
   public let translationCacheEntryCount: UInt64
   public let translationCacheAllocatedBytes: UInt64
   public let translationCacheAddressSpaceGeneration: UInt64
@@ -289,6 +297,19 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     chainedExecutionCalls = sum(\.chainedExecutionCalls)
     chainedRequestedInstructions = sum(\.chainedRequestedInstructions)
     chainedRetiredInstructions = sum(\.chainedRetiredInstructions)
+    nativeDispatcherEntries = sum(\.nativeDispatcherEntries)
+    directChainPatches = sum(\.directChainPatches)
+    directChainUnlinks = sum(\.directChainUnlinks)
+    directlyChainedBlocks = sum(\.directlyChainedBlocks)
+    indirectBranchTargetCacheHits = sum(\.indirectBranchTargetCacheHits)
+    indirectBranchTargetCacheMisses = sum(\.indirectBranchTargetCacheMisses)
+    indirectBranchTargetCacheFills = sum(\.indirectBranchTargetCacheFills)
+    let indirectLookups = indirectBranchTargetCacheHits.addingReportingOverflow(
+      indirectBranchTargetCacheMisses)
+    let indirectDenominator = indirectLookups.overflow ? UInt64.max : indirectLookups.partialValue
+    indirectBranchTargetCacheHitRate =
+      indirectDenominator == 0
+      ? 0 : Double(indirectBranchTargetCacheHits) / Double(indirectDenominator)
     translationCacheEntryCount = sum(\.translationCacheEntryCount)
     translationCacheAllocatedBytes = sum(\.translationCacheAllocatedBytes)
     translationCacheAddressSpaceGeneration =

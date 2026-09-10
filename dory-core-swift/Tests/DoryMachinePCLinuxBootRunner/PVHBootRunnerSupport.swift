@@ -646,6 +646,16 @@ struct PVHJITCacheSnapshot: Codable, Sendable {
         "chainedExecutionCalls": source.chainedExecutionCalls,
         "chainedRequestedInstructions": source.chainedRequestedInstructions,
         "chainedRetiredInstructions": source.chainedRetiredInstructions,
+        "nativeDispatcherEntries": source.nativeDispatcherEntries,
+        "directChainPatches": source.directChainPatches,
+        "directChainUnlinks": source.directChainUnlinks,
+        "directlyChainedBlocks": source.directlyChainedBlocks,
+        "indirectBranchTargetCacheHits": source.indirectBranchTargetCacheHits,
+        "indirectBranchTargetCacheMisses": source.indirectBranchTargetCacheMisses,
+        "indirectBranchTargetCacheFills": source.indirectBranchTargetCacheFills,
+        "indirectBranchTargetCacheHitRatePPM": UInt64(
+          source.indirectBranchTargetCacheHitRate * 1_000_000
+        ),
         "translationCacheEntryCount": source.translationCacheEntryCount,
         "translationCacheAllocatedBytes": source.translationCacheAllocatedBytes,
         "translationCacheAddressSpaceGeneration": source.translationCacheAddressSpaceGeneration,
