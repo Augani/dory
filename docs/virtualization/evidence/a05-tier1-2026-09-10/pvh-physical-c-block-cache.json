@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-physical-c-block-cache",
+  "observedAt": "2026-09-10T01:08:29Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-use evidence for the A05.3 physical C block-cache slice; not A05.3 closure, hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "d45312f1c92087145f1a964264496c63623ad097",
+    "implementationCommit": "3023b47c5",
+    "telemetryCommit": "d45312f1c",
+    "candidateRunnerSHA256": "57798384948abfa0fe8a44a455da10ff3cd7128030508a95f0f82f1170dd60e6",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "implementation": {
+    "residentIndex": "DoryJITRuntimeC owns an open-addressed, linearly probed hash table with tombstones, replacement, removal, clearing, and power-of-two growth at 70 percent occupancy.",
+    "key": [
+      "physicalRIP",
+      "executionMode",
+      "privilegeLevel",
+      "pagingEnabled"
+    ],
+    "ownership": "Swift retains resident block objects in recyclable integer slots; the C table maps an exact block key to a nonzero slot ID and is the only production resident key lookup.",
+    "physicalIdentity": "The PC machine supplies a permission-checked instruction-fetch translation for the current virtual RIP. The same physical and virtual address can reuse a translation across CR3 changes; distinct physical addresses cannot collide.",
+    "aliasSafety": "Current generated bodies still encode virtual-RIP-relative behavior, so a physical hit with a different virtual guest RIP is rejected and recompiled until relocatable block metadata is implemented.",
+    "boundedCache": "The existing 128 MiB default code-cache ceiling is retained. A wrap clears the resident C table and recent front cache; the successful production run did not wrap.",
+    "diagnostics": "blockCacheLookupHits reports C-table hits. dictionaryLookupHits and sharedCodeHits remain zero-valued compatibility fields after removal of their Swift dictionaries."
+  },
+  "verification": {
+    "dbtPCAndRunnerGate": "1,506 tests in 176 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "cTableCoverage": "Replacement, all identity fields, tombstone probe chains, 1,000-entry growth, removal, and clear pass.",
+    "executorCoverage": "Cross-CR3 physical reuse, distinct-physical separation, virtual-alias recompilation with correct RIP-relative LEA, missing-physical-identity decline, resident-count stability, invalidation, and byte-revalidation slot recycling pass.",
+    "pagingCoverage": "Permission-checked instruction physical-address translation passes across discontiguous guest pages.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "20a59135-f9e1-42e2-8f77-565a90ba1336",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 152225844916,
+    "retiredInstructions": 733533019,
+    "throughputMIPS": 4.8187153725753475,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731188972,
+    "interpreterInstructions": 2344047,
+    "deliveredMaskableInterrupts": 57943,
+    "retiredInterruptReturns": 146197,
+    "compiledBlocks": 188808,
+    "tier1CompilationAttempts": 220246,
+    "tier1CompilationDeclines": 117659,
+    "tier1CompiledBlocks": 102587,
+    "codeCacheWraps": 0,
+    "recentLookupHits": 131079899,
+    "blockCacheLookupHits": 104587507,
+    "dictionaryLookupHits": 0,
+    "lookupMisses": 2516195,
+    "recentLookupPercent": 55.033133452373995,
+    "blockCacheLookupPercent": 43.910456706883025,
+    "lookupMissPercent": 1.0564098407429823,
+    "chainedExecutionCalls": 5579918,
+    "translatedBlocks": 234392916,
+    "translatedBlocksPerExternalCall": 42.0065162247904,
+    "externalCallsPerMillionInstructions": 7606.907740304462
+  },
+  "a05_3Status": {
+    "completedSlice": "The production Swift resident dictionary and shared-code dictionary are replaced by the exact physical-key C table, physical instruction translation is wired through the PC machine, cache lifecycle operations are covered, the 128 MiB default remains bounded, and production telemetry proves use.",
+    "remaining": [
+      "Generated direct chain slots for both conditional directions and invalidation-time predecessor unlinking",
+      "Inline per-vCPU 4,096-entry IBTC for indirect JMP and CALL with hit-rate telemetry",
+      "RET shadow return stack with fallback",
+      "Natural-boundary block growth with a large safety cap",
+      "Generational exhaustion policy rather than the retained whole-cache wrap",
+      "A controlled kernel-boot dispatcher-entry baseline proving greater than 95 percent reduction"
+    ],
+    "cardClosed": false
+  },
+  "interpretation": "The production workload used the C resident table for 104,587,507 lookups while the retired dictionary counter remained zero. The run establishes correctness and production use for this slice only; it does not establish the final direct-chaining dispatcher reduction or a performance delta.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The run is not a controlled A/B comparison and makes no performance claim.",
+    "The external-call metric describes the current chained executor API and is recorded as a baseline; it is not yet the final generated/C dispatcher-entry metric required by A05.3.",
+    "Physical aliases at different virtual RIPs intentionally recompile until block metadata can relocate virtual-RIP-sensitive behavior.",
+    "Direct chaining, IBTC, shadow return stack, natural-boundary block growth, generational eviction, and the greater-than-95-percent dispatcher gate remain open."
+  ]
+}
