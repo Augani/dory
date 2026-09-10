@@ -709,14 +709,16 @@ struct DoryARM64Tier1Emitter: Sendable {
     let wordCountBeforeChainMetadata = words.count
     DoryARM64CompiledBlock.installChainMetadata(chainSlots, in: &words)
     let chainMetadataWordCount = words.count - wordCountBeforeChainMetadata
-    let registerMasks = Self.instructionRegisterMasks(for: block)
     let instructionMetadata = DoryARM64CompiledBlock.makeInstructionMetadata(
       for: block,
       statementWordOffsets: statementWordOffsets,
       statementFlagsStates: statementFlagsStates,
       leadingWordCount: chainMetadataWordCount + chainBudgetGuardWordCount + entryWordCount,
-      liveInRegisterMasks: registerMasks.liveIn,
-      dirtyRegisterMasks: registerMasks.dirty
+      // Recovery currently republishes the complete captured context. Keep the metadata
+      // conservative until the executor consumes a formally validated partial-register
+      // dataflow proof; the earlier exact-mask experiment corrupted production filesystem I/O.
+      liveInRegisterMasks: Array(repeating: .max, count: block.instructionBoundaries.count),
+      dirtyRegisterMasks: Array(repeating: .max, count: block.instructionBoundaries.count)
     )
     return .init(
       guestStart: block.guestStart,

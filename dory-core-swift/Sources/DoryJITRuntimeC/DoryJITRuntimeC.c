@@ -24,10 +24,6 @@ enum {
 
 static const uint64_t dory_jit_tlb_maximum_generation = (UINT64_C(1) << 28) - 1;
 static pthread_mutex_t dory_jit_atomic_mutex = PTHREAD_MUTEX_INITIALIZER;
-static _Thread_local uintptr_t dory_jit_memory_callback_return_pc = 0;
-
-#define DORY_JIT_CAPTURE_CALLBACK_RETURN_PC() \
-    ((uintptr_t)__builtin_extract_return_addr(__builtin_return_address(0)))
 
 uint8_t dory_jit_pending_work_load_acquire(const uint8_t *value) {
     return atomic_load_explicit((const _Atomic uint8_t *)value, memory_order_acquire);
@@ -814,7 +810,6 @@ int dory_jit_tlb_resolve(
     return 0;
 }
 
-__attribute__((noinline))
 int dory_jit_tlb_resolve_from_context(
     const uint64_t *context,
     void *memory_context,
@@ -823,10 +818,6 @@ int dory_jit_tlb_resolve_from_context(
     uint32_t byte_count,
     dory_jit_tlb_resolution *resolution_out
 ) {
-    // This entry point is called directly from generated code. Preserve its return address before
-    // descending through the generic TLB resolver into Swift so an architectural translation fault
-    // can be mapped back to the exact guest-instruction side-table record.
-    dory_jit_memory_callback_return_pc = DORY_JIT_CAPTURE_CALLBACK_RETURN_PC();
     if (context == NULL || access > DORY_JIT_TLB_ACCESS_EXECUTE) {
         return EINVAL;
     }
@@ -1605,7 +1596,11 @@ typedef struct dory_jit_tracked_memory_callbacks {
     dory_jit_memory_synchronize_function synchronize;
 } dory_jit_tracked_memory_callbacks;
 
+static _Thread_local uintptr_t dory_jit_memory_callback_return_pc = 0;
 static _Thread_local dory_jit_tracked_memory_callbacks *dory_jit_active_memory_callbacks = NULL;
+
+#define DORY_JIT_CAPTURE_CALLBACK_RETURN_PC() \
+    ((uintptr_t)__builtin_extract_return_addr(__builtin_return_address(0)))
 
 __attribute__((noinline))
 static uint64_t dory_jit_tracked_memory_read(

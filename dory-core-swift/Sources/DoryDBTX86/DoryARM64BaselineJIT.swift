@@ -4953,7 +4953,6 @@ func doryX86JITTranslate(
   } catch DoryX86MemoryError.pageFault(let address, let errorCode) {
     faultAddressOut.pointee = address
     faultErrorCodeOut.pointee = errorCode
-    doryJITRecordMemoryFailure(callback)
     return Int32(DORY_JIT_TLB_RESOLUTION_PAGE_FAULT.rawValue)
   } catch {
     return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue)

@@ -47,11 +47,11 @@ import Testing
     #expect(compiled.instructionMetadata.map(\.guestRIP) == [0x5000, 0x5001, 0x500B, 0x500F])
     #expect(compiled.instructionMetadata.map(\.flagsState)
       == [.context, .context, .context, .nativeNZCV])
-    #expect(compiled.instructionMetadata.map(\.liveInRegisterMask) == [0, 0, 1, 1])
-    #expect(compiled.instructionMetadata.map(\.dirtyRegisterMask) == [0, 0, 1, 1])
+    #expect(compiled.instructionMetadata.allSatisfy { $0.liveInRegisterMask == .max })
+    #expect(compiled.instructionMetadata.allSatisfy { $0.dirtyRegisterMask == .max })
   }
 
-  @Test func tier1SideTableTracksAddressAndPartialRegisterDependencies() throws {
+  @Test func tier1SideTableKeepsConservativeRegisterRecoveryMasks() throws {
     let block = try DoryX86IRTranslator().translate(
       [
         0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0,  // mov rax,1
@@ -64,13 +64,8 @@ import Testing
     let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
 
     #expect(compiled.instructionMetadata.map(\.guestRIP) == [0x5800, 0x580A, 0x580C])
-    let expectedLiveIn: [UInt16] = [
-      0,
-      (1 << 0) | (1 << 1),
-      (1 << 1) | (1 << 3),
-    ]
-    #expect(compiled.instructionMetadata.map(\.liveInRegisterMask) == expectedLiveIn)
-    #expect(compiled.instructionMetadata.map(\.dirtyRegisterMask) == [0, 1, 1])
+    #expect(compiled.instructionMetadata.allSatisfy { $0.liveInRegisterMask == .max })
+    #expect(compiled.instructionMetadata.allSatisfy { $0.dirtyRegisterMask == .max })
   }
 
   @Test func failedMemoryCallbackHostPCSelectsTheFaultingGuestInstruction() throws {
@@ -351,7 +346,7 @@ import Testing
     #endif
   }
 
-  @Test func inlineTLBPageFaultPublishesTheCompletedInstructionPrefix() throws {
+  @Test func inlineTLBPageFaultRollsBackBeforeInterpreterReplay() throws {
     #if arch(arm64)
       for (tier1Enabled, optimization) in [
         (false, DoryARM64JITOptimization.baseline),
@@ -376,7 +371,7 @@ import Testing
         )
         var state = initial
 
-        let summary = try #require(executor.executeChainedSummary(
+        let summary = try executor.executeChainedSummary(
           byteProvider: { address, maximumCount in
             (try? translated.instructionBytes(at: address, maximumCount: maximumCount)) ?? []
           },
@@ -389,17 +384,32 @@ import Testing
           maximumInstructions: 2,
           state: &state,
           memory: translated
-        ))
-        #expect(summary.guestInstructionCount == 1)
-        #expect(summary.exitCode == .dispatch)
+        )
+        if tier1Enabled {
+          let prefix = try #require(summary)
+          #expect(prefix.guestInstructionCount == 1)
+          #expect(prefix.exitCode == .dispatch)
+        } else {
+          // The generated TLB resolver reports architectural faults after returning to generated
+          // code, so its in-callback context is not a sound recovery snapshot. Replay the whole
+          // block through the interpreter instead of publishing a partial native prefix.
+          #expect(summary == nil)
+          #expect(state == initial)
+          #expect(executor.diagnostics.translationCachePageFaults == 1)
+          guard case .retired = DoryX86Interpreter().step(
+            state: &state,
+            memory: physical,
+            mode: .long64,
+            pagingUnit: paging,
+            translatedMemory: translated
+          ) else {
+            Issue.record("interpreter did not replay the rolled-back INC")
+            return
+          }
+        }
         #expect(state.rip == 0x1003)
         #expect(state.registers.rcx == 1)
         #expect(state.registers.rax == 0xAAAA)
-        if !tier1Enabled {
-          // The baseline body uses the inline TLB. This counter distinguishes its C miss resolver
-          // from the tier-one MOV helper callback while both recovery paths share the assertions.
-          #expect(executor.diagnostics.translationCachePageFaults == 1)
-        }
 
         #expect(DoryX86Interpreter().step(
           state: &state,
