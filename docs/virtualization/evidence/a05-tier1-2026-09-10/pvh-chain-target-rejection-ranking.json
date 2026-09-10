@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-chain-target-rejection-ranking",
+  "observedAt": "2026-09-10T14:01:20Z",
+  "status": "correctness-passed-diagnostic-ranking-complete",
+  "qualification": "local A05.3 chain-target rejection ranking; not A05.3 closure, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "3e9cc82b7",
+    "candidateRunnerSHA256": "5d1c03a4c3f754ac8689858f21f49744fdfc0c3708f578f0257d10484815f6ee",
+    "buildConfiguration": "release"
+  },
+  "instrumentation": {
+    "scope": "Every dispatcher-observed resident edge considered for a direct-chain patch or IBTC fill is assigned to exactly one accepted or rejected category.",
+    "classificationOrder": [
+      "source-shape",
+      "target-boundary",
+      "restartable-writer",
+      "missing-memory",
+      "interpreter-guard",
+      "compiler-ABI",
+      "publication",
+      "accepted"
+    ],
+    "invariant": "chainTargetAttempts equals chainTargetAccepts plus every rejection bucket",
+    "regressionCoverage": "The multi-access writer isolation test proves repeated rejected edges increment attempts and restartable-writer rejections without incrementing accepts."
+  },
+  "verification": {
+    "focused": "Six target-admission and PVH-diagnostics tests passed.",
+    "deterministicAggregate": "1,555 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the frozen fixture was executed explicitly.",
+    "diffCheck": "git diff --check passed before the focused implementation commit."
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "measuredRun": {
+    "runID": "7c0b4850-4c22-4caa-b1ec-0272d1bae5ca",
+    "diagnosticReceiptSHA256": "4d33c24beab9004d9877495bd550be54de3b698c5bee6e633b06656a1554bdbc",
+    "elapsedNanoseconds": 320253665166,
+    "retiredInstructions": 722929984,
+    "baselineJITInstructions": 720156611,
+    "interpreterInstructions": 2773373,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "codeCacheWraps": 2,
+    "codeCacheEvictedBlocks": 74602,
+    "nativeDispatcherEntries": 115216599,
+    "directlyChainedBlocks": 116435596,
+    "dispatcherEntriesPerMillionInstructions": 159374.49206699387,
+    "chainedBypassesPerMillionInstructions": 161060.6816385693,
+    "withinRunDispatcherReductionPercent": 50.26310931351201,
+    "directChainPatches": 621969,
+    "directChainUnlinks": 607338,
+    "indirectBranchTargetCacheHits": 135948,
+    "indirectBranchTargetCacheMisses": 13498275,
+    "shadowReturnStackHits": 1965264,
+    "shadowReturnStackMisses": 12769212,
+    "translationCachePageFaults": 743,
+    "pendingWorkExits": 1,
+    "pendingWorkMaximumRetiredInstructions": 0
+  },
+  "ranking": {
+    "chainTargetAttempts": 107147294,
+    "classifiedTotal": 107147294,
+    "reconciles": true,
+    "categories": [
+      {
+        "rank": 1,
+        "category": "compiler-ABI",
+        "count": 56066297,
+        "percentOfAttempts": 52.32637699651099
+      },
+      {
+        "rank": 2,
+        "category": "restartable-writer",
+        "count": 31746152,
+        "percentOfAttempts": 29.628514930111066
+      },
+      {
+        "rank": 3,
+        "category": "interpreter-guard",
+        "count": 14639944,
+        "percentOfAttempts": 13.663381923578957
+      },
+      {
+        "rank": 4,
+        "category": "target-boundary",
+        "count": 3969144,
+        "percentOfAttempts": 3.7043809991132393
+      },
+      {
+        "rank": 5,
+        "category": "accepted",
+        "count": 725757,
+        "percentOfAttempts": 0.6773451506857466
+      },
+      {
+        "rank": 6,
+        "category": "source-shape",
+        "count": 0,
+        "percentOfAttempts": 0
+      },
+      {
+        "rank": 6,
+        "category": "missing-memory",
+        "count": 0,
+        "percentOfAttempts": 0
+      },
+      {
+        "rank": 6,
+        "category": "publication",
+        "count": 0,
+        "percentOfAttempts": 0
+      }
+    ]
+  },
+  "disposition": {
+    "telemetryAccepted": true,
+    "a05_3DispatcherGatePassed": false,
+    "requiredDispatcherReductionPercent": 95,
+    "measuredDispatcherReductionPercent": 50.26310931351201,
+    "nextRankedBoundary": "compiler-ABI",
+    "reason": "Compiler-ABI mismatches account for a majority of all attempted targets, but the preceding unbridged widening failed production. The next implementation must normalize the complete generated edge contract before admission changes."
+  },
+  "limitations": [
+    "Categories are exclusive and ordered; a target rejected earlier may also possess a later property.",
+    "This is one local run and ranks structural blockers rather than wall-time performance.",
+    "The strict greater-than-95-percent dispatcher gate remains open."
+  ]
+}
