@@ -6365,16 +6365,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             if hasCheckpoint {
               for index in context.indices { checkpoint[index] = context[index] }
             }
-            let usesGeneratedChainAccounting = canInitiateRuntimeChain(resident)
-            // A callback-free entry may jump directly to a callback-bearing resident. Install one
-            // callback context for the whole native chain rather than inheriting only the entry
-            // block's capabilities. Targets requiring replay proof stay ineligible below because
-            // that policy is fixed when this dispatcher entry creates the callback context.
-            if (resident.block.requiresMemoryCallbacks || usesGeneratedChainAccounting),
-              memoryCapabilities == nil
-            {
+            if resident.block.requiresMemoryCallbacks, memoryCapabilities == nil {
               memoryCapabilities = memory.map { DoryJITMemoryCapabilities(memory: $0) }
             }
+            let usesGeneratedChainAccounting = canInitiateRuntimeChain(resident)
             context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] =
               usesGeneratedChainAccounting ? 1 : 0
             context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] =
@@ -6386,9 +6380,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             let execution = try region.executePreparedWithRecovery(
               at: resident.offset,
               context: context,
-              memoryCapabilities:
-                (resident.block.requiresMemoryCallbacks || usesGeneratedChainAccounting)
-                ? memoryCapabilities : nil,
+              memoryCapabilities: resident.block.requiresMemoryCallbacks ? memoryCapabilities : nil,
               requiresRestartableReads: resident.block.requiresRestartableMemoryReads,
               translationTLB: translationTLB
             )
@@ -7509,6 +7501,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       // recover a chained target's completed prefix. Tier one marks every callback block as
       // interpreter-capable even though its generated interpreter exit is that captured failure.
       && !resident.block.requiresRestartableMemoryReads
+      && !resident.block.requiresMemoryCallbacks
       && (!resident.block.mayExitToInterpreter || resident.block.tier == .tier1)
   }
 

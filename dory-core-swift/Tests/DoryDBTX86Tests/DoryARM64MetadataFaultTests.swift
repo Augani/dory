@@ -171,7 +171,7 @@ import Testing
     #endif
   }
 
-  @Test func directChainedTargetCallbackFaultPublishesBothCompletedPrefixes() throws {
+  @Test func callbackTargetFaultPublishesBothDispatcherCompletedPrefixes() throws {
     #if arch(arm64)
       let source: [UInt8] = [
         0x48, 0xFF, 0xC1,  // inc rcx
@@ -247,7 +247,7 @@ import Testing
         #expect(state.registers.rcx == 1)
         #expect(state.registers.rdx == 1)
         #expect(state.registers.rax == 0xAAAA)
-        #expect(executor.diagnostics.directlyChainedBlocks > directBefore)
+        #expect(executor.diagnostics.directlyChainedBlocks == directBefore)
       }
     #endif
   }
