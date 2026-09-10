@@ -34,7 +34,7 @@ a prologue or epilogue.
 
 ## Stable vCPU context
 
-The context is an array of 72 little-endian `UInt64` words. It is not a Swift
+The context is an array of 95 little-endian `UInt64` words. It is not a Swift
 struct ABI. The word layout is:
 
 | Words | Contents |
@@ -53,6 +53,10 @@ struct ABI. The word layout is:
 | 59...63 | per-vCPU IBTC entry base, entry mask, code-cache generation, inline hits, and inline misses |
 | 64...70 | per-vCPU shadow-return entry base, entry mask, top pointer, code-cache generation, inline hits, misses, and pushes |
 | 71 | atomic pending-work byte in the low eight bits; the remaining bits are reserved |
+| 72...73 | trusted incoming host frame pointer and return address for memory-capable generated blocks |
+| 74 | generated BLR return PC for an architectural inline-TLB page fault |
+| 75...93 | active memory-write checkpoint, exact GPR mask, entry RFLAGS, and RAX...R15 images |
+| 94 | block-local restartable-read policy selected before the first memory callback |
 
 The context pointer remains stable for a dispatch. TLB bases and helper
 addresses are derived from it; generated code must not retain them beyond that
