@@ -967,6 +967,98 @@ import Testing
     #endif
   }
 
+  @Test func chainedMultiAccessTargetSelectsItsOwnRestartableReadPolicy() throws {
+    #if arch(arm64)
+      let source: [UInt8] = [
+        0x48, 0xFF, 0xC1,  // inc rcx
+        0xE9, 0xF8, 0x0F, 0, 0,  // jmp 0x2000
+      ]
+      let target: [UInt8] = [
+        0x48, 0x8B, 0x03,  // mov rax,[rbx]
+        0x48, 0x8B, 0x16,  // mov rdx,[rsi]
+        0xE9, 0xF5, 0x0F, 0, 0,  // jmp 0x3000
+      ]
+      let halt: [UInt8] = [0xF4]
+      for (tier1Enabled, optimization) in [
+        (false, DoryARM64JITOptimization.baseline),
+        (true, DoryARM64JITOptimization.optimizing),
+      ] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: tier1Enabled,
+          optimization: optimization
+        )
+        let memory = try SelectiveRestartableMemory(
+          byteCount: 0x100,
+          declinedAddress: 0x88
+        )
+        try memory.backing.writeScalar(
+          at: 0x80,
+          value: 0x1122_3344_5566_7788,
+          byteCount: 8
+        )
+        func bytes(at address: UInt64, maximumCount: Int) -> [UInt8] {
+          let block: [UInt8]
+          switch address {
+          case 0x1000: block = source
+          case 0x2000: block = target
+          case 0x3000: block = halt
+          default: return []
+          }
+          return Array(block.prefix(maximumCount))
+        }
+
+        var cold = try DoryX86ArchitecturalState(
+          registers: .init(rbx: 0x80, rsi: 0x80),
+          rip: 0x1000,
+          cs: .init(selector: 0, attributes: 0xA09B, limit: .max)
+        )
+        let coldSummary = try #require(executor.executeChainedSummary(
+          byteProvider: bytes,
+          at: cold.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 8,
+          state: &cold,
+          memory: memory
+        ))
+        #expect(coldSummary.guestInstructionCount == 6)
+        #expect(cold.rip == 0x3001)
+        #expect(cold.registers.rax == 0x1122_3344_5566_7788)
+        #expect(cold.registers.rdx == 0x1122_3344_5566_7788)
+
+        let directBefore = executor.diagnostics.directlyChainedBlocks
+        let dispatcherBefore = executor.diagnostics.nativeDispatcherEntries
+        let restartableBefore = memory.restartableReads
+        var state = try DoryX86ArchitecturalState(
+          registers: .init(rax: 0xAAAA, rcx: 0, rdx: 0xBBBB, rbx: 0x80, rsi: 0x88),
+          rip: 0x1000,
+          cs: .init(selector: 0, attributes: 0xA09B, limit: .max)
+        )
+        let summary = try #require(executor.executeChainedSummary(
+          byteProvider: bytes,
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 8,
+          state: &state,
+          memory: memory
+        ))
+
+        #expect(summary.guestInstructionCount == 3)
+        #expect(summary.residentBlockCount == 2)
+        #expect(summary.exitCode == .interpreter)
+        #expect(state.rip == 0x2003)
+        #expect(state.registers.rcx == 1)
+        #expect(state.registers.rax == 0x1122_3344_5566_7788)
+        #expect(state.registers.rdx == 0xBBBB)
+        #expect(memory.restartableReads == restartableBefore + 2)
+        #expect(executor.diagnostics.directlyChainedBlocks == directBefore + 1)
+        #expect(executor.diagnostics.nativeDispatcherEntries == dispatcherBefore + 1)
+      }
+    #endif
+  }
+
   @Test func executorUsesAllocationFreeScalarMemoryCallbacksWhenAvailable() throws {
     #if arch(arm64)
       let memory = try ScalarTrackingMemory(byteCount: 0x100)

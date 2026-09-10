@@ -127,6 +127,9 @@ enum DoryARM64Tier1ABI {
     case memoryFaultCheckpointR13
     case memoryFaultCheckpointR14
     case memoryFaultCheckpointR15
+    /// Selected by each generated memory-bearing block on entry so a raw chain target does not
+    /// inherit the dispatcher entry block's replay policy.
+    case requiresRestartableMemoryReads
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }

@@ -89,6 +89,22 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
         byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
   }
 
+  /// Publishes the block-local replay policy before its first memory callback. A raw predecessor
+  /// therefore cannot make a multi-access target inherit a weaker dispatcher-entry policy.
+  func emitRestartableMemoryReadPolicy(_ required: Bool, into words: inout [UInt32]) {
+    words.append(
+      Self.encodeMoveWideZero32(
+        register: DoryARM64Tier1ABI.scratchRegisters[0],
+        immediate: required ? 1 : 0
+      ))
+    words.append(
+      Self.encodeStore64(
+        register: DoryARM64Tier1ABI.scratchRegisters[0],
+        base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.requiresRestartableMemoryReads.byteOffset
+      ))
+  }
+
   /// Materializes a pending record through the stable context helper. The zero-descriptor path is
   /// one CBZ. A real call spills every pinned caller-saved guest register because the Darwin C ABI
   /// permits the materializer to clobber x0...x18; its returned RFLAGS image becomes the new x25.
