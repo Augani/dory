@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-host-control-state-hardening",
+  "observedAt": "2026-09-10T09:20:12Z",
+  "status": "passed-local-production-reliability-check",
+  "qualification": "local pinned-fixture reliability investigation; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "6112055b4",
+    "candidateRunnerSHA256": "927d26e0dacb76d6562b6b9a2e92ce28ea4795aacc9daaa6583178a0606bd532",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "failureBeingContained": {
+    "priorCandidateCommit": "33c5a0f70",
+    "signature": "EXC_BAD_ACCESS / SIGBUS / EXC_ARM_DA_ALIGN with PC = LR = 0x6e",
+    "interpretation": "The generated memory epilogue loaded a guest-like value as its host return address. The exact overwrite source remains unproven because the failed mask candidate did not change emitted machineWords.",
+    "containment": "Memory-capable generated blocks refresh append-only context words with the incoming host FP/LR on every entry and restore those trusted values from the context. Generated stack storage no longer supplies FP/LR at RET."
+  },
+  "verification": {
+    "focused": "19 tests in 3 suites passed, covering context layout, emitted frame encodings, real helper execution, and metadata-fault recovery.",
+    "dbtPCAndRunnerGate": "1,546 tests in 179 suites passed; the environment-driven pinned boot test skipped because its variables were absent, then the same pinned inputs were executed explicitly twice.",
+    "emissionInvariant": "Memory blocks contain context stores/loads for host FP/LR and contain neither the old stack-pair prologue nor the old stack-pair epilogue."
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "runs": [
+    {
+      "runID": "6d010ceb-8667-488f-8ffd-7124fc185b82",
+      "diagnosticReceiptSHA256": "d9e63644a7d81790efa49357c59cd73fcdfdd5d4725958453e4073867d5a2d66",
+      "elapsedNanoseconds": 239266171459,
+      "retiredInstructions": 733524732,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 76501,
+      "nativeDispatcherEntries": 189366696,
+      "directlyChainedBlocks": 44918446,
+      "translationCachePageFaults": 2231,
+      "pendingWorkExits": 1,
+      "pendingWorkMaximumRetiredInstructions": 0
+    },
+    {
+      "runID": "066c7112-74b9-4ca7-ad10-dc2a73a936ef",
+      "diagnosticReceiptSHA256": "8808b2fa9f24d79235704a75580d3f54eada602239a138f44391b6bf66f6328a",
+      "elapsedNanoseconds": 237144994583,
+      "retiredInstructions": 733625999,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 76447,
+      "nativeDispatcherEntries": 190195243,
+      "directlyChainedBlocks": 44928895,
+      "translationCachePageFaults": 2307,
+      "pendingWorkExits": 1,
+      "pendingWorkMaximumRetiredInstructions": 0
+    }
+  ],
+  "workloads": [
+    "bootstrap.filesystems",
+    "syscall.identity",
+    "process.creation_exec_wait",
+    "memory.allocation_copy",
+    "signal.handler_return",
+    "timer.sleep_elapsed",
+    "filesystem.write_read_sync"
+  ],
+  "disposition": {
+    "containmentAccepted": true,
+    "reason": "Both independent production runs crossed the prior approximate 208.8-second failure window, two code-cache wraps, all seven authenticated workloads, and clean ACPI poweroff without an invalid generated return.",
+    "recoveryMasks": "Tier-one masks remain conservative. Exact-mask analysis must be reintroduced and separately pass the production reliability gate before A05.4 can close."
+  },
+  "limitations": [
+    "Two passing local runs establish bounded evidence for the containment, not proof of the original overwrite mechanism.",
+    "The former crashing candidate has not yet been rerun on top of this hardening.",
+    "This evidence does not satisfy the greater-than-95-percent dispatcher gate or G1-G5."
+  ]
+}
