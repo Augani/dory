@@ -6302,9 +6302,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       case .unavailable:
         break
       }
-      // Capability conformance is fixed for this memory object. Resolve it lazily once per
-      // chain; callback failure and restartable-read policy still belong to each block.
-      var memoryCapabilities: DoryJITMemoryCapabilities?
+      // A raw link can enter a memory-bearing target even when the dispatcher entry block has no
+      // callbacks. Keep one callback authority alive for the complete native chain so such a
+      // target can report and recover its exact faulting instruction.
+      let memoryCapabilities = memory.map { DoryJITMemoryCapabilities(memory: $0) }
       return try executionContextStorage.withBuffer { context in
         try withUnsafeTemporaryAllocation(
           of: UInt64.self,
@@ -6464,13 +6465,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 fillIndirectBranchTargetCache(
                   from: pendingLink.source,
                   to: resident,
-                  destinationGuestRIP: pendingLink.destinationGuestRIP
+                  destinationGuestRIP: pendingLink.destinationGuestRIP,
+                  memoryCallbacksAvailable: memoryCapabilities != nil
                 )
               } else {
                 installDirectChain(
                   from: pendingLink.source,
                   to: resident,
-                  destinationGuestRIP: pendingLink.destinationGuestRIP
+                  destinationGuestRIP: pendingLink.destinationGuestRIP,
+                  memoryCallbacksAvailable: memoryCapabilities != nil
                 )
               }
             }
@@ -6509,9 +6512,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             if hasCheckpoint {
               for index in context.indices { checkpoint[index] = context[index] }
             }
-            if resident.block.requiresMemoryCallbacks, memoryCapabilities == nil {
-              memoryCapabilities = memory.map { DoryJITMemoryCapabilities(memory: $0) }
-            }
             let usesGeneratedChainAccounting = canInitiateRuntimeChain(resident)
             context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] =
               usesGeneratedChainAccounting ? 1 : 0
@@ -6524,7 +6524,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             let execution = try region.executePreparedWithRecovery(
               at: resident.offset,
               context: context,
-              memoryCapabilities: resident.block.requiresMemoryCallbacks ? memoryCapabilities : nil,
+              memoryCapabilities: memoryCapabilities,
               requiresRestartableReads: resident.block.requiresRestartableMemoryReads,
               translationTLB: translationTLB
             )
@@ -7646,12 +7646,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       && !resident.endsTimeBoundary
   }
 
-  private func canBeRuntimeChainTarget(_ resident: ResidentBlock) -> Bool {
+  private func canBeRuntimeChainTarget(
+    _ resident: ResidentBlock,
+    memoryCallbacksAvailable: Bool
+  ) -> Bool {
     canInitiateRuntimeChain(resident)
-      // A dispatcher entry owns one recoverable callback context. Keep callback-bearing and
-      // restartable-read blocks off raw links until that context is valid across resident targets.
+      // Multi-access blocks still need a block-local restartable-read policy. Single-access
+      // callback targets share the chain's recovery context and are safe after A05.4.
       && !resident.block.requiresRestartableMemoryReads
-      && !resident.block.requiresMemoryCallbacks
+      && (!resident.block.requiresMemoryCallbacks || memoryCallbacksAvailable)
       && (!resident.block.mayExitToInterpreter || resident.block.tier == .tier1)
   }
 
@@ -7680,9 +7683,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private func installDirectChain(
     from source: ResidentBlock,
     to target: ResidentBlock,
-    destinationGuestRIP: UInt64
+    destinationGuestRIP: UInt64,
+    memoryCallbacksAvailable: Bool
   ) {
-    guard canInitiateRuntimeChain(source), canBeRuntimeChainTarget(target),
+    guard canInitiateRuntimeChain(source),
+      canBeRuntimeChainTarget(target, memoryCallbacksAvailable: memoryCallbacksAvailable),
       source.block.tier == target.block.tier,
       let slot = source.block.chainSlots?.first(where: {
         $0.targetGuestRIP == destinationGuestRIP
@@ -7703,10 +7708,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private func fillIndirectBranchTargetCache(
     from source: ResidentBlock,
     to target: ResidentBlock,
-    destinationGuestRIP: UInt64
+    destinationGuestRIP: UInt64,
+    memoryCallbacksAvailable: Bool
   ) {
     guard source.block.chainSlots?.isEmpty == true,
-      canBeRuntimeChainTarget(target),
+      canBeRuntimeChainTarget(target, memoryCallbacksAvailable: memoryCallbacksAvailable),
       source.block.tier == target.block.tier,
       target.block.guestStart == destinationGuestRIP,
       let hostAddress = region.entryAddress(at: target.offset)

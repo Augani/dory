@@ -224,6 +224,7 @@ import Testing
         #expect(cold.registers.rax == 0x1234)
 
         let directBefore = executor.diagnostics.directlyChainedBlocks
+        let dispatcherBefore = executor.diagnostics.nativeDispatcherEntries
         memory.rejectReads = true
         var state = try DoryX86ArchitecturalState(
           registers: .init(rax: 0xAAAA, rbx: 0x1000),
@@ -247,7 +248,8 @@ import Testing
         #expect(state.registers.rcx == 1)
         #expect(state.registers.rdx == 1)
         #expect(state.registers.rax == 0xAAAA)
-        #expect(executor.diagnostics.directlyChainedBlocks == directBefore)
+        #expect(executor.diagnostics.directlyChainedBlocks == directBefore + 1)
+        #expect(executor.diagnostics.nativeDispatcherEntries == dispatcherBefore + 1)
       }
     #endif
   }
