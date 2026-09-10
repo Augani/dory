@@ -41,7 +41,7 @@ import Testing
   }
 
   @Test func stableContextLayoutMatchesTheExecutableBaselineBoundary() {
-    #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<105))
+    #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<95))
     #expect(DoryARM64Tier1ABI.contextWordCount == DoryJITExecutableRegion.contextWordCount)
     #expect(DoryARM64Tier1ABI.ContextWord.hostAddressSpaceBase.rawValue
       == DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex)
@@ -82,40 +82,9 @@ import Testing
     #expect(DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRSP.rawValue == 82)
     #expect(DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointR15.rawValue == 93)
     #expect(DoryARM64Tier1ABI.ContextWord.requiresRestartableMemoryReads.rawValue == 94)
-    #expect(DoryARM64Tier1ABI.ContextWord.hostRegister19.rawValue == 95)
-    #expect(DoryARM64Tier1ABI.ContextWord.hostRegister28.rawValue == 104)
-    #expect(DoryARM64Tier1ABI.hostCalleeSavedRegisterWords.map(\.register)
-      == Array(19...30).map(UInt32.init))
     for word in DoryARM64Tier1ABI.ContextWord.allCases {
       #expect(word.byteOffset == word.rawValue * MemoryLayout<UInt64>.stride)
     }
-  }
-
-  @Test func generatedTierOneFrameIsNeverTheCalleeSavedAuthority() throws {
-    #if arch(arm64)
-      let boundary = DoryARM64Tier1BoundaryEmitter()
-      var words: [UInt32] = []
-      boundary.emitEntry(into: &words)
-      words.append(0xD297_DDF0)  // mov x16,#0xbeef
-      for byteOffset in stride(from: 0, to: 96, by: 8) {
-        words.append(0xF900_0000 | UInt32(byteOffset / 8) << 10 | 31 << 5 | 16)
-      }
-      boundary.emitExit(.dispatch, into: &words)
-
-      let block = DoryARM64CompiledBlock(
-        guestStart: 0,
-        guestByteCount: 1,
-        guestInstructionCount: 1,
-        machineWords: words,
-        tier: .tier1,
-        exitCode: .dispatch
-      )
-      let region = try DoryJITExecutableRegion(minimumCapacity: 4_096)
-      try region.publish(block, at: 0)
-      var context = [UInt64](repeating: 0, count: DoryARM64Tier1ABI.contextWordCount)
-
-      #expect(try region.execute(at: 0, context: &context) == .dispatch)
-    #endif
   }
 
   @Test func helperBoundaryRoundTripsEveryArchitecturalRegisterDuringMigration() throws {

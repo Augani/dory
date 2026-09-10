@@ -49,18 +49,19 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
 
   private static let hostFrameByteCount = 12 * MemoryLayout<UInt64>.stride
 
-  /// Saves the Darwin callee-saved register set outside generated stack memory, installs x28, and
-  /// loads every architectural GPR plus RIP, the currently materialized RFLAGS image, and the
-  /// pending lazy operation descriptor.
+  /// Saves the Darwin callee-saved register set owned by tier-1, installs x28, and loads every
+  /// architectural GPR plus RIP, the currently materialized RFLAGS image, and the pending lazy
+  /// operation descriptor.
   func emitEntry(into words: inout [UInt32]) {
     words.append(
       Self.encodeSubtractImmediate(
         left: 31, immediate: Self.hostFrameByteCount,
         destination: 31))
-    for saved in DoryARM64Tier1ABI.hostCalleeSavedRegisterWords {
+    for (pairIndex, first) in stride(from: 19, through: 29, by: 2).enumerated() {
       words.append(
-        Self.encodeStore64(
-          register: saved.register, base: 0, byteOffset: saved.word.byteOffset))
+        Self.encodeStorePair(
+          first: UInt32(first), second: UInt32(first + 1), base: 31,
+          byteOffset: pairIndex * 16))
     }
     words.append(Self.encodeMove(destination: 28, source: 0))
     // Preserve the remaining generated-function ABI arguments in the dispatcher-owned
@@ -554,17 +555,12 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
   }
 
   private func emitHostFrameRestore(into words: inout [UInt32]) {
-    for saved in DoryARM64Tier1ABI.hostCalleeSavedRegisterWords where saved.register != 28 {
+    for (pairIndex, first) in stride(from: 19, through: 29, by: 2).enumerated() {
       words.append(
-        Self.encodeLoad64(
-          register: saved.register, base: DoryARM64Tier1ABI.contextRegister,
-          byteOffset: saved.word.byteOffset))
+        Self.encodeLoadPair(
+          first: UInt32(first), second: UInt32(first + 1), base: 31,
+          byteOffset: pairIndex * 16))
     }
-    words.append(
-      Self.encodeLoad64(
-        register: DoryARM64Tier1ABI.contextRegister,
-        base: DoryARM64Tier1ABI.contextRegister,
-        byteOffset: DoryARM64Tier1ABI.ContextWord.hostRegister28.byteOffset))
     words.append(
       Self.encodeAddImmediate(
         left: 31, immediate: Self.hostFrameByteCount, destination: 31))
@@ -603,6 +599,26 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
   private static func encodeStore64(register: UInt32, base: UInt32, byteOffset: Int) -> UInt32 {
     precondition(byteOffset >= 0 && byteOffset.isMultiple(of: 8) && byteOffset / 8 < 4_096)
     return 0xF900_0000 | UInt32(byteOffset / 8) << 10 | base << 5 | register
+  }
+
+  private static func encodeStorePair(
+    first: UInt32,
+    second: UInt32,
+    base: UInt32,
+    byteOffset: Int
+  ) -> UInt32 {
+    precondition(byteOffset >= 0 && byteOffset.isMultiple(of: 8) && byteOffset / 8 < 64)
+    return 0xA900_0000 | UInt32(byteOffset / 8) << 15 | second << 10 | base << 5 | first
+  }
+
+  private static func encodeLoadPair(
+    first: UInt32,
+    second: UInt32,
+    base: UInt32,
+    byteOffset: Int
+  ) -> UInt32 {
+    precondition(byteOffset >= 0 && byteOffset.isMultiple(of: 8) && byteOffset / 8 < 64)
+    return 0xA940_0000 | UInt32(byteOffset / 8) << 15 | second << 10 | base << 5 | first
   }
 
   private static func encodeAddImmediate(

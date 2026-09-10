@@ -99,8 +99,8 @@ enum DoryARM64Tier1ABI {
     case shadowReturnMisses
     case shadowReturnPushes
     case pendingWork
-    /// Original host control state for generated blocks. These words are refreshed on every
-    /// applicable entry and deliberately live outside the generated stack frame.
+    /// Original host control state for memory-capable generated blocks. These words are
+    /// refreshed on every entry and deliberately live outside the generated stack frame.
     case hostFramePointer
     case hostReturnAddress
     /// Generated BLR return PC for an architectural inline-TLB page-fault exit.
@@ -130,36 +130,9 @@ enum DoryARM64Tier1ABI {
     /// Selected by each generated memory-bearing block on entry so a raw chain target does not
     /// inherit the dispatcher entry block's replay policy.
     case requiresRestartableMemoryReads
-    /// Incoming Darwin callee-saved state not already represented by the stable FP/LR words.
-    /// Generated stack memory is scratch-only and is never authoritative for this bank.
-    case hostRegister19
-    case hostRegister20
-    case hostRegister21
-    case hostRegister22
-    case hostRegister23
-    case hostRegister24
-    case hostRegister25
-    case hostRegister26
-    case hostRegister27
-    case hostRegister28
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }
-
-  static let hostCalleeSavedRegisterWords: [(register: HostRegister, word: ContextWord)] = [
-    (19, .hostRegister19),
-    (20, .hostRegister20),
-    (21, .hostRegister21),
-    (22, .hostRegister22),
-    (23, .hostRegister23),
-    (24, .hostRegister24),
-    (25, .hostRegister25),
-    (26, .hostRegister26),
-    (27, .hostRegister27),
-    (28, .hostRegister28),
-    (29, .hostFramePointer),
-    (30, .hostReturnAddress),
-  ]
 
   static let contextWordCount = ContextWord.allCases.count
 }
