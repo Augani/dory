@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-alternatives-patched-memory-bts",
+  "observedAt": "2026-09-10T00:13:04Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "69aa0ad81610d5ee8fba0c476177bd4a23a57938",
+    "candidateRunnerSHA256": "482dcd8ea6cf567ac7b8eadb208f735a257f57e8443ca74a728e24ccc04b968b",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "guestRIP": "0xffffffff8133cb0f",
+    "symbol": "__resched_curr+0x11f",
+    "guestByteCount": 8,
+    "guestInstructionCount": 2,
+    "staticInstructionBytes": [
+      72,
+      99,
+      193,
+      240,
+      72,
+      15,
+      171,
+      6
+    ],
+    "liveInstructionBytes": [
+      72,
+      99,
+      193,
+      62,
+      72,
+      15,
+      171,
+      6
+    ],
+    "instruction": "movslq %ecx,%rax; ds btsq %rax,(%rsi)",
+    "lowering": "The pinned single-vCPU alternatives patch replaces LOCK with a long-mode-ignored DS prefix. The exact live block uses the restartable signed bit-string read/write path; the static locked form retains its compare-exchange lowering.",
+    "boundedRule": "The measured RIP, complete eight-byte two-instruction block, signed ECX-to-RAX extension, DS-prefixed qword BTS, RSI base, and RAX index must all match. An adjacent RIP or changed base declines.",
+    "priorNegativeCacheHits": 6614,
+    "remainsInCandidateRunNegativeCache": false
+  },
+  "verification": {
+    "focusedGate": "All 67 DoryARM64Tier1JITTests pass, including the new live-patched BTS differential.",
+    "dbtPCAndRunnerGate": "1,499 tests in 175 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Signed indices 0, 64, and -1 and both old-bit states match the interpreter for complete state, MOVSXD publication, CF, and memory.",
+    "faultCoverage": "A rejected final write restores complete block-entry state and memory, including the preceding MOVSXD destination.",
+    "negativeCoverage": "An adjacent RIP and a changed memory base both decline tier one.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "0b94ef9b-2a3b-4c27-99d0-f9315ff2fee0",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 148765923541,
+    "retiredInstructions": 733023876,
+    "throughputMIPS": 4.9273641338836445,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 730710170,
+    "interpreterInstructions": 2313706,
+    "deliveredMaskableInterrupts": 57893,
+    "retiredInterruptReturns": 146075,
+    "compiledBlocks": 185901,
+    "tier1CompilationAttempts": 217783,
+    "tier1CompilationDeclines": 115781,
+    "tier1DeclinePercentOfAttempts": 53.163470059646535,
+    "tier1CompiledBlocks": 102002,
+    "lazyFlagMaterializations": 54761087,
+    "translationCacheInvalidations": 239669
+  },
+  "unmatchedPriorRunComparison": {
+    "slabFreeMemorySETEElapsedNanoseconds": 143771861500,
+    "patchedMemoryBTSElapsedNanoseconds": 148765923541,
+    "directionalElapsedIncreasePercent": 3.473601850108896,
+    "tier1AttemptIncrease": 69,
+    "tier1DeclineDecrease": 146,
+    "tier1CompiledBlockIncrease": 215,
+    "interpreterInstructionDecrease": 17520,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. Exact-site absence establishes production use; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleSites": [
+    {
+      "guestRIP": "0xffffffff81723a8c",
+      "symbol": "__kernfs_remove.part.0+0x2c",
+      "instructionBytes": [
+        102,
+        129,
+        75,
+        60,
+        0,
+        64
+      ],
+      "instruction": "orw $0x4000,0x3c(%rbx)",
+      "guestByteCount": 6,
+      "hitCount": 2115,
+      "declineReason": "nativeEmitter"
+    }
+  ],
+  "interpretation": "The exact 6,614-hit alternatives-patched BTS block is absent from the candidate's capped live negative-cache sample. A05.2 remains open because 115,781 of 217,783 tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "The DS form is correct only because the pinned single-vCPU alternatives policy deliberately removes LOCK semantics at this exact site.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
