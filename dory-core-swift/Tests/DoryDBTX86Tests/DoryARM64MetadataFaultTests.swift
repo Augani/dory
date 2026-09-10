@@ -418,15 +418,67 @@ import Testing
     #endif
   }
 
-  @Test func baselineInlineTLBReadWriteAndAtomicFaultsResolveToTheirExactInstruction() throws {
+  @Test func baselineInlineTLBReadFaultResolvesToItsExactInstruction() throws {
     #if arch(arm64)
-      let faultingInstructions: [(String, [UInt8], UInt32)] = [
-        ("read", [0x48, 0x8B, 0x03], 0x4),  // mov rax,[rbx]
-        ("write", [0x48, 0x89, 0x03], 0x6),  // mov [rbx],rax
-      ]
-      for (name, faultingInstruction, errorCode) in faultingInstructions {
+      let physical = try mmapMemory()
+      let bytes: [UInt8] = [0x48, 0xFF, 0xC1, 0x48, 0x8B, 0x03]
+      try physical.write(at: 0x1000, bytes: bytes)
+      var initial = try state(rip: 0x1000)
+      initial.registers.rbx = 0x7000
+      initial.registers.rax = 0xAAAA
+      let paging = DoryX86PagingUnit()
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: initial, mode: .long64)
+      )
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: false,
+        optimization: .baseline
+      )
+      var state = initial
+      let prefix = try #require(executor.executeChainedSummary(
+        byteProvider: { address, maximumCount in
+          (try? translated.instructionBytes(at: address, maximumCount: maximumCount)) ?? []
+        },
+        codeGenerationProvider: { try translated.codeGeneration(at: $0, byteCount: $1) },
+        at: state.rip,
+        mode: .long64,
+        addressSpaceID: 0x9000,
+        maximumInstructions: 2,
+        state: &state,
+        memory: translated
+      ))
+      #expect(prefix.guestInstructionCount == 1)
+      #expect(prefix.exitCode == .dispatch)
+      #expect(executor.diagnostics.translationCachePageFaults == 1)
+      #expect(state.rip == 0x1003)
+      #expect(state.registers.rcx == 1)
+      #expect(state.registers.rax == 0xAAAA)
+      #expect(DoryX86Interpreter().step(
+        state: &state,
+        memory: physical,
+        mode: .long64,
+        pagingUnit: paging,
+        translatedMemory: translated
+      ) == .exception(.init(
+        kind: .pageFault,
+        vector: 14,
+        errorCode: 0x4,
+        instructionPointer: 0x1003,
+        linearAddress: 0x7000
+      )))
+    #endif
+  }
+
+  @Test func baselineInlineTLBWriteAndAtomicFaultsRemainWholeBlockFallbacks() throws {
+    #if arch(arm64)
+      for bytes in [
+        [UInt8](arrayLiteral: 0x48, 0x89, 0x03),
+        [UInt8](arrayLiteral: 0xF0, 0x48, 0x0F, 0xB1, 0x13),
+      ] {
         let physical = try mmapMemory()
-        let bytes = [0x48, 0xFF, 0xC1] + faultingInstruction  // inc rcx; faulting operation
         try physical.write(at: 0x1000, bytes: bytes)
         var initial = try state(rip: 0x1000)
         initial.registers.rbx = 0x7000
@@ -438,99 +490,35 @@ import Testing
           pagingUnit: paging,
           context: .init(state: initial, mode: .long64)
         )
-        let executor = try DoryARM64BaselineExecutor(
-          maximumCodeBytes: 16 * 1024,
-          tier1Enabled: false,
-          optimization: .baseline
-        )
-        var state = initial
-
-        guard let prefix = try executor.executeChainedSummary(
-          byteProvider: { address, maximumCount in
-            (try? translated.instructionBytes(at: address, maximumCount: maximumCount)) ?? []
-          },
-          codeGenerationProvider: {
-            try translated.codeGeneration(at: $0, byteCount: $1)
-          },
-          at: state.rip,
-          mode: .long64,
-          addressSpaceID: 0x9000,
-          maximumInstructions: 2,
-          state: &state,
-          memory: translated
-        ) else {
-          Issue.record("missing recovered prefix for inline-TLB \(name) fault")
-          continue
+        let block = try DoryX86IRTranslator().translate(bytes, at: 0x1000, mode: .long64)
+        let compiled = DoryARM64BaselineEmitter().compile(block)
+        let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+        try region.publish(compiled, at: 0)
+        let tlb = try DoryX86JITTLB()
+        var context = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+        context.withUnsafeMutableBufferPointer {
+          DoryARM64BaselineExecutor.populateExecutionContext(
+            $0,
+            from: initial,
+            memory: translated,
+            translationTLB: tlb,
+            addressSpaceGeneration: 1
+          )
         }
-
-        #expect(prefix.guestInstructionCount == 1)
-        #expect(prefix.exitCode == .dispatch)
-        #expect(executor.diagnostics.translationCachePageFaults == 1)
-        #expect(state.rip == 0x1003)
-        #expect(state.registers.rcx == 1)
-        #expect(state.registers.rax == 0xAAAA)
-        #expect(state.registers.rdx == 0xBBBB)
-        #expect(DoryX86Interpreter().step(
-          state: &state,
-          memory: physical,
-          mode: .long64,
-          pagingUnit: paging,
-          translatedMemory: translated
-        ) == .exception(.init(
-          kind: .pageFault,
-          vector: 14,
-          errorCode: errorCode,
-          instructionPointer: 0x1003,
-          linearAddress: 0x7000
-        )))
+        let execution = try context.withUnsafeMutableBufferPointer {
+          try region.executePreparedWithRecovery(
+            at: 0,
+            context: $0,
+            memoryCapabilities: .init(memory: translated),
+            requiresRestartableReads: compiled.requiresRestartableMemoryReads,
+            translationTLB: tlb
+          )
+        }
+        #expect(execution.exitCode == .interpreter)
+        #expect(execution.failedCallbackHostPC == nil)
+        #expect(execution.failedExecutionContext == nil)
+        #expect(tlb.diagnostics.pageFaults == 1)
       }
-
-      // Locked operations are isolated translation boundaries, so assert their captured host PC
-      // directly instead of requiring a preceding instruction in the same compiled block.
-      let physical = try mmapMemory()
-      let atomicBytes: [UInt8] = [0xF0, 0x48, 0x0F, 0xB1, 0x13]
-      try physical.write(at: 0x1000, bytes: atomicBytes)
-      var atomicState = try state(rip: 0x1000)
-      atomicState.registers.rbx = 0x7000
-      atomicState.registers.rax = 0xAAAA
-      atomicState.registers.rdx = 0xBBBB
-      let paging = DoryX86PagingUnit()
-      let translated = DoryX86TranslatedMemory(
-        physicalMemory: physical,
-        pagingUnit: paging,
-        context: .init(state: atomicState, mode: .long64)
-      )
-      let block = try DoryX86IRTranslator().translate(atomicBytes, at: 0x1000, mode: .long64)
-      let compiled = DoryARM64BaselineEmitter().compile(block)
-      let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
-      try region.publish(compiled, at: 0)
-      let tlb = try DoryX86JITTLB()
-      var context = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
-      context.withUnsafeMutableBufferPointer {
-        DoryARM64BaselineExecutor.populateExecutionContext(
-          $0,
-          from: atomicState,
-          memory: translated,
-          translationTLB: tlb,
-          addressSpaceGeneration: 1
-        )
-      }
-      let execution = try context.withUnsafeMutableBufferPointer {
-        try region.executePreparedWithRecovery(
-          at: 0,
-          context: $0,
-          memoryCapabilities: .init(memory: translated),
-          requiresRestartableReads: compiled.requiresRestartableMemoryReads,
-          translationTLB: tlb
-        )
-      }
-      let entryAddress = try #require(region.entryAddress(at: 0))
-      let faultHostPC = try #require(execution.failedCallbackHostPC)
-      let hostOffset = try #require(UInt32(exactly: faultHostPC - entryAddress))
-      #expect(execution.exitCode == .interpreter)
-      #expect(execution.failedExecutionContext != nil)
-      #expect(compiled.instructionMetadata(atHostOffset: hostOffset)?.guestRIP == 0x1000)
-      #expect(tlb.diagnostics.pageFaults == 1)
     #endif
   }
 

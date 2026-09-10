@@ -2963,8 +2963,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
       condition: .equal,
       wordOffset: pageFaultStart - pageFaultBranch
     )
-    words.append(
-      encodeStore64(register: 30, base: 19, byteOffset: Self.inlineTLBFaultHostPCOffset))
     emitMemoryEpilogue(into: &words)
     words.append(
       encodeMoveWideZero32(
@@ -3065,8 +3063,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
       condition: .equal,
       wordOffset: pageFaultStart - directPageFaultBranch
     )
-    words.append(
-      encodeStore64(register: 30, base: 19, byteOffset: Self.inlineTLBFaultHostPCOffset))
     emitMemoryEpilogue(into: &words)
     words.append(
       encodeMoveWideZero32(
