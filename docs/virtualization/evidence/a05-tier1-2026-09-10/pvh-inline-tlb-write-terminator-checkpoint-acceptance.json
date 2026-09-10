@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-inline-tlb-write-terminator-checkpoint-acceptance",
+  "observedAt": "2026-09-10T11:46:45Z",
+  "status": "passed-narrow-local-production-reliability-check",
+  "qualification": "local A05.4 inline-TLB write-fault recovery acceptance; not atomic recovery, hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "acb29b826",
+    "candidateRunnerSHA256": "e494590a2efb9c290e819dce3abf4772a969202ac1fb847d8a2ff7d81e10aa30",
+    "buildConfiguration": "release"
+  },
+  "diagnosis": {
+    "failedRunID": "9ac37426-b396-4fd9-b6b0-552dbd7614d8",
+    "failedRunnerSHA256": "71f5d51d0539ea4c00b59ec51b0ab427611cc39f459373aaab34763deb7f6e16",
+    "failedDiagnosticReceiptSHA256": "ad96de2d531c5aa180a9de3e9ff2b1136a98127182645ddcd3aea958be46b30d",
+    "retiredInstructions": 634622409,
+    "elapsedNanoseconds": 188057826833,
+    "outcome": "guest-reset-after-init-nx-panic",
+    "faultSite": "musl _Fork direct CALL at guest image offset 0x5c650, metadata instruction index 2",
+    "rootCause": "The generated CALL decremented RSP before its return-address push faulted. The rejected checkpoint covered write-bearing statements but not write-bearing terminators, so interpreter retry decremented RSP a second time and later returned through an invalid executable address."
+  },
+  "candidate": {
+    "acceptedBoundary": "Baseline instructions checkpoint their exact IR-derived GPR write set and RFLAGS before a write-bearing statement. Direct and indirect CALL terminators checkpoint RSP and RFLAGS before the generated stack push. A successful write clears the active checkpoint; a generated write resolver page fault restores it, publishes the completed prefix, and interpreter-deoptimizes only the faulting instruction.",
+    "accountingBoundary": "A recovered generated prefix remains baseline-JIT retirement; the same-call interpreter retry is counted separately as interpreter retirement.",
+    "conservativeBoundary": "Generated atomic resolver faults do not publish a recovery PC and retain whole-block rollback plus interpreter replay."
+  },
+  "verification": {
+    "focused": "59 tests in the ABI, metadata-fault, and restartability suites passed.",
+    "deterministicAggregate": "1,552 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the same pinned inputs were executed explicitly.",
+    "targetedCoverage": [
+      "exact clear_page_orig prefix register and flag state",
+      "exact musl loader RIP-relative prefix state",
+      "read-succeeds/write-faults RMW restoration at instruction entry",
+      "musl _Fork CALL return-address push restoration to pre-decrement RSP",
+      "write resolver precise PC publication and atomic resolver fail-closed behavior"
+    ]
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "diagnosticTraceRun": {
+    "runID": "7948021c-8012-49e8-8719-e7a33cd5048d",
+    "runnerSHA256": "121129b42943fae6a2e94197ba5248b7e07f0b0926eff57b81e7efde3e4d8ab0",
+    "diagnosticReceiptSHA256": "6b0b43a7536b85d290c0920a7cd699259fc3c90e8352c7f9ab5eb367d8c3d4a5",
+    "retiredInstructions": 733789203,
+    "elapsedNanoseconds": 223951435084,
+    "outcome": "userspace-workloads-powered-off",
+    "purpose": "Trace-enabled confirmation only; clean-run acceptance uses the committed runner below."
+  },
+  "acceptedRuns": [
+    {
+      "runID": "e5917df7-6da3-4647-af94-e80078636125",
+      "diagnosticReceiptSHA256": "53902d82b078d497233e021815ff3fd47212235f0873dda41bca8e92b683cd38",
+      "elapsedNanoseconds": 243168691833,
+      "retiredInstructions": 733277497,
+      "baselineJITInstructions": 730498736,
+      "interpreterInstructions": 2778761,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 75069,
+      "nativeDispatcherEntries": 189013358,
+      "directlyChainedBlocks": 44917503,
+      "translationCachePageFaults": 743,
+      "pendingWorkExits": 1,
+      "pendingWorkMaximumRetiredInstructions": 0
+    },
+    {
+      "runID": "9d2f699d-e8c9-4f21-830e-b2b8aa50c122",
+      "diagnosticReceiptSHA256": "c1e89ab49f545d4f840d44e517e1173629b932631e48dbdfde85a8c480f7e40a",
+      "elapsedNanoseconds": 236862501667,
+      "retiredInstructions": 733142657,
+      "baselineJITInstructions": 730339653,
+      "interpreterInstructions": 2803004,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 75183,
+      "nativeDispatcherEntries": 189422120,
+      "directlyChainedBlocks": 44923118,
+      "translationCachePageFaults": 722,
+      "pendingWorkExits": 1,
+      "pendingWorkMaximumRetiredInstructions": 0
+    }
+  ],
+  "workloads": [
+    "bootstrap.filesystems",
+    "syscall.identity",
+    "process.creation_exec_wait",
+    "memory.allocation_copy",
+    "signal.handler_return",
+    "timer.sleep_elapsed",
+    "filesystem.write_read_sync"
+  ],
+  "disposition": {
+    "inlineReadPrefixRecoveryAccepted": true,
+    "inlineWritePrefixRecoveryAccepted": true,
+    "inlineAtomicPrefixRecoveryAccepted": false,
+    "reason": "The exact failing production terminator is covered by a MAP_JIT regression, and two independent clean committed-runner executions crossed the former deterministic reset boundary, four aggregate code-cache wraps, all seven authenticated workloads, and clean ACPI poweroff.",
+    "remainingA05_4Work": "Atomic resolver page faults remain conservative and require their own isolated fault-site diagnosis, checkpoint contract, and two-run production reliability proof."
+  },
+  "limitations": [
+    "Two passing local runs are a bounded reliability check, not cross-host qualification.",
+    "The checkpoint is intentionally limited to baseline write instructions and CALL terminators represented by the current IR; atomic recovery remains disabled.",
+    "This evidence does not satisfy the greater-than-95-percent dispatcher gate or G1-G5."
+  ]
+}
