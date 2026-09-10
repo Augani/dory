@@ -41,7 +41,7 @@ import Testing
   }
 
   @Test func stableContextLayoutMatchesTheExecutableBaselineBoundary() {
-    #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<95))
+    #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<100))
     #expect(DoryARM64Tier1ABI.contextWordCount == DoryJITExecutableRegion.contextWordCount)
     #expect(DoryARM64Tier1ABI.ContextWord.hostAddressSpaceBase.rawValue
       == DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex)
@@ -82,9 +82,78 @@ import Testing
     #expect(DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRSP.rawValue == 82)
     #expect(DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointR15.rawValue == 93)
     #expect(DoryARM64Tier1ABI.ContextWord.requiresRestartableMemoryReads.rawValue == 94)
+    #expect(DoryARM64Tier1ABI.ContextWord.memoryContext.rawValue
+      == DoryJITExecutableRegion.memoryContextWordIndex)
+    #expect(DoryARM64Tier1ABI.ContextWord.memoryReadCallback.rawValue
+      == DoryJITExecutableRegion.memoryReadCallbackWordIndex)
+    #expect(DoryARM64Tier1ABI.ContextWord.memoryWriteCallback.rawValue
+      == DoryJITExecutableRegion.memoryWriteCallbackWordIndex)
+    #expect(DoryARM64Tier1ABI.ContextWord.memoryCompareExchangeCallback.rawValue
+      == DoryJITExecutableRegion.memoryCompareExchangeCallbackWordIndex)
+    #expect(DoryARM64Tier1ABI.ContextWord.memorySynchronizeCallback.rawValue
+      == DoryJITExecutableRegion.memorySynchronizeCallbackWordIndex)
     for word in DoryARM64Tier1ABI.ContextWord.allCases {
       #expect(word.byteOffset == word.rawValue * MemoryLayout<UInt64>.stride)
     }
+  }
+
+  @Test func chainedFullEntryReloadsSnapshottedCallbackArguments() throws {
+    #if arch(arm64)
+      let targetAddress: UInt64 = 0x800
+      let translated = try DoryX86IRTranslator().translate(
+        [0x48, 0x8B, 0x07],  // mov rax,[rdi]
+        at: targetAddress,
+        mode: .long64
+      )
+      let target = try #require(DoryARM64Tier1Emitter().compile(translated))
+      #expect(target.requiresMemoryCallbacks)
+      let source = DoryARM64CompiledBlock(
+        guestStart: 0x400,
+        guestByteCount: 1,
+        guestInstructionCount: 1,
+        machineWords: [
+          0xAA1F_03E1,  // mov x1,xzr
+          0xAA1F_03E2,  // mov x2,xzr
+          0xAA1F_03E3,  // mov x3,xzr
+          0xAA1F_03E4,  // mov x4,xzr
+          0xAA1F_03E5,  // mov x5,xzr
+          0x1400_0000,  // patched tail branch
+        ],
+        tier: .baseline,
+        exitCode: .dispatch
+      )
+      let region = try DoryJITExecutableRegion(minimumCapacity: 4_096)
+      let targetOffset = 256
+      try region.publish(source, at: 0)
+      try region.publish(target, at: targetOffset)
+      try region.patchDirectBranch(
+        at: 5 * MemoryLayout<UInt32>.stride,
+        to: targetOffset
+      )
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+      try memory.writeScalar(
+        at: 0x40,
+        value: 0x1122_3344_5566_7788,
+        byteCount: 8
+      )
+      var context = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+      context[DoryARM64Tier1ABI.ContextWord.rdi.rawValue] = 0x40
+      context[DoryARM64Tier1ABI.ContextWord.rip.rawValue] = targetAddress
+      context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue] =
+        DoryX86RFLAGS.reservedOne.rawValue
+
+      let exit = try region.execute(at: 0, context: &context, memory: memory)
+
+      #expect(exit == .dispatch)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
+        == 0x1122_3344_5566_7788)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.rip.rawValue] == targetAddress + 3)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.memoryContext.rawValue] != 0)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.memoryReadCallback.rawValue] != 0)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.memoryWriteCallback.rawValue] != 0)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.memoryCompareExchangeCallback.rawValue] != 0)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.memorySynchronizeCallback.rawValue] != 0)
+    #endif
   }
 
   @Test func helperBoundaryRoundTripsEveryArchitecturalRegisterDuringMigration() throws {

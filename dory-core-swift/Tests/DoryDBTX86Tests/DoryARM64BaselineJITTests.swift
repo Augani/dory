@@ -584,6 +584,113 @@ import Testing
     #endif
   }
 
+  @Test func legacyBaselineSourceChainsIntoTier1ThroughNormalizedFullEntry() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x1800
+      // btq $1,(rdi); jb target; adc rax,1; jmp halt; hlt
+      let bytes: [UInt8] = [
+        0x48, 0x0F, 0xBA, 0x27, 1, 0x72, 0,
+        0x48, 0x83, 0xD0, 1, 0xEB, 0,
+        0xF4,
+      ]
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: true
+      )
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+      try memory.writeScalar(at: 0x80, value: 2, byteCount: 8)
+      func run() throws -> (DoryARM64ExecutionSummary, DoryX86ArchitecturalState, UInt64) {
+        var state = try DoryX86ArchitecturalState(
+          registers: .init(rax: 8, rdi: 0x80),
+          rip: base,
+          rflags: [.reservedOne]
+        )
+        let entriesBefore = executor.diagnostics.nativeDispatcherEntries
+        let summary = try #require(executor.executeChainedSummary(
+          byteProvider: { address, count in
+            guard address >= base else { return [] }
+            let offset = Int(address - base)
+            guard bytes.indices.contains(offset) else { return [] }
+            return Array(bytes[offset..<min(bytes.count, offset + count)])
+          },
+          physicalRIPProvider: { $0 },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 17,
+          maximumInstructions: 8,
+          state: &state,
+          memory: memory
+        ))
+        return (summary, state, executor.diagnostics.nativeDispatcherEntries - entriesBefore)
+      }
+
+      let cold = try run()
+      #expect(cold.0.guestInstructionCount == 5)
+      #expect(cold.0.residentBlockCount == 3)
+      #expect(cold.1.registers.rax == 10)
+      #expect(cold.1.rip == base + UInt64(bytes.count))
+      #expect(cold.2 == 3)
+      #expect(executor.diagnostics.tier1CompilationAttempts == 3)
+      #expect(executor.diagnostics.tier1CompilationDeclines == 2)
+      #expect(executor.diagnostics.directChainPatches == 1)
+
+      let warm = try run()
+      #expect(warm.0 == cold.0)
+      #expect(warm.1 == cold.1)
+      #expect(warm.2 == 2)
+      #expect(executor.diagnostics.directlyChainedBlocks == 1)
+    #endif
+  }
+
+  @Test func tier1SourceRemainsSeparatedFromLegacyLazyFlagsConsumer() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x1A00
+      // add rax,rbx; jmp next; test [rdi],rax; jmp next; hlt
+      let bytes: [UInt8] = [
+        0x48, 0x01, 0xD8, 0xEB, 0,
+        0x48, 0x85, 0x07, 0xEB, 0,
+        0xF4,
+      ]
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: true
+      )
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+      try memory.writeScalar(at: 0x80, value: 3, byteCount: 8)
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: 1, rbx: 2, rdi: 0x80),
+        rip: base,
+        rflags: [.reservedOne]
+      )
+
+      let summary = try #require(executor.executeChainedSummary(
+        byteProvider: { address, count in
+          guard address >= base else { return [] }
+          let offset = Int(address - base)
+          guard bytes.indices.contains(offset) else { return [] }
+          return Array(bytes[offset..<min(bytes.count, offset + count)])
+        },
+        physicalRIPProvider: { $0 },
+        at: base,
+        mode: .long64,
+        addressSpaceID: 18,
+        maximumInstructions: 8,
+        state: &state,
+        memory: memory
+      ))
+
+      #expect(summary.guestInstructionCount == 5)
+      #expect(summary.residentBlockCount == 3)
+      #expect(state.registers.rax == 3)
+      #expect(state.rip == base + UInt64(bytes.count))
+      #expect(!state.rflags.contains(.zero))
+      #expect(executor.diagnostics.tier1CompiledBlocks == 1)
+      #expect(executor.diagnostics.tier1CompilationDeclines == 2)
+      #expect(executor.diagnostics.directChainPatches == 0)
+      #expect(executor.diagnostics.chainTargetCompilerABIRejections == 1)
+    #endif
+  }
+
   @Test func protectedCodeGenerationInvalidatesChainsWithoutWarmGraphScanning() throws {
     #if arch(arm64)
       let base: UInt64 = 0x1400

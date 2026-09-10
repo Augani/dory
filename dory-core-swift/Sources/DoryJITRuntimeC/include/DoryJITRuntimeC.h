@@ -174,6 +174,19 @@ typedef int32_t (*dory_jit_memory_compare_exchange_function)(
 
 typedef void (*dory_jit_memory_synchronize_function)(void *memory_context);
 
+// Append-only generated-function ABI words shared by the C entry trampoline and both ARM64
+// emitters. The architectural and chaining words before these indices are owned by Swift; these
+// five words freeze the actual x1...x5 values supplied to the first native entry so every raw
+// chain target can reconstruct the same callback authority without trusting predecessor scratch.
+enum {
+    DORY_JIT_CONTEXT_MEMORY_CONTEXT_WORD = 95,
+    DORY_JIT_CONTEXT_MEMORY_READ_WORD = 96,
+    DORY_JIT_CONTEXT_MEMORY_WRITE_WORD = 97,
+    DORY_JIT_CONTEXT_MEMORY_COMPARE_EXCHANGE_WORD = 98,
+    DORY_JIT_CONTEXT_MEMORY_SYNCHRONIZE_WORD = 99,
+    DORY_JIT_CONTEXT_WORD_COUNT = 100,
+};
+
 // Valid only while one of the memory callbacks above is executing. The returned host PC is the
 // generated instruction immediately following the callback branch, or zero outside that path.
 uintptr_t dory_jit_current_memory_callback_return_pc(void);

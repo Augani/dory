@@ -3262,6 +3262,7 @@ import Testing
       #expect(executor.diagnostics.tier1CompilationDeclines == 1)
       #expect(executor.diagnostics.tier1CompiledBlocks == 1)
       #expect(executor.diagnostics.lazyFlagMaterializations == 1)
+      #expect(executor.diagnostics.directChainPatches == 0)
     #endif
   }
 

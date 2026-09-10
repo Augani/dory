@@ -64,10 +64,21 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
           byteOffset: pairIndex * 16))
     }
     words.append(Self.encodeMove(destination: 28, source: 0))
-    // Preserve the remaining generated-function ABI arguments in the dispatcher-owned
-    // callee-saved bank before x1...x15 become pinned guest registers.
-    for (destination, source) in zip(19...23, 1...5) {
-      words.append(Self.encodeMove(destination: UInt32(destination), source: UInt32(source)))
+    // Reconstruct the dispatcher-owned callback bank from the C trampoline's stable snapshot.
+    // Raw predecessors may use caller-saved x1...x5 as scratch before reaching this full entry.
+    for (destination, word) in zip(
+      19...23,
+      [
+        DoryARM64Tier1ABI.ContextWord.memoryContext,
+        .memoryReadCallback,
+        .memoryWriteCallback,
+        .memoryCompareExchangeCallback,
+        .memorySynchronizeCallback,
+      ]
+    ) {
+      words.append(
+        Self.encodeLoad64(
+          register: UInt32(destination), base: 28, byteOffset: word.byteOffset))
     }
     for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
       words.append(
