@@ -4910,9 +4910,13 @@ func doryX86JITTranslate(
   default: return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue)
   }
   let callback = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
-  guard !callback.pointee.failed,
-    let translatedMemory = callback.pointee.capabilities.memory as? DoryX86TranslatedMemory
-  else { return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue) }
+  guard !callback.pointee.failed else {
+    return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue)
+  }
+  guard let translatedMemory = callback.pointee.capabilities.memory as? DoryX86TranslatedMemory
+  else {
+    return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue)
+  }
   do {
     guard
       let hostAddressSpaceOffset = try translatedMemory.hostAddressSpaceOffsetForJIT(
@@ -4920,12 +4924,15 @@ func doryX86JITTranslate(
         byteCount: Int(rawByteCount),
         access: access
       )
-    else { return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue) }
+    else {
+      return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue)
+    }
     hostAddressSpaceOffsetOut.pointee = hostAddressSpaceOffset
     return Int32(DORY_JIT_TLB_RESOLUTION_FILLED.rawValue)
   } catch DoryX86MemoryError.pageFault(let address, let errorCode) {
     faultAddressOut.pointee = address
     faultErrorCodeOut.pointee = errorCode
+    doryJITRecordMemoryFailure(callback)
     return Int32(DORY_JIT_TLB_RESOLUTION_PAGE_FAULT.rawValue)
   } catch {
     return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue)

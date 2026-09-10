@@ -213,6 +213,76 @@ import Testing
     #endif
   }
 
+  @Test func inlineTLBPageFaultPublishesTheCompletedInstructionPrefix() throws {
+    #if arch(arm64)
+      for (tier1Enabled, optimization) in [
+        (false, DoryARM64JITOptimization.baseline),
+        (true, DoryARM64JITOptimization.optimizing),
+      ] {
+        let physical = try mmapMemory()
+        // INC RCX; MOV RAX,[RBX]. Page 0x7000 is deliberately absent.
+        try physical.write(at: 0x1000, bytes: [0x48, 0xFF, 0xC1, 0x48, 0x8B, 0x03])
+        var initial = try state(rip: 0x1000)
+        initial.registers.rbx = 0x7000
+        initial.registers.rax = 0xAAAA
+        let paging = DoryX86PagingUnit()
+        let translated = DoryX86TranslatedMemory(
+          physicalMemory: physical,
+          pagingUnit: paging,
+          context: .init(state: initial, mode: .long64)
+        )
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: tier1Enabled,
+          optimization: optimization
+        )
+        var state = initial
+
+        let summary = try #require(executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            (try? translated.instructionBytes(at: address, maximumCount: maximumCount)) ?? []
+          },
+          codeGenerationProvider: {
+            try translated.codeGeneration(at: $0, byteCount: $1)
+          },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0x9000,
+          maximumInstructions: 2,
+          state: &state,
+          memory: translated
+        ))
+        #expect(summary.guestInstructionCount == 1)
+        #expect(summary.exitCode == .dispatch)
+        #expect(state.rip == 0x1003)
+        #expect(state.registers.rcx == 1)
+        #expect(state.registers.rax == 0xAAAA)
+        if !tier1Enabled {
+          // The baseline body uses the inline TLB. This counter distinguishes its C miss resolver
+          // from the tier-one MOV helper callback while both recovery paths share the assertions.
+          #expect(executor.diagnostics.translationCachePageFaults == 1)
+        }
+
+        #expect(DoryX86Interpreter().step(
+          state: &state,
+          memory: physical,
+          mode: .long64,
+          pagingUnit: paging,
+          translatedMemory: translated
+        ) == .exception(.init(
+          kind: .pageFault,
+          vector: 14,
+          errorCode: 0x4,
+          instructionPointer: 0x1003,
+          linearAddress: 0x7000
+        )))
+        #expect(state.rip == 0x1003)
+        #expect(state.registers.rcx == 1)
+        #expect(state.registers.rax == 0xAAAA)
+      }
+    #endif
+  }
+
   @Test func revokedCachedTargetPublishesCompletedStorePrefixBeforePrecisePageFault() throws {
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
@@ -328,6 +398,15 @@ import Testing
 
   private func memory() throws -> DoryX86ByteArrayMemory {
     let physical = try DoryX86ByteArrayMemory(byteCount: 0x10000)
+    for (address, value): (UInt64, UInt64) in [
+      (0x9000, 0xA007), (0xA000, 0xB007), (0xB000, 0xC007),
+      (0xC008, 0x1007), (0xC010, 0x2007), (0xC040, 0x8007),
+    ] { try physical.writeScalar(at: address, value: value, byteCount: 8) }
+    return physical
+  }
+
+  private func mmapMemory() throws -> DoryX86MmapMemory {
+    let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)
     for (address, value): (UInt64, UInt64) in [
       (0x9000, 0xA007), (0xA000, 0xB007), (0xB000, 0xC007),
       (0xC008, 0x1007), (0xC010, 0x2007), (0xC040, 0x8007),
