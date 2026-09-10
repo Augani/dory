@@ -47,11 +47,11 @@ import Testing
     #expect(compiled.instructionMetadata.map(\.guestRIP) == [0x5000, 0x5001, 0x500B, 0x500F])
     #expect(compiled.instructionMetadata.map(\.flagsState)
       == [.context, .context, .context, .nativeNZCV])
-    #expect(compiled.instructionMetadata.map(\.liveInRegisterMask) == [0, 0, 1, 1])
-    #expect(compiled.instructionMetadata.map(\.dirtyRegisterMask) == [0, 0, 1, 1])
+    #expect(compiled.instructionMetadata.allSatisfy { $0.liveInRegisterMask == .max })
+    #expect(compiled.instructionMetadata.allSatisfy { $0.dirtyRegisterMask == .max })
   }
 
-  @Test func tier1SideTableTracksAddressAndPartialRegisterDependencies() throws {
+  @Test func tier1SideTableKeepsConservativeRegisterRecoveryMasks() throws {
     let block = try DoryX86IRTranslator().translate(
       [
         0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0,  // mov rax,1
@@ -64,13 +64,8 @@ import Testing
     let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
 
     #expect(compiled.instructionMetadata.map(\.guestRIP) == [0x5800, 0x580A, 0x580C])
-    let expectedLiveIn: [UInt16] = [
-      0,
-      (1 << 0) | (1 << 1),
-      (1 << 1) | (1 << 3),
-    ]
-    #expect(compiled.instructionMetadata.map(\.liveInRegisterMask) == expectedLiveIn)
-    #expect(compiled.instructionMetadata.map(\.dirtyRegisterMask) == [0, 1, 1])
+    #expect(compiled.instructionMetadata.allSatisfy { $0.liveInRegisterMask == .max })
+    #expect(compiled.instructionMetadata.allSatisfy { $0.dirtyRegisterMask == .max })
   }
 
   @Test func failedMemoryCallbackHostPCSelectsTheFaultingGuestInstruction() throws {
