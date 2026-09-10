@@ -341,9 +341,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
     switch terminator {
     case .next(let target), .branch(let target), .call(let target, _):
       guard DoryX86ArchitecturalState.isCanonical(target) else { return [] }
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.chainEnabledOffset))
+      let disabledBranch = words.count
+      words.append(0)
       let slot = words.count
       words.append(0)
       let fallback = words.count
+      words[disabledBranch] = encodeCompareBranchZero64(
+        register: 9,
+        wordOffset: fallback - disabledBranch
+      )
       words[slot] = encodeUnconditionalBranch(wordOffset: fallback - slot)
       return [
         .init(
@@ -357,6 +364,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
       guard DoryX86ArchitecturalState.isCanonical(taken),
         DoryX86ArchitecturalState.isCanonical(notTaken)
       else { return [] }
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.chainEnabledOffset))
+      let disabledBranch = words.count
+      words.append(0)
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.ripOffset))
       emitImmediate(taken, register: 10, into: &words)
       words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 9, 10, 31))
@@ -367,6 +377,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
       let takenSlot = words.count
       words.append(0)
       let fallback = words.count
+      words[disabledBranch] = encodeCompareBranchZero64(
+        register: 9,
+        wordOffset: fallback - disabledBranch
+      )
       words[selectTaken] = encodeConditionalBranch(
         condition: .equal,
         wordOffset: takenSlot - selectTaken
@@ -4884,6 +4898,14 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let chainedExecutionCalls: UInt64
   public let chainedRequestedInstructions: UInt64
   public let chainedRetiredInstructions: UInt64
+  /// Host-to-generated-code entries made by the chained dispatcher. One entry may now retire
+  /// several resident blocks after direct links have warmed.
+  public let nativeDispatcherEntries: UInt64
+  public let directChainPatches: UInt64
+  public let directChainUnlinks: UInt64
+  /// Resident transitions completed through patched generated branches, excluding the entry
+  /// block selected by Swift.
+  public let directlyChainedBlocks: UInt64
   public let translationCacheEntryCount: UInt64
   public let translationCacheAllocatedBytes: UInt64
   public let translationCacheAddressSpaceGeneration: UInt64
@@ -4931,9 +4953,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let block: DoryARM64CompiledBlock
     let offset: Int
     let codeGeneration: UInt64
-    let memoryCodeGeneration: UInt64?
+    var memoryCodeGeneration: UInt64?
     let endsTimeBoundary: Bool
     let cr3WriteSourceRegister: Int?
+    var incomingLinks: [ChainLink] = []
+    var outgoingLinks: [Int: ChainLink] = [:]
 
     init(
       block: DoryARM64CompiledBlock,
@@ -4949,6 +4973,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       self.memoryCodeGeneration = memoryCodeGeneration
       self.endsTimeBoundary = endsTimeBoundary
       self.cr3WriteSourceRegister = cr3WriteSourceRegister
+    }
+  }
+
+  private final class ChainLink {
+    weak var source: ResidentBlock?
+    weak var target: ResidentBlock?
+    let slot: DoryARM64ChainSlot
+
+    init(source: ResidentBlock, target: ResidentBlock, slot: DoryARM64ChainSlot) {
+      self.source = source
+      self.target = target
+      self.slot = slot
     }
   }
 
@@ -5085,6 +5121,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var chainedExecutionCallCount: UInt64 = 0
   private var chainedRequestedInstructionCount: UInt64 = 0
   private var chainedRetiredInstructionCount: UInt64 = 0
+  private var nativeDispatcherEntryCount: UInt64 = 0
+  private var directChainPatchCount: UInt64 = 0
+  private var directChainUnlinkCount: UInt64 = 0
+  private var directlyChainedBlockCount: UInt64 = 0
   private var codeCacheEpoch: UInt64 = 0
   private var nextOffset = 0
   private var currentTLBAddressSpaceID: UInt64?
@@ -5173,6 +5213,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         chainedExecutionCalls: chainedExecutionCallCount,
         chainedRequestedInstructions: chainedRequestedInstructionCount,
         chainedRetiredInstructions: chainedRetiredInstructionCount,
+        nativeDispatcherEntries: nativeDispatcherEntryCount,
+        directChainPatches: directChainPatchCount,
+        directChainUnlinks: directChainUnlinkCount,
+        directlyChainedBlocks: directlyChainedBlockCount,
         translationCacheEntryCount: UInt64(translationTLB.entryCount),
         translationCacheAllocatedBytes: UInt64(translationTLB.allocatedByteCount),
         translationCacheAddressSpaceGeneration: translationTLBGeneration,
@@ -5497,6 +5541,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           }
           var newTrace: [NativeTraceEntry] = []
           var recordsTrace = recordedTrace == nil && completed == 0
+          var pendingLink: (source: ResidentBlock, destinationGuestRIP: UInt64)?
           while completed < maximumInstructions {
             let currentRIP = context[16]
             let remaining = maximumInstructions - completed
@@ -5582,6 +5627,22 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               )
             }
 
+            if let pendingLink {
+              installDirectChain(
+                from: pendingLink.source,
+                to: resident,
+                destinationGuestRIP: pendingLink.destinationGuestRIP
+              )
+            }
+            pendingLink = nil
+            validateDirectChainTargets(
+              reachableFrom: resident,
+              byteProvider: byteProvider,
+              codeGenerationProvider: codeGenerationProvider,
+              mode: mode,
+              memory: memory
+            )
+
             // Tier-one blocks retain a deferred arithmetic-flags descriptor across native block
             // boundaries. Legacy baseline and optimizing blocks know only context word 17, so
             // resolve that descriptor before they can consume or preserve architectural flags.
@@ -5604,6 +5665,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             if resident.block.requiresMemoryCallbacks, memoryCapabilities == nil {
               memoryCapabilities = memory.map { DoryJITMemoryCapabilities(memory: $0) }
             }
+            let usesGeneratedChainAccounting = isRuntimeChainEligible(resident)
+            context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] =
+              usesGeneratedChainAccounting ? 1 : 0
+            context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] =
+              UInt64(remaining)
+            context[DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue] = 0
+            context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] = 0
+            context[DoryARM64Tier1ABI.ContextWord.chainLastGuestRIP.rawValue] = 0
+            nativeDispatcherEntryCount &+= 1
             let exit = try region.executePrepared(
               at: resident.offset,
               context: context,
@@ -5626,8 +5696,41 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               )
             }
 
-            completed += Int(resident.block.guestInstructionCount)
-            blockCount += 1
+            let generatedInstructionCount =
+              usesGeneratedChainAccounting
+              ? context[DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue] : 0
+            let generatedBlockCount =
+              usesGeneratedChainAccounting
+              ? context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] : 0
+            context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 0
+            if generatedBlockCount > 0 {
+              precondition(
+                generatedInstructionCount <= UInt64(remaining)
+                  && generatedBlockCount <= UInt64(UInt32.max),
+                "generated chain exceeded its dispatcher budget"
+              )
+              completed += Int(generatedInstructionCount)
+              blockCount += Int(generatedBlockCount)
+              if generatedBlockCount > 1 {
+                directlyChainedBlockCount &+= generatedBlockCount - 1
+              }
+            } else {
+              completed += Int(resident.block.guestInstructionCount)
+              blockCount += 1
+            }
+            if exit == .dispatch, completed < maximumInstructions,
+              usesGeneratedChainAccounting,
+              let source = residentForExecutedChainSource(
+                guestRIP: context[DoryARM64Tier1ABI.ContextWord.chainLastGuestRIP.rawValue],
+                entryResident: resident,
+                physicalRIPProvider: physicalRIPProvider,
+                addressSpaceID: addressSpaceID,
+                mode: mode,
+                state: state
+              )
+            {
+              pendingLink = (source, context[DoryARM64Tier1ABI.ContextWord.rip.rawValue])
+            }
             guard exit == .dispatch, completed < maximumInstructions, !resident.endsTimeBoundary
             else {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
@@ -5935,6 +6038,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           memoryCodeGeneration: memoryGeneration,
           memory: memory
         )
+        if lookupKey(for: cached) == key {
+          cached.memoryCodeGeneration = memoryGeneration
+          return cached
+        }
+        // Physical-code sharing may return a block owned by another address-space lookup key.
+        // Preserve the established replacement semantics while retaining links only for an
+        // in-place generation refresh of the exact same resident.
         let resident = ResidentBlock(
           block: cached.block,
           offset: cached.offset,
@@ -6576,6 +6686,147 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     return slot.resident
   }
 
+  private func isRuntimeChainEligible(_ resident: ResidentBlock) -> Bool {
+    resident.block.chainSlots != nil
+      && !resident.block.requiresMemoryCallbacks
+      && !resident.block.mayExitToInterpreter
+      && !resident.endsTimeBoundary
+  }
+
+  private func residentForExecutedChainSource(
+    guestRIP: UInt64,
+    entryResident: ResidentBlock,
+    physicalRIPProvider: ((_ guestStart: UInt64) throws -> UInt64?)?,
+    addressSpaceID: UInt64,
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState
+  ) -> ResidentBlock? {
+    if entryResident.block.guestStart == guestRIP { return entryResident }
+    guard let physicalStart = resolvePhysicalStart(at: guestRIP, using: physicalRIPProvider) else {
+      return nil
+    }
+    return lookupResident(
+      for: makeLookupKey(
+        guestStart: guestRIP,
+        physicalStart: physicalStart,
+        addressSpaceID: addressSpaceID,
+        mode: mode,
+        state: state
+      ))
+  }
+
+  private func installDirectChain(
+    from source: ResidentBlock,
+    to target: ResidentBlock,
+    destinationGuestRIP: UInt64
+  ) {
+    guard isRuntimeChainEligible(source), isRuntimeChainEligible(target),
+      source.block.tier == target.block.tier,
+      let slot = source.block.chainSlots?.first(where: {
+        $0.targetGuestRIP == destinationGuestRIP
+      })
+    else { return }
+    if let existing = source.outgoingLinks[slot.machineWordIndex] {
+      if existing.target === target { return }
+      unlinkDirectChain(existing)
+    }
+    let slotOffset = source.offset + slot.machineWordIndex * MemoryLayout<UInt32>.size
+    guard (try? region.patchDirectBranch(at: slotOffset, to: target.offset)) != nil else { return }
+    let link = ChainLink(source: source, target: target, slot: slot)
+    source.outgoingLinks[slot.machineWordIndex] = link
+    target.incomingLinks.append(link)
+    directChainPatchCount &+= 1
+  }
+
+  /// Validates every already-linked target before the entry block can reach it without another
+  /// Swift boundary. Explicit invalidation normally removes stale targets eagerly; this check
+  /// preserves the older generation/byte-provider contract for callers that mutate code between
+  /// dispatches and report that change only through their providers.
+  private func validateDirectChainTargets(
+    reachableFrom entry: ResidentBlock,
+    byteProvider: (_ guestStart: UInt64, _ maximumCount: Int) throws -> [UInt8],
+    codeGenerationProvider: ((_ guestStart: UInt64, _ byteCount: Int) throws -> UInt64?)?,
+    mode: DoryX86ExecutionMode,
+    memory: (any DoryX86Memory)?
+  ) {
+    var pending = [entry]
+    var visited = Set<ObjectIdentifier>()
+    while let source = pending.popLast() {
+      guard visited.insert(ObjectIdentifier(source)).inserted else { continue }
+      for link in Array(source.outgoingLinks.values) {
+        guard let target = link.target, let key = lookupKey(for: target) else {
+          unlinkDirectChain(link)
+          continue
+        }
+        let byteCount = Int(target.block.guestByteCount)
+        let currentGeneration = readCodeGeneration(
+          using: codeGenerationProvider.map { provider in
+            { try provider(target.block.guestStart, $0) }
+          },
+          byteCount: byteCount
+        )
+        if let residentGeneration = target.memoryCodeGeneration,
+          residentGeneration == currentGeneration
+        {
+          pending.append(target)
+          continue
+        }
+        guard
+          let currentBytes = try? byteProvider(target.block.guestStart, byteCount),
+          currentBytes.count == byteCount,
+          Self.fingerprint(bytes: currentBytes, mode: mode) == target.codeGeneration
+        else {
+          removeResident(for: key)
+          continue
+        }
+        do {
+          try protectValidatedGuestCode(
+            at: target.block.guestStart,
+            byteCount: byteCount,
+            memoryCodeGeneration: currentGeneration,
+            memory: memory
+          )
+          target.memoryCodeGeneration = currentGeneration
+          pending.append(target)
+        } catch {
+          removeResident(for: key)
+        }
+      }
+    }
+  }
+
+  private func lookupKey(for resident: ResidentBlock) -> LookupKey? {
+    for slot in residentSlots {
+      if let slot, slot.resident === resident { return slot.key }
+    }
+    return nil
+  }
+
+  private func unlinkDirectChain(_ link: ChainLink) {
+    guard let source = link.source else {
+      link.target?.incomingLinks.removeAll { $0 === link }
+      return
+    }
+    let fallbackOffset =
+      source.offset + link.slot.fallbackWordIndex * MemoryLayout<UInt32>.size
+    let slotOffset = source.offset + link.slot.machineWordIndex * MemoryLayout<UInt32>.size
+    do {
+      try region.patchDirectBranch(at: slotOffset, to: fallbackOffset)
+    } catch {
+      preconditionFailure("resident chain slot could not be restored: \(error)")
+    }
+    source.outgoingLinks[link.slot.machineWordIndex] = nil
+    link.target?.incomingLinks.removeAll { $0 === link }
+    directChainUnlinkCount &+= 1
+  }
+
+  private func retireResident(_ resident: ResidentBlock) {
+    for link in Array(resident.incomingLinks) { unlinkDirectChain(link) }
+    for link in Array(resident.outgoingLinks.values) { unlinkDirectChain(link) }
+    resident.incomingLinks.removeAll(keepingCapacity: false)
+    resident.outgoingLinks.removeAll(keepingCapacity: false)
+  }
+
   private func publish(_ resident: ResidentBlock, for key: LookupKey) throws {
     let slot = ResidentSlot(key: key, resident: resident)
     let slotIndex: Int
@@ -6597,6 +6848,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       {
         let replacedIndex = Int(replaced - 1)
         if replacedIndex != slotIndex {
+          if let replacedSlot = residentSlots[replacedIndex] {
+            let recent = recentIndex(for: replacedSlot.key)
+            if recentEntries[recent]?.key == replacedSlot.key { recentEntries[recent] = nil }
+            let replacedResident = replacedSlot.resident
+            retireResident(replacedResident)
+          }
           residentSlots[replacedIndex] = nil
           freeResidentSlotIndices.append(replacedIndex)
         }
@@ -6618,6 +6875,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       removed <= UInt64(residentSlots.count)
     {
       let removedIndex = Int(removed - 1)
+      if let removedResident = residentSlots[removedIndex]?.resident {
+        retireResident(removedResident)
+      }
       residentSlots[removedIndex] = nil
       freeResidentSlotIndices.append(removedIndex)
     }

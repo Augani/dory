@@ -443,6 +443,66 @@ import Testing
     #endif
   }
 
+  @Test func warmedDirectChainsBypassDispatchAndUnlinkBeforeTargetReplacement() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x1400
+      for tier1Enabled in [false, true] {
+        // inc eax; jmp next; inc eax; jmp next; hlt
+        var bytes: [UInt8] = [0xFF, 0xC0, 0xEB, 0, 0xFF, 0xC0, 0xEB, 0, 0xF4]
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: tier1Enabled
+        )
+        func run() throws -> (DoryARM64ExecutionSummary, DoryX86ArchitecturalState, UInt64) {
+          var state = try DoryX86ArchitecturalState(rip: base)
+          let entriesBefore = executor.diagnostics.nativeDispatcherEntries
+          let summary = try #require(
+            executor.executeChainedSummary(
+              byteProvider: { address, count in
+                guard address >= base else { return [] }
+                let offset = Int(address - base)
+                guard bytes.indices.contains(offset) else { return [] }
+                return Array(bytes[offset..<min(bytes.count, offset + count)])
+              },
+              physicalRIPProvider: { $0 },
+              at: base,
+              mode: .long64,
+              addressSpaceID: 9,
+              maximumInstructions: 16,
+              state: &state
+            ))
+          return (summary, state, executor.diagnostics.nativeDispatcherEntries - entriesBefore)
+        }
+
+        let cold = try run()
+        #expect(cold.0.guestInstructionCount == 5)
+        #expect(cold.0.residentBlockCount == 3)
+        #expect(cold.1.registers.rax == 2)
+        #expect(cold.2 == 3)
+        #expect(executor.diagnostics.directChainPatches == 1)
+
+        let warm = try run()
+        #expect(warm.0.guestInstructionCount == 5)
+        #expect(warm.0.residentBlockCount == 3)
+        #expect(warm.1.registers.rax == 2)
+        #expect(warm.2 == 2)
+        #expect(executor.diagnostics.directlyChainedBlocks == 1)
+
+        executor.invalidate(addressSpaceID: 9, guestRange: (base + 4)..<(base + 8))
+        #expect(executor.diagnostics.directChainUnlinks == 1)
+        bytes[5] = 0xC1  // Replace the target with inc ecx; jmp next.
+
+        let replaced = try run()
+        #expect(replaced.0.guestInstructionCount == 5)
+        #expect(replaced.0.residentBlockCount == 3)
+        #expect(replaced.1.registers.rax == 1)
+        #expect(replaced.1.registers.rcx == 1)
+        #expect(replaced.2 == 3)
+        #expect(executor.diagnostics.directChainPatches == 2)
+      }
+    #endif
+  }
+
   @Test func nativeTraceGenerationMismatchRebuildsBeforeExecutingChangedCode() throws {
     #if arch(arm64)
       let base: UInt64 = 0x1800
@@ -8155,11 +8215,19 @@ import Testing
           to: targetOffset
         )
         #expect(try region.execute(at: 0, context: &context) == .dispatch)
+        #expect(context[0] == 0)
+        #expect(context[16] == 0x1001)
+
+        context[16] = 0x1000
+        context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 1
+        context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] = 2
+        #expect(try region.execute(at: 0, context: &context) == .dispatch)
         #expect(context[0] == 0x1234_5678)
         #expect(context[16] == 0x100B)
 
         context[0] = 0
         context[16] = 0x1000
+        context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] = 2
         try region.patchDirectBranch(
           at: slot.machineWordIndex * MemoryLayout<UInt32>.stride,
           to: slot.fallbackWordIndex * MemoryLayout<UInt32>.stride
@@ -8232,6 +8300,8 @@ import Testing
           repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
         context[16] = 0x2000
         context[17] = DoryX86RFLAGS.zero.rawValue
+        context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 1
+        context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] = 2
         #expect(try region.execute(at: 0, context: &context) == .dispatch)
         #expect(context[0] == 0x11)
         #expect(context[16] == 0x2009)
@@ -8239,6 +8309,7 @@ import Testing
         context[0] = 0
         context[16] = 0x2000
         context[17] = DoryX86RFLAGS.reservedOne.rawValue
+        context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] = 2
         #expect(try region.execute(at: 0, context: &context) == .dispatch)
         #expect(context[0] == 0x22)
         #expect(context[16] == 0x2007)
@@ -8334,6 +8405,8 @@ import Testing
       context[3] = 0x40
       context[4] = 0x100
       context[16] = 0x3000
+      context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 1
+      context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] = 2
 
       #expect(try region.execute(at: 0, context: &context, memory: memory) == .dispatch)
       #expect(context[0] == 0x1122_3344_5566_7788)

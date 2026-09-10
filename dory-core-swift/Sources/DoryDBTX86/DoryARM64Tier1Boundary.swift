@@ -279,9 +279,21 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
     switch terminator {
     case .next(let target), .branch(let target):
       guard DoryX86ArchitecturalState.isCanonical(target) else { return [] }
+      words.append(
+        Self.encodeLoad64(
+          register: 9,
+          base: 0,
+          byteOffset: DoryARM64Tier1ABI.ContextWord.chainEnabled.byteOffset
+        ))
+      let disabledBranch = words.count
+      words.append(0)
       let slot = words.count
       words.append(0)
       let fallback = words.count
+      words[disabledBranch] = Self.encodeCompareAndBranchZero(
+        register: 9,
+        wordOffset: fallback - disabledBranch
+      )
       words[slot] = Self.encodeUnconditionalBranch(wordOffset: fallback - slot)
       return [
         .init(
@@ -299,6 +311,14 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
         Self.encodeLoad64(
           register: 9,
           base: 0,
+          byteOffset: DoryARM64Tier1ABI.ContextWord.chainEnabled.byteOffset
+        ))
+      let disabledBranch = words.count
+      words.append(0)
+      words.append(
+        Self.encodeLoad64(
+          register: 9,
+          base: 0,
           byteOffset: DoryARM64Tier1ABI.ContextWord.rip.byteOffset
         ))
       Self.emitImmediate(taken, register: 10, into: &words)
@@ -310,6 +330,10 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
       let takenSlot = words.count
       words.append(0)
       let fallback = words.count
+      words[disabledBranch] = Self.encodeCompareAndBranchZero(
+        register: 9,
+        wordOffset: fallback - disabledBranch
+      )
       words[selectTaken] = Self.encodeConditionalBranchEqual(
         wordOffset: takenSlot - selectTaken)
       words[notTakenSlot] = Self.encodeUnconditionalBranch(

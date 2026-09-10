@@ -103,7 +103,11 @@ after the preceding native return has crossed this publication boundary; an
 interrupt consumer therefore never observes a tier-1-private lazy descriptor.
 Interpreter, exception, interrupt, and code-cache exits must publish the precise
 RIP of the next instruction to execute. A direct chain publishes nothing solely
-for the chain; its target consumes the pinned state.
+for the chain; its target consumes the pinned state. Patched chain slots consult
+context word 54 and remain block-local dispatcher exits while chaining is disabled.
+This keeps one-block execution and recorded native-trace replay independent of
+runtime link state. The chained dispatcher enables the slots only after validating
+the complete reachable resident set against generation tokens or current bytes.
 
 The Swift dispatcher also materializes a pending tier-1 record before entering a
 legacy baseline or optimizing resident in the same chain. Those emitters consume
