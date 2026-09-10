@@ -367,6 +367,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let shadowReturnPushesOffset =
     DoryARM64Tier1ABI.ContextWord.shadowReturnPushes.byteOffset
   private static let pendingWorkOffset = DoryARM64Tier1ABI.ContextWord.pendingWork.byteOffset
+  private static let hostFramePointerOffset =
+    DoryARM64Tier1ABI.ContextWord.hostFramePointer.byteOffset
+  private static let hostReturnAddressOffset =
+    DoryARM64Tier1ABI.ContextWord.hostReturnAddress.byteOffset
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
@@ -2660,12 +2664,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func emitMemoryPrologue(into words: inout [UInt32]) {
     words += [
-      0xA9B9_7BFD,  // stp x29,x30,[sp,#-112]!
-      0x9100_03FD,  // mov x29,sp
+      encodeSubtractImmediate64(left: 31, immediate: 112, destination: 31),
       0xA901_53F3,  // stp x19,x20,[sp,#16]
       0xA902_5BF5,  // stp x21,x22,[sp,#32]
       0xA903_63F7,  // stp x23,x24,[sp,#48]
       0xAA00_03F3,  // mov x19,x0 (architectural context)
+      // Keep host control state in the context, not beside generated memory temporaries.
+      // This makes a corrupted generated frame incapable of supplying FP/LR at RET.
+      encodeStore64(register: 29, base: 19, byteOffset: Self.hostFramePointerOffset),
+      encodeStore64(register: 30, base: 19, byteOffset: Self.hostReturnAddressOffset),
+      0x9100_03FD,  // mov x29,sp
       0xAA01_03F4,  // mov x20,x1 (memory context)
       0xAA02_03F5,  // mov x21,x2 (read callback)
       0xAA03_03F6,  // mov x22,x3 (write callback)
@@ -2676,10 +2684,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func emitMemoryEpilogue(into words: inout [UInt32]) {
     words += [
+      // Load the trusted values before restoring x19, which owns the context pointer.
+      encodeLoad64(register: 16, base: 19, byteOffset: Self.hostFramePointerOffset),
+      encodeLoad64(register: 17, base: 19, byteOffset: Self.hostReturnAddressOffset),
       0xA943_63F7,  // ldp x23,x24,[sp,#48]
       0xA942_5BF5,  // ldp x21,x22,[sp,#32]
       0xA941_53F3,  // ldp x19,x20,[sp,#16]
-      0xA8C7_7BFD,  // ldp x29,x30,[sp],#112
+      encodeAddImmediate64(left: 31, immediate: 112, destination: 31),
+      encodeLogical(.or, left: 31, right: 16, destination: 29),  // mov x29,x16
+      encodeLogical(.or, left: 31, right: 17, destination: 30),  // mov x30,x17
     ]
   }
 

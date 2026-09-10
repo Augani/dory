@@ -23,6 +23,26 @@ import Testing
     #expect(first.machineBytes.count == first.machineWords.count * 4)
   }
 
+  @Test func memoryFramesRestoreHostControlStateFromTheContext() throws {
+    let block = try DoryX86IRTranslator().translate(
+      [0x48, 0x8B, 0x03],  // mov rax,[rbx]
+      at: 0x1000,
+      mode: .long64
+    )
+    let words = DoryARM64BaselineEmitter().compile(block).machineWords
+
+    #expect(words.contains(0xD101_C3FF))  // sub sp,sp,#112
+    #expect(words.contains(0xF901_227D))  // str x29,[x19,#576]
+    #expect(words.contains(0xF901_267E))  // str x30,[x19,#584]
+    #expect(words.contains(0xF941_2270))  // ldr x16,[x19,#576]
+    #expect(words.contains(0xF941_2671))  // ldr x17,[x19,#584]
+    #expect(words.contains(0x9101_C3FF))  // add sp,sp,#112
+    #expect(words.contains(0xAA10_03FD))  // mov x29,x16
+    #expect(words.contains(0xAA11_03FE))  // mov x30,x17
+    #expect(!words.contains(0xA9B9_7BFD))  // no stack-saved FP/LR prologue
+    #expect(!words.contains(0xA8C7_7BFD))  // no stack-restored FP/LR epilogue
+  }
+
   @Test func unsupportedIRProducesAClosedInterpreterFallbackStub() throws {
     let block = try DoryX86IRTranslator().translate(
       [0x0F, 0xA2],

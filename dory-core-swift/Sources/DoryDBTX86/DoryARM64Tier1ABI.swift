@@ -99,6 +99,10 @@ enum DoryARM64Tier1ABI {
     case shadowReturnMisses
     case shadowReturnPushes
     case pendingWork
+    /// Original host control state for memory-capable generated blocks. These words are
+    /// refreshed on every entry and deliberately live outside the generated stack frame.
+    case hostFramePointer
+    case hostReturnAddress
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }
