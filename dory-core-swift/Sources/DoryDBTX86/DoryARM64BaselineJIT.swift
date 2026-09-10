@@ -232,6 +232,20 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let ibtcInlineHitsOffset = DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.byteOffset
   private static let ibtcInlineMissesOffset =
     DoryARM64Tier1ABI.ContextWord.ibtcInlineMisses.byteOffset
+  private static let shadowReturnEntriesBaseOffset =
+    DoryARM64Tier1ABI.ContextWord.shadowReturnEntriesBase.byteOffset
+  private static let shadowReturnEntryMaskOffset =
+    DoryARM64Tier1ABI.ContextWord.shadowReturnEntryMask.byteOffset
+  private static let shadowReturnTopAddressOffset =
+    DoryARM64Tier1ABI.ContextWord.shadowReturnTopAddress.byteOffset
+  private static let shadowReturnGenerationOffset =
+    DoryARM64Tier1ABI.ContextWord.shadowReturnGeneration.byteOffset
+  private static let shadowReturnHitsOffset =
+    DoryARM64Tier1ABI.ContextWord.shadowReturnHits.byteOffset
+  private static let shadowReturnMissesOffset =
+    DoryARM64Tier1ABI.ContextWord.shadowReturnMisses.byteOffset
+  private static let shadowReturnPushesOffset =
+    DoryARM64Tier1ABI.ContextWord.shadowReturnPushes.byteOffset
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
@@ -327,6 +341,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
     let chainSlots = hasChainSlots
       ? emitChainSlots(for: block.terminator, into: &words)
       : []
+    if case .returnFromCall(let popBytes) = block.terminator, hasIndirectChain {
+      emitShadowReturnStackLookup(popBytes: popBytes, into: &words)
+    }
     if hasIndirectChain { emitIndirectBranchTargetCacheLookup(into: &words) }
     words.append(encodeMoveWideZero32(register: 0, immediate: UInt16(exit.rawValue)))
     words.append(0xD65F_03C0)
@@ -537,11 +554,157 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func supportsIndirectBranchTargetCache(for terminator: DoryIRTerminator) -> Bool {
     switch terminator {
-    case .indirect, .indirectCall:
+    case .indirect, .indirectCall, .returnFromCall:
       return true
     default:
       return false
     }
+  }
+
+  /// Pushes the architectural CALL pair and, when already resident, its predicted host return
+  /// target. A zero host address is a valid cold prediction and makes the later RET fall through
+  /// to the IBTC/dispatcher path without compromising architectural state.
+  private func emitShadowReturnStackPush(returnAddress: UInt64, into words: inout [UInt32]) {
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.chainEnabledOffset))
+    let disabledBranch = words.count
+    words.append(0)
+    words.append(
+      encodeLoad64(register: 10, base: 0, byteOffset: Self.shadowReturnEntriesBaseOffset))
+    let missingEntriesBranch = words.count
+    words.append(0)
+    words.append(
+      encodeLoad64(register: 11, base: 0, byteOffset: Self.shadowReturnTopAddressOffset))
+    let missingTopBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 12, base: 11, byteOffset: 0))
+    words.append(
+      encodeLoad64(register: 13, base: 0, byteOffset: Self.shadowReturnEntryMaskOffset))
+    words.append(encodeLogical(.and, left: 13, right: 12, destination: 13))
+    words.append(encodeAdd(is64Bit: true, left: 10, right: 13, leftShift: 5, destination: 10))
+    words.append(encodeLoad64(register: 13, base: 0, byteOffset: Self.rspOffset))
+    words.append(encodeStore64(register: 13, base: 10, byteOffset: 0))
+    emitImmediate(returnAddress, register: 15, into: &words)
+    words.append(encodeStore64(register: 15, base: 10, byteOffset: 8))
+    words.append(encodeStore64(register: 31, base: 10, byteOffset: 16))
+    words.append(
+      encodeLoad64(register: 13, base: 0, byteOffset: Self.shadowReturnGenerationOffset))
+    words.append(encodeStore64(register: 13, base: 10, byteOffset: 24))
+
+    // Reuse a warm IBTC target for the return continuation without counting this predictor fill
+    // as an executed indirect branch lookup.
+    words.append(encodeLoad64(register: 14, base: 0, byteOffset: Self.ibtcEntriesBaseOffset))
+    let missingIBTCBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 16, base: 0, byteOffset: Self.ibtcEntryMaskOffset))
+    words.append(
+      encodeLogical(
+        .and,
+        left: 16,
+        right: 15,
+        shiftAmount: 2,
+        logicalRightShift: true,
+        destination: 16
+      ))
+    words.append(encodeAdd(is64Bit: true, left: 14, right: 16, leftShift: 5, destination: 14))
+    words.append(encodeLoad64(register: 16, base: 14, byteOffset: 0))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 15, 31))
+    let tagMismatchBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 16, base: 14, byteOffset: 16))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 13, 31))
+    let generationMismatchBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 16, base: 14, byteOffset: 8))
+    let missingHostBranch = words.count
+    words.append(0)
+    words.append(encodeStore64(register: 16, base: 10, byteOffset: 16))
+
+    let finishPush = words.count
+    words.append(encodeAddImmediate64(left: 12, immediate: 1, destination: 12))
+    words.append(encodeStore64(register: 12, base: 11, byteOffset: 0))
+    emitIncrementContextWord(byteOffset: Self.shadowReturnPushesOffset, into: &words)
+    let done = words.count
+    words[disabledBranch] = encodeCompareBranchZero64(
+      register: 9, wordOffset: done - disabledBranch)
+    words[missingEntriesBranch] = encodeCompareBranchZero64(
+      register: 10, wordOffset: done - missingEntriesBranch)
+    words[missingTopBranch] = encodeCompareBranchZero64(
+      register: 11, wordOffset: done - missingTopBranch)
+    words[missingIBTCBranch] = encodeCompareBranchZero64(
+      register: 14, wordOffset: finishPush - missingIBTCBranch)
+    words[tagMismatchBranch] = encodeConditionalBranch(
+      condition: .notEqual, wordOffset: finishPush - tagMismatchBranch)
+    words[generationMismatchBranch] = encodeConditionalBranch(
+      condition: .notEqual, wordOffset: finishPush - generationMismatchBranch)
+    words[missingHostBranch] = encodeCompareBranchZero64(
+      register: 16, wordOffset: finishPush - missingHostBranch)
+  }
+
+  /// Pops and validates `{guest RSP, guest RIP, generation, host address}` after the architectural
+  /// RET read and stack update have succeeded. Any mismatch falls through to the ordinary IBTC.
+  private func emitShadowReturnStackLookup(popBytes: UInt16, into words: inout [UInt32]) {
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.chainEnabledOffset))
+    let disabledBranch = words.count
+    words.append(0)
+    words.append(
+      encodeLoad64(register: 10, base: 0, byteOffset: Self.shadowReturnEntriesBaseOffset))
+    let missingEntriesBranch = words.count
+    words.append(0)
+    words.append(
+      encodeLoad64(register: 11, base: 0, byteOffset: Self.shadowReturnTopAddressOffset))
+    let missingTopBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 12, base: 11, byteOffset: 0))
+    let emptyBranch = words.count
+    words.append(0)
+    words.append(encodeSubtractImmediate64(left: 12, immediate: 1, destination: 12))
+    words.append(encodeStore64(register: 12, base: 11, byteOffset: 0))
+    words.append(
+      encodeLoad64(register: 13, base: 0, byteOffset: Self.shadowReturnEntryMaskOffset))
+    words.append(encodeLogical(.and, left: 13, right: 12, destination: 13))
+    words.append(encodeAdd(is64Bit: true, left: 10, right: 13, leftShift: 5, destination: 10))
+
+    words.append(encodeLoad64(register: 13, base: 0, byteOffset: Self.rspOffset))
+    emitImmediate(UInt64(8) &+ UInt64(popBytes), register: 14, into: &words)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 13, 14, 13))
+    words.append(encodeLoad64(register: 14, base: 10, byteOffset: 0))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 14, 13, 31))
+    let stackMismatchBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 13, base: 0, byteOffset: Self.ripOffset))
+    words.append(encodeLoad64(register: 14, base: 10, byteOffset: 8))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 14, 13, 31))
+    let targetMismatchBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 13, base: 0, byteOffset: Self.shadowReturnGenerationOffset))
+    words.append(encodeLoad64(register: 14, base: 10, byteOffset: 24))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 14, 13, 31))
+    let generationMismatchBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 16, base: 10, byteOffset: 16))
+    let missingHostBranch = words.count
+    words.append(0)
+    emitIncrementContextWord(byteOffset: Self.shadowReturnHitsOffset, into: &words)
+    words.append(encodeBranch(register: 16))
+    let miss = words.count
+    emitIncrementContextWord(byteOffset: Self.shadowReturnMissesOffset, into: &words)
+    let done = words.count
+    words[disabledBranch] = encodeCompareBranchZero64(
+      register: 9, wordOffset: done - disabledBranch)
+    words[missingEntriesBranch] = encodeCompareBranchZero64(
+      register: 10, wordOffset: done - missingEntriesBranch)
+    words[missingTopBranch] = encodeCompareBranchZero64(
+      register: 11, wordOffset: done - missingTopBranch)
+    words[emptyBranch] = encodeCompareBranchZero64(
+      register: 12, wordOffset: miss - emptyBranch)
+    words[stackMismatchBranch] = encodeConditionalBranch(
+      condition: .notEqual, wordOffset: miss - stackMismatchBranch)
+    words[targetMismatchBranch] = encodeConditionalBranch(
+      condition: .notEqual, wordOffset: miss - targetMismatchBranch)
+    words[generationMismatchBranch] = encodeConditionalBranch(
+      condition: .notEqual, wordOffset: miss - generationMismatchBranch)
+    words[missingHostBranch] = encodeCompareBranchZero64(
+      register: 16, wordOffset: miss - missingHostBranch)
   }
 
   /// Probes `{guest RIP, host address, generation, reserved}` directly from the per-vCPU C table.
@@ -3884,6 +4047,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(encodeStore64(register: 11, base: 0, byteOffset: Self.rspOffset))
       emitImmediate(returnAddress, register: 10, into: &words)
       emitMemoryWrite(addressRegister: 11, valueRegister: 10, width: .i64, words: &words)
+      emitShadowReturnStackPush(returnAddress: returnAddress, into: &words)
       target = address
       exit = .dispatch
     case .indirectCall(let operand, let returnAddress):
@@ -3901,6 +4065,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(encodeStore64(register: 11, base: 0, byteOffset: Self.rspOffset))
       emitImmediate(returnAddress, register: 10, into: &words)
       emitMemoryWrite(addressRegister: 11, valueRegister: 10, width: .i64, words: &words)
+      emitShadowReturnStackPush(returnAddress: returnAddress, into: &words)
       return .dispatch
     case .indirect(let operand):
       guard load(operand, matching: .i64, into: 9, words: &words) else { return nil }
@@ -4359,6 +4524,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) -> UInt32 {
     precondition(immediate < 4096)
     return 0x9100_0000 | immediate << 10 | left << 5 | destination
+  }
+
+  private func encodeSubtractImmediate64(
+    left: UInt32,
+    immediate: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    precondition(immediate < 4096)
+    return 0xD100_0000 | immediate << 10 | left << 5 | destination
   }
 
   private enum ARM64Condition: UInt32 {
@@ -5030,6 +5204,10 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let indirectBranchTargetCacheMisses: UInt64
   public let indirectBranchTargetCacheFills: UInt64
   public let indirectBranchTargetCacheHitRate: Double?
+  public let shadowReturnStackHits: UInt64
+  public let shadowReturnStackMisses: UInt64
+  public let shadowReturnStackPushes: UInt64
+  public let shadowReturnStackHitRate: Double?
   public let translationCacheEntryCount: UInt64
   public let translationCacheAllocatedBytes: UInt64
   public let translationCacheAddressSpaceGeneration: UInt64
@@ -5253,6 +5431,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var directlyChainedBlockCount: UInt64 = 0
   private var indirectBranchTargetCacheHitCount: UInt64 = 0
   private var indirectBranchTargetCacheMissCount: UInt64 = 0
+  private var shadowReturnStackHitCount: UInt64 = 0
+  private var shadowReturnStackMissCount: UInt64 = 0
+  private var shadowReturnStackPushCount: UInt64 = 0
   private var codeCacheEpoch: UInt64 = 0
   private var nextOffset = 0
   private var currentTLBAddressSpaceID: UInt64?
@@ -5355,6 +5536,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           let lookups = indirectBranchTargetCacheHitCount + indirectBranchTargetCacheMissCount
           return lookups == 0
             ? nil : Double(indirectBranchTargetCacheHitCount) / Double(lookups)
+        }(),
+        shadowReturnStackHits: shadowReturnStackHitCount,
+        shadowReturnStackMisses: shadowReturnStackMissCount,
+        shadowReturnStackPushes: shadowReturnStackPushCount,
+        shadowReturnStackHitRate: {
+          let lookups = shadowReturnStackHitCount + shadowReturnStackMissCount
+          return lookups == 0 ? nil : Double(shadowReturnStackHitCount) / Double(lookups)
         }(),
         translationCacheEntryCount: UInt64(translationTLB.entryCount),
         translationCacheAllocatedBytes: UInt64(translationTLB.allocatedByteCount),
@@ -5836,6 +6024,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             )
             recordLazyFlagMaterializations(in: context)
             recordIndirectBranchTargetCacheLookups(in: context)
+            recordShadowReturnStackActivity(in: context)
             if exit == .interpreter, hasCheckpoint {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               for index in context.indices { context[index] = checkpoint[index] }
@@ -7217,6 +7406,20 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     indirectBranchTargetCacheMissCount &+= context[missIndex]
     context[hitIndex] = 0
     context[missIndex] = 0
+  }
+
+  private func recordShadowReturnStackActivity(
+    in context: UnsafeMutableBufferPointer<UInt64>
+  ) {
+    let hitIndex = DoryARM64Tier1ABI.ContextWord.shadowReturnHits.rawValue
+    let missIndex = DoryARM64Tier1ABI.ContextWord.shadowReturnMisses.rawValue
+    let pushIndex = DoryARM64Tier1ABI.ContextWord.shadowReturnPushes.rawValue
+    shadowReturnStackHitCount &+= context[hitIndex]
+    shadowReturnStackMissCount &+= context[missIndex]
+    shadowReturnStackPushCount &+= context[pushIndex]
+    context[hitIndex] = 0
+    context[missIndex] = 0
+    context[pushIndex] = 0
   }
 
   /// Publishes a fully materialized architectural state at every Swift/dispatcher boundary. The

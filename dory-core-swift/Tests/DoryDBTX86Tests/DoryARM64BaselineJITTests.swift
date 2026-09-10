@@ -8438,6 +8438,121 @@ import Testing
     #endif
   }
 
+  @Test func baselineCallAndReturnUseTheGuestRSPTaggedShadowStackInline() throws {
+    #if arch(arm64)
+      let emitter = DoryARM64BaselineEmitter()
+      let call = emitter.compile(
+        try DoryX86IRTranslator(instructionBudget: 1).translate(
+          [0xE8, 0xFB, 0, 0, 0], at: 0x3000, mode: .long64))
+      let callee = emitter.compile(
+        try DoryX86IRTranslator(instructionBudget: 1).translate(
+          [0xC3], at: 0x3100, mode: .long64))
+      let continuation = emitter.compile(
+        try DoryX86IRTranslator(instructionBudget: 1).translate(
+          [0xB9, 0x34, 0x12, 0, 0], at: 0x3005, mode: .long64))
+      #expect(call.chainSlots?.count == 1)
+      #expect(callee.chainSlots?.isEmpty == true)
+
+      let region = try DoryJITExecutableRegion(minimumCapacity: 16 * 1024)
+      let calleeOffset = call.machineBytes.count
+      let continuationOffset = calleeOffset + callee.machineBytes.count
+      try region.publish(call, at: 0)
+      try region.publish(callee, at: calleeOffset)
+      try region.publish(continuation, at: continuationOffset)
+      let ibtc = try DoryJITIndirectBranchTargetCache()
+      try ibtc.fill(
+        guestRIP: 0x3005,
+        generation: 7,
+        hostAddress: try #require(region.entryAddress(at: continuationOffset))
+      )
+      let shadowStack = try DoryJITShadowReturnStack()
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+      var context = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+      context.withUnsafeMutableBufferPointer {
+        DoryARM64BaselineExecutor.populateExecutionContext(
+          $0,
+          from: .reset(),
+          memory: memory,
+          indirectBranchTargetCache: ibtc,
+          shadowReturnStack: shadowStack,
+          codeCacheGeneration: 7
+        )
+      }
+      context[4] = 0x100
+      context[16] = 0x3000
+      context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 1
+      context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] = 1
+
+      #expect(try region.execute(at: 0, context: &context, memory: memory) == .dispatch)
+      #expect(context[4] == 0xF8)
+      #expect(context[16] == 0x3100)
+      #expect(try memory.readScalar(at: 0xF8, byteCount: 8) == 0x3005)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.shadowReturnPushes.rawValue] == 1)
+
+      context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] = 2
+      context[DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue] = 0
+      context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] = 0
+      context[DoryARM64Tier1ABI.ContextWord.shadowReturnPushes.rawValue] = 0
+      #expect(
+        try region.execute(at: calleeOffset, context: &context, memory: memory) == .dispatch)
+      #expect(context[1] == 0x1234)
+      #expect(context[4] == 0x100)
+      #expect(context[16] == 0x300A)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue] == 2)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] == 2)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.shadowReturnHits.rawValue] == 1)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.shadowReturnMisses.rawValue] == 0)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.rawValue] == 0)
+    #endif
+  }
+
+  @Test func shadowReturnMismatchFallsThroughToTheInlineIBTC() throws {
+    #if arch(arm64)
+      let emitter = DoryARM64BaselineEmitter()
+      let source = emitter.compile(
+        try DoryX86IRTranslator(instructionBudget: 1).translate(
+          [0xC3], at: 0x3100, mode: .long64))
+      let target = emitter.compile(
+        try DoryX86IRTranslator(instructionBudget: 1).translate(
+          [0xB9, 0x34, 0x12, 0, 0], at: 0x3005, mode: .long64))
+      let region = try DoryJITExecutableRegion(minimumCapacity: 16 * 1024)
+      let targetOffset = source.machineBytes.count
+      try region.publish(source, at: 0)
+      try region.publish(target, at: targetOffset)
+      let ibtc = try DoryJITIndirectBranchTargetCache()
+      let targetHost = try #require(region.entryAddress(at: targetOffset))
+      try ibtc.fill(guestRIP: 0x3005, generation: 7, hostAddress: targetHost)
+      let shadowStack = try DoryJITShadowReturnStack()
+      try shadowStack.push(
+        guestRSP: 0xF8, guestRIP: 0x3006, hostAddress: targetHost, generation: 7)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+      try memory.writeScalar(at: 0xF8, value: 0x3005, byteCount: 8)
+      var context = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+      context.withUnsafeMutableBufferPointer {
+        DoryARM64BaselineExecutor.populateExecutionContext(
+          $0,
+          from: .reset(),
+          memory: memory,
+          indirectBranchTargetCache: ibtc,
+          shadowReturnStack: shadowStack,
+          codeCacheGeneration: 7
+        )
+      }
+      context[4] = 0xF8
+      context[16] = 0x3100
+      context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 1
+      context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] = 2
+
+      #expect(try region.execute(at: 0, context: &context, memory: memory) == .dispatch)
+      #expect(context[1] == 0x1234)
+      #expect(context[4] == 0x100)
+      #expect(context[16] == 0x300A)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.shadowReturnHits.rawValue] == 0)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.shadowReturnMisses.rawValue] == 1)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.rawValue] == 1)
+    #endif
+  }
+
   @Test func chainedExecutorFillsHitsAndInvalidatesTheIndirectTargetCache() throws {
     #if arch(arm64)
       let base: UInt64 = 0x3500
@@ -8492,6 +8607,70 @@ import Testing
       #expect(executor.diagnostics.indirectBranchTargetCacheHits == 1)
       #expect(executor.diagnostics.indirectBranchTargetCacheMisses == 2)
       #expect(executor.diagnostics.indirectBranchTargetCacheFills == 2)
+    #endif
+  }
+
+  @Test func chainedExecutorWarmsAndHitsTheShadowReturnStack() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x3500
+      // call function; inc ecx; jmp halt; function: ret; halt
+      let bytes: [UInt8] = [
+        0xE8, 0x04, 0, 0, 0,
+        0xFF, 0xC1,
+        0xEB, 0x01,
+        0xC3,
+        0xF4,
+      ]
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 32 * 1024)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+      func run() throws -> (DoryARM64ExecutionSummary, DoryX86ArchitecturalState, UInt64) {
+        var state = try DoryX86ArchitecturalState(
+          registers: .init(rsp: 0x100),
+          rip: base
+        )
+        let entriesBefore = executor.diagnostics.nativeDispatcherEntries
+        let summary = try #require(
+          executor.executeChainedSummary(
+            byteProvider: { address, count in
+              guard address >= base else { return [] }
+              let offset = Int(address - base)
+              guard bytes.indices.contains(offset) else { return [] }
+              return Array(bytes[offset..<min(bytes.count, offset + count)])
+            },
+            physicalRIPProvider: { $0 },
+            at: base,
+            mode: .long64,
+            addressSpaceID: 5,
+            maximumInstructions: 16,
+            state: &state,
+            memory: memory
+          ))
+        return (summary, state, executor.diagnostics.nativeDispatcherEntries - entriesBefore)
+      }
+
+      let cold = try run()
+      #expect(cold.0.guestInstructionCount == 5)
+      #expect(cold.0.residentBlockCount == 4)
+      #expect(cold.0.exitCode == .halt)
+      #expect(cold.1.registers.rcx == 1)
+      #expect(cold.1.registers.rsp == 0x100)
+      #expect(cold.2 == 4)
+      #expect(executor.diagnostics.shadowReturnStackPushes == 1)
+      #expect(executor.diagnostics.shadowReturnStackHits == 0)
+      #expect(executor.diagnostics.shadowReturnStackMisses == 1)
+      #expect(executor.diagnostics.indirectBranchTargetCacheFills == 1)
+
+      let warm = try run()
+      #expect(warm.0 == cold.0)
+      #expect(warm.1.registers.rcx == 1)
+      #expect(warm.1.registers.rsp == 0x100)
+      // CALL and RET require guest-memory callbacks, so the current runtime preserves a Swift
+      // boundary before RET; the warm shadow hit still removes the return edge's entry.
+      #expect(warm.2 == 3)
+      #expect(executor.diagnostics.shadowReturnStackPushes == 2)
+      #expect(executor.diagnostics.shadowReturnStackHits == 1)
+      #expect(executor.diagnostics.shadowReturnStackMisses == 1)
+      #expect(executor.diagnostics.shadowReturnStackHitRate == 0.5)
     #endif
   }
 
