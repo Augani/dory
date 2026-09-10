@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-host-control-hardening-rejection",
+  "observedAt": "2026-09-10T16:18:07Z",
+  "status": "production-host-crash-reverted",
+  "qualification": "local A05.3 reliability investigation; not A05.3 closure, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "72167aeb670822be7e189314afbc76ea14c5750c",
+    "revertCommit": "ff659f230f69db689bd9d31e0cc4e02bee90562a",
+    "candidateRunnerSHA256": "ce21138e0afa7bf71b218847fe3692563e4481737cb13d88ee77b671090170c2",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "scope": "Capture the incoming tier-one frame pointer and link register in two existing context words and restore them from that context instead of trusting their generated stack-frame pair. Direct mixed-compiler chaining remained disabled.",
+    "behavioralIntent": "Test whether the low-PC production failures were confined to corruption of the tier-one frame-pointer/link-register save pair.",
+    "regressionCoverage": "A new encoding test required context-backed tier-one FP/LR capture and restore; the existing tier-one helper-clobber and baseline memory host-control regressions also passed.",
+    "productionFinding": "The exact release binary crashed before it could serialize a diagnostic receipt. Control returned from generated code to the correct C caller, but generated execution had violated the Darwin callee-saved contract by returning with x20 changed from the caller's exit-code output pointer to the Swift memory-write callback thunk. The caller's exit-code store therefore attempted a byte write into its read-only executable text segment. Protecting only FP/LR does not contain the production corruption."
+  },
+  "verification": {
+    "focused": "3 ABI and host-control tests passed.",
+    "deterministicAggregate": "1,556 tests in 179 suites passed with test parallelism disabled.",
+    "productionAttempts": 1,
+    "diagnosticReceiptsProduced": 0,
+    "secondAttemptSkipped": "A single host correctness failure rejects a reliability hardening candidate; another full workload run cannot average it into acceptance."
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ]
+  },
+  "failedRun": {
+    "runID": "d7cea68e-9ff4-472c-9112-4628448edef9",
+    "intendedDiagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-tier1-host-control-first.json",
+    "diagnosticReceiptPresent": false,
+    "terminalOutputCaptured": false,
+    "processExitStatus": 138,
+    "signal": "SIGBUS",
+    "exceptionSubtype": "KERN_PROTECTION_FAILURE",
+    "faultAddress": "0x1006c6548",
+    "programCounter": "0x1008a7740",
+    "linkRegister": "0x1008a7738",
+    "esr": "Data Abort: byte write Permission fault",
+    "faultRegion": "runner __TEXT, r-x/r-x",
+    "faultAddressSymbol": "Swift memory-write callback thunk",
+    "programCounterSymbol": "dory_jit_region_execute+220: str w8, [x20]",
+    "x20": "0x1006c6548",
+    "crashReportIncidentID": "5395B9C7-0E1D-4710-AAB2-2D192655DC20",
+    "crashReportSHA256": "3fec03e4c6a65c779e92232bc940331fde63f6f9c64e79c6def31e814fd216c7"
+  },
+  "retainedBaseline": {
+    "evidence": "pvh-chain-target-rejection-ranking.json",
+    "withinRunDispatcherReductionPercent": 50.26310931351201,
+    "compilerABIRejections": 56066297,
+    "reason": "The behavior-neutral coarse instrumentation remains the last production-safe measurement."
+  },
+  "disposition": {
+    "candidateAccepted": false,
+    "a05_3DispatcherGatePassed": false,
+    "requiredDispatcherReductionPercent": 95,
+    "lastAcceptedMeasuredDispatcherReductionPercent": 50.26310931351201,
+    "reason": "The candidate is fully reverted. The crash disproves the FP/LR-only corruption hypothesis and positively identifies a separate corrupted callee-saved register. Any future containment must preserve and verify the complete generated-code callee-saved bank before mixed-compiler edge admission resumes."
+  },
+  "limitations": [
+    "The run produced no diagnostic receipt, so guest progress, retired instructions, dispatcher counters, elapsed execution, and workload status are unavailable and are not inferred.",
+    "The crash proves x20 was corrupted across generated execution but does not identify the generated instruction, callback, or stack write that first changed its saved value.",
+    "Passing directed MAP_JIT tests do not reproduce production cache rotation, predictor history, interrupts, or long native chains."
+  ]
+}
