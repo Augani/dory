@@ -105,6 +105,27 @@ enum DoryARM64Tier1ABI {
     case hostReturnAddress
     /// Generated BLR return PC for an architectural inline-TLB page-fault exit.
     case inlineTLBFaultHostPC
+    /// A baseline memory-writing instruction checkpoints only the architectural fields it can
+    /// speculatively modify before its final transactional store.
+    case memoryFaultCheckpointActive
+    case memoryFaultCheckpointRegisterMask
+    case memoryFaultCheckpointRFlags
+    case memoryFaultCheckpointRAX
+    case memoryFaultCheckpointRCX
+    case memoryFaultCheckpointRDX
+    case memoryFaultCheckpointRBX
+    case memoryFaultCheckpointRSP
+    case memoryFaultCheckpointRBP
+    case memoryFaultCheckpointRSI
+    case memoryFaultCheckpointRDI
+    case memoryFaultCheckpointR8
+    case memoryFaultCheckpointR9
+    case memoryFaultCheckpointR10
+    case memoryFaultCheckpointR11
+    case memoryFaultCheckpointR12
+    case memoryFaultCheckpointR13
+    case memoryFaultCheckpointR14
+    case memoryFaultCheckpointR15
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }

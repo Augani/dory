@@ -472,7 +472,7 @@ import Testing
     #endif
   }
 
-  @Test func baselineInlineTLBWriteAndAtomicFaultsRemainWholeBlockFallbacks() throws {
+  @Test func baselineInlineTLBWriteAndAtomicFaultsPublishExactHostPCs() throws {
     #if arch(arm64)
       for bytes in [
         [UInt8](arrayLiteral: 0x48, 0x89, 0x03),
@@ -515,10 +515,81 @@ import Testing
           )
         }
         #expect(execution.exitCode == .interpreter)
-        #expect(execution.failedCallbackHostPC == nil)
-        #expect(execution.failedExecutionContext == nil)
+        let entryAddress = try #require(region.entryAddress(at: 0))
+        let faultHostPC = try #require(execution.failedCallbackHostPC)
+        let hostOffset = try #require(UInt32(exactly: faultHostPC - entryAddress))
+        #expect(execution.failedExecutionContext != nil)
+        #expect(compiled.instructionMetadata(atHostOffset: hostOffset)?.guestRIP == 0x1000)
         #expect(tlb.diagnostics.pageFaults == 1)
       }
+    #endif
+  }
+
+  @Test func baselineInlineTLBWriteFaultRestoresItsInstructionEntryCheckpoint() throws {
+    #if arch(arm64)
+      let physical = try mmapMemory()
+      // inc rcx; inc qword [rbx]. The second instruction can complete its read and compute
+      // speculative flags/value before the write resolver discovers a read-only guest page.
+      let bytes: [UInt8] = [0x48, 0xFF, 0xC1, 0x48, 0xFF, 0x03]
+      try physical.write(at: 0x1000, bytes: bytes)
+      try physical.writeScalar(at: 0x8000, value: 5, byteCount: 8)
+      try physical.writeScalar(at: 0xC040, value: 0x8005, byteCount: 8)
+      var initial = try state(rip: 0x1000)
+      initial.registers.rbx = 0x8000
+      initial.rflags = [.reservedOne, .carry]
+      let paging = DoryX86PagingUnit()
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: initial, mode: .long64)
+      )
+      var expected = initial
+      guard case .retired = DoryX86Interpreter().step(
+        state: &expected,
+        memory: physical,
+        mode: .long64,
+        pagingUnit: paging,
+        translatedMemory: translated
+      ) else {
+        Issue.record("interpreter did not retire the expected prefix")
+        return
+      }
+      translated.updateContext(.init(state: initial, mode: .long64))
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: false,
+        optimization: .baseline
+      )
+      var state = initial
+      let prefix = try #require(executor.executeChainedSummary(
+        byteProvider: { address, maximumCount in
+          (try? translated.instructionBytes(at: address, maximumCount: maximumCount)) ?? []
+        },
+        codeGenerationProvider: { try translated.codeGeneration(at: $0, byteCount: $1) },
+        at: state.rip,
+        mode: .long64,
+        addressSpaceID: 0x9000,
+        maximumInstructions: 2,
+        state: &state,
+        memory: translated
+      ))
+      #expect(prefix.guestInstructionCount == 1)
+      #expect(prefix.exitCode == .dispatch)
+      #expect(state == expected)
+      #expect(try physical.readScalar(at: 0x8000, byteCount: 8) == 5)
+      #expect(DoryX86Interpreter().step(
+        state: &state,
+        memory: physical,
+        mode: .long64,
+        pagingUnit: paging,
+        translatedMemory: translated
+      ) == .exception(.init(
+        kind: .pageFault,
+        vector: 14,
+        errorCode: 0x7,
+        instructionPointer: 0x1003,
+        linearAddress: 0x8000
+      )))
     #endif
   }
 
