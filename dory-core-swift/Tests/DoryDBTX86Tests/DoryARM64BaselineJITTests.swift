@@ -9216,6 +9216,15 @@ import Testing
     #expect(result.block.guestInstructionCount == translated.guestInstructionCount)
     #expect(result.block.guestByteCount == translated.guestByteCount)
     #expect(result.block.statements.count == 2)
+    #expect(result.block.instructionBoundaries.count == 4)
+    #expect(result.block.instructionBoundaries[0].statementStartIndex == 0)
+    #expect(result.block.instructionBoundaries[0].statementCount == 1)
+    #expect(result.block.instructionBoundaries[1].statementStartIndex == 1)
+    #expect(result.block.instructionBoundaries[1].statementCount == 1)
+    #expect(result.block.instructionBoundaries[2].statementStartIndex == 2)
+    #expect(result.block.instructionBoundaries[2].statementCount == 0)
+    #expect(result.block.instructionBoundaries[3].statementStartIndex == 2)
+    #expect(result.block.instructionBoundaries[3].statementCount == 0)
     guard case .copy(_, .immediate(let value, width: .i64)) = result.block.statements[1]
     else {
       Issue.record("expected propagated immediate")

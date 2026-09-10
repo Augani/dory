@@ -35,10 +35,11 @@ public struct DoryIROptimizer: Sendable {
     var knownConstants: [RegisterIdentity: UInt64] = [:]
     var statements: [DoryIRStatement] = []
     statements.reserveCapacity(block.statements.count)
+    var outputStatementOffsets = Array(repeating: 0, count: block.statements.count + 1)
     var eliminated: UInt32 = 0
     var propagated: UInt32 = 0
 
-    for statement in block.statements {
+    for (statementIndex, statement) in block.statements.enumerated() {
       switch statement {
       case .copy(let destination, let source):
         let optimizedSource = substitute(source, knownConstants: knownConstants)
@@ -49,6 +50,7 @@ public struct DoryIROptimizer: Sendable {
           target.width == .i64
         {
           eliminated &+= 1
+          outputStatementOffsets[statementIndex + 1] = statements.count
           continue
         }
         statements.append(.copy(destination: destination, source: optimizedSource))
@@ -202,6 +204,21 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         knownConstants.removeAll(keepingCapacity: true)
       }
+      outputStatementOffsets[statementIndex + 1] = statements.count
+    }
+
+    let instructionBoundaries = block.instructionBoundaries.map { boundary in
+      let inputStart = min(Int(boundary.statementStartIndex), block.statements.count)
+      let inputEnd = min(inputStart + Int(boundary.statementCount), block.statements.count)
+      let outputStart = outputStatementOffsets[inputStart]
+      let outputEnd = outputStatementOffsets[inputEnd]
+      return DoryIRInstructionBoundary(
+        guestRIP: boundary.guestRIP,
+        guestByteOffset: boundary.guestByteOffset,
+        guestByteCount: boundary.guestByteCount,
+        statementStartIndex: UInt32(outputStart),
+        statementCount: UInt32(outputEnd - outputStart)
+      )
     }
 
     return .init(
@@ -210,7 +227,8 @@ public struct DoryIROptimizer: Sendable {
         guestByteCount: block.guestByteCount,
         guestInstructionCount: block.guestInstructionCount,
         statements: statements,
-        terminator: block.terminator
+        terminator: block.terminator,
+        instructionBoundaries: instructionBoundaries
       ),
       metrics: .init(
         eliminatedStatements: eliminated,

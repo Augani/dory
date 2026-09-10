@@ -18,6 +18,18 @@ import Testing
     #expect(block.guestInstructionCount == 4)
     #expect(block.statements.count == 3)
     #expect(
+      block.instructionBoundaries == [
+        .init(guestRIP: 0x1000, guestByteOffset: 0, guestByteCount: 5,
+          statementStartIndex: 0, statementCount: 1),
+        .init(guestRIP: 0x1005, guestByteOffset: 5, guestByteCount: 5,
+          statementStartIndex: 1, statementCount: 1),
+        .init(guestRIP: 0x100A, guestByteOffset: 10, guestByteCount: 5,
+          statementStartIndex: 2, statementCount: 1),
+        .init(guestRIP: 0x100F, guestByteOffset: 15, guestByteCount: 2,
+          statementStartIndex: 3, statementCount: 0),
+      ]
+    )
+    #expect(
       block.terminator
         == .conditional(
           condition: "x86.condition.5",
@@ -131,6 +143,26 @@ import Testing
     #expect(block.guestInstructionCount == 2)
     #expect(block.guestByteCount == 2)
     #expect(block.terminator == .exit(.instructionBudget, resumeAt: 0x3002))
+    #expect(block.instructionBoundaries.count == 2)
+    #expect(block.instructionBoundaries.allSatisfy { $0.statementCount == 0 })
+  }
+
+  @Test func dispatchBoundaryDoesNotPublishMetadataForTheRewoundInstruction() throws {
+    let block = try DoryX86IRTranslator().translate(
+      [0x90, 0x0F, 0xA2],  // nop; cpuid
+      at: 0x3100,
+      mode: .long64
+    )
+
+    #expect(block.guestInstructionCount == 1)
+    #expect(block.guestByteCount == 1)
+    #expect(block.terminator == .next(0x3101))
+    #expect(
+      block.instructionBoundaries == [
+        .init(guestRIP: 0x3100, guestByteOffset: 0, guestByteCount: 1,
+          statementStartIndex: 0, statementCount: 0)
+      ]
+    )
   }
 
   @Test func prefetchHintsRemainPureNativeInstructions() throws {

@@ -158,25 +158,76 @@ public enum DoryIRTerminator: Codable, Sendable, Hashable {
   case exit(DoryIRExitReason, resumeAt: UInt64)
 }
 
+/// The guest-instruction boundary that owns a contiguous range of statements in a basic block.
+/// Instructions with no IR statements (for example NOP or a branch terminator) retain an empty
+/// range so later lowering can still publish a precise host-PC-to-guest-RIP side table.
+public struct DoryIRInstructionBoundary: Codable, Sendable, Hashable {
+  public let guestRIP: UInt64
+  public let guestByteOffset: UInt32
+  public let guestByteCount: UInt8
+  public let statementStartIndex: UInt32
+  public let statementCount: UInt32
+
+  public init(
+    guestRIP: UInt64,
+    guestByteOffset: UInt32,
+    guestByteCount: UInt8,
+    statementStartIndex: UInt32,
+    statementCount: UInt32
+  ) {
+    self.guestRIP = guestRIP
+    self.guestByteOffset = guestByteOffset
+    self.guestByteCount = guestByteCount
+    self.statementStartIndex = statementStartIndex
+    self.statementCount = statementCount
+  }
+}
+
 public struct DoryIRBasicBlock: Codable, Sendable, Hashable {
   public let guestStart: UInt64
   public let guestByteCount: UInt32
   public let guestInstructionCount: UInt32
   public let statements: [DoryIRStatement]
   public let terminator: DoryIRTerminator
+  public let instructionBoundaries: [DoryIRInstructionBoundary]
+
+  private enum CodingKeys: String, CodingKey {
+    case guestStart
+    case guestByteCount
+    case guestInstructionCount
+    case statements
+    case terminator
+    case instructionBoundaries
+  }
 
   public init(
     guestStart: UInt64,
     guestByteCount: UInt32,
     guestInstructionCount: UInt32,
     statements: [DoryIRStatement],
-    terminator: DoryIRTerminator
+    terminator: DoryIRTerminator,
+    instructionBoundaries: [DoryIRInstructionBoundary] = []
   ) {
     self.guestStart = guestStart
     self.guestByteCount = guestByteCount
     self.guestInstructionCount = guestInstructionCount
     self.statements = statements
     self.terminator = terminator
+    self.instructionBoundaries = instructionBoundaries
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    guestStart = try container.decode(UInt64.self, forKey: .guestStart)
+    guestByteCount = try container.decode(UInt32.self, forKey: .guestByteCount)
+    guestInstructionCount = try container.decode(UInt32.self, forKey: .guestInstructionCount)
+    statements = try container.decode([DoryIRStatement].self, forKey: .statements)
+    terminator = try container.decode(DoryIRTerminator.self, forKey: .terminator)
+    instructionBoundaries =
+      try container.decodeIfPresent(
+        [DoryIRInstructionBoundary].self,
+        forKey: .instructionBoundaries
+      ) ?? []
   }
 }
 
@@ -197,10 +248,12 @@ public struct DoryX86IRTranslator: Sendable {
     var offset = 0
     var instructionCount = 0
     var statements: [DoryIRStatement] = []
+    var instructionBoundaries: [DoryIRInstructionBoundary] = []
     // Most decoded instructions lower to one or two statements. Reserving the bounded block
     // shape avoids repeatedly reallocating and copying the comparatively large statement enum
     // while translating cold firmware and kernel code.
     statements.reserveCapacity(min(instructionBudget * 2, 128))
+    instructionBoundaries.reserveCapacity(min(instructionBudget, 64))
     var terminator: DoryIRTerminator?
 
     while offset < bytes.count, instructionCount < instructionBudget {
@@ -222,7 +275,17 @@ public struct DoryX86IRTranslator: Sendable {
         terminator = .next(instructionAddress)
         break
       }
+      let statementStartIndex = statements.count
       statements.append(contentsOf: lowering.statements)
+      instructionBoundaries.append(
+        .init(
+          guestRIP: instructionAddress,
+          guestByteOffset: UInt32(offset - Int(instruction.length)),
+          guestByteCount: instruction.length,
+          statementStartIndex: UInt32(statementStartIndex),
+          statementCount: UInt32(statements.count - statementStartIndex)
+        )
+      )
       if let end = lowering.terminator {
         terminator = end
         break
@@ -248,7 +311,8 @@ public struct DoryX86IRTranslator: Sendable {
       guestByteCount: UInt32(offset),
       guestInstructionCount: UInt32(instructionCount),
       statements: statements,
-      terminator: terminator!
+      terminator: terminator!,
+      instructionBoundaries: instructionBoundaries
     )
   }
 
