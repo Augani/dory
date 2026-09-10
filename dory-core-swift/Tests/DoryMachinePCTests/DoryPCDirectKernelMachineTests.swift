@@ -284,8 +284,8 @@ import Testing
         executionTier: .baselineJIT,
         baselineJITMaximumCodeBytes: 16 * 1024
       )
-      // CPUID declines native emission; the backward jump keeps revisiting the same exact site
-      // while the resident resolver's 64-instruction budget remains stable.
+      // CPUID declines native emission; the backward jump keeps revisiting the same exact site.
+      // The terminal hot-site sample retains the exact final short-budget identity.
       try machine.load(kernel: makeELF(code: [0x0F, 0xA2, 0xEB, 0xFC]), commandLine: "x")
 
       #expect(try machine.runOnDedicatedStack(maximumInstructions: 130) == .instructionBudget(130))
@@ -293,7 +293,7 @@ import Testing
       let hotSite = try #require(diagnostics.negativeCacheHotSites.first)
       #expect(hotSite.guestRIP == 0x10_0000)
       #expect(hotSite.executionMode == .protected32)
-      #expect(hotSite.instructionBudget == 64)
+      #expect(hotSite.instructionBudget == 2)
       #expect(hotSite.addressSpaceID == 0)
       #expect(hotSite.privilegeLevel == 0)
       #expect(hotSite.pagingEnabled == false)

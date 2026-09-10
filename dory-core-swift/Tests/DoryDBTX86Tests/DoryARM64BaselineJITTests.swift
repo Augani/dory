@@ -528,16 +528,11 @@ import Testing
     #if arch(arm64)
       let base: UInt64 = 0x20_000
       var bytes: [UInt8] = []
-      for value in 0..<1_024 {
-        bytes += [
-          0xB8,
-          UInt8(truncatingIfNeeded: value),
-          UInt8(truncatingIfNeeded: value >> 8),
-          0,
-          0,
-          0xEB,
-          0,
-        ]
+      // Keep every source instruction within one 4 KiB instruction page. Each direct jump is a
+      // real natural block boundary, while the generated code is still large enough to wrap the
+      // deliberately tiny executable region many times.
+      for _ in 0..<1_000 {
+        bytes += [0xFF, 0xC0, 0xEB, 0]  // inc eax; jmp next
       }
       bytes.append(0xF4)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
@@ -558,7 +553,7 @@ import Testing
           state: &state
         ))
         #expect(summary.exitCode == .halt)
-        #expect(state.registers.rax == 1_023)
+        #expect(state.registers.rax == 1_000)
       }
 
       try run()
@@ -8781,10 +8776,10 @@ import Testing
     #endif
   }
 
-  @Test func largeChainKeepsResidentCompilationFetchesAtOrBelow960Bytes() throws {
+  @Test func largeChainCompilesStraightLineCodeToItsNaturalControlBoundary() throws {
     #if arch(arm64)
       let base: UInt64 = 0x3000
-      let bytes = [UInt8](repeating: 0x90, count: 100) + [0xF4]
+      let bytes = [UInt8](repeating: 0x90, count: 512) + [0xF4]
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024)
       var requestedCounts: [Int] = []
       var state = try DoryX86ArchitecturalState(rip: base)
@@ -8799,6 +8794,7 @@ import Testing
             return Array(bytes[offset..<min(bytes.count, offset + count)])
           },
           codeGenerationProvider: { _, _ in 1 },
+          physicalRIPProvider: { $0 },
           at: base,
           mode: .long64,
           addressSpaceID: 0,
@@ -8807,9 +8803,52 @@ import Testing
         ))
 
       #expect(summary.exitCode == .halt)
-      #expect(summary.guestInstructionCount == 101)
-      #expect(requestedCounts.max() == 960)
-      #expect(requestedCounts.allSatisfy { $0 <= 960 })
+      #expect(summary.guestInstructionCount == 513)
+      #expect(summary.residentBlockCount == 1)
+      #expect(requestedCounts.max() == 4_096)
+      #expect(requestedCounts.allSatisfy { $0 <= 4_096 })
+      #expect(DoryARM64BaselineExecutor.maximumResidentInstructionBudget == 4_096)
+    #endif
+  }
+
+  @Test func naturalResidentBlockStopsBeforeTheNextInstructionPage() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x1F00
+      let bytes = [UInt8](repeating: 0x90, count: 300) + [0xF4]
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024)
+      var requests: [(address: UInt64, count: Int)] = []
+      var state = try DoryX86ArchitecturalState(rip: base)
+
+      let summary = try #require(
+        executor.executeChainedSummary(
+          byteProvider: { address, count in
+            requests.append((address, count))
+            guard address >= base else { return [] }
+            let offset = Int(address - base)
+            guard bytes.indices.contains(offset) else { return [] }
+            return Array(bytes[offset..<min(bytes.count, offset + count)])
+          },
+          codeGenerationProvider: { _, _ in 1 },
+          physicalRIPProvider: { $0 },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 4_096,
+          state: &state
+        ))
+
+      #expect(summary.exitCode == .halt)
+      #expect(summary.guestInstructionCount == 301)
+      #expect(summary.residentBlockCount == 2)
+      #expect(requests.first?.address == base)
+      #expect(requests.first?.count == 256)
+      #expect(requests.dropFirst().first?.address == 0x2000)
+      #expect(
+        DoryARM64BaselineExecutor.maximumResidentFetchByteCount(
+          at: 0x2FFF,
+          instructionBudget: 4_096
+        ) == 1
+      )
     #endif
   }
 

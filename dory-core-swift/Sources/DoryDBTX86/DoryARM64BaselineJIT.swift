@@ -4575,7 +4575,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   /// large enough that a normal installer boot does not continuously discard and recompile its
   /// cold-start working set.
   public static let defaultMaximumCodeBytes = 128 * 1024 * 1024
-  static let maximumResidentInstructionBudget = 64
+  /// A resident block normally ends at an architectural control, write, helper, or instruction
+  /// page boundary. This is only a pathological straight-line safety ceiling; the 4 KiB fetch
+  /// bound below is the effective limit for ordinary one-byte instructions.
+  static let maximumResidentInstructionBudget = 4_096
+  static let instructionPageByteCount = 4_096
   static let maximumRecordedNativeTraceBlocks = 256
 
   private struct LookupKey: Hashable {
@@ -5547,6 +5551,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state: DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)?
   ) throws -> ResidentBlock? {
+    let compilationInstructionBudget = min(
+      maximumInstructions, Self.maximumResidentInstructionBudget)
     guard let physicalStart = resolvePhysicalStart(
       at: guestStart,
       using: physicalRIPProvider
@@ -5560,7 +5566,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     )
     let negativeKey = NegativeLookupKey(
       lookupKey: key,
-      instructionBudget: maximumInstructions
+      instructionBudget: compilationInstructionBudget
     )
     if let cached = lookupResident(for: key) {
       // The interrupt deadline is an execution constraint, not part of guest code identity. A
@@ -5612,15 +5618,23 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     ) {
       return nil
     }
+    let pageBoundedFetch = physicalRIPProvider != nil || memory is DoryX86TranslatedMemory
     let bytes = try speculativeInstructionBytes(
-      using: byteProvider, maximumCount: maximumInstructions * 15)
+      using: byteProvider,
+      maximumCount: pageBoundedFetch
+        ? Self.maximumResidentFetchByteCount(
+          at: guestStart,
+          instructionBudget: compilationInstructionBudget
+        )
+        : compilationInstructionBudget * 15
+    )
     let compilation = try compileResident(
       key: key,
       bytes: bytes,
       codeGenerationProvider: codeGenerationProvider,
       guestStart: guestStart,
       mode: mode,
-      maximumInstructions: maximumInstructions,
+      maximumInstructions: compilationInstructionBudget,
       memory: memory
     )
     if let resident = compilation.resident {
@@ -5653,6 +5667,16 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       // prefix before the interpreter retries the fetch at the faulting RIP.
       return []
     }
+  }
+
+  static func maximumResidentFetchByteCount(
+    at guestStart: UInt64,
+    instructionBudget: Int
+  ) -> Int {
+    precondition(instructionBudget > 0)
+    let pageOffset = Int(guestStart & UInt64(instructionPageByteCount - 1))
+    let bytesUntilPageBoundary = instructionPageByteCount - pageOffset
+    return min(instructionBudget * 15, bytesUntilPageBoundary)
   }
 
   private func compileResident(

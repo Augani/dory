@@ -66,7 +66,7 @@ import Testing
     #endif
   }
 
-  @Test func completingMappingDoesNotLeaveAStaleNegativeCompilationEntry() throws {
+  @Test func completingMappingKeepsCrossPageInstructionOnThePreciseInterpreterPath() throws {
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
         let physical = try memory()
@@ -80,19 +80,24 @@ import Testing
           #expect(state == before)
         }
         #expect(executor.diagnostics.negativeEntryCount == 0)
-        // Only the second page and page table change. The first byte's code
-        // generation remains unchanged, so a cached negative first-byte proof
-        // would incorrectly suppress fresh compilation from the complete input.
+        // Only the second page and page table change. Even once the instruction is complete, the
+        // JIT must neither cache a truncated negative entry nor span the instruction-page edge;
+        // the interpreter remains the precise cross-page fetch authority.
         try physical.write(at: 0x2000, bytes: [0x78, 0x56, 0x34, 0x12])
         try physical.writeScalar(at: 0xC010, value: 0x2007, byteCount: 8)
         paging.invalidateAll()
-        let summary = try #require(executor.executeSummary(
+        #expect(try executor.executeSummary(
           byteProvider: { try translated.instructionBytes(at: 0x1FFF, maximumCount: $0) },
           codeGenerationProvider: { try translated.codeGeneration(at: 0x1FFF, byteCount: $0) },
           at: 0x1FFF, mode: .long64, addressSpaceID: 0x9000, maximumInstructions: 1,
-          state: &state, memory: translated))
-        #expect(summary.guestInstructionCount == 1)
-        #expect(summary.exitCode == .dispatch)
+          state: &state, memory: translated) == nil)
+        #expect(state == before)
+        let decoded = try DoryX86Decoder().decode(
+          [0xB8, 0x78, 0x56, 0x34, 0x12], at: 0x1FFF, mode: .long64)
+        #expect(DoryX86Interpreter().step(
+          state: &state, memory: physical, mode: .long64,
+          pagingUnit: paging, translatedMemory: translated
+        ) == .retired(decoded))
         #expect(state.registers.rax == 0x1234_5678)
         #expect(state.rip == 0x2004)
         #expect(executor.diagnostics.negativeEntryCount == 0)
