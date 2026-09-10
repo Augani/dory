@@ -524,6 +524,44 @@ import Testing
     #endif
   }
 
+  @Test func chainedExecutionCanDisableRecordedNativeTraceReplay() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x1200
+      let bytes: [UInt8] = [0xB9, 3, 0, 0, 0, 0xFF, 0xC9, 0x75, 0xFC, 0xF4]
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4_096,
+        nativeTraceEnabled: false
+      )
+      func run() throws -> DoryARM64ExecutionSummary {
+        var state = try DoryX86ArchitecturalState(rip: base)
+        let summary = try #require(executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            guard address >= base else { return [] }
+            let offset = Int(address - base)
+            guard bytes.indices.contains(offset) else { return [] }
+            return Array(bytes[offset..<min(bytes.count, offset + maximumCount)])
+          },
+          codeGenerationProvider: { _, _ in 1 },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 16,
+          state: &state
+        ))
+        #expect(state.registers.rcx == 0)
+        #expect(state.rip == base + UInt64(bytes.count))
+        return summary
+      }
+
+      let cold = try run()
+      let warm = try run()
+      #expect(warm == cold)
+      #expect(executor.nativeBatchExecutionCount == 0)
+      #expect(executor.diagnostics.nativeTraceAttempts == 0)
+      #expect(executor.diagnostics.nativeTraceReplays == 0)
+    #endif
+  }
+
   @Test func warmedDirectChainsBypassDispatchAndUnlinkBeforeTargetReplacement() throws {
     #if arch(arm64)
       let base: UInt64 = 0x1400

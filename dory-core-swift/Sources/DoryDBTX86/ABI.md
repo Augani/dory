@@ -139,6 +139,13 @@ only the architectural RFLAGS context word and cannot safely inherit the private
 descriptor. Recorded native traces are therefore homogeneous by compilation tier;
 trace replay cannot skip this tier-transition boundary.
 
+Recorded native-trace batch replay is independently selectable on an executor.
+Standalone executor tests keep it enabled to exercise generation and cache-wrap
+validation, while the production PC machine disables it until the alternate C
+batch-call boundary passes the same frozen-fixture reliability gate as ordinary
+generated execution. Direct chaining, IBTC, and shadow-return prediction remain
+enabled and are independent of trace recording.
+
 ## Native flags producers and fusion
 
 `DoryARM64Tier1ALUEmitter` emits pinned-register ADD/ADC/SUB/SBB/CMP,
