@@ -225,6 +225,7 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let negativeEntryCount: UInt64
   public let negativeCacheHotSites: [DoryPCJITNegativeCacheHotSite]
   public let codeCacheWraps: UInt64
+  public let codeCacheEvictedBlocks: UInt64
   public let nativeTraceAttempts: UInt64
   public let nativeTraceReplays: UInt64
   public let codeGenerationChecks: UInt64
@@ -294,6 +295,7 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
         .map(DoryPCJITNegativeCacheHotSite.init)
     )
     codeCacheWraps = sum(\.codeCacheWraps)
+    codeCacheEvictedBlocks = sum(\.codeCacheEvictedBlocks)
     nativeTraceAttempts = sum(\.nativeTraceAttempts)
     nativeTraceReplays = sum(\.nativeTraceReplays)
     codeGenerationChecks = sum(\.codeGenerationChecks)

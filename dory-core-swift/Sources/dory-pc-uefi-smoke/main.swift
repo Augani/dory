@@ -366,6 +366,7 @@ private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
     "negativeEntryCount": diagnostics.negativeEntryCount,
     "negativeCacheHotSites": negativeCacheHotSites,
     "codeCacheWraps": diagnostics.codeCacheWraps,
+    "codeCacheEvictedBlocks": diagnostics.codeCacheEvictedBlocks,
     "nativeTraceAttempts": diagnostics.nativeTraceAttempts,
     "nativeTraceReplays": diagnostics.nativeTraceReplays,
     "codeGenerationChecks": diagnostics.codeGenerationChecks,

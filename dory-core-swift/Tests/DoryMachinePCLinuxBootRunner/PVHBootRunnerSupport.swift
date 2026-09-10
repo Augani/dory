@@ -639,6 +639,7 @@ struct PVHJITCacheSnapshot: Codable, Sendable {
         "negativeCacheMisses": source.negativeCacheMisses,
         "negativeGenerationMismatches": source.negativeGenerationMismatches,
         "codeCacheWraps": source.codeCacheWraps,
+        "codeCacheEvictedBlocks": source.codeCacheEvictedBlocks,
         "nativeTraceAttempts": source.nativeTraceAttempts,
         "nativeTraceReplays": source.nativeTraceReplays,
         "codeGenerationChecks": source.codeGenerationChecks,
