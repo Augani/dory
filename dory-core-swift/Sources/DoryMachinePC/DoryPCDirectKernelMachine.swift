@@ -247,6 +247,9 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let chainTargetMissingMemoryRejections: UInt64
   public let chainTargetInterpreterGuardRejections: UInt64
   public let chainTargetCompilerABIRejections: UInt64
+  public let chainTargetLegacyToTier1Rejections: UInt64
+  public let chainTargetTier1ToLegacyRejections: UInt64
+  public let chainTargetOtherCompilerABIRejections: UInt64
   public let chainTargetPublicationRejections: UInt64
   public let indirectBranchTargetCacheHits: UInt64
   public let indirectBranchTargetCacheMisses: UInt64
@@ -329,6 +332,9 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     chainTargetMissingMemoryRejections = sum(\.chainTargetMissingMemoryRejections)
     chainTargetInterpreterGuardRejections = sum(\.chainTargetInterpreterGuardRejections)
     chainTargetCompilerABIRejections = sum(\.chainTargetCompilerABIRejections)
+    chainTargetLegacyToTier1Rejections = sum(\.chainTargetLegacyToTier1Rejections)
+    chainTargetTier1ToLegacyRejections = sum(\.chainTargetTier1ToLegacyRejections)
+    chainTargetOtherCompilerABIRejections = sum(\.chainTargetOtherCompilerABIRejections)
     chainTargetPublicationRejections = sum(\.chainTargetPublicationRejections)
     indirectBranchTargetCacheHits = sum(\.indirectBranchTargetCacheHits)
     indirectBranchTargetCacheMisses = sum(\.indirectBranchTargetCacheMisses)
