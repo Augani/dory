@@ -871,6 +871,10 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
       .translatedCodeProtectionGeneration ?? 0
   }
 
+  var hasTranslatedCodeProtection: Bool {
+    physicalMemory is any DoryX86TranslatedCodeProtectionMemory
+  }
+
   /// Permission-checks one generated-code miss through the architectural walker. Backing access
   /// remains separate: the C slow path uses the physical result only to construct a host address
   /// inside the reserved guest-physical region.

@@ -564,6 +564,58 @@ import Testing
     #endif
   }
 
+  @Test func protectedCodeGenerationInvalidatesChainsWithoutWarmGraphScanning() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x1400
+      // inc eax; jmp next; inc eax; jmp next; hlt
+      let bytes: [UInt8] = [0xFF, 0xC0, 0xEB, 0, 0xFF, 0xC0, 0xEB, 0, 0xF4]
+      let memory = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+      try memory.write(at: base, bytes: bytes)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024)
+      var byteFetchCount = 0
+
+      func run() throws -> DoryX86ArchitecturalState {
+        var state = try DoryX86ArchitecturalState(rip: base)
+        _ = try #require(
+          executor.executeChainedSummary(
+            byteProvider: { address, count in
+              byteFetchCount += 1
+              return try memory.read(at: address, byteCount: count)
+            },
+            codeGenerationProvider: { address, count in
+              try memory.codeGeneration(at: address, byteCount: count)
+            },
+            physicalRIPProvider: { $0 },
+            at: base,
+            mode: .long64,
+            addressSpaceID: 11,
+            maximumInstructions: 16,
+            state: &state,
+            memory: memory
+          ))
+        return state
+      }
+
+      let cold = try run()
+      #expect(cold.registers.rax == 2)
+      byteFetchCount = 0
+      let warm = try run()
+      #expect(warm.registers.rax == 2)
+      // The terminal HLT sits outside the replayable trace and needs one lookup. A reachable-graph
+      // scan would additionally fetch the linked target blocks before native entry.
+      #expect(byteFetchCount == 1)
+
+      let unlinksBeforeMutation = executor.diagnostics.directChainUnlinks
+      try memory.write(at: base + 4, bytes: [0xFF, 0xC1])
+      byteFetchCount = 0
+      let replaced = try run()
+      #expect(replaced.registers.rax == 1)
+      #expect(replaced.registers.rcx == 1)
+      #expect(byteFetchCount > 0)
+      #expect(executor.diagnostics.directChainUnlinks > unlinksBeforeMutation)
+    #endif
+  }
+
   @Test func nativeTraceGenerationMismatchRebuildsBeforeExecutingChangedCode() throws {
     #if arch(arm64)
       let base: UInt64 = 0x1800

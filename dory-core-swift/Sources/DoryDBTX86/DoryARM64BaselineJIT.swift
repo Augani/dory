@@ -5254,6 +5254,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   }
 
   private final class ResidentBlock {
+    let key: LookupKey
     let block: DoryARM64CompiledBlock
     let offset: Int
     let codeGeneration: UInt64
@@ -5264,6 +5265,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     var outgoingLinks: [Int: ChainLink] = [:]
 
     init(
+      key: LookupKey,
       block: DoryARM64CompiledBlock,
       offset: Int,
       codeGeneration: UInt64,
@@ -5271,6 +5273,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       endsTimeBoundary: Bool,
       cr3WriteSourceRegister: Int?
     ) {
+      self.key = key
       self.block = block
       self.offset = offset
       self.codeGeneration = codeGeneration
@@ -5993,13 +5996,20 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               }
             }
             pendingLink = nil
-            validateDirectChainTargets(
-              reachableFrom: resident,
-              byteProvider: byteProvider,
-              codeGenerationProvider: codeGenerationProvider,
-              mode: mode,
-              memory: memory
-            )
+            // Protected production memory advances one global generation whenever a code-bearing
+            // page becomes writable. synchronizeCodeProtection has already unlinked every raw
+            // generated target on that transition, so walking the complete reachable graph here
+            // would add O(graph) work to every dispatcher entry. Provider-only test memories lack
+            // that boundary and retain the conservative recursive validation path.
+            if codeProtectionState(for: memory) == nil {
+              validateDirectChainTargets(
+                reachableFrom: resident,
+                byteProvider: byteProvider,
+                codeGenerationProvider: codeGenerationProvider,
+                mode: mode,
+                memory: memory
+              )
+            }
 
             // Tier-one blocks retain a deferred arithmetic-flags descriptor across native block
             // boundaries. Legacy baseline and optimizing blocks know only context word 17, so
@@ -6404,7 +6414,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           memoryCodeGeneration: memoryGeneration,
           memory: memory
         )
-        if lookupKey(for: cached) == key {
+        if cached.key == key {
           cached.memoryCodeGeneration = memoryGeneration
           return cached
         }
@@ -6412,6 +6422,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         // Preserve the established replacement semantics while retaining links only for an
         // in-place generation refresh of the exact same resident.
         let resident = ResidentBlock(
+          key: key,
           block: cached.block,
           offset: cached.offset,
           codeGeneration: cached.codeGeneration,
@@ -6692,6 +6703,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       memory: memory
     )
     let resident = ResidentBlock(
+      key: key,
       block: compiled,
       offset: offset,
       codeGeneration: Self.fingerprint(bytes: guestBytes, mode: mode),
@@ -6744,6 +6756,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   ) -> (identity: ObjectIdentifier, generation: UInt64)? {
     guard let memory else { return nil }
     if let translatedMemory = memory as? DoryX86TranslatedMemory {
+      guard translatedMemory.hasTranslatedCodeProtection else { return nil }
       return (
         ObjectIdentifier(translatedMemory), translatedMemory.translatedCodeProtectionGeneration
       )
@@ -6756,6 +6769,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     guard let state = codeProtectionState(for: memory) else { return }
     if let previous = codeProtectionGenerations[state.identity], previous != state.generation {
       invalidateAllTranslations()
+      invalidateGeneratedTargetPredictions()
     }
     codeProtectionGenerations[state.identity] = state.generation
   }
@@ -7165,10 +7179,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     while let source = pending.popLast() {
       guard visited.insert(ObjectIdentifier(source)).inserted else { continue }
       for link in Array(source.outgoingLinks.values) {
-        guard let target = link.target, let key = lookupKey(for: target) else {
+        guard let target = link.target else {
           unlinkDirectChain(link)
           continue
         }
+        let key = target.key
         let byteCount = Int(target.block.guestByteCount)
         let currentGeneration = readCodeGeneration(
           using: codeGenerationProvider.map { provider in
@@ -7206,13 +7221,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }
   }
 
-  private func lookupKey(for resident: ResidentBlock) -> LookupKey? {
-    for slot in residentSlots {
-      if let slot, slot.resident === resident { return slot.key }
-    }
-    return nil
-  }
-
   private func unlinkDirectChain(_ link: ChainLink) {
     guard let source = link.source else {
       link.target?.incomingLinks.removeAll { $0 === link }
@@ -7229,6 +7237,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     source.outgoingLinks[link.slot.machineWordIndex] = nil
     link.target?.incomingLinks.removeAll { $0 === link }
     directChainUnlinkCount &+= 1
+  }
+
+  /// Drops generated raw-code targets after protected guest code becomes writable. Resident
+  /// blocks remain cached and are revalidated lazily at their next dispatcher lookup.
+  private func invalidateGeneratedTargetPredictions() {
+    for slot in residentSlots {
+      guard let resident = slot?.resident else { continue }
+      for link in Array(resident.outgoingLinks.values) { unlinkDirectChain(link) }
+    }
+    indirectBranchTargetCache.removeAll()
+    shadowReturnStack.removeAll()
   }
 
   private func retireResident(_ resident: ResidentBlock) {

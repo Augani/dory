@@ -456,6 +456,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       for codePage in codePages { codePageGenerations[codePage, default: 0] &+= 1 }
       changed = true
     }
+    if changed { codeProtectionGeneration &+= 1 }
     return changed
   }
 
