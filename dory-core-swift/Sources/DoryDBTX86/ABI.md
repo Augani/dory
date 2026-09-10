@@ -98,13 +98,6 @@ image into `x25`, the pending operation/count descriptor into `x26`, and install
 patched edge enters the target through its complete entry rather than a private
 body label.
 
-A single-access, read-only legacy memory source preserves the callback bank and
-restores the canonical `x0`...`x5` tuple before its chain slot, so it may target
-a tier-1 entry directly. Legacy writers, guarded exits, multi-access reads, and
-callback-free blocks remain compiler-separated. Tier-1 sources also remain
-separated from legacy targets because those targets cannot consume tier-1's
-private lazy-flags descriptor.
-
 `DoryARM64Tier1BoundaryEmitter` is the executable implementation of these
 boundaries. Its entry saves `x19`...`x30` in one 96-byte, 16-byte-aligned host
 frame before installing pinned state. Its exit writes architectural state,
