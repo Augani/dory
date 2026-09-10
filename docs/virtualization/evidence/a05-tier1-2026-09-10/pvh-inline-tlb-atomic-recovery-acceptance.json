@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-inline-tlb-atomic-recovery-acceptance",
+  "observedAt": "2026-09-10T12:33:59Z",
+  "status": "passed-local-production-reliability-check",
+  "qualification": "local A05.4 precise read, write, and generated atomic page-fault recovery acceptance; not hardware, cross-host, A05.3 dispatcher reduction, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "15ca643d5",
+    "candidateRunnerSHA256": "d43cf53ba922040f4005c54214b3fbee18dd666e7b312beef784159ad25497cd",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "acceptedBoundary": "A shared generated status decoder now publishes the resolver BLR continuation PC only for typed DORY_JIT_ATOMIC_RESOLUTION_PAGE_FAULT results from exchange, fetch-add, general binary RMW, unary RMW, bit-test RMW, and pair compare-exchange. Direct compare-exchange retains its separately accepted typed path.",
+    "failClosedBoundary": "Successful atomic resolution continues in generated code. Fallback and error results return to the interpreter without a recovery PC or speculative recovery context.",
+    "recoveryContract": "The instruction-entry checkpoint restores the exact faulting atomic instruction state, while the per-instruction side table publishes only the completed prefix and deoptimizes the faulting instruction to the interpreter. Read and terminator-safe write recovery retain their separately accepted paths."
+  },
+  "verification": {
+    "focused": "60 tests in the DBT ABI, metadata-fault, restartability, and PC Linux boot runner suites passed.",
+    "deterministicAggregate": "1,553 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the same pinned inputs were executed explicitly twice.",
+    "targetedCoverage": "A real MAP_JIT matrix covers ordinary write, direct compare-exchange, exchange, fetch-add, locked add, locked increment, locked bit-test, and pair compare-exchange page faults. A cross-page atomic fallback regression proves that non-page-fault outcomes expose neither a recovery PC nor recovery context."
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "acceptedRuns": [
+    {
+      "runID": "6c0ffb44-6960-485d-8c7f-d0dd8fe99cff",
+      "diagnosticReceiptSHA256": "6cd39cb7be39e8072bceb870ef6a240fd3308646c7958af060b28c50bbc55291",
+      "elapsedNanoseconds": 255904398125,
+      "retiredInstructions": 732389204,
+      "baselineJITInstructions": 729547575,
+      "interpreterInstructions": 2841629,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 75093,
+      "nativeDispatcherEntries": 189854898,
+      "directlyChainedBlocks": 44899746,
+      "translationCachePageFaults": 732,
+      "pendingWorkExits": 1,
+      "pendingWorkMaximumRetiredInstructions": 0
+    },
+    {
+      "runID": "fe4be1ca-f3e6-4bd3-a6d6-c27e78ccd228",
+      "diagnosticReceiptSHA256": "6e7eb0b3362fad398aa470afbd6d6a600f42dc5c27b882515eb669fc55c39683",
+      "elapsedNanoseconds": 239730031500,
+      "retiredInstructions": 733541273,
+      "baselineJITInstructions": 730732408,
+      "interpreterInstructions": 2808865,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 75147,
+      "nativeDispatcherEntries": 190115085,
+      "directlyChainedBlocks": 44920336,
+      "translationCachePageFaults": 737,
+      "pendingWorkExits": 0,
+      "pendingWorkMaximumRetiredInstructions": 0
+    }
+  ],
+  "workloads": [
+    "bootstrap.filesystems",
+    "syscall.identity",
+    "process.creation_exec_wait",
+    "memory.allocation_copy",
+    "signal.handler_return",
+    "timer.sleep_elapsed",
+    "filesystem.write_read_sync"
+  ],
+  "disposition": {
+    "readPrefixRecoveryAccepted": true,
+    "writePrefixRecoveryAccepted": true,
+    "allGeneratedAtomicPrefixRecoveryAccepted": true,
+    "a05_4Complete": true,
+    "reason": "The named restartability and latency matrix, exact metadata and checkpoint tests, fail-closed atomic status coverage, deterministic aggregate, and two independent clean production runs satisfy the A05.4 action and check without relaxing their bounds."
+  },
+  "limitations": [
+    "Two passing local runs are a bounded reliability check, not cross-host qualification.",
+    "The production fixture proves overall reliability but does not assert that every generated atomic helper faulted during the runs; the MAP_JIT matrix supplies that targeted proof.",
+    "This evidence does not satisfy the greater-than-95-percent A05.3 dispatcher gate or G1-G5."
+  ]
+}
