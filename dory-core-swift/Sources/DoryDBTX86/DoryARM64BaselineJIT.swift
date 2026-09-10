@@ -7731,16 +7731,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       chainTargetInterpreterGuardRejectionCount &+= 1
       return false
     }
-    // A legacy memory block keeps the callback bank in x20...x24 and its chain epilogue
-    // restores the canonical x0...x5 generated-function entry tuple. That makes this narrow
-    // one-way edge ABI-complete without placing host pointers in mutable guest context.
-    // Callback-free legacy sources may clobber x1...x5 and remain isolated. Tier-one sources
-    // also remain isolated from legacy targets until their private lazy flags are bridged.
-    let hasCompatibleCompilerABI = source.block.tier == target.block.tier
-      || (source.block.tier != .tier1
-        && target.block.tier == .tier1
-        && source.block.requiresMemoryCallbacks)
-    guard hasCompatibleCompilerABI else {
+    guard source.block.tier == target.block.tier else {
       chainTargetCompilerABIRejectionCount &+= 1
       return false
     }

@@ -2,10 +2,10 @@
 
 This document is normative for the tier-1 ARM64 translator. It separates the
 stable vCPU context layout from the internal pinned-register convention. The
-legacy baseline emitter and the opt-in tier-1 compiler both enter blocks through
-the Darwin C ABI with the context pointer in `x0`. Tier-1 then installs the pinned
-convention internally. Direct chains target the same complete block entries after
-the source publishes architectural state and restores the target's entry tuple.
+legacy baseline emitter and the opt-in tier-1 compiler both enter standalone
+blocks through the Darwin C ABI with the context pointer in `x0`. Tier-1 then
+installs the pinned convention internally; direct chaining will replace those
+per-block boundaries atomically in the dispatcher.
 
 ## Pinned register convention
 
@@ -27,11 +27,10 @@ host `xn`. Partial-register writes are normalized before the value becomes live
 again: 32-bit writes zero-extend, 8/16-bit writes merge, and AH/CH/DH/BH forms
 are never represented as independent pinned values.
 
-`x19`...`x28` are callee-saved by the Darwin ARM64 ABI. A tier-1 entry saves the
-incoming host values before installing its own state. Its chain exit publishes
-architectural state, restores the host frame and callback arguments, and then
-tail-branches to the target's complete entry; pinned values never cross compiler
-boundaries implicitly.
+`x19`...`x28` are callee-saved by the Darwin ARM64 ABI. The dispatcher saves the
+incoming host values once before installing its own state and restores them on
+the final return to Swift/C. A chained block inherits all pinned values without
+a prologue or epilogue.
 
 ## Stable vCPU context
 
@@ -90,20 +89,12 @@ architectural spill at each guest instruction.
 
 ## Entry, exit, and chaining
 
-The C dispatcher calls a block entry using the Darwin C ABI. A tier-1 entry
+The C dispatcher initially calls an entry shim using the Darwin C ABI. The shim
 preserves the memory context and callback arguments in `x19`...`x23`, then loads
 guest GPRs into `x0`...`x15`, RIP into `x27`, the last materialized RFLAGS
 image into `x25`, the pending operation/count descriptor into `x26`, and installs
-`x28`. A tier-1 chain exit reverses that boundary before its patch slot, so a
-patched edge enters the target through its complete entry rather than a private
-body label.
-
-Legacy memory blocks keep the architectural context and callback bank in
-`x19`...`x24`. Their chain epilogue restores the canonical `x0`...`x5` tuple,
-which permits a one-way legacy-memory-to-tier-1 edge. Callback-free legacy blocks
-do not establish or preserve that tuple and remain compiler-separated. The
-reverse tier-1-to-legacy direction also remains separated because legacy code
-cannot consume tier-1's private lazy-flags descriptor.
+`x28`. Direct chains branch to a tier-1 block entry after this setup and therefore
+cannot target the C entry shim.
 
 `DoryARM64Tier1BoundaryEmitter` is the executable implementation of these
 boundaries. Its entry saves `x19`...`x30` in one 96-byte, 16-byte-aligned host
