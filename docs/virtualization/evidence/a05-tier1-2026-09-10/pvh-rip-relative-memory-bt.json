@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-rip-relative-memory-bt",
+  "observedAt": "2026-09-10T00:33:53Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness, production-admission, and A05.2 closure evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "c4d0b53ef43346f84136d093a23d4f76b960126a",
+    "candidateRunnerSHA256": "02d53e126fa48b33ddd69cc696b66db0d1250bcababd65fc93d137b2fac71b80",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "guestRIP": "0xffffffff813a96ab",
+    "symbol": "__call_rcu_common.constprop.0+0xfb",
+    "guestByteCount": 10,
+    "guestInstructionCount": 2,
+    "instructionBytes": [
+      72,
+      15,
+      163,
+      5,
+      237,
+      166,
+      132,
+      1,
+      115,
+      30
+    ],
+    "instruction": "btq %rax,0x184a6ed(%rip); jae +30",
+    "resolvedMemoryBase": "0xffffffff82bf3da0",
+    "takenTarget": "0xffffffff813a96d3",
+    "notTakenTarget": "0xffffffff813a96b5",
+    "lowering": "The exact block reuses the production-qualified signed bit-string read path. The RIP-relative base resolves from the end of the eight-byte BT instruction, and its CF-only result directly selects the short JAE target.",
+    "boundedRule": "The measured RIP, complete ten-byte two-instruction block, RIP-relative displacement and base, qword width, RAX index, JAE condition, and both branch targets must all match. An adjacent RIP, changed displacement, or changed condition declines.",
+    "priorNegativeCacheHits": 5379,
+    "remainsInCandidateRunNegativeCache": false
+  },
+  "verification": {
+    "focusedGate": "The exact RIP-relative memory-BT block passes its tier-one differential and failed-read matrix.",
+    "dbtPCAndRunnerGate": "1,500 tests in 175 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Signed indices 0, 64, and -1 and both selected-bit states match the interpreter for complete state, unchanged memory, CF, and exact branch destinations across the measured 25 MiB code-to-data span.",
+    "faultCoverage": "An unmapped resolved source read preserves complete block-entry state.",
+    "negativeCoverage": "An adjacent RIP, changed RIP-relative displacement, and changed branch condition all decline tier one.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "7b28ce42-b4a5-40a0-aefa-5f4b86295c2b",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 145253789583,
+    "retiredInstructions": 733808838,
+    "throughputMIPS": 5.05190838811604,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731512670,
+    "interpreterInstructions": 2296168,
+    "deliveredMaskableInterrupts": 57976,
+    "retiredInterruptReturns": 146196,
+    "compiledBlocks": 186151,
+    "tier1CompilationAttempts": 217300,
+    "tier1CompilationDeclines": 115100,
+    "tier1DeclinePercentOfAttempts": 52.968246663598705,
+    "tier1CompiledBlocks": 102200,
+    "lazyFlagMaterializations": 54829602,
+    "translationCacheInvalidations": 246784
+  },
+  "unmatchedPriorRunComparison": {
+    "secondWordMemoryORElapsedNanoseconds": 141396278667,
+    "ripRelativeMemoryBTElapsedNanoseconds": 145253789583,
+    "directionalElapsedIncreasePercent": 2.728155897995561,
+    "tier1AttemptDecrease": 816,
+    "tier1DeclineDecrease": 915,
+    "tier1CompiledBlockIncrease": 99,
+    "interpreterInstructionDecrease": 76411,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. Exact-site absence establishes production use; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "retainedNegativeCache": {
+    "siteCount": 16,
+    "nativeEmitterSiteCount": 0,
+    "interpreterHelperSiteCount": 16,
+    "leadingSites": [
+      {
+        "guestRIP": "0x00007f34311f0b8c",
+        "instructionBytes": [15, 17, 71, 240],
+        "instruction": "movups %xmm0,-0x10(%rdi)",
+        "hitCount": 53124,
+        "declineReason": "interpreterHelper"
+      },
+      {
+        "guestRIP": "0x00007f34311f0b80",
+        "instructionBytes": [243, 15, 111, 6],
+        "instruction": "movdqu (%rsi),%xmm0",
+        "hitCount": 48010,
+        "declineReason": "interpreterHelper"
+      },
+      {
+        "guestRIP": "0xffffffff810017e8",
+        "instructionBytes": [72, 207],
+        "instruction": "iretq",
+        "hitCount": 11689,
+        "declineReason": "interpreterHelper"
+      }
+    ]
+  },
+  "a05_2Closure": {
+    "lazyFlagsRepresentation": "The append-only context stores operation/count, width, result, source1, and source2 with interpreter-validated materializers for arithmetic, logical, unary, shift, rotate, and double-shift families.",
+    "requiredMaterializationBoundaries": "PUSHF, LAHF, materialized SETcc/Jcc/CMOVcc, helper calls, native publication, and interrupt delivery boundaries are covered by focused and aggregate tests.",
+    "nativeConditionPaths": "CMP, TEST, SUB, ADD, INC, DEC, and eligible flag-neutral intervening operations retain validated NZCV fast paths; unsupported flag domains materialize or decline atomically.",
+    "productionEvidence": "The pinned full workload succeeds with 1,500-test regression evidence, a measured lazy-materialization counter, prior A/B throughput evidence, and no native-emitter site in the terminal capped sample.",
+    "remainingFallbackClassification": "All retained negative-cache sites are explicit interpreterHelper boundaries permitted by Appendix A.10; they are not evidence of an unimplemented A05.2 flag materializer or native condition path."
+  },
+  "interpretation": "The exact 5,379-hit RIP-relative memory-BT block is absent. The A05.2 action and check are complete; 115,100 compilation declines remain, but every site in the capped terminal sample is explicitly classified as an interpreter helper rather than a native-emitter gap.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped; zero retained native-emitter sites does not prove that no lower-ranked native-emitter miss exists.",
+    "Interpreter-helper retirement remains and is not claimed eliminated by A05.2 closure.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
