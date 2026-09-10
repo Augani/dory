@@ -32,6 +32,7 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredSlabFreeWordSubtractStoreRIP: UInt64 = 0xFFFF_FFFF_815E_3559
   private static let measuredFreeFrozenPageByteShiftRIP: UInt64 = 0xFFFF_FFFF_815C_C28B
   private static let measuredKernfsActivateWordORRIP: UInt64 = 0xFFFF_FFFF_8172_2852
+  private static let measuredKernfsRemoveWordORRIP: UInt64 = 0xFFFF_FFFF_8172_3A8C
   private let boundary = DoryARM64Tier1BoundaryEmitter()
   private let alu = DoryARM64Tier1ALUEmitter()
 
@@ -197,8 +198,12 @@ struct DoryARM64Tier1Emitter: Sendable {
             continue
           }
           if Self.isMeasuredKernfsActivateWordORBlock(block), operation == .or, width == .i16,
-            source == .immediate(0x10, width: .i16), writesDestination,
-            alu.emitMeasuredWordORImmediate16(address: address, into: &body)
+            case .immediate(let immediate, width: .i16) = source, writesDestination,
+            alu.emitMeasuredWordORImmediate16(
+              address: address,
+              immediate: immediate,
+              into: &body
+            )
           {
             nativeFlags = nil
             continue
@@ -766,18 +771,30 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static func isMeasuredKernfsActivateWordORBlock(
     _ block: DoryIRBasicBlock
   ) -> Bool {
-    guard block.guestStart == measuredKernfsActivateWordORRIP,
-      block.guestByteCount == 5,
-      block.guestInstructionCount == 1,
+    guard block.guestInstructionCount == 1,
       block.statements.count == 1,
       case .binary(
         .or,
         .memory(let address, let width),
-        .immediate(0x10, width: let sourceWidth),
+        .immediate(let immediate, width: let sourceWidth),
         writesDestination: true
       ) = block.statements[0]
     else { return false }
-    return width == .i16
+    let expectedByteCount: UInt64
+    let expectedImmediate: UInt64
+    switch block.guestStart {
+    case measuredKernfsActivateWordORRIP:
+      expectedByteCount = 5
+      expectedImmediate = 0x10
+    case measuredKernfsRemoveWordORRIP:
+      expectedByteCount = 6
+      expectedImmediate = 0x4000
+    default:
+      return false
+    }
+    return block.guestByteCount == expectedByteCount
+      && immediate == expectedImmediate
+      && width == .i16
       && sourceWidth == .i16
       && address
         == .init(

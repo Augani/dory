@@ -529,11 +529,12 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
-  /// Executes the measured `orw $0x10,0x3c(%rbx)` read/modify/write. The old word remains in the
+  /// Executes the measured word-memory OR-immediate sites. The old word remains in the
   /// temporary RIP slot until the transactional write succeeds, after which the fragment
   /// publishes the logical-operation flags record.
   func emitMeasuredWordORImmediate16(
     address: DoryIRMemoryAddress,
+    immediate: UInt64,
     into words: inout [UInt32]
   ) -> Bool {
     var fragment: [UInt32] = []
@@ -544,7 +545,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
 
     fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
     fragment.append(Self.encodeLoad64(register: 17, word: .rip))
-    Self.emitImmediate(0x10, register: 26, into: &fragment)
+    Self.emitImmediate(immediate, register: 26, into: &fragment)
     fragment.append(
       Self.encodeLogical(.or, is64Bit: true, left: 17, right: 26, destination: 17))
     fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
@@ -552,7 +553,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
 
     fragment.append(Self.encodeLoad64(register: 16, word: .rip))
     fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
-    Self.emitImmediate(0x10, register: 17, into: &fragment)
+    Self.emitImmediate(immediate, register: 17, into: &fragment)
     fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
     fragment.append(
       Self.encodeLogical(.or, is64Bit: true, left: 16, right: 17, destination: 16))
