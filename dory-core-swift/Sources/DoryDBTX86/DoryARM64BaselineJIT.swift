@@ -189,13 +189,15 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
     statementWordOffsets: [Int],
     statementFlagsStates: [DoryARM64InstructionFlagsState],
     leadingWordCount: Int,
-    liveInRegisterMask: UInt16,
-    dirtyRegisterMask: UInt16
+    liveInRegisterMasks: [UInt16],
+    dirtyRegisterMasks: [UInt16]
   ) -> [DoryARM64InstructionMetadata] {
     guard statementWordOffsets.count == block.statements.count + 1,
-      statementFlagsStates.count == statementWordOffsets.count
+      statementFlagsStates.count == statementWordOffsets.count,
+      liveInRegisterMasks.count == block.instructionBoundaries.count,
+      dirtyRegisterMasks.count == block.instructionBoundaries.count
     else { return [] }
-    return block.instructionBoundaries.compactMap { boundary in
+    return block.instructionBoundaries.enumerated().compactMap { boundaryIndex, boundary in
       let statementIndex = Int(boundary.statementStartIndex)
       guard statementIndex <= block.statements.count else { return nil }
       let wordOffset = leadingWordCount + statementWordOffsets[statementIndex]
@@ -205,8 +207,8 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
         guestRIP: boundary.guestRIP,
         guestByteCount: boundary.guestByteCount,
         flagsState: statementFlagsStates[statementIndex],
-        liveInRegisterMask: liveInRegisterMask,
-        dirtyRegisterMask: dirtyRegisterMask
+        liveInRegisterMask: liveInRegisterMasks[boundaryIndex],
+        dirtyRegisterMask: dirtyRegisterMasks[boundaryIndex]
       )
     }
   }
@@ -489,8 +491,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       statementWordOffsets: statementWordOffsets,
       statementFlagsStates: Array(repeating: .context, count: statementWordOffsets.count),
       leadingWordCount: leadingWordCount,
-      liveInRegisterMask: 0,
-      dirtyRegisterMask: 0
+      liveInRegisterMasks: Array(repeating: 0, count: block.instructionBoundaries.count),
+      dirtyRegisterMasks: Array(repeating: 0, count: block.instructionBoundaries.count)
     )
     return .init(
       guestStart: block.guestStart,

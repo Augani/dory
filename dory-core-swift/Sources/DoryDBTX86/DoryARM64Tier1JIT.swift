@@ -709,13 +709,14 @@ struct DoryARM64Tier1Emitter: Sendable {
     let wordCountBeforeChainMetadata = words.count
     DoryARM64CompiledBlock.installChainMetadata(chainSlots, in: &words)
     let chainMetadataWordCount = words.count - wordCountBeforeChainMetadata
+    let registerMasks = Self.instructionRegisterMasks(for: block)
     let instructionMetadata = DoryARM64CompiledBlock.makeInstructionMetadata(
       for: block,
       statementWordOffsets: statementWordOffsets,
       statementFlagsStates: statementFlagsStates,
       leadingWordCount: chainMetadataWordCount + chainBudgetGuardWordCount + entryWordCount,
-      liveInRegisterMask: .max,
-      dirtyRegisterMask: .max
+      liveInRegisterMasks: registerMasks.liveIn,
+      dirtyRegisterMasks: registerMasks.dirty
     )
     return .init(
       guestStart: block.guestStart,
@@ -1217,6 +1218,228 @@ struct DoryARM64Tier1Emitter: Sendable {
       count: count,
       into: &words
     )
+  }
+
+  private struct RegisterUsage {
+    var reads: UInt16 = 0
+    var writes: UInt16 = 0
+  }
+
+  private static func instructionRegisterMasks(
+    for block: DoryIRBasicBlock
+  ) -> (liveIn: [UInt16], dirty: [UInt16]) {
+    var liveIn: [UInt16] = []
+    var dirtyAtEntry: [UInt16] = []
+    var cumulativeDirty: UInt16 = 0
+    liveIn.reserveCapacity(block.instructionBoundaries.count)
+    dirtyAtEntry.reserveCapacity(block.instructionBoundaries.count)
+    for boundary in block.instructionBoundaries {
+      let start = Int(boundary.statementStartIndex)
+      let end = start + Int(boundary.statementCount)
+      guard start <= end, end <= block.statements.count else {
+        liveIn.append(.max)
+        dirtyAtEntry.append(.max)
+        cumulativeDirty = .max
+        continue
+      }
+      var liveAtEntry: UInt16 = 0
+      var writtenWithinInstruction: UInt16 = 0
+      for statement in block.statements[start..<end] {
+        let usage = registerUsage(of: statement)
+        liveAtEntry |= usage.reads & ~writtenWithinInstruction
+        writtenWithinInstruction |= usage.writes
+      }
+      liveIn.append(liveAtEntry)
+      dirtyAtEntry.append(cumulativeDirty)
+      cumulativeDirty |= writtenWithinInstruction
+    }
+    return (liveIn, dirtyAtEntry)
+  }
+
+  private static func registerUsage(of statement: DoryIRStatement) -> RegisterUsage {
+    var usage = RegisterUsage()
+    switch statement {
+    case .copy(let destination, let source):
+      addOperand(source, readValue: true, writeValue: false, to: &usage)
+      addOperand(
+        destination,
+        readValue: writePreservesUpperBits(destination),
+        writeValue: true,
+        to: &usage
+      )
+    case .binary(_, let destination, let source, let writesDestination):
+      addOperand(destination, readValue: true, writeValue: writesDestination, to: &usage)
+      addOperand(source, readValue: true, writeValue: false, to: &usage)
+    case .atomicBinary(_, let destination, let source):
+      addOperand(destination, readValue: true, writeValue: true, to: &usage)
+      addOperand(source, readValue: true, writeValue: false, to: &usage)
+    case .unary(_, let operand), .atomicUnary(_, let operand):
+      addOperand(operand, readValue: true, writeValue: true, to: &usage)
+    case .shift(_, let destination, let count):
+      addOperand(destination, readValue: true, writeValue: true, to: &usage)
+      if count == .cl { usage.reads |= registerBit(1) }
+    case .conditionalMove(_, let destination, let source):
+      addOperand(source, readValue: true, writeValue: false, to: &usage)
+      addOperand(
+        destination,
+        readValue: true,
+        writeValue: true,
+        to: &usage
+      )
+    case .setCondition(_, let destination):
+      addOperand(destination, readValue: true, writeValue: true, to: &usage)
+    case .bitTestRegister(let operation, let base, let index):
+      addOperand(base, readValue: true, writeValue: operation != .test, to: &usage)
+      addOperand(index, readValue: true, writeValue: false, to: &usage)
+    case .bitTestMemoryRegister(_, let base, let index),
+      .atomicBitTestMemory(_, let base, let index):
+      addOperand(base, readValue: true, writeValue: false, to: &usage)
+      addOperand(index, readValue: true, writeValue: false, to: &usage)
+    case .bitTestMemoryImmediate(_, let base, _):
+      addOperand(base, readValue: true, writeValue: false, to: &usage)
+    case .bitScan(_, let destination, let source):
+      addOperand(destination, readValue: true, writeValue: true, to: &usage)
+      addOperand(source, readValue: true, writeValue: false, to: &usage)
+    case .byteSwap(let operand):
+      addOperand(operand, readValue: true, writeValue: true, to: &usage)
+    case .stackPush(let source):
+      addOperand(source, readValue: true, writeValue: false, to: &usage)
+      usage.reads |= registerBit(4)
+      usage.writes |= registerBit(4)
+    case .stackPushFlags:
+      usage.reads |= registerBit(4)
+      usage.writes |= registerBit(4)
+    case .stackPop(let destination):
+      usage.reads |= registerBit(4)
+      usage.writes |= registerBit(4)
+      addOperand(
+        destination,
+        readValue: writePreservesUpperBits(destination),
+        writeValue: true,
+        to: &usage
+      )
+    case .loadFlagsIntoAH:
+      usage.reads |= registerBit(0)
+      usage.writes |= registerBit(0)
+    case .storeAHIntoFlags:
+      usage.reads |= registerBit(0)
+    case .readSegment(_, let destination):
+      addOperand(destination, readValue: true, writeValue: true, to: &usage)
+    case .readControlRegister(_, let destination):
+      usage.writes |= registerMask(destination)
+    case .writeControlRegister(_, let source):
+      usage.reads |= registerMask(source)
+    case .readTimestampCounter:
+      usage.writes |= registerBit(0) | registerBit(2)
+    case .signExtendAccumulatorHigh:
+      usage.reads |= registerBit(0)
+      usage.writes |= registerBit(2)
+    case .unsignedAccumulatorMultiply(let source):
+      usage.reads |= registerBit(0)
+      usage.writes |= registerBit(0) | registerBit(2)
+      addOperand(source, readValue: true, writeValue: false, to: &usage)
+    case .unsignedAccumulatorDivide(let source), .signedAccumulatorDivide(let source):
+      usage.reads |= registerBit(0) | registerBit(2)
+      usage.writes |= registerBit(0) | registerBit(2)
+      addOperand(source, readValue: true, writeValue: false, to: &usage)
+    case .doubleShiftRightCL(let destination, let source):
+      addOperand(destination, readValue: true, writeValue: true, to: &usage)
+      addOperand(source, readValue: true, writeValue: false, to: &usage)
+      usage.reads |= registerBit(1)
+    case .doubleShiftRightImmediate(let destination, let source, _):
+      addOperand(destination, readValue: true, writeValue: true, to: &usage)
+      addOperand(source, readValue: true, writeValue: false, to: &usage)
+    case .compareExchange(let destination, let source):
+      usage.reads |= registerBit(0)
+      usage.writes |= registerBit(0)
+      addOperand(destination, readValue: true, writeValue: true, to: &usage)
+      addOperand(source, readValue: true, writeValue: false, to: &usage)
+    case .compareExchangePair(let destination, _):
+      let implicitMask = registerBit(0) | registerBit(1) | registerBit(2) | registerBit(3)
+      usage.reads |= implicitMask
+      usage.writes |= registerBit(0) | registerBit(2)
+      addOperand(destination, readValue: true, writeValue: false, to: &usage)
+    case .exchangeMemory(let destination, let source),
+      .exchangeAddMemory(let destination, let source):
+      addOperand(destination, readValue: true, writeValue: false, to: &usage)
+      usage.reads |= registerMask(source)
+      usage.writes |= registerMask(source)
+    case .exchangeRegisters(let lhs, let rhs):
+      usage.reads |= registerMask(lhs) | registerMask(rhs)
+      usage.writes |= registerMask(lhs) | registerMask(rhs)
+    case .signedMultiply(let destination, let lhs, let rhs):
+      addOperand(lhs, readValue: true, writeValue: false, to: &usage)
+      addOperand(rhs, readValue: true, writeValue: false, to: &usage)
+      addOperand(
+        destination,
+        readValue: writePreservesUpperBits(destination),
+        writeValue: true,
+        to: &usage
+      )
+    case .extendMove(let destination, let source, _):
+      addOperand(source, readValue: true, writeValue: false, to: &usage)
+      addOperand(
+        destination,
+        readValue: writePreservesUpperBits(destination),
+        writeValue: true,
+        to: &usage
+      )
+    case .effectiveAddress(let destination, let address):
+      addAddress(address, to: &usage)
+      addOperand(
+        destination,
+        readValue: writePreservesUpperBits(destination),
+        writeValue: true,
+        to: &usage
+      )
+    case .setCarryFlag, .complementCarryFlag, .clearInterruptFlag, .memoryFence,
+      .swapGS, .setDirectionFlag:
+      break
+    case .helper:
+      usage.reads = .max
+      usage.writes = .max
+    }
+    return usage
+  }
+
+  private static func addOperand(
+    _ operand: DoryIROperand,
+    readValue: Bool,
+    writeValue: Bool,
+    to usage: inout RegisterUsage
+  ) {
+    switch operand {
+    case .register(let register):
+      if readValue { usage.reads |= registerMask(register) }
+      if writeValue { usage.writes |= registerMask(register) }
+    case .memory(let address, _):
+      addAddress(address, to: &usage)
+    case .immediate:
+      break
+    }
+  }
+
+  private static func addAddress(
+    _ address: DoryIRMemoryAddress,
+    to usage: inout RegisterUsage
+  ) {
+    if let base = address.base { usage.reads |= registerMask(base) }
+    if let index = address.index { usage.reads |= registerMask(index) }
+  }
+
+  private static func writePreservesUpperBits(_ operand: DoryIROperand) -> Bool {
+    guard case .register(let register) = operand else { return false }
+    return register.bank == "x86.high8" || register.width == .i8 || register.width == .i16
+  }
+
+  private static func registerMask(_ register: DoryIRRegister) -> UInt16 {
+    guard (register.bank == "x86.gpr" || register.bank == "x86.high8"), register.index < 16
+    else { return 0 }
+    return registerBit(Int(register.index))
+  }
+
+  private static func registerBit(_ index: Int) -> UInt16 {
+    UInt16(1) << UInt16(index)
   }
 
   private func condition(named name: String) -> DoryX86Condition? {
