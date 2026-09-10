@@ -103,6 +103,8 @@ enum DoryARM64Tier1ABI {
     /// refreshed on every entry and deliberately live outside the generated stack frame.
     case hostFramePointer
     case hostReturnAddress
+    /// Generated BLR return PC for an architectural inline-TLB page-fault exit.
+    case inlineTLBFaultHostPC
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }

@@ -371,6 +371,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     DoryARM64Tier1ABI.ContextWord.hostFramePointer.byteOffset
   private static let hostReturnAddressOffset =
     DoryARM64Tier1ABI.ContextWord.hostReturnAddress.byteOffset
+  private static let inlineTLBFaultHostPCOffset =
+    DoryARM64Tier1ABI.ContextWord.inlineTLBFaultHostPC.byteOffset
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
@@ -2813,6 +2815,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
       condition: .equal,
       wordOffset: pageFaultStart - pageFaultBranch
     )
+    // x30 is the exact generated return PC from the resolver BLR. Capture it only after
+    // the C/Swift translation walk has returned and published the architectural fault.
+    words.append(
+      encodeStore64(register: 30, base: 19, byteOffset: Self.inlineTLBFaultHostPCOffset))
     emitMemoryEpilogue(into: &words)
     words.append(
       encodeMoveWideZero32(
@@ -2957,6 +2963,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       condition: .equal,
       wordOffset: pageFaultStart - pageFaultBranch
     )
+    words.append(
+      encodeStore64(register: 30, base: 19, byteOffset: Self.inlineTLBFaultHostPCOffset))
     emitMemoryEpilogue(into: &words)
     words.append(
       encodeMoveWideZero32(
@@ -3057,6 +3065,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       condition: .equal,
       wordOffset: pageFaultStart - directPageFaultBranch
     )
+    words.append(
+      encodeStore64(register: 30, base: 19, byteOffset: Self.inlineTLBFaultHostPCOffset))
     emitMemoryEpilogue(into: &words)
     words.append(
       encodeMoveWideZero32(
@@ -5227,6 +5237,8 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     var memoryFailed = false
     var failedCallbackHostPC: UInt64?
     var failedExecutionContext: [UInt64]?
+    let inlineTLBFaultHostPCIndex = DoryARM64Tier1ABI.ContextWord.inlineTLBFaultHostPC.rawValue
+    context[inlineTLBFaultHostPCIndex] = 0
     if let memoryCapabilities {
       var memoryContext = DoryJITMemoryCallbackContext(
         capabilities: memoryCapabilities,
@@ -5269,6 +5281,13 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
         exitCode: .interpreter,
         failedCallbackHostPC: failedCallbackHostPC,
         failedExecutionContext: failedExecutionContext
+      )
+    }
+    if context[inlineTLBFaultHostPCIndex] != 0 {
+      return .init(
+        exitCode: .interpreter,
+        failedCallbackHostPC: context[inlineTLBFaultHostPCIndex],
+        failedExecutionContext: Array(context)
       )
     }
     guard let exit = DoryJITExitCode(rawValue: rawExit) else {
@@ -6074,9 +6093,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     )
   }
 
-  /// Restores the architectural prefix published immediately before a failed memory callback.
+  /// Restores the architectural prefix published immediately before a failed memory operation.
   /// Tier 1 writes its complete lazy-flags descriptor to the context alongside native NZCV, so
-  /// both metadata flag states are recoverable from the captured context image.
+  /// both metadata flag states are recoverable from the captured context image. Inline-TLB faults
+  /// capture their generated BLR return PC after the architectural resolver has returned.
   private func restoreFailedMemoryCallbackPrefix(
     _ execution: DoryJITPreparedExecution,
     entryResident: ResidentBlock,
@@ -7880,6 +7900,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     if !preservePendingWork {
       context[DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue] = 0
     }
+    context[DoryARM64Tier1ABI.ContextWord.hostFramePointer.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.hostReturnAddress.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.inlineTLBFaultHostPC.rawValue] = 0
   }
 
   private func recordLazyFlagMaterializations(
