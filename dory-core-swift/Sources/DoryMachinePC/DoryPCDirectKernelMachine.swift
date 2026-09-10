@@ -644,7 +644,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       ? max(4_096, baselineJITMaximumCodeBytes / 4)
       : baselineJITMaximumCodeBytes
     let perProcessorBaselineCodeBytes = max(4_096, baselineCodeBytes / processorCount)
-    baselineJITs = try switch executionTier {
+    let createdBaselineJITs: [DoryARM64BaselineExecutor] = try switch executionTier {
     case .interpreter:
       []
     case .baselineJIT, .optimizingJIT:
@@ -660,9 +660,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         )
       }
     }
+    baselineJITs = createdBaselineJITs
     let optimizingCodeBytes = max(4_096, baselineJITMaximumCodeBytes * 3 / 4)
     let perProcessorOptimizingCodeBytes = max(4_096, optimizingCodeBytes / processorCount)
-    optimizingJITs = try switch executionTier {
+    let createdOptimizingJITs: [DoryARM64BaselineExecutor] = try switch executionTier {
     case .interpreter, .baselineJIT:
       []
     case .optimizingJIT:
@@ -677,6 +678,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         )
       }
     }
+    optimizingJITs = createdOptimizingJITs
     firmwareConfiguration = DoryPCFirmwareConfiguration(
       totalRAMBytes: UInt64(memoryBytes),
       processorCount: processorCount,
@@ -732,15 +734,33 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     physicalMemory = physicalMemories[0]
     memoryByteCount = memoryBytes
     ioBus = DoryPCPortIOBus()
-    localAPICs = (0..<processorCount).map {
-      DoryPCLocalAPIC(apicID: UInt32($0), diagnosticsEnabled: instrumentationEnabled)
+    let requestPendingWorkForProcessor: @Sendable (Int) -> Void = {
+      [createdBaselineJITs, createdOptimizingJITs] processor in
+      if createdBaselineJITs.indices.contains(processor) {
+        createdBaselineJITs[processor].requestPendingWork()
+      }
+      if createdOptimizingJITs.indices.contains(processor) {
+        createdOptimizingJITs[processor].requestPendingWork()
+      }
+    }
+    let requestPendingWorkForAllProcessors: @Sendable () -> Void = {
+      [createdBaselineJITs, createdOptimizingJITs] in
+      createdBaselineJITs.forEach { $0.requestPendingWork() }
+      createdOptimizingJITs.forEach { $0.requestPendingWork() }
+    }
+    localAPICs = (0..<processorCount).map { processor in
+      DoryPCLocalAPIC(
+        apicID: UInt32(processor),
+        diagnosticsEnabled: instrumentationEnabled,
+        onPendingWork: { requestPendingWorkForProcessor(processor) }
+      )
     }
     localAPIC = localAPICs[0]
     multiprocessorController = try .init(localAPICs: localAPICs)
     ioAPIC = DoryPCIOAPIC()
     for apic in localAPICs { try ioAPIC.attach(apic) }
     ioAPIC.seal()
-    legacyPIC = DoryPCPIC8259Pair()
+    legacyPIC = DoryPCPIC8259Pair(onPendingWork: requestPendingWorkForAllProcessors)
     legacyPIT = DoryPCPIT8254(diagnosticsEnabled: instrumentationEnabled) { [legacyPIC, ioAPIC] in
       try? legacyPIC.raise(irq: 0)
       try? ioAPIC.setAsserted(true, pin: 2)
@@ -1155,6 +1175,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           interruptStop = try deliverPendingInterrupts(instructionCount: completed)
         }
         if let interruptStop { return interruptStop }
+        // Every pending controller and lifecycle source has crossed the dispatcher boundary. A
+        // later device edge sets the byte again and is observed at the next native block entry.
+        baselineJITs.forEach { $0.clearPendingWork() }
+        optimizingJITs.forEach { $0.clearPendingWork() }
         guard let processor = nextRunnableProcessor() else {
           let resumed: Bool
           if instrumentationEnabled {
@@ -1458,6 +1482,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         case .interpreter, .system, .portIO:
           break
         }
+      }
+      if jit.hasPendingWork {
+        return .init(result: .yielded, instructionCount: 0, jitTier: nil, jitBlockCount: 0)
       }
     }
 

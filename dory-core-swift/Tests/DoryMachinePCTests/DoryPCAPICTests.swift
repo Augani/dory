@@ -4,6 +4,15 @@ import Testing
 @testable import DoryMachinePC
 
 @Suite struct DoryPCAPICTests {
+  @Test func interruptInjectionPublishesPendingWork() throws {
+    let counter = APICPendingWorkCounter()
+    let apic = DoryPCLocalAPIC(apicID: 0, onPendingWork: { counter.increment() })
+
+    try apic.inject(vector: 0x40)
+
+    #expect(counter.value == 1)
+  }
+
   @Test func spuriousVectorAcceptsArchitecturalVirtualWireValue() throws {
     let apic = DoryPCLocalAPIC(apicID: 0)
 
@@ -142,4 +151,12 @@ import Testing
       try local.inject(vector: 0x0F)
     }
   }
+}
+
+private final class APICPendingWorkCounter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var count = 0
+
+  var value: Int { lock.withLock { count } }
+  func increment() { lock.withLock { count += 1 } }
 }

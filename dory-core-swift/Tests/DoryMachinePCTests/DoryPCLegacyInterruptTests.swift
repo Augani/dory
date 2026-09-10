@@ -5,6 +5,15 @@ import Testing
 @testable import DoryMachinePC
 
 @Suite struct DoryPCLegacyInterruptTests {
+  @Test func interruptRequestPublishesPendingWork() throws {
+    let counter = LockedCounter()
+    let pair = DoryPCPIC8259Pair(onPendingWork: { counter.increment() })
+
+    try pair.raise(irq: 1)
+
+    #expect(counter.value == 1)
+  }
+
   @Test func picRemapsMasksCascadesAndAcknowledgesInPriorityOrder() throws {
     let pair = DoryPCPIC8259Pair()
     let master = DoryPCPIC8259Port(pair: pair, slave: false)

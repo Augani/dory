@@ -41,10 +41,12 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
 
   private let lock = NSLock()
   private let hasPendingRequest: UnsafeMutablePointer<UInt8>
+  private let onPendingWork: @Sendable () -> Void
   private var master = Chip(vectorOffset: 0x08)
   private var slave = Chip(vectorOffset: 0x70)
 
-  public init() {
+  public init(onPendingWork: @escaping @Sendable () -> Void = {}) {
+    self.onPendingWork = onPendingWork
     hasPendingRequest = .allocate(capacity: 1)
     hasPendingRequest.initialize(to: 0)
   }
@@ -269,6 +271,7 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
 
   private func publishPendingRequestLocked() {
     dory_atomic_u8_store_release(hasPendingRequest, master.request == 0 ? 0 : 1)
+    if master.request != 0 { onPendingWork() }
   }
 
   private func withChip(_ controller: Controller, _ body: (inout Chip) -> Void) {

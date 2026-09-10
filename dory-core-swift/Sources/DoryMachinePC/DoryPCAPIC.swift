@@ -66,10 +66,16 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   private var timerBaseClockRemainder: UInt64 = 0
   private var timerInterruptRequestCount: UInt64 = 0
   private let diagnosticsEnabled: Bool
+  private let onPendingWork: @Sendable () -> Void
 
-  public init(apicID: UInt32, diagnosticsEnabled: Bool = true) {
+  public init(
+    apicID: UInt32,
+    diagnosticsEnabled: Bool = true,
+    onPendingWork: @escaping @Sendable () -> Void = {}
+  ) {
     self.apicID = apicID
     self.diagnosticsEnabled = diagnosticsEnabled
+    self.onPendingWork = onPendingWork
     hasPendingRequest = .allocate(capacity: 1)
     hasPendingRequest.initialize(to: 0)
   }
@@ -308,6 +314,7 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   private func injectLocked(vector: UInt8, levelTriggered: Bool) {
     interruptRequest.insert(vector)
     dory_atomic_u8_store_release(hasPendingRequest, 1)
+    onPendingWork()
     if levelTriggered { self.levelTriggered.insert(vector) }
   }
 
