@@ -591,7 +591,7 @@ import Testing
       let executor = try DoryARM64BaselineExecutor(
         maximumCodeBytes: 16 * 1024,
         tier1Enabled: true,
-        rawTargetPredictionEnabled: false
+        rawTargetPredictionOptions: []
       )
       func run() throws -> (DoryARM64ExecutionSummary, DoryX86ArchitecturalState, UInt64) {
         var state = try DoryX86ArchitecturalState(rip: base)
@@ -623,6 +623,46 @@ import Testing
       #expect(warm.2 == 3)
       #expect(executor.diagnostics.directChainPatches == 0)
       #expect(executor.diagnostics.directlyChainedBlocks == 0)
+      #expect(executor.diagnostics.indirectBranchTargetCacheFills == 0)
+      #expect(executor.diagnostics.shadowReturnStackPushes == 0)
+    #endif
+  }
+
+  @Test func directTargetPredictionCanBeEnabledWithoutIBTCOrShadowState() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x1680
+      let bytes: [UInt8] = [0xFF, 0xC0, 0xEB, 0, 0xFF, 0xC0, 0xEB, 0, 0xF4]
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: true,
+        rawTargetPredictionOptions: [.directChain]
+      )
+      func run() throws -> DoryARM64ExecutionSummary {
+        var state = try DoryX86ArchitecturalState(rip: base)
+        let summary = try #require(executor.executeChainedSummary(
+          byteProvider: { address, count in
+            guard address >= base else { return [] }
+            let offset = Int(address - base)
+            guard bytes.indices.contains(offset) else { return [] }
+            return Array(bytes[offset..<min(bytes.count, offset + count)])
+          },
+          physicalRIPProvider: { $0 },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 10,
+          maximumInstructions: 16,
+          state: &state
+        ))
+        #expect(state.registers.rax == 2)
+        return summary
+      }
+
+      _ = try run()
+      let patchesAfterColdRun = executor.diagnostics.directChainPatches
+      let warm = try run()
+      #expect(patchesAfterColdRun == 1)
+      #expect(warm.guestInstructionCount == 5)
+      #expect(executor.diagnostics.directlyChainedBlocks > 0)
       #expect(executor.diagnostics.indirectBranchTargetCacheFills == 0)
       #expect(executor.diagnostics.shadowReturnStackPushes == 0)
     #endif

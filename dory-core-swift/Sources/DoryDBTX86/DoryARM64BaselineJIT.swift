@@ -22,6 +22,19 @@ public enum DoryARM64JITOptimization: String, Codable, Sendable, Hashable {
   case optimizing
 }
 
+public struct DoryARM64RawTargetPredictionOptions: OptionSet, Sendable, Hashable {
+  public let rawValue: UInt8
+
+  public init(rawValue: UInt8) {
+    self.rawValue = rawValue
+  }
+
+  public static let directChain = Self(rawValue: 1 << 0)
+  public static let indirectBranchTargetCache = Self(rawValue: 1 << 1)
+  public static let shadowReturnStack = Self(rawValue: 1 << 2)
+  public static let all: Self = [.directChain, .indirectBranchTargetCache, .shadowReturnStack]
+}
+
 public enum DoryARM64ChainSlotKind: String, Codable, Sendable, Hashable {
   case direct
   case conditionalTaken
@@ -5821,7 +5834,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let emitter: DoryARM64BaselineEmitter
   private let tier1Emitter: DoryARM64Tier1Emitter
   private let tier1Enabled: Bool
-  private let rawTargetPredictionEnabled: Bool
+  private let rawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions
   private let optimization: DoryARM64JITOptimization
   private let optimizer: DoryIROptimizer
   private let region: DoryJITExecutableRegion
@@ -5897,7 +5910,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     profile: DoryX86CPUProfile = .compatibleV1,
     emitter: DoryARM64BaselineEmitter = .init(),
     tier1Enabled: Bool = false,
-    rawTargetPredictionEnabled: Bool = true,
+    rawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions = .all,
     optimization: DoryARM64JITOptimization = .baseline,
     optimizer: DoryIROptimizer = .init()
   ) throws {
@@ -5912,7 +5925,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     self.emitter = emitter
     self.tier1Emitter = .init()
     self.tier1Enabled = tier1Enabled
-    self.rawTargetPredictionEnabled = rawTargetPredictionEnabled
+    self.rawTargetPredictionOptions = rawTargetPredictionOptions
     self.optimization = optimization
     self.optimizer = optimizer
     executionContextStorage = .init()
@@ -6382,9 +6395,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             memory: memory,
             translationTLB: translationTLB,
             addressSpaceGeneration: translationGeneration,
-            indirectBranchTargetCache: rawTargetPredictionEnabled
-              ? indirectBranchTargetCache : nil,
-            shadowReturnStack: rawTargetPredictionEnabled ? shadowReturnStack : nil,
+            indirectBranchTargetCache: rawTargetPredictionOptions.contains(
+              .indirectBranchTargetCache
+            ) ? indirectBranchTargetCache : nil,
+            shadowReturnStack: rawTargetPredictionOptions.contains(.shadowReturnStack)
+              ? shadowReturnStack : nil,
             codeCacheGeneration: codeCacheEpoch &+ 1,
             preservePendingWork: true
           )
@@ -6697,11 +6712,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 state: state
               )
             {
-              pendingLink = (
-                source,
-                context[DoryARM64Tier1ABI.ContextWord.rip.rawValue],
-                source.block.chainSlots?.isEmpty == true
-              )
+              if canInitiateRuntimeChain(source) {
+                pendingLink = (
+                  source,
+                  context[DoryARM64Tier1ABI.ContextWord.rip.rawValue],
+                  source.block.chainSlots?.isEmpty == true
+                )
+              }
             }
             guard exit == .dispatch, completed < maximumInstructions, !resident.endsTimeBoundary
             else {
@@ -7707,9 +7724,16 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   }
 
   private func canInitiateRuntimeChain(_ resident: ResidentBlock) -> Bool {
-    rawTargetPredictionEnabled
-      && resident.block.chainSlots != nil
-      && !resident.endsTimeBoundary
+    guard let chainSlots = resident.block.chainSlots, !resident.endsTimeBoundary else {
+      return false
+    }
+    return chainSlots.isEmpty
+      ? rawTargetPredictionOptions.contains(.indirectBranchTargetCache)
+      : rawTargetPredictionOptions.contains(.directChain)
+  }
+
+  private func canAcceptRuntimeChainTarget(_ resident: ResidentBlock) -> Bool {
+    resident.block.chainSlots != nil && !resident.endsTimeBoundary
   }
 
   private func admitRuntimeChainTarget(
@@ -7718,7 +7742,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     memoryCallbacksAvailable: Bool
   ) -> Bool {
     chainTargetAttemptCount &+= 1
-    guard canInitiateRuntimeChain(target) else {
+    guard canAcceptRuntimeChainTarget(target) else {
       chainTargetBoundaryRejectionCount &+= 1
       return false
     }
@@ -7771,7 +7795,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     destinationGuestRIP: UInt64,
     memoryCallbacksAvailable: Bool
   ) {
-    guard canInitiateRuntimeChain(source),
+    guard rawTargetPredictionOptions.contains(.directChain),
+      canInitiateRuntimeChain(source),
       let slot = source.block.chainSlots?.first(where: {
         $0.targetGuestRIP == destinationGuestRIP
       })
@@ -7810,7 +7835,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     destinationGuestRIP: UInt64,
     memoryCallbacksAvailable: Bool
   ) {
-    guard source.block.chainSlots?.isEmpty == true,
+    guard rawTargetPredictionOptions.contains(.indirectBranchTargetCache),
+      source.block.chainSlots?.isEmpty == true,
       target.block.guestStart == destinationGuestRIP
     else {
       chainTargetAttemptCount &+= 1

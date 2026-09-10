@@ -632,7 +632,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     executionTier: DoryPCExecutionTier = .interpreter,
     baselineJITMaximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
     baselineJITTier1Enabled: Bool = true,
-    baselineJITRawTargetPredictionEnabled: Bool = false,
+    baselineJITRawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions = [],
     optimizingJITWarmupDispatches: UInt8 = 8,
     clockSource: DoryPCClockSource = .deterministic,
     instrumentationEnabled: Bool = false
@@ -680,7 +680,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           physicalAddressBits: interpreter.profile.physicalAddressBits,
           profile: interpreter.profile,
           tier1Enabled: baselineJITTier1Enabled,
-          rawTargetPredictionEnabled: baselineJITRawTargetPredictionEnabled,
+          rawTargetPredictionOptions: baselineJITRawTargetPredictionOptions,
           optimization: .baseline
         )
       }
@@ -699,7 +699,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           cpuProfileIdentifier: interpreter.profile.identifier,
           physicalAddressBits: interpreter.profile.physicalAddressBits,
           profile: interpreter.profile,
-          rawTargetPredictionEnabled: baselineJITRawTargetPredictionEnabled,
+          rawTargetPredictionOptions: baselineJITRawTargetPredictionOptions,
           optimization: .optimizing
         )
       }
