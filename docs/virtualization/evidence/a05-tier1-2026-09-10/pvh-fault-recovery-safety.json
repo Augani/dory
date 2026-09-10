@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-fault-recovery-safety",
+  "observedAt": "2026-09-10T08:18:49Z",
+  "status": "passed-local-production-gate",
+  "qualification": "local pinned-fixture A05.4 recovery regression investigation; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "0c5b6be7c89c61c70a52ef74e5bfc84925577ba6",
+    "candidateRunnerSHA256": "86dcd0a5d23aecf38f589794fc10bc3de4eca4a094b56bdef3f71c5e18cc9e7a",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900
+  },
+  "bisect": [
+    {
+      "commit": "c362803b4a",
+      "patch": "none",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "elapsedNanoseconds": 228618551375,
+      "retiredInstructions": 733001374
+    },
+    {
+      "commit": "33bd56196d",
+      "patch": "none",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "elapsedNanoseconds": 221758185583,
+      "retiredInstructions": 733665899
+    },
+    {
+      "commit": "9dc361c7cf",
+      "patch": "none",
+      "passed": false,
+      "reason": "wall-budget",
+      "elapsedNanoseconds": 900016948459,
+      "retiredInstructions": 682497000,
+      "lastCompletedWorkload": "timer.sleep_elapsed"
+    },
+    {
+      "commit": "db06f5aed6",
+      "patch": "conservative-tier1-recovery-masks",
+      "passed": false,
+      "reason": "guest-reset",
+      "elapsedNanoseconds": 193769465625,
+      "retiredInstructions": 634196598
+    },
+    {
+      "commit": "b1c1a7fcc9",
+      "patch": "conservative-tier1-recovery-masks",
+      "passed": false,
+      "reason": "guest-reset",
+      "elapsedNanoseconds": 196954086292,
+      "retiredInstructions": 634164728
+    }
+  ],
+  "repair": {
+    "tier1RecoveryMasks": "Conservative all-GPR masks remain until partial-register dataflow is formally validated and consumed by deoptimization.",
+    "inlineTLBPageFaults": "Baseline inline-TLB translation faults use whole-block rollback and interpreter replay because the resolver callback snapshot precedes generated architectural fault publication.",
+    "callbackChainTargets": "Callback-bearing blocks remain dispatcher-separated pending a production-proven cross-resident callback context contract."
+  },
+  "successfulFullRun": {
+    "runID": "266386e7-31e1-45e8-a6c7-9ba5ec8a82e5",
+    "elapsedNanoseconds": 240722719541,
+    "retiredInstructions": 734215272,
+    "baselineJITInstructions": 731383861,
+    "interpreterInstructions": 2831411,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ],
+    "nativeDispatcherEntries": 189630704,
+    "directlyChainedBlocks": 44966163,
+    "directChainPatches": 143582,
+    "directChainUnlinks": 141133,
+    "translationCachePageFaults": 2285
+  },
+  "verification": {
+    "metadataFaultSuite": "12 tests passed, including baseline inline-TLB rollback/interpreter replay and Tier-one precise callback recovery.",
+    "dbtPCAndRunnerGate": "1,544 tests in 178 suites passed; the environment-driven pinned boot test skipped because its variables were absent, then this runner executed the same pinned inputs explicitly."
+  },
+  "limitations": [
+    "The successful workload evidence contains one repaired candidate run on one local Apple M2 Pro.",
+    "Exact Tier-one recovery masks and precise baseline inline-TLB prefix publication were withdrawn rather than claimed complete.",
+    "Callback-bearing raw chain targets remain disabled, so the greater-than-95-percent A05.3 dispatcher gate remains open."
+  ]
+}
