@@ -656,6 +656,10 @@ struct PVHJITCacheSnapshot: Codable, Sendable {
         "indirectBranchTargetCacheHitRatePPM": UInt64(
           source.indirectBranchTargetCacheHitRate * 1_000_000
         ),
+        "shadowReturnStackHits": source.shadowReturnStackHits,
+        "shadowReturnStackMisses": source.shadowReturnStackMisses,
+        "shadowReturnStackPushes": source.shadowReturnStackPushes,
+        "shadowReturnStackHitRatePPM": UInt64(source.shadowReturnStackHitRate * 1_000_000),
         "translationCacheEntryCount": source.translationCacheEntryCount,
         "translationCacheAllocatedBytes": source.translationCacheAllocatedBytes,
         "translationCacheAddressSpaceGeneration": source.translationCacheAddressSpaceGeneration,

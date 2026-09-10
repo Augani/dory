@@ -240,6 +240,10 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let indirectBranchTargetCacheMisses: UInt64
   public let indirectBranchTargetCacheFills: UInt64
   public let indirectBranchTargetCacheHitRate: Double
+  public let shadowReturnStackHits: UInt64
+  public let shadowReturnStackMisses: UInt64
+  public let shadowReturnStackPushes: UInt64
+  public let shadowReturnStackHitRate: Double
   public let translationCacheEntryCount: UInt64
   public let translationCacheAllocatedBytes: UInt64
   public let translationCacheAddressSpaceGeneration: UInt64
@@ -310,6 +314,14 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     indirectBranchTargetCacheHitRate =
       indirectDenominator == 0
       ? 0 : Double(indirectBranchTargetCacheHits) / Double(indirectDenominator)
+    shadowReturnStackHits = sum(\.shadowReturnStackHits)
+    shadowReturnStackMisses = sum(\.shadowReturnStackMisses)
+    shadowReturnStackPushes = sum(\.shadowReturnStackPushes)
+    let shadowLookups = shadowReturnStackHits.addingReportingOverflow(shadowReturnStackMisses)
+    let shadowDenominator = shadowLookups.overflow ? UInt64.max : shadowLookups.partialValue
+    shadowReturnStackHitRate =
+      shadowDenominator == 0
+      ? 0 : Double(shadowReturnStackHits) / Double(shadowDenominator)
     translationCacheEntryCount = sum(\.translationCacheEntryCount)
     translationCacheAllocatedBytes = sum(\.translationCacheAllocatedBytes)
     translationCacheAddressSpaceGeneration =
