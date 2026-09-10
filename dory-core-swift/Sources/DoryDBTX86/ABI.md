@@ -34,7 +34,7 @@ a prologue or epilogue.
 
 ## Stable vCPU context
 
-The context is an array of 64 little-endian `UInt64` words. It is not a Swift
+The context is an array of 72 little-endian `UInt64` words. It is not a Swift
 struct ABI. The word layout is:
 
 | Words | Contents |
@@ -52,6 +52,7 @@ struct ABI. The word layout is:
 | 54...58 | native-chain enable, remaining instruction budget, retired instructions, retired blocks, and last executed block's guest RIP |
 | 59...63 | per-vCPU IBTC entry base, entry mask, code-cache generation, inline hits, and inline misses |
 | 64...70 | per-vCPU shadow-return entry base, entry mask, top pointer, code-cache generation, inline hits, misses, and pushes |
+| 71 | atomic pending-work byte in the low eight bits; the remaining bits are reserved |
 
 The context pointer remains stable for a dispatch. TLB bases and helper
 addresses are derived from it; generated code must not retain them beyond that
@@ -73,6 +74,14 @@ Words 64...67 expose the fixed 32-byte C shadow-return entries and persistent
 top word. Words 68...70 are per-dispatch generated hit, miss, and push counters.
 Each entry is tagged with the guest RSP, guest return RIP, and code-cache
 generation before its host target may be used.
+
+Word 71 remains at one stable address for the executor's lifetime. Device and
+coordination threads publish work with a release byte store; every chain-capable
+block checks that byte before its instruction-budget guard and returns to the
+dispatcher without retiring when it is nonzero. The check is disabled for
+ordinary one-block execution. Because patched targets enter through the same
+guard, block entry also bounds backward-branch interrupt latency without an
+architectural spill at each guest instruction.
 
 ## Entry, exit, and chaining
 

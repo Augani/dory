@@ -28,6 +28,14 @@ static _Thread_local uintptr_t dory_jit_memory_callback_return_pc = 0;
 #define DORY_JIT_CAPTURE_CALLBACK_RETURN_PC() \
     ((uintptr_t)__builtin_extract_return_addr(__builtin_return_address(0)))
 
+uint8_t dory_jit_pending_work_load_acquire(const uint8_t *value) {
+    return atomic_load_explicit((const _Atomic uint8_t *)value, memory_order_acquire);
+}
+
+void dory_jit_pending_work_store_release(uint8_t *value, uint8_t desired) {
+    atomic_store_explicit((_Atomic uint8_t *)value, desired, memory_order_release);
+}
+
 struct dory_jit_tlb {
     uint32_t magic;
     size_t entry_count;

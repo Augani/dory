@@ -393,6 +393,12 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
         byteOffset: DoryARM64Tier1ABI.ContextWord.chainEnabled.byteOffset
       ),
       UInt32(0),
+      Self.encodeLoad8(
+        register: 9,
+        base: 0,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.pendingWork.byteOffset
+      ),
+      UInt32(0),
       Self.encodeLoad64(
         register: 9,
         base: 0,
@@ -403,6 +409,7 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
     guardWords.append(Self.encodeCompare64(left: 9, right: 10))
     let enoughBudgetBranch = guardWords.count
     guardWords.append(0)
+    let pendingWorkExit = guardWords.count
     guardWords.append(
       Self.encodeMoveWideZero32(
         register: 0,
@@ -413,6 +420,10 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
     guardWords[1] = Self.encodeCompareAndBranchZero(
       register: 9,
       wordOffset: bodyStart - 1
+    )
+    guardWords[3] = Self.encodeCompareAndBranchNonZero32(
+      register: 9,
+      wordOffset: pendingWorkExit - 3
     )
     guardWords[enoughBudgetBranch] = Self.encodeConditionalBranchCarrySet(
       wordOffset: bodyStart - enoughBudgetBranch)
@@ -558,6 +569,11 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
     return 0xF940_0000 | UInt32(byteOffset / 8) << 10 | base << 5 | register
   }
 
+  private static func encodeLoad8(register: UInt32, base: UInt32, byteOffset: Int) -> UInt32 {
+    precondition((0..<4_096).contains(byteOffset))
+    return 0x3940_0000 | UInt32(byteOffset) << 10 | base << 5 | register
+  }
+
   private static func encodeStore64(register: UInt32, base: UInt32, byteOffset: Int) -> UInt32 {
     precondition(byteOffset >= 0 && byteOffset.isMultiple(of: 8) && byteOffset / 8 < 4_096)
     return 0xF900_0000 | UInt32(byteOffset / 8) << 10 | base << 5 | register
@@ -627,6 +643,16 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
   ) -> UInt32 {
     precondition((-262_144..<262_144).contains(wordOffset))
     return 0xB400_0000
+      | (UInt32(truncatingIfNeeded: wordOffset) & 0x7_FFFF) << 5
+      | register
+  }
+
+  private static func encodeCompareAndBranchNonZero32(
+    register: UInt32,
+    wordOffset: Int
+  ) -> UInt32 {
+    precondition((-262_144..<262_144).contains(wordOffset))
+    return 0x3500_0000
       | (UInt32(truncatingIfNeeded: wordOffset) & 0x7_FFFF) << 5
       | register
   }

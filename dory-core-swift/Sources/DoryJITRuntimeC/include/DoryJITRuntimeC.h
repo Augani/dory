@@ -10,6 +10,9 @@ typedef struct dory_jit_block_cache dory_jit_block_cache;
 typedef struct dory_jit_ibtc dory_jit_ibtc;
 typedef struct dory_jit_shadow_return_stack dory_jit_shadow_return_stack;
 
+uint8_t dory_jit_pending_work_load_acquire(const uint8_t *value);
+void dory_jit_pending_work_store_release(uint8_t *value, uint8_t desired);
+
 typedef struct dory_jit_block_key {
     uint64_t physical_rip;
     uint8_t execution_mode;

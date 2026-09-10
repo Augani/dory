@@ -8467,7 +8467,7 @@ import Testing
         let enabled = DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue
         let remaining = DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue
         let retired = DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue
-        let blocks = DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue
+        let retiredBlocks = DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue
         let lastRIP = DoryARM64Tier1ABI.ContextWord.chainLastGuestRIP.rawValue
         context[enabled] = 1
         context[remaining] = 2
@@ -8495,6 +8495,83 @@ import Testing
         #expect(context[blocks] == 1)
         #expect(context[lastRIP] == 0x2800)
       }
+    #endif
+  }
+
+  @Test func generatedChainEntryPollsTheSinglePendingWorkByte() throws {
+    #if arch(arm64)
+      let ir = try DoryX86IRTranslator(instructionBudget: 1).translate(
+        [0x48, 0xFF, 0xC0], at: 0x2A00, mode: .long64)
+      let blocks = [
+        DoryARM64BaselineEmitter().compile(ir),
+        try #require(DoryARM64Tier1Emitter().compile(ir)),
+      ]
+
+      for block in blocks {
+        let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+        try region.publish(block, at: 0)
+        var context = [UInt64](
+          repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+        let enabled = DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue
+        let remaining = DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue
+        let retired = DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue
+        let blocks = DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue
+        let pendingWork = DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue
+        context[16] = 0x2A00
+        context[enabled] = 1
+        context[remaining] = 1
+        context[pendingWork] = 1
+
+        #expect(try region.execute(at: 0, context: &context) == .dispatch)
+        #expect(context[0] == 0)
+        #expect(context[16] == 0x2A00)
+        #expect(context[remaining] == 1)
+        #expect(context[retired] == 0)
+        #expect(context[retiredBlocks] == 0)
+
+        context[pendingWork] = 0
+        #expect(try region.execute(at: 0, context: &context) == .dispatch)
+        #expect(context[0] == 1)
+        #expect(context[16] == 0x2A03)
+        #expect(context[remaining] == 0)
+        #expect(context[retired] == 1)
+        #expect(context[retiredBlocks] == 1)
+      }
+    #endif
+  }
+
+  @Test func executorPendingWorkRequestPreemptsAndCanBeConsumed() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x2B00
+      let bytes: [UInt8] = [0x48, 0xFF, 0xC0]  // inc rax
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(rip: base)
+      let before = state
+      executor.requestPendingWork()
+      #expect(executor.hasPendingWork)
+      #expect(try executor.executeChainedSummary(
+        byteProvider: { _, count in Array(bytes.prefix(count)) },
+        at: base,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &state
+      ) == nil)
+      #expect(state == before)
+
+      executor.clearPendingWork()
+      #expect(!executor.hasPendingWork)
+      let execution = try #require(executor.executeChainedSummary(
+        byteProvider: { _, count in Array(bytes.prefix(count)) },
+        at: base,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &state
+      ))
+      #expect(execution.guestInstructionCount == 1)
+      #expect(state.registers.rax == 1)
+      #expect(state.rip == base + 3)
     #endif
   }
 

@@ -98,6 +98,7 @@ enum DoryARM64Tier1ABI {
     case shadowReturnHits
     case shadowReturnMisses
     case shadowReturnPushes
+    case pendingWork
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }

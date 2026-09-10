@@ -365,6 +365,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     DoryARM64Tier1ABI.ContextWord.shadowReturnMisses.byteOffset
   private static let shadowReturnPushesOffset =
     DoryARM64Tier1ABI.ContextWord.shadowReturnPushes.byteOffset
+  private static let pendingWorkOffset = DoryARM64Tier1ABI.ContextWord.pendingWork.byteOffset
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
@@ -590,6 +591,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     var guardWords = [
       encodeLoad64(register: 9, base: 0, byteOffset: Self.chainEnabledOffset),
       UInt32(0),
+      encodeLoad8(register: 9, base: 0, byteOffset: Self.pendingWorkOffset),
+      UInt32(0),
       encodeLoad64(
         register: 9,
         base: 0,
@@ -601,11 +604,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
       encodeAddSubtractSetFlags(add: false, is64Bit: true, 9, 10, 31))
     let enoughBudgetBranch = guardWords.count
     guardWords.append(0)
+    let pendingWorkExit = guardWords.count
     guardWords.append(
       encodeMoveWideZero32(register: 0, immediate: UInt16(DoryJITExitCode.dispatch.rawValue)))
     guardWords.append(0xD65F_03C0)
     let bodyStart = guardWords.count
     guardWords[1] = encodeCompareBranchZero64(register: 9, wordOffset: bodyStart - 1)
+    guardWords[3] = encodeCompareBranchNonZero32(
+      register: 9,
+      wordOffset: pendingWorkExit - 3
+    )
     guardWords[enoughBudgetBranch] = encodeConditionalBranch(
       condition: .carrySet,
       wordOffset: bodyStart - enoughBudgetBranch
@@ -4408,6 +4416,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
     0xF940_0000 | UInt32(byteOffset / 8) << 10 | base << 5 | register
   }
 
+  private func encodeLoad8(register: UInt32, base: UInt32, byteOffset: Int) -> UInt32 {
+    0x3940_0000 | UInt32(byteOffset) << 10 | base << 5 | register
+  }
+
   private func encodeLoad32(register: UInt32, base: UInt32, byteOffset: Int) -> UInt32 {
     0xB940_0000 | UInt32(byteOffset / 4) << 10 | base << 5 | register
   }
@@ -4707,6 +4719,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private func encodeCompareBranchZero64(register: UInt32, wordOffset: Int) -> UInt32 {
     precondition((-262_144..<262_144).contains(wordOffset))
     return 0xB400_0000 | (UInt32(truncatingIfNeeded: wordOffset) & 0x7_FFFF) << 5 | register
+  }
+
+  private func encodeCompareBranchNonZero32(register: UInt32, wordOffset: Int) -> UInt32 {
+    precondition((-262_144..<262_144).contains(wordOffset))
+    return 0x3500_0000 | (UInt32(truncatingIfNeeded: wordOffset) & 0x7_FFFF) << 5 | register
   }
 
   private func encodeUnconditionalBranch(wordOffset: Int) -> UInt32 {
@@ -5440,6 +5457,38 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   static let maximumRecordedNativeTraceBlocks = 256
   static let codeCacheGenerationCount = 2
 
+  /// One executor has one serialized native entry, so its context can remain at a stable address.
+  /// The final byte is the only field written concurrently by device/coordination threads.
+  private final class ExecutionContextStorage: @unchecked Sendable {
+    private let words: UnsafeMutablePointer<UInt64>
+
+    init() {
+      words = .allocate(capacity: DoryJITExecutableRegion.contextWordCount)
+      words.initialize(repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+    }
+
+    deinit {
+      words.deinitialize(count: DoryJITExecutableRegion.contextWordCount)
+      words.deallocate()
+    }
+
+    func withBuffer<Result>(
+      _ body: (UnsafeMutableBufferPointer<UInt64>) throws -> Result
+    ) rethrows -> Result {
+      try body(
+        UnsafeMutableBufferPointer(
+          start: words,
+          count: DoryJITExecutableRegion.contextWordCount
+        ))
+    }
+
+    var pendingWorkPointer: UnsafeMutablePointer<UInt8> {
+      UnsafeMutableRawPointer(words)
+        .advanced(by: DoryARM64Tier1ABI.ContextWord.pendingWork.byteOffset)
+        .assumingMemoryBound(to: UInt8.self)
+    }
+  }
+
   private struct LookupKey: Hashable {
     let guestStart: UInt64
     let physicalStart: UInt64
@@ -5598,6 +5647,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let blockCache: DoryJITBlockCache
   private let indirectBranchTargetCache: DoryJITIndirectBranchTargetCache
   private let shadowReturnStack: DoryJITShadowReturnStack
+  private let executionContextStorage: ExecutionContextStorage
   private var residentSlots: [ResidentSlot?] = []
   private var freeResidentSlotIndices: [Int] = []
   private var recentEntries: [RecentResidentBlock?] = .init(repeating: nil, count: 256)
@@ -5670,6 +5720,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     self.tier1Enabled = tier1Enabled
     self.optimization = optimization
     self.optimizer = optimizer
+    executionContextStorage = .init()
     let executableRegion = try DoryJITExecutableRegion(minimumCapacity: self.maximumCodeBytes)
     region = executableRegion
     codeCacheGenerationNextOffsets = [
@@ -5692,6 +5743,21 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   }
   public var nativeBatchExecutionCount: UInt64 {
     lock.withLock { nativeBatchExecutionCountValue }
+  }
+
+  /// Requests a bounded native exit. The release store is observed by the generated byte poll at
+  /// the next block entry, including entries reached through a patched direct chain.
+  public func requestPendingWork() {
+    dory_jit_pending_work_store_release(executionContextStorage.pendingWorkPointer, 1)
+  }
+
+  /// Clears a request after the dispatcher has consumed interrupts, cancellation, or tier work.
+  public func clearPendingWork() {
+    dory_jit_pending_work_store_release(executionContextStorage.pendingWorkPointer, 0)
+  }
+
+  public var hasPendingWork: Bool {
+    dory_jit_pending_work_load_acquire(executionContextStorage.pendingWorkPointer) != 0
   }
   public var diagnostics: DoryARM64BaselineExecutorDiagnostics {
     lock.withLock {
@@ -6000,7 +6066,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       })
     else { return nil }
     let metadata = resident.block.instructionMetadata[metadataIndex]
-    for index in context.indices { context[index] = failedContext[index] }
+    for index in context.indices
+    where index != DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue
+    {
+      context[index] = failedContext[index]
+    }
     context[DoryARM64Tier1ABI.ContextWord.rip.rawValue] = metadata.guestRIP
     context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 0
     return metadataIndex
@@ -6035,6 +6105,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       synchronizeCodeProtection(for: memory)
       chainedExecutionCallCount &+= 1
       chainedRequestedInstructionCount &+= UInt64(maximumInstructions)
+      guard !hasPendingWork else { return nil }
       switch try executeQwordCopyLoop(
         byteProvider: byteProvider,
         guestStart: guestStart,
@@ -6054,10 +6125,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       // Capability conformance is fixed for this memory object. Resolve it lazily once per
       // chain; callback failure and restartable-read policy still belong to each block.
       var memoryCapabilities: DoryJITMemoryCapabilities?
-      return try withUnsafeTemporaryAllocation(
-        of: UInt64.self,
-        capacity: DoryJITExecutableRegion.contextWordCount
-      ) { context in
+      return try executionContextStorage.withBuffer { context in
         try withUnsafeTemporaryAllocation(
           of: UInt64.self,
           capacity: DoryJITExecutableRegion.contextWordCount
@@ -6071,7 +6139,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             addressSpaceGeneration: translationGeneration,
             indirectBranchTargetCache: indirectBranchTargetCache,
             shadowReturnStack: shadowReturnStack,
-            codeCacheGeneration: codeCacheEpoch &+ 1
+            codeCacheGeneration: codeCacheEpoch &+ 1,
+            preservePendingWork: true
           )
           var completed = 0
           var blockCount = 0
@@ -6294,7 +6363,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                   // The captured callback image may contain speculative state produced inside the
                   // first instruction (for example flags computed before a rejected RMW store).
                   // Its exact entry state is the dispatcher checkpoint.
-                  for index in context.indices { context[index] = checkpoint[index] }
+                  for index in context.indices
+                  where index != DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue
+                  {
+                    context[index] = checkpoint[index]
+                  }
                 }
                 completed += recoveredPrefixInstructionCount
                 if recoveredPrefixInstructionCount > 0 { blockCount += 1 }
@@ -6308,7 +6381,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                   exitCode: .dispatch
                 )
               }
-              for index in context.indices { context[index] = checkpoint[index] }
+              for index in context.indices
+              where index != DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue
+              {
+                context[index] = checkpoint[index]
+              }
               guard completed > 0 else { return nil }
               chainedRetiredInstructionCount &+= UInt64(completed)
               publishExecutionContext(context, to: &state, memory: memory)
@@ -6327,6 +6404,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               usesGeneratedChainAccounting
               ? context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] : 0
             context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 0
+            if usesGeneratedChainAccounting, generatedBlockCount == 0, hasPendingWork {
+              publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
+              guard completed > 0 else { return nil }
+              chainedRetiredInstructionCount &+= UInt64(completed)
+              publishExecutionContext(context, to: &state, memory: memory)
+              return DoryARM64ExecutionSummary(
+                guestInstructionCount: UInt32(completed),
+                residentBlockCount: UInt32(blockCount),
+                tier: resident.block.tier,
+                exitCode: .dispatch
+              )
+            }
             if generatedBlockCount > 0 {
               precondition(
                 generatedInstructionCount <= UInt64(remaining)
@@ -6341,6 +6430,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             } else {
               completed += Int(resident.block.guestInstructionCount)
               blockCount += 1
+            }
+            if hasPendingWork {
+              publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
+              chainedRetiredInstructionCount &+= UInt64(completed)
+              publishExecutionContext(context, to: &state, memory: memory)
+              return DoryARM64ExecutionSummary(
+                guestInstructionCount: UInt32(completed),
+                residentBlockCount: UInt32(blockCount),
+                tier: resident.block.tier,
+                exitCode: .dispatch
+              )
             }
             if exit == .dispatch, completed < maximumInstructions,
               usesGeneratedChainAccounting,
@@ -6574,10 +6674,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         )
       else { return nil }
 
-      return try withUnsafeTemporaryAllocation(
-        of: UInt64.self,
-        capacity: DoryJITExecutableRegion.contextWordCount
-      ) { context in
+      return try executionContextStorage.withBuffer { context in
         let translationGeneration = selectTLBAddressSpace(addressSpaceID)
         Self.populateExecutionContext(
           context,
@@ -6586,7 +6683,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           translationTLB: translationTLB,
           addressSpaceGeneration: translationGeneration,
           indirectBranchTargetCache: indirectBranchTargetCache,
-          codeCacheGeneration: codeCacheEpoch &+ 1
+          codeCacheGeneration: codeCacheEpoch &+ 1,
+          preservePendingWork: true
         )
         guard canExecute(resident, context: context) else { return nil }
         let execution = try region.executePreparedWithRecovery(
@@ -7617,7 +7715,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     addressSpaceGeneration: UInt64 = 0,
     indirectBranchTargetCache: DoryJITIndirectBranchTargetCache? = nil,
     shadowReturnStack: DoryJITShadowReturnStack? = nil,
-    codeCacheGeneration: UInt64 = 0
+    codeCacheGeneration: UInt64 = 0,
+    preservePendingWork: Bool = false
   ) {
     precondition(context.count == DoryJITExecutableRegion.contextWordCount)
     context[0] = state.registers.rax
@@ -7719,6 +7818,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[DoryARM64Tier1ABI.ContextWord.shadowReturnHits.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.shadowReturnMisses.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.shadowReturnPushes.rawValue] = 0
+    if !preservePendingWork {
+      context[DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue] = 0
+    }
   }
 
   private func recordLazyFlagMaterializations(
