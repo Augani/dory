@@ -698,12 +698,14 @@ struct DoryARM64Tier1Emitter: Sendable {
       chainSlots = []
       boundary.emitExit(exitCode, into: &words)
     }
+    let wordCountBeforeChainBudgetGuard = words.count
     if supportsChainSlots {
       boundary.installChainBudgetGuard(
         guestInstructionCount: block.guestInstructionCount,
         in: &words
       )
     }
+    let chainBudgetGuardWordCount = words.count - wordCountBeforeChainBudgetGuard
     let wordCountBeforeChainMetadata = words.count
     DoryARM64CompiledBlock.installChainMetadata(chainSlots, in: &words)
     let chainMetadataWordCount = words.count - wordCountBeforeChainMetadata
@@ -711,7 +713,7 @@ struct DoryARM64Tier1Emitter: Sendable {
       for: block,
       statementWordOffsets: statementWordOffsets,
       statementFlagsStates: statementFlagsStates,
-      leadingWordCount: chainMetadataWordCount + entryWordCount,
+      leadingWordCount: chainMetadataWordCount + chainBudgetGuardWordCount + entryWordCount,
       liveInRegisterMask: .max,
       dirtyRegisterMask: .max
     )

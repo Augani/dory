@@ -83,10 +83,66 @@ import Testing
       }
       let entryAddress = try #require(region.entryAddress(at: 0))
       let callbackHostPC = try #require(execution.failedCallbackHostPC)
+      let failedContext = try #require(execution.failedExecutionContext)
       #expect(execution.exitCode == .interpreter)
+      #expect(failedContext[1] == 1)
+      #expect(failedContext[16] == 0x6000)
       #expect(callbackHostPC >= entryAddress)
       let hostOffset = try #require(UInt32(exactly: callbackHostPC - entryAddress))
       #expect(compiled.instructionMetadata(atHostOffset: hostOffset)?.guestRIP == 0x600A)
+    #endif
+  }
+
+  @Test func failedCallbackPublishesCompletedInstructionPrefixAndRetriesAtFaultingRIP() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [
+        0x48, 0xB9, 1, 0, 0, 0, 0, 0, 0, 0,  // mov rcx,1
+        0x48, 0x8B, 0x03,  // mov rax,[rbx]
+      ]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          optimization: optimization
+        )
+        let memory = try DoryX86ByteArrayMemory(baseAddress: 0x6000, bytes: bytes)
+        var state = try DoryX86ArchitecturalState(
+          registers: .init(rax: 0xAAAA, rcx: 0, rbx: 0x7000),
+          rip: 0x6000,
+          cs: .init(selector: 0, attributes: 0xA09B, limit: .max)
+        )
+
+        let prefix = try #require(executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            (try? memory.instructionBytes(at: address, maximumCount: maximumCount)) ?? []
+          },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &state,
+          memory: memory
+        ))
+        #expect(prefix.guestInstructionCount == 1)
+        #expect(prefix.residentBlockCount == 1)
+        #expect(prefix.exitCode == .dispatch)
+        #expect(state.rip == 0x600A)
+        #expect(state.registers.rcx == 1)
+        #expect(state.registers.rax == 0xAAAA)
+
+        let beforeRetry = state
+        #expect(try executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            (try? memory.instructionBytes(at: address, maximumCount: maximumCount)) ?? []
+          },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        ) == nil)
+        #expect(state == beforeRetry)
+      }
     #endif
   }
 

@@ -468,19 +468,22 @@ public struct DoryARM64BaselineEmitter: Sendable {
     if hasIndirectChain { emitIndirectBranchTargetCacheLookup(into: &words) }
     words.append(encodeMoveWideZero32(register: 0, immediate: UInt16(exit.rawValue)))
     words.append(0xD65F_03C0)
+    let wordCountBeforeChainBudgetGuard = words.count
     if hasGeneratedChain {
       installChainBudgetGuard(
         guestInstructionCount: block.guestInstructionCount,
         in: &words
       )
     }
+    let chainBudgetGuardWordCount = words.count - wordCountBeforeChainBudgetGuard
     let wordCountBeforeChainMetadata = words.count
     if hasIndirectChain {
       DoryARM64CompiledBlock.installIndirectChainMetadata(in: &words)
     } else {
       DoryARM64CompiledBlock.installChainMetadata(chainSlots, in: &words)
     }
-    let leadingWordCount = words.count - wordCountBeforeChainMetadata
+    let leadingWordCount =
+      chainBudgetGuardWordCount + words.count - wordCountBeforeChainMetadata
     let instructionMetadata = DoryARM64CompiledBlock.makeInstructionMetadata(
       for: block,
       statementWordOffsets: statementWordOffsets,
@@ -4849,9 +4852,11 @@ struct DoryJITMemoryCapabilities {
 struct DoryJITMemoryCallbackContext {
   let capabilities: DoryJITMemoryCapabilities
   let requiresRestartableReads: Bool
+  var executionContext: UnsafeMutableBufferPointer<UInt64>? = nil
   var translationTLB: DoryX86JITTLB?
   var failed = false
   var failedCallbackHostPC: UInt64?
+  var failedExecutionContext: [UInt64]?
   var pageTableWriteObserved = false
 }
 
@@ -4862,6 +4867,7 @@ private func doryJITRecordMemoryFailure(
   context.pointee.failed = true
   let returnPC = dory_jit_current_memory_callback_return_pc()
   context.pointee.failedCallbackHostPC = returnPC == 0 ? nil : UInt64(returnPC)
+  context.pointee.failedExecutionContext = context.pointee.executionContext.map(Array.init)
 }
 
 private func doryJITInvalidatePageTableWrite(
@@ -5020,6 +5026,7 @@ private let doryJITMemoryCompareExchange: dory_jit_memory_compare_exchange_funct
 struct DoryJITPreparedExecution: Sendable, Hashable {
   let exitCode: DoryJITExitCode
   let failedCallbackHostPC: UInt64?
+  let failedExecutionContext: [UInt64]?
 }
 
 public final class DoryJITExecutableRegion: @unchecked Sendable {
@@ -5177,10 +5184,12 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     let result: Int32
     var memoryFailed = false
     var failedCallbackHostPC: UInt64?
+    var failedExecutionContext: [UInt64]?
     if let memoryCapabilities {
       var memoryContext = DoryJITMemoryCallbackContext(
         capabilities: memoryCapabilities,
         requiresRestartableReads: requiresRestartableReads,
+        executionContext: context,
         translationTLB: translationTLB
       )
       result = withUnsafeMutablePointer(to: &memoryContext) { memoryContext in
@@ -5198,6 +5207,7 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
       }
       memoryFailed = memoryContext.failed
       failedCallbackHostPC = memoryContext.failedCallbackHostPC
+      failedExecutionContext = memoryContext.failedExecutionContext
     } else {
       result = dory_jit_region_execute(
         region,
@@ -5213,12 +5223,16 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     }
     guard result == 0 else { throw DoryJITRuntimeError.executionFailed(result) }
     if memoryFailed {
-      return .init(exitCode: .interpreter, failedCallbackHostPC: failedCallbackHostPC)
+      return .init(
+        exitCode: .interpreter,
+        failedCallbackHostPC: failedCallbackHostPC,
+        failedExecutionContext: failedExecutionContext
+      )
     }
     guard let exit = DoryJITExitCode(rawValue: rawExit) else {
       throw DoryJITRuntimeError.invalidExitCode(rawExit)
     }
-    return .init(exitCode: exit, failedCallbackHostPC: nil)
+    return .init(exitCode: exit, failedCallbackHostPC: nil, failedExecutionContext: nil)
   }
 
   /// Replays an already validated sequence of callback-free resident blocks without crossing the
@@ -5943,6 +5957,35 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     )
   }
 
+  /// Restores the architectural prefix published immediately before a failed memory callback.
+  /// Native-NZCV boundaries remain on whole-block rollback until their host flags can be captured.
+  private func restoreFailedMemoryCallbackPrefix(
+    _ execution: DoryJITPreparedExecution,
+    resident: ResidentBlock,
+    context: UnsafeMutableBufferPointer<UInt64>
+  ) -> Int? {
+    guard execution.exitCode == .interpreter,
+      let callbackHostPC = execution.failedCallbackHostPC,
+      let failedContext = execution.failedExecutionContext,
+      failedContext.count == context.count,
+      let entryAddress = region.entryAddress(at: resident.offset),
+      callbackHostPC >= entryAddress
+    else { return nil }
+    let relativeHostPC = callbackHostPC - entryAddress
+    guard relativeHostPC < UInt64(resident.block.machineBytes.count),
+      let hostOffset = UInt32(exactly: relativeHostPC),
+      let metadataIndex = resident.block.instructionMetadata.lastIndex(where: {
+        $0.hostOffsetStart <= hostOffset
+      })
+    else { return nil }
+    let metadata = resident.block.instructionMetadata[metadataIndex]
+    guard metadata.flagsState == .context else { return nil }
+    for index in context.indices { context[index] = failedContext[index] }
+    context[DoryARM64Tier1ABI.ContextWord.rip.rawValue] = metadata.guestRIP
+    context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 0
+    return metadataIndex
+  }
+
   /// Runs consecutive resident basic blocks while the machine's interrupt deadline permits it.
   /// The execution context crosses block boundaries without round-tripping all architectural
   /// registers through Swift. System, port-I/O, halt, and restartable-memory exits still return at
@@ -6209,18 +6252,39 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] = 0
             context[DoryARM64Tier1ABI.ContextWord.chainLastGuestRIP.rawValue] = 0
             nativeDispatcherEntryCount &+= 1
-            let exit = try region.executePrepared(
+            let execution = try region.executePreparedWithRecovery(
               at: resident.offset,
               context: context,
               memoryCapabilities: resident.block.requiresMemoryCallbacks ? memoryCapabilities : nil,
               requiresRestartableReads: resident.block.requiresRestartableMemoryReads,
               translationTLB: translationTLB
             )
+            let exit = execution.exitCode
             recordLazyFlagMaterializations(in: context)
             recordIndirectBranchTargetCacheLookups(in: context)
             recordShadowReturnStackActivity(in: context)
             if exit == .interpreter, hasCheckpoint {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
+              if let recoveredPrefixInstructionCount = restoreFailedMemoryCallbackPrefix(
+                execution,
+                resident: resident,
+                context: context
+              ) {
+                completed += recoveredPrefixInstructionCount
+                if recoveredPrefixInstructionCount > 0 { blockCount += 1 }
+                guard completed > 0 else {
+                  publishExecutionContext(context, to: &state, memory: memory)
+                  return nil
+                }
+                chainedRetiredInstructionCount &+= UInt64(completed)
+                publishExecutionContext(context, to: &state, memory: memory)
+                return DoryARM64ExecutionSummary(
+                  guestInstructionCount: UInt32(completed),
+                  residentBlockCount: UInt32(blockCount),
+                  tier: resident.block.tier,
+                  exitCode: .dispatch
+                )
+              }
               for index in context.indices { context[index] = checkpoint[index] }
               guard completed > 0 else { return nil }
               chainedRetiredInstructionCount &+= UInt64(completed)
