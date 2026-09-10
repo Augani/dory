@@ -7731,7 +7731,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       chainTargetInterpreterGuardRejectionCount &+= 1
       return false
     }
-    guard source.block.tier == target.block.tier else {
+    // A single-access, read-only legacy memory block preserves the callback bank and its chain
+    // epilogue restores the canonical x0...x5 entry tuple. Restrict the cross-compiler edge to
+    // that rollback-free shape: writers, guarded exits, multi-access reads, and callback-free
+    // legacy blocks remain dispatcher-separated.
+    let hasCompatibleCompilerABI = source.block.tier == target.block.tier
+      || (source.block.tier != .tier1
+        && target.block.tier == .tier1
+        && source.block.requiresMemoryCallbacks
+        && !source.block.requiresRestartableMemoryReads
+        && !source.block.mayWriteMemory
+        && !source.block.mayExitToInterpreter)
+    guard hasCompatibleCompilerABI else {
       chainTargetCompilerABIRejectionCount &+= 1
       return false
     }
