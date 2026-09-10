@@ -373,14 +373,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
     DoryARM64Tier1ABI.ContextWord.hostReturnAddress.byteOffset
   private static let inlineTLBFaultHostPCOffset =
     DoryARM64Tier1ABI.ContextWord.inlineTLBFaultHostPC.byteOffset
-  private static let memoryFaultCheckpointActiveOffset =
-    DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointActive.byteOffset
-  private static let memoryFaultCheckpointRegisterMaskOffset =
-    DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRegisterMask.byteOffset
-  private static let memoryFaultCheckpointRFlagsOffset =
-    DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRFlags.byteOffset
-  private static let memoryFaultCheckpointRAXOffset =
-    DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRAX.byteOffset
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
@@ -446,34 +438,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
     }
     if wroteMemory && guardsTerminator { return fallback(block) }
     if usesMemory { emitMemoryPrologue(into: &words) }
-    let registerMasks = DoryARM64Tier1Emitter.instructionRegisterMasks(for: block)
-    var writeCheckpointMasksByStatement: [Int: UInt16] = [:]
-    for (boundaryIndex, boundary) in block.instructionBoundaries.enumerated() {
-      let start = Int(boundary.statementStartIndex)
-      let end = start + Int(boundary.statementCount)
-      guard start < end, end <= block.statements.count,
-        block.statements[start..<end].contains(where: writesMemory)
-      else { continue }
-      writeCheckpointMasksByStatement[start] = registerMasks.writes[boundaryIndex]
-    }
     var statementWordOffsets: [Int] = []
     statementWordOffsets.reserveCapacity(block.statements.count + 1)
-    for (statementIndex, statement) in block.statements.enumerated() {
+    for statement in block.statements {
       statementWordOffsets.append(words.count)
-      if let registerMask = writeCheckpointMasksByStatement[statementIndex] {
-        emitMemoryFaultCheckpoint(registerMask: registerMask, into: &words)
-      }
       guard emit(statement, into: &words) else {
         return fallback(block)
       }
     }
     statementWordOffsets.append(words.count)
-    if !writeCheckpointMasksByStatement.isEmpty {
-      // A successful final store must not leave its checkpoint active across a native chain.
-      words.append(encodeMoveWideZero32(register: 16, immediate: 0))
-      words.append(
-        encodeStore64(register: 16, base: 19, byteOffset: Self.memoryFaultCheckpointActiveOffset))
-    }
     guard let exit = emit(block.terminator, usesMemory: usesMemory, into: &words) else {
       return fallback(block)
     }
@@ -543,32 +516,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
       mayExitToInterpreter: guardsTerminator || guardsStack || guardsInterpreterExit,
       instructionMetadata: instructionMetadata
     )
-  }
-
-  private func emitMemoryFaultCheckpoint(registerMask: UInt16, into words: inout [UInt32]) {
-    for registerIndex in 0..<16 where registerMask & (UInt16(1) << registerIndex) != 0 {
-      words.append(
-        encodeLoad64(register: 16, base: 19, byteOffset: registerIndex * 8))
-      words.append(
-        encodeStore64(
-          register: 16,
-          base: 19,
-          byteOffset: Self.memoryFaultCheckpointRAXOffset + registerIndex * 8
-        ))
-    }
-    words.append(encodeLoad64(register: 16, base: 19, byteOffset: Self.rflagsOffset))
-    words.append(
-      encodeStore64(register: 16, base: 19, byteOffset: Self.memoryFaultCheckpointRFlagsOffset))
-    emitImmediate(UInt64(registerMask), register: 16, into: &words)
-    words.append(
-      encodeStore64(
-        register: 16,
-        base: 19,
-        byteOffset: Self.memoryFaultCheckpointRegisterMaskOffset
-      ))
-    words.append(encodeMoveWideZero32(register: 16, immediate: 1))
-    words.append(
-      encodeStore64(register: 16, base: 19, byteOffset: Self.memoryFaultCheckpointActiveOffset))
   }
 
   private func emitChainSlots(
@@ -3016,8 +2963,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
       condition: .equal,
       wordOffset: pageFaultStart - pageFaultBranch
     )
-    words.append(
-      encodeStore64(register: 30, base: 19, byteOffset: Self.inlineTLBFaultHostPCOffset))
     emitMemoryEpilogue(into: &words)
     words.append(
       encodeMoveWideZero32(
@@ -3118,8 +3063,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
       condition: .equal,
       wordOffset: pageFaultStart - directPageFaultBranch
     )
-    words.append(
-      encodeStore64(register: 30, base: 19, byteOffset: Self.inlineTLBFaultHostPCOffset))
     emitMemoryEpilogue(into: &words)
     words.append(
       encodeMoveWideZero32(
@@ -5292,8 +5235,6 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     var failedExecutionContext: [UInt64]?
     let inlineTLBFaultHostPCIndex = DoryARM64Tier1ABI.ContextWord.inlineTLBFaultHostPC.rawValue
     context[inlineTLBFaultHostPCIndex] = 0
-    context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointActive.rawValue] = 0
-    context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRegisterMask.rawValue] = 0
     if let memoryCapabilities {
       var memoryContext = DoryJITMemoryCallbackContext(
         capabilities: memoryCapabilities,
@@ -6181,17 +6122,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       })
     else { return nil }
     let metadata = faultResident.block.instructionMetadata[metadataIndex]
-    var recoveredContext = failedContext
-    if failedContext[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointActive.rawValue] != 0 {
-      recoveredContext[DoryARM64Tier1ABI.ContextWord.rflags.rawValue] =
-        failedContext[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRFlags.rawValue]
-      let registerMask = UInt16(truncatingIfNeeded:
-        failedContext[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRegisterMask.rawValue])
-      let checkpointBase = DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRAX.rawValue
-      for registerIndex in 0..<16 where registerMask & (UInt16(1) << registerIndex) != 0 {
-        recoveredContext[registerIndex] = failedContext[checkpointBase + registerIndex]
-      }
-    }
     guard
       let chainInstructionCount = Int(exactly:
         failedContext[DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue]),
@@ -6201,7 +6131,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     for index in context.indices
     where index != DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue
     {
-      context[index] = recoveredContext[index]
+      context[index] = failedContext[index]
     }
     context[DoryARM64Tier1ABI.ContextWord.rip.rawValue] = metadata.guestRIP
     context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 0
@@ -7969,8 +7899,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[DoryARM64Tier1ABI.ContextWord.hostFramePointer.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.hostReturnAddress.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.inlineTLBFaultHostPC.rawValue] = 0
-    context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointActive.rawValue] = 0
-    context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRegisterMask.rawValue] = 0
   }
 
   private func recordLazyFlagMaterializations(
