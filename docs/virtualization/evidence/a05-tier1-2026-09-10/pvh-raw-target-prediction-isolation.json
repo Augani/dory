@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-raw-target-prediction-isolation",
+  "observedAt": "2026-09-10T17:26:51Z",
+  "status": "passed-local-production-reliability-check",
+  "qualification": "local A05.3 reliability isolation; not A05.3 closure, performance acceptance, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "e79ada3d20d9a446a7fd51b9b98eaf53e9155e83",
+    "candidateRunnerSHA256": "b42c72ce36c3dcf65e6af3af512c857570ab9c7ea374296728f2cd12967f53d7",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "acceptedBoundary": "Raw host-address prediction is independently selectable on each executor. The production PC machine disables direct-chain initiation and publishes neither its generated indirect-branch target cache nor its shadow-return stack to generated execution. Standalone executor use retains the complete predictor path by default.",
+    "preservedBehavior": "Ordinary generated execution, Tier-one admission, the physical C block cache, native trace recording and replay, precise fault recovery, and interpreter fallback remain enabled.",
+    "behavioralIntent": "Determine whether the intermittent guest corruption and invalid host returns persist after isolating every generated path that consumes a runtime-published raw host code address.",
+    "productionFinding": "Two runs of the exact same hashed release runner passed the authenticated seven-workload fixture and powered off. Both receipts record zero direct-chain activity, zero IBTC activity, and zero shadow-return activity while native trace replay remains active. This accepts the isolation as a production reliability boundary and makes one or more raw-target predictor paths the leading suspect; it does not identify a specific predictor or prove sole causality."
+  },
+  "verification": {
+    "focused": "Six tests passed: the new predictor-off state-equivalence regression plus the existing direct-chain, generated IBTC, shadow-return, and cache invalidation paths.",
+    "deterministicAggregate": "1,556 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the same pinned inputs were executed explicitly twice.",
+    "productionAttempts": 2,
+    "passingDiagnosticReceiptsProduced": 2
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ]
+  },
+  "acceptedRuns": [
+    {
+      "runID": "9c1fa6fd-7260-451c-9cb5-397b8830e6e1",
+      "diagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-raw-targets-off-first-valid.json",
+      "diagnosticReceiptSHA256": "ef778b994b8537356651c94db7835c551656c1bb69ca20ed392ea5aaba563d53",
+      "elapsedNanoseconds": 228778884958,
+      "retiredInstructions": 732494380,
+      "baselineJITInstructions": 729654866,
+      "interpreterInstructions": 2839514,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 74495,
+      "nativeDispatcherEntries": 233428929,
+      "directChainPatches": 0,
+      "directlyChainedBlocks": 0,
+      "indirectBranchTargetCacheHits": 0,
+      "indirectBranchTargetCacheMisses": 0,
+      "indirectBranchTargetCacheFills": 0,
+      "shadowReturnStackHits": 0,
+      "shadowReturnStackMisses": 0,
+      "shadowReturnStackPushes": 0,
+      "nativeTraceAttempts": 544780,
+      "nativeTraceReplays": 377237
+    },
+    {
+      "runID": "e07e867f-bca3-4516-a55f-b5b38c45e216",
+      "diagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-raw-targets-off-second-valid.json",
+      "diagnosticReceiptSHA256": "e5f9f7a4103f2f7a40727f83194e6363b9dce8b451b0768fdd4516bcfd813cc1",
+      "elapsedNanoseconds": 219398542250,
+      "retiredInstructions": 733728470,
+      "baselineJITInstructions": 730853357,
+      "interpreterInstructions": 2875113,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 74646,
+      "nativeDispatcherEntries": 235172044,
+      "directChainPatches": 0,
+      "directlyChainedBlocks": 0,
+      "indirectBranchTargetCacheHits": 0,
+      "indirectBranchTargetCacheMisses": 0,
+      "indirectBranchTargetCacheFills": 0,
+      "shadowReturnStackHits": 0,
+      "shadowReturnStackMisses": 0,
+      "shadowReturnStackPushes": 0,
+      "nativeTraceAttempts": 540956,
+      "nativeTraceReplays": 344251
+    }
+  ],
+  "retainedBaseline": {
+    "evidence": "pvh-chain-target-rejection-ranking.json",
+    "withinRunDispatcherReductionPercent": 50.26310931351201,
+    "requiredDispatcherReductionPercent": 95,
+    "reason": "The isolation deliberately disables every raw-target bypass, so its zero bypass share is not performance evidence and cannot replace the last accepted enabled-path measurement."
+  },
+  "disposition": {
+    "candidateAccepted": true,
+    "productionReliabilityIsolationAccepted": true,
+    "a05_3DispatcherGatePassed": false,
+    "a05_3Complete": false,
+    "reason": "The two exact-binary runs accept the fail-closed production boundary. A05.3 remains open because direct chaining, IBTC, and shadow returns must be reintroduced independently, each with targeted tests and two frozen-fixture runs, and the final enabled path must exceed 95-percent dispatcher avoidance."
+  },
+  "limitations": [
+    "Two passing local runs are a bounded reliability check, not cross-host qualification or proof that all intermittent failures have been eliminated.",
+    "The combined result with the preceding native-trace-off rejection implicates raw host-address prediction, but binary layout and an unobserved correlated defect remain possible confounders.",
+    "This diagnostic isolation removes the A05.3 acceleration paths from the production PC default and therefore cannot satisfy their performance gate.",
+    "The raw diagnostic receipts remain in the local fixture directory; this checked-in record binds their hashes and selected counters."
+  ]
+}
