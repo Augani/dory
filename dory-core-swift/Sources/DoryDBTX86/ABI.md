@@ -133,6 +133,13 @@ This keeps one-block execution and recorded native-trace replay independent of
 runtime link state. The chained dispatcher enables the slots only after validating
 the complete reachable resident set against generation tokens or current bytes.
 
+Raw host-address prediction is independently selectable. When disabled, runtime
+chain initiation and direct-chain accounting stay off, and the execution context
+exposes neither the indirect-branch target cache nor the shadow-return stack.
+The production PC machine currently selects this isolation boundary while the
+remaining raw-target reliability investigation is open; standalone executor use
+retains the full predictor path by default.
+
 The Swift dispatcher also materializes a pending tier-1 record before entering a
 legacy baseline or optimizing resident in the same chain. Those emitters consume
 only the architectural RFLAGS context word and cannot safely inherit the private

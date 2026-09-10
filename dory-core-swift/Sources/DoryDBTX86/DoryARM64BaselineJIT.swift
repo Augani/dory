@@ -5821,6 +5821,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let emitter: DoryARM64BaselineEmitter
   private let tier1Emitter: DoryARM64Tier1Emitter
   private let tier1Enabled: Bool
+  private let rawTargetPredictionEnabled: Bool
   private let optimization: DoryARM64JITOptimization
   private let optimizer: DoryIROptimizer
   private let region: DoryJITExecutableRegion
@@ -5896,6 +5897,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     profile: DoryX86CPUProfile = .compatibleV1,
     emitter: DoryARM64BaselineEmitter = .init(),
     tier1Enabled: Bool = false,
+    rawTargetPredictionEnabled: Bool = true,
     optimization: DoryARM64JITOptimization = .baseline,
     optimizer: DoryIROptimizer = .init()
   ) throws {
@@ -5910,6 +5912,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     self.emitter = emitter
     self.tier1Emitter = .init()
     self.tier1Enabled = tier1Enabled
+    self.rawTargetPredictionEnabled = rawTargetPredictionEnabled
     self.optimization = optimization
     self.optimizer = optimizer
     executionContextStorage = .init()
@@ -6379,8 +6382,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             memory: memory,
             translationTLB: translationTLB,
             addressSpaceGeneration: translationGeneration,
-            indirectBranchTargetCache: indirectBranchTargetCache,
-            shadowReturnStack: shadowReturnStack,
+            indirectBranchTargetCache: rawTargetPredictionEnabled
+              ? indirectBranchTargetCache : nil,
+            shadowReturnStack: rawTargetPredictionEnabled ? shadowReturnStack : nil,
             codeCacheGeneration: codeCacheEpoch &+ 1,
             preservePendingWork: true
           )
@@ -7703,7 +7707,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   }
 
   private func canInitiateRuntimeChain(_ resident: ResidentBlock) -> Bool {
-    resident.block.chainSlots != nil
+    rawTargetPredictionEnabled
+      && resident.block.chainSlots != nil
       && !resident.endsTimeBoundary
   }
 
