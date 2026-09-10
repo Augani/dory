@@ -19,6 +19,7 @@ enum {
     dory_jit_block_cache_tombstone = 2,
     dory_jit_ibtc_magic = 0x49425431,
     dory_jit_shadow_return_stack_magic = 0x52534231,
+    dory_jit_exit_pending_work = 5,
 };
 
 static const uint64_t dory_jit_tlb_maximum_generation = (UINT64_C(1) << 28) - 1;
@@ -1760,6 +1761,9 @@ int dory_jit_region_execute_batch(
         // Batch callers admit only blocks without memory callbacks. Keeping callback authority
         // absent makes that contract fail closed if a mismatched block ever reaches this path.
         exit_code = callable.function(context, NULL, NULL, NULL, NULL, NULL);
+        if (exit_code == dory_jit_exit_pending_work) {
+            break;
+        }
         executed++;
         instructions += guest_instruction_counts[index];
         if (exit_code != 0) {

@@ -7,6 +7,7 @@ public enum DoryJITExitCode: UInt32, Codable, Sendable, Hashable {
   case halt = 2
   case system = 3
   case portIO = 4
+  case pendingWork = 5
 }
 
 public enum DoryARM64CompilationTier: String, Codable, Sendable, Hashable {
@@ -589,9 +590,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) {
     precondition(guestInstructionCount > 0)
     var guardWords = [
-      encodeLoad64(register: 9, base: 0, byteOffset: Self.chainEnabledOffset),
-      UInt32(0),
       encodeLoad8(register: 9, base: 0, byteOffset: Self.pendingWorkOffset),
+      UInt32(0),
+      encodeLoad64(register: 9, base: 0, byteOffset: Self.chainEnabledOffset),
       UInt32(0),
       encodeLoad64(
         register: 9,
@@ -604,16 +605,19 @@ public struct DoryARM64BaselineEmitter: Sendable {
       encodeAddSubtractSetFlags(add: false, is64Bit: true, 9, 10, 31))
     let enoughBudgetBranch = guardWords.count
     guardWords.append(0)
-    let pendingWorkExit = guardWords.count
     guardWords.append(
       encodeMoveWideZero32(register: 0, immediate: UInt16(DoryJITExitCode.dispatch.rawValue)))
     guardWords.append(0xD65F_03C0)
+    let pendingWorkExit = guardWords.count
+    guardWords.append(
+      encodeMoveWideZero32(register: 0, immediate: UInt16(DoryJITExitCode.pendingWork.rawValue)))
+    guardWords.append(0xD65F_03C0)
     let bodyStart = guardWords.count
-    guardWords[1] = encodeCompareBranchZero64(register: 9, wordOffset: bodyStart - 1)
-    guardWords[3] = encodeCompareBranchNonZero32(
+    guardWords[1] = encodeCompareBranchNonZero32(
       register: 9,
-      wordOffset: pendingWorkExit - 3
+      wordOffset: pendingWorkExit - 1
     )
+    guardWords[3] = encodeCompareBranchZero64(register: 9, wordOffset: bodyStart - 3)
     guardWords[enoughBudgetBranch] = encodeConditionalBranch(
       condition: .carrySet,
       wordOffset: bodyStart - enoughBudgetBranch
@@ -6404,7 +6408,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               usesGeneratedChainAccounting
               ? context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] : 0
             context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 0
-            if usesGeneratedChainAccounting, generatedBlockCount == 0, hasPendingWork {
+            if usesGeneratedChainAccounting, generatedBlockCount == 0, exit == .pendingWork {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               guard completed > 0 else { return nil }
               chainedRetiredInstructionCount &+= UInt64(completed)
@@ -6430,17 +6434,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             } else {
               completed += Int(resident.block.guestInstructionCount)
               blockCount += 1
-            }
-            if hasPendingWork {
-              publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
-              chainedRetiredInstructionCount &+= UInt64(completed)
-              publishExecutionContext(context, to: &state, memory: memory)
-              return DoryARM64ExecutionSummary(
-                guestInstructionCount: UInt32(completed),
-                residentBlockCount: UInt32(blockCount),
-                tier: resident.block.tier,
-                exitCode: .dispatch
-              )
             }
             if exit == .dispatch, completed < maximumInstructions,
               usesGeneratedChainAccounting,
@@ -6650,7 +6643,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state: inout DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)?
   ) throws -> ResidentExecution? {
-    guard maximumInstructions > 0, state.interruptShadow == nil,
+    guard maximumInstructions > 0, !hasPendingWork, state.interruptShadow == nil,
       !state.rflags.contains(.virtual8086),
       !state.rflags.contains(.resume),
       !DoryX86AlignmentPolicy.isEnabled(state: state),

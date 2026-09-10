@@ -8522,7 +8522,7 @@ import Testing
         context[remaining] = 1
         context[pendingWork] = 1
 
-        #expect(try region.execute(at: 0, context: &context) == .dispatch)
+        #expect(try region.execute(at: 0, context: &context) == .pendingWork)
         #expect(context[0] == 0)
         #expect(context[16] == 0x2A00)
         #expect(context[remaining] == 1)
@@ -9132,6 +9132,21 @@ import Testing
       try region.publish(second, at: secondOffset)
       var words = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
       words[16] = 0x5000
+
+      words[DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue] = 1
+      let preempted = try words.withUnsafeMutableBufferPointer { context in
+        try region.executeBatch(
+          offsets: [0, secondOffset],
+          expectedGuestRIPs: [0x5000, 0x5007],
+          guestInstructionCounts: [first.guestInstructionCount, second.guestInstructionCount],
+          context: context
+        )
+      }
+      #expect(preempted.exitCode == .pendingWork)
+      #expect(preempted.residentBlockCount == 0)
+      #expect(preempted.guestInstructionCount == 0)
+      #expect(words[16] == 0x5000)
+      words[DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue] = 0
 
       let batch = try words.withUnsafeMutableBufferPointer { context in
         try region.executeBatch(

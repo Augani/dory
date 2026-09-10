@@ -387,16 +387,16 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
   ) {
     precondition(guestInstructionCount > 0)
     var guardWords = [
-      Self.encodeLoad64(
-        register: 9,
-        base: 0,
-        byteOffset: DoryARM64Tier1ABI.ContextWord.chainEnabled.byteOffset
-      ),
-      UInt32(0),
       Self.encodeLoad8(
         register: 9,
         base: 0,
         byteOffset: DoryARM64Tier1ABI.ContextWord.pendingWork.byteOffset
+      ),
+      UInt32(0),
+      Self.encodeLoad64(
+        register: 9,
+        base: 0,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.chainEnabled.byteOffset
       ),
       UInt32(0),
       Self.encodeLoad64(
@@ -409,21 +409,27 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
     guardWords.append(Self.encodeCompare64(left: 9, right: 10))
     let enoughBudgetBranch = guardWords.count
     guardWords.append(0)
-    let pendingWorkExit = guardWords.count
     guardWords.append(
       Self.encodeMoveWideZero32(
         register: 0,
         immediate: UInt16(DoryJITExitCode.dispatch.rawValue)
       ))
     guardWords.append(0xD65F_03C0)
+    let pendingWorkExit = guardWords.count
+    guardWords.append(
+      Self.encodeMoveWideZero32(
+        register: 0,
+        immediate: UInt16(DoryJITExitCode.pendingWork.rawValue)
+      ))
+    guardWords.append(0xD65F_03C0)
     let bodyStart = guardWords.count
-    guardWords[1] = Self.encodeCompareAndBranchZero(
+    guardWords[1] = Self.encodeCompareAndBranchNonZero32(
       register: 9,
-      wordOffset: bodyStart - 1
+      wordOffset: pendingWorkExit - 1
     )
-    guardWords[3] = Self.encodeCompareAndBranchNonZero32(
+    guardWords[3] = Self.encodeCompareAndBranchZero(
       register: 9,
-      wordOffset: pendingWorkExit - 3
+      wordOffset: bodyStart - 3
     )
     guardWords[enoughBudgetBranch] = Self.encodeConditionalBranchCarrySet(
       wordOffset: bodyStart - enoughBudgetBranch)

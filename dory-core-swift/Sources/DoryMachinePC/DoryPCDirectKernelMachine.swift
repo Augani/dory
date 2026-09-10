@@ -1472,6 +1472,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             jitTier: execution.tier,
             jitBlockCount: UInt64(execution.residentBlockCount)
           )
+        case .pendingWork:
+          return .init(
+            result: .yielded,
+            instructionCount: count,
+            jitTier: execution.tier,
+            jitBlockCount: UInt64(execution.residentBlockCount)
+          )
         case .halt:
           return .init(
             result: .halted,
