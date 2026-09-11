@@ -83,6 +83,43 @@ final class PublishedPortRepairClientTests: XCTestCase {
         }
     }
 
+    func testInventoryUnavailableReceiptDoesNotLookLikeRegistryMismatch() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let receiptURL = directory.appendingPathComponent(PublishedPortReconcileProtocol.receiptFilename)
+        let client = PublishedPortRepairClient(timeout: 0.25, pollInterval: 0.002) { pid in
+            do {
+                let request = try Self.readRequest(in: directory)
+                try Self.writeReceipt(
+                    for: request,
+                    enginePID: pid,
+                    publishedPortCount: 0,
+                    desiredForwardCount: 0,
+                    observedForwardCount: 0,
+                    addedForwardCount: 0,
+                    removedForwardCount: 0,
+                    missing: 0,
+                    unexpected: 0,
+                    error: "Docker published-port inventory is unavailable",
+                    to: receiptURL
+                )
+                return nil
+            } catch {
+                return "\(error)"
+            }
+        }
+
+        XCTAssertThrowsError(try client.reconcile(
+            stateDirectory: directory.path,
+            enginePID: 73,
+            helperIsCurrent: { true }
+        )) { error in
+            let message = "\(error)"
+            XCTAssertEqual(message, "Docker published-port inventory is unavailable")
+            XCTAssertFalse(message.contains("missing 0, unexpected 0"), message)
+        }
+    }
+
     func testRegistryMismatchReceiptCannotReportSuccess() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -188,6 +225,11 @@ final class PublishedPortRepairClientTests: XCTestCase {
     private static func writeReceipt(
         for request: PublishedPortReconcileRequest,
         enginePID: Int32,
+        publishedPortCount: Int = 1,
+        desiredForwardCount: Int = 2,
+        observedForwardCount: Int? = nil,
+        addedForwardCount: Int = 1,
+        removedForwardCount: Int = 1,
         missing: Int = 0,
         unexpected: Int = 0,
         error: String? = nil,
@@ -199,11 +241,11 @@ final class PublishedPortRepairClientTests: XCTestCase {
             enginePID: enginePID,
             startedAt: startedAt,
             finishedAt: startedAt.addingTimeInterval(0.001),
-            publishedPortCount: 1,
-            desiredForwardCount: 2,
-            observedForwardCount: 2 - missing + unexpected,
-            addedForwardCount: 1,
-            removedForwardCount: 1,
+            publishedPortCount: publishedPortCount,
+            desiredForwardCount: desiredForwardCount,
+            observedForwardCount: observedForwardCount ?? (2 - missing + unexpected),
+            addedForwardCount: addedForwardCount,
+            removedForwardCount: removedForwardCount,
             missingForwardCount: missing,
             unexpectedForwardCount: unexpected,
             error: error

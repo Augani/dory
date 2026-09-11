@@ -1,4 +1,5 @@
 import DoryCore
+import DorydKit
 import Foundation
 
 /// Keeps Docker's published-port inventory synchronized with the gvproxy owned by the macOS 14
@@ -21,6 +22,7 @@ final class DoryVMMPortForwarder: @unchecked Sendable {
     private let lock = NSLock()
     private var started = false
     private var lastLANFailureLog = Date.distantPast
+    private var lastInventoryFailureLog = Date.distantPast
     private var recoveringLANSession = false
 
     init(
@@ -84,7 +86,10 @@ final class DoryVMMPortForwarder: @unchecked Sendable {
     }
 
     private func synchronize() {
-        guard let ports = publishedPorts() else { return }
+        guard let ports = publishedPorts() else {
+            logInventoryUnavailable()
+            return
+        }
         if let client = sourcePreservingLANClient, let sessionID = sourcePreservingLANSessionID {
             do {
                 _ = try client.apply(SourcePreservingLANRequest(
@@ -147,6 +152,13 @@ final class DoryVMMPortForwarder: @unchecked Sendable {
         }
     }
 
+    private func logInventoryUnavailable() {
+        let now = Date()
+        guard now.timeIntervalSince(lastInventoryFailureLog) >= 30 else { return }
+        lastInventoryFailureLog = now
+        log("Docker published-port inventory is unavailable")
+    }
+
     private func logLANFailure(_ message: String) {
         let now = Date()
         guard now.timeIntervalSince(lastLANFailureLog) >= 30 else { return }
@@ -155,38 +167,35 @@ final class DoryVMMPortForwarder: @unchecked Sendable {
     }
 
     private func publishedPorts() -> Set<PublishedPortBinding>? {
-        guard let data = curlData(
-            unixSocket: dockerSocketPath,
-            url: "http://docker/v1.41/containers/json"
-        ), let containers = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        switch DockerEngineProbe.containerSummaries(socketPath: dockerSocketPath, timeout: 3) {
+        case .unavailable:
             return nil
-        }
-        var result = Set<PublishedPortBinding>()
-        for container in containers {
-            let labels = container["Labels"] as? [String: String]
-            let intents = PublishedPortForwardPlan.loopbackIntents(
-                fromLabel: labels?[PublishedPortForwardPlan.loopbackPortIntentLabel]
-            )
-            guard let ports = container["Ports"] as? [[String: Any]] else { continue }
-            for port in ports {
-                let dockerType = port["Type"] as? String ?? "tcp"
-                let requestedHost = PublishedPortForwardPlan.requestedHost(
-                    dockerHost: port["IP"] as? String,
-                    containerPort: port["PrivatePort"] as? Int,
-                    publicPort: port["PublicPort"] as? Int,
-                    dockerType: dockerType,
-                    loopbackIntents: intents
+        case let .ok(containers):
+            var result = Set<PublishedPortBinding>()
+            for container in containers where container.isRunning {
+                let intents = PublishedPortForwardPlan.loopbackIntents(
+                    fromLabel: container.labels[PublishedPortForwardPlan.loopbackPortIntentLabel]
                 )
-                guard let publicPort = port["PublicPort"] as? Int,
-                      let binding = PublishedPortBinding(
+                for port in container.ports {
+                    let dockerType = port.type ?? "tcp"
+                    let requestedHost = PublishedPortForwardPlan.requestedHost(
+                        dockerHost: port.ip,
+                        containerPort: port.privatePort,
+                        publicPort: port.publicPort,
                         dockerType: dockerType,
-                        publicPort: publicPort,
-                        hostIP: requestedHost
-                      ) else { continue }
-                result.insert(binding)
+                        loopbackIntents: intents
+                    )
+                    guard let publicPort = port.publicPort,
+                          let binding = PublishedPortBinding(
+                            dockerType: dockerType,
+                            publicPort: publicPort,
+                            hostIP: requestedHost
+                          ) else { continue }
+                    result.insert(binding)
+                }
             }
+            return result
         }
-        return result
     }
 
     private func expose(_ forward: PublishedPortForward) -> Bool {
@@ -208,23 +217,6 @@ final class DoryVMMPortForwarder: @unchecked Sendable {
                 "protocol": forward.protocol.rawValue,
             ]
         )
-    }
-
-    private func curlData(unixSocket: String, url: String) -> Data? {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        process.arguments = [
-            "--fail", "--silent", "--max-time", "3",
-            "--unix-socket", unixSocket,
-            url,
-        ]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return process.terminationStatus == 0 ? data : nil
     }
 
     private func post(path: String, body: [String: String]) -> Bool {

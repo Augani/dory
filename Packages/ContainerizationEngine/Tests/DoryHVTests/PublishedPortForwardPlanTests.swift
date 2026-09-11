@@ -2,6 +2,7 @@ import Testing
 @testable import DoryHV
 import DoryCore
 import DoryOperations
+import Foundation
 
 @Suite struct PublishedPortForwardPlanTests {
     @Test func parsesDockerTransportTypes() {
@@ -158,6 +159,31 @@ import DoryOperations
         let label = #"{"0/tcp":{"80":"ipv4"},"8080/sctp":{"80":"ipv4"},"9090/tcp":{"80":"wide"},"bad":{"80":"ipv6"}}"#
         #expect(PublishedPortForwardPlan.loopbackIntents(fromLabel: label).isEmpty)
         #expect(PublishedPortForwardPlan.loopbackIntents(fromLabel: "not-json").isEmpty)
+    }
+
+    @Test func bindingsFromContainersJSONFailClosedOnNonArray() {
+        #expect(PublishedPortForwardPlan.bindings(fromContainersJSON: Data("not-json".utf8)) == nil)
+        #expect(PublishedPortForwardPlan.bindings(fromContainersJSON: Data("{}".utf8)) == nil)
+        #expect(PublishedPortForwardPlan.bindings(fromContainersJSON: Data("[]".utf8)) == [])
+    }
+
+    @Test func bindingsFromContainersJSONReadPublicPorts() throws {
+        let data = Data(#"""
+        [
+          {
+            "Id": "abc",
+            "Labels": {},
+            "Ports": [
+              {"IP": "127.0.0.1", "PrivatePort": 80, "PublicPort": 38099, "Type": "tcp"},
+              {"PrivatePort": 80, "Type": "tcp"}
+            ]
+          }
+        ]
+        """#.utf8)
+        let bindings = try #require(PublishedPortForwardPlan.bindings(fromContainersJSON: data))
+        #expect(bindings == [
+            PublishedPortBinding(protocol: .tcp, port: 38_099, hostIP: "127.0.0.1"),
+        ])
     }
 
     private func forward(

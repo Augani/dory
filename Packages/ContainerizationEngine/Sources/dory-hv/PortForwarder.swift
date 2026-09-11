@@ -47,6 +47,7 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
     private var machineExposed = Set<PublishedPortForward>()
     private var lastForwardFailureLog: [PublishedPortForward: Date] = [:]
     private var lastLANFailureLog = Date.distantPast
+    private var lastInventoryFailureLog = Date.distantPast
     private var recoveringLANSession = false
 
     init(
@@ -130,6 +131,7 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
         removedSoFar: Int = 0
     ) -> PortForwardReconcileResult {
         guard let ports = publishedPorts() else {
+            logInventoryUnavailable()
             return failure("Docker published-port inventory is unavailable")
         }
         if let client = sourcePreservingLANClient, let sessionID = sourcePreservingLANSessionID {
@@ -316,6 +318,13 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
         }
     }
 
+    private func logInventoryUnavailable() {
+        let now = Date()
+        guard now.timeIntervalSince(lastInventoryFailureLog) >= 30 else { return }
+        lastInventoryFailureLog = now
+        log("Docker published-port inventory is unavailable")
+    }
+
     private func logLANFailure(_ message: String) {
         let now = Date()
         guard now.timeIntervalSince(lastLANFailureLog) >= 30 else { return }
@@ -326,38 +335,15 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
     /// The set of host ports currently published by any running container.
     private func publishedPorts() -> Set<PublishedPortBinding>? {
         if let publishedPortsProvider { return publishedPortsProvider() }
-        guard let data = curlData(unixSocket: engineSocket, url: "http://d/v1.41/containers/json"),
-              let containers = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        guard let response = UnixSocketHTTPClient.get(
+            socketPath: engineSocket,
+            path: PublishedPortForwardPlan.dockerContainerListPath,
+            timeout: 3,
+            maximumBodyBytes: PublishedPortForwardPlan.dockerContainerListMaximumBodyBytes
+        ), (200..<300).contains(response.statusCode) else {
             return nil
         }
-        var ports = Set<PublishedPortBinding>()
-        for container in containers {
-            let labels = container["Labels"] as? [String: String]
-            let loopbackIntents = PublishedPortForwardPlan.loopbackIntents(
-                fromLabel: labels?[PublishedPortForwardPlan.loopbackPortIntentLabel]
-            )
-            guard let list = container["Ports"] as? [[String: Any]] else { continue }
-            for entry in list {
-                let proto = entry["Type"] as? String ?? "tcp"
-                let requestedHost = PublishedPortForwardPlan.requestedHost(
-                    dockerHost: entry["IP"] as? String,
-                    containerPort: entry["PrivatePort"] as? Int,
-                    publicPort: entry["PublicPort"] as? Int,
-                    dockerType: proto,
-                    loopbackIntents: loopbackIntents
-                )
-                guard let publicPort = entry["PublicPort"] as? Int,
-                      let binding = PublishedPortBinding(
-                        dockerType: proto,
-                        publicPort: publicPort,
-                        hostIP: requestedHost
-                      ) else {
-                    continue
-                }
-                ports.insert(binding)
-            }
-        }
-        return ports
+        return PublishedPortForwardPlan.bindings(fromContainersJSON: response.body)
     }
 
     private func expose(_ forward: PublishedPortForward) -> Bool {

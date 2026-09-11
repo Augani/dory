@@ -76,6 +76,44 @@ public struct PublishedPortForward: Sendable, Hashable {
 
 public enum PublishedPortForwardPlan {
     public static let loopbackPortIntentLabel = "dev.dory.internal.loopback-port-intent"
+    /// Running-container list used by host-side published-port reconcilers. Stopped containers
+    /// are omitted so gvproxy does not retain stale host listeners.
+    public static let dockerContainerListPath = "/containers/json"
+    public static let dockerContainerListMaximumBodyBytes = 2 * 1_024 * 1_024
+
+    /// Fail closed on a non-array payload. An empty array is a successful empty inventory.
+    public static func bindings(fromContainersJSON data: Data) -> Set<PublishedPortBinding>? {
+        guard let containers = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return nil
+        }
+        var ports = Set<PublishedPortBinding>()
+        for container in containers {
+            let labels = container["Labels"] as? [String: String] ?? [:]
+            let loopbackIntents = loopbackIntents(fromLabel: labels[loopbackPortIntentLabel])
+            guard let list = container["Ports"] as? [[String: Any]] else { continue }
+            for entry in list {
+                let proto = jsonString(entry["Type"]) ?? "tcp"
+                let publicPort = jsonInt(entry["PublicPort"])
+                let requestedHost = requestedHost(
+                    dockerHost: jsonString(entry["IP"]),
+                    containerPort: jsonInt(entry["PrivatePort"]),
+                    publicPort: publicPort,
+                    dockerType: proto,
+                    loopbackIntents: loopbackIntents
+                )
+                guard let publicPort,
+                      let binding = PublishedPortBinding(
+                        dockerType: proto,
+                        publicPort: publicPort,
+                        hostIP: requestedHost
+                      ) else {
+                    continue
+                }
+                ports.insert(binding)
+            }
+        }
+        return ports
+    }
 
     /// Parse the trusted label injected by Dory's create-request dataplane. Values outside the
     /// closed vocabulary are ignored so malformed daemon state can never widen exposure.
@@ -248,5 +286,20 @@ public enum PublishedPortForwardPlan {
         (byte >= 48 && byte <= 57)
             || (byte >= 65 && byte <= 90)
             || (byte >= 97 && byte <= 122)
+    }
+
+    private static func jsonInt(_ value: Any?) -> Int? {
+        switch value {
+        case let int as Int:
+            return int
+        case let number as NSNumber:
+            return number.intValue
+        default:
+            return nil
+        }
+    }
+
+    private static func jsonString(_ value: Any?) -> String? {
+        value as? String
     }
 }

@@ -1,5 +1,6 @@
 import Darwin
 @testable import DoryHV
+import DoryCore
 import Foundation
 import Testing
 
@@ -51,6 +52,27 @@ struct UnixSocketHTTPClientTests {
     @Test func rejectsHeaderInjectionAndOversizedSocketPaths() {
         #expect(UnixSocketHTTPClient.get(socketPath: "/tmp/missing", path: "/_ping\r\nInjected: yes") == nil)
         #expect(UnixSocketHTTPClient.get(socketPath: "/" + String(repeating: "x", count: 512), path: "/_ping") == nil)
+    }
+
+    @Test func readsDockerContainerListWithinInventoryBodyCap() throws {
+        let body = #"[{"Id":"abc","Ports":[{"IP":"127.0.0.1","PrivatePort":80,"PublicPort":38099,"Type":"tcp"}]}]"#
+        let server = try GVHTTPFakeServer(
+            response: "HTTP/1.1 200 OK\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+        )
+        defer { server.stop() }
+
+        let response = try #require(UnixSocketHTTPClient.get(
+            socketPath: server.path,
+            path: PublishedPortForwardPlan.dockerContainerListPath,
+            timeout: 3,
+            maximumBodyBytes: PublishedPortForwardPlan.dockerContainerListMaximumBodyBytes
+        ))
+        #expect(response.statusCode == 200)
+        #expect(PublishedPortForwardPlan.bindings(fromContainersJSON: response.body) == [
+            PublishedPortBinding(protocol: .tcp, port: 38_099, hostIP: "127.0.0.1"),
+        ])
+        #expect(server.wait())
+        #expect(server.request.contains("GET /containers/json HTTP/1.1"))
     }
 }
 
