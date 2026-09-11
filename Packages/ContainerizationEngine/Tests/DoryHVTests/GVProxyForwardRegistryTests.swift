@@ -162,6 +162,78 @@ import Testing
         #expect(result.error?.contains("could not be read after") == true)
     }
 
+    @Test func nilDockerInventoryFailsClosedWithoutMutatingGvproxy() {
+        let registry = ForwardRegistryStub()
+        let calls = ForwardCallRecorder()
+        let logs = LockedStringList()
+        let forwarder = PortForwarder(
+            engineSocket: "/unused/engine.sock",
+            apiSocket: "/unused/gvproxy.sock",
+            guestIP: "192.168.127.2",
+            log: { logs.append($0) },
+            publishedPortsProvider: { nil },
+            registeredForwardsProvider: { registry.snapshot },
+            exposeProvider: { forward in
+                calls.record(.expose(forward))
+                registry.expose(forward)
+                return true
+            },
+            unexposeProvider: { forward in
+                calls.record(.unexpose(forward))
+                registry.unexpose(forward)
+                return true
+            }
+        )
+        defer { forwarder.stop() }
+
+        let result = forwarder.reconcileNow()
+
+        #expect(!result.succeeded)
+        #expect(result.error == "Docker published-port inventory is unavailable")
+        #expect(result.publishedPortCount == 0)
+        #expect(result.desired.isEmpty)
+        #expect(result.missing.isEmpty)
+        #expect(result.unexpected.isEmpty)
+        #expect(calls.operations.isEmpty)
+        #expect(registry.forwards.isEmpty)
+        #expect(logs.strings.contains("Docker published-port inventory is unavailable"))
+    }
+
+    @Test func inProcessContainerListCreatesWantedGvproxyForward() throws {
+        let body = #"[{"Id":"abc","Names":["/web"],"State":"running","Ports":[{"IP":"127.0.0.1","PrivatePort":80,"PublicPort":38099,"Type":"tcp"}]}]"#
+        let server = try RepeatingUnixHTTPServer.containersJSON(body)
+        defer { server.stop() }
+        let wanted = forward(.tcp, host: "127.0.0.1", port: 38_099)
+        let registry = ForwardRegistryStub()
+        let calls = ForwardCallRecorder()
+        let forwarder = PortForwarder(
+            engineSocket: server.path,
+            apiSocket: "/unused/gvproxy.sock",
+            guestIP: "192.168.127.2",
+            log: { _ in },
+            registeredForwardsProvider: { registry.snapshot },
+            exposeProvider: { forward in
+                calls.record(.expose(forward))
+                registry.expose(forward)
+                return true
+            },
+            unexposeProvider: { forward in
+                calls.record(.unexpose(forward))
+                registry.unexpose(forward)
+                return true
+            }
+        )
+        defer { forwarder.stop() }
+
+        let result = forwarder.reconcileNow()
+
+        #expect(result.succeeded)
+        #expect(result.publishedPortCount == 1)
+        #expect(registry.forwards.contains(wanted))
+        #expect(calls.operations == [.expose(wanted)])
+        #expect(server.paths.contains(PublishedPortForwardPlan.dockerContainerListPath))
+    }
+
     @Test func malformedRegistryFailsClosed() {
         #expect(GVProxyForwardRegistry.decode(Data("not-json".utf8)) == nil)
         #expect(GVProxyForwardRegistry.decode(Data(#"""
@@ -306,4 +378,118 @@ private final class LockedInt: @unchecked Sendable {
             return stored
         }
     }
+}
+
+private final class LockedStringList: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+
+    var strings: [String] { lock.withLock { stored } }
+
+    func append(_ value: String) {
+        lock.withLock { stored.append(value) }
+    }
+}
+
+private final class RepeatingUnixHTTPServer: @unchecked Sendable {
+    let path: String
+    private let fd: Int32
+    private let response: Data
+    private let queue = DispatchQueue(label: "dev.dory.test.repeating-unix-http")
+    private let lock = NSLock()
+    private var storedPaths: [String] = []
+    private var stopped = false
+
+    var paths: [String] { lock.withLock { storedPaths } }
+
+    static func containersJSON(_ body: String) throws -> RepeatingUnixHTTPServer {
+        let header = "HTTP/1.1 200 OK\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n"
+        return try RepeatingUnixHTTPServer(response: header + body)
+    }
+
+    init(response: String) throws {
+        let base = "/tmp/dory-port-forward-http-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        path = base + "/server.sock"
+        fd = try repeatingUnixBindListener(path: path)
+        self.response = Data(response.utf8)
+        acceptLoop()
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        lock.unlock()
+        close(fd)
+        try? FileManager.default.removeItem(atPath: (path as NSString).deletingLastPathComponent)
+    }
+
+    private func acceptLoop() {
+        queue.async { [self] in
+            while true {
+                if lock.withLock({ stopped }) { return }
+                let client = accept(fd, nil, nil)
+                guard client >= 0 else { return }
+                serve(client)
+            }
+        }
+    }
+
+    private func serve(_ client: Int32) {
+        defer { close(client) }
+        var requestBytes = Data()
+        var byte: UInt8 = 0
+        while requestBytes.count < 8_192, Darwin.read(client, &byte, 1) == 1 {
+            requestBytes.append(byte)
+            if requestBytes.suffix(4) == Data("\r\n\r\n".utf8) { break }
+        }
+        let request = String(decoding: requestBytes, as: UTF8.self)
+        let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? ""
+        lock.lock()
+        storedPaths.append(path)
+        lock.unlock()
+        response.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var offset = 0
+            while offset < raw.count {
+                let count = Darwin.write(client, base.advanced(by: offset), raw.count - offset)
+                guard count > 0 else { break }
+                offset += count
+            }
+        }
+        shutdown(client, SHUT_WR)
+    }
+}
+
+private enum RepeatingUnixHTTPServerError: Error {
+    case syscall(String, Int32)
+    case pathTooLong
+}
+
+private func repeatingUnixBindListener(path: String) throws -> Int32 {
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { throw RepeatingUnixHTTPServerError.syscall("socket", errno) }
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let bytes = Array(path.utf8)
+    guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+        close(fd)
+        throw RepeatingUnixHTTPServerError.pathTooLong
+    }
+    withUnsafeMutableBytes(of: &address.sun_path) { destination in
+        bytes.withUnsafeBytes { source in
+            destination.baseAddress!.copyMemory(from: source.baseAddress!, byteCount: bytes.count)
+        }
+    }
+    let bound = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    guard bound == 0, listen(fd, 8) == 0 else {
+        let code = errno
+        close(fd)
+        throw RepeatingUnixHTTPServerError.syscall("bind/listen", code)
+    }
+    return fd
 }

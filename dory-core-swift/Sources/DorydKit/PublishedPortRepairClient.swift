@@ -95,10 +95,12 @@ public final class PublishedPortRepairClient: @unchecked Sendable {
                 }
                 guard helperIsCurrent() else { throw RepairError.helperChanged }
                 guard receipt.succeeded else {
-                    let mismatch = "missing \(receipt.missingForwardCount), unexpected \(receipt.unexpectedForwardCount)"
                     throw RepairError.reconciliationFailed(
-                        receipt.error.map { "gvproxy reconciliation failed: \($0) (\(mismatch))" }
-                            ?? "gvproxy reconciliation failed validation (\(mismatch))"
+                        Self.reconciliationFailureDescription(
+                            error: receipt.error,
+                            missingForwardCount: receipt.missingForwardCount,
+                            unexpectedForwardCount: receipt.unexpectedForwardCount
+                        )
                     )
                 }
                 return receipt
@@ -106,6 +108,19 @@ public final class PublishedPortRepairClient: @unchecked Sendable {
             Thread.sleep(forTimeInterval: pollInterval)
         }
         throw RepairError.timeout(timeout)
+    }
+
+    static func reconciliationFailureDescription(
+        error: String?,
+        missingForwardCount: Int,
+        unexpectedForwardCount: Int
+    ) -> String {
+        if let error, error.contains("published-port inventory is unavailable") {
+            return error
+        }
+        let mismatch = "missing \(missingForwardCount), unexpected \(unexpectedForwardCount)"
+        return error.map { "gvproxy reconciliation failed: \($0) (\(mismatch))" }
+            ?? "gvproxy reconciliation failed validation (\(mismatch))"
     }
 
     private func readReceipt(at url: URL) -> PublishedPortReconcileReceipt? {

@@ -11,10 +11,11 @@ public struct UnixSocketHTTPResponse: Equatable, Sendable {
     }
 }
 
-/// A bounded HTTP/1.1 GET used by engine-internal Unix-socket health probes.
+/// A bounded HTTP/1.1 GET used by engine-internal Unix-socket probes (gvproxy health, Docker
+/// `/_ping`, and published-port inventory).
 ///
-/// Keeping this in-process avoids spawning two `curl` processes every probe interval. Responses
-/// are capped before allocation growth, and malformed/truncated/chunked bodies fail closed.
+/// Keeping this in-process avoids spawning `curl` for every probe interval. Responses are capped
+/// before allocation growth, and malformed/truncated/chunked bodies fail closed.
 public enum UnixSocketHTTPClient {
     public static func get(
         socketPath: String,
