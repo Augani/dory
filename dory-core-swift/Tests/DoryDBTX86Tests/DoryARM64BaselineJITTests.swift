@@ -9103,7 +9103,10 @@ import Testing
         0x48, 0xB8, 0x0C, 0x35, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0,
         0xFF, 0xC1, 0xEB, 0, 0xF4,
       ]
-      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024)
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        rawTargetPredictionOptions: [.indirectBranchTargetCache]
+      )
       func run() throws -> (DoryARM64ExecutionSummary, DoryX86ArchitecturalState, UInt64) {
         var state = try DoryX86ArchitecturalState(rip: base)
         let entriesBefore = executor.diagnostics.nativeDispatcherEntries
@@ -9148,6 +9151,11 @@ import Testing
       #expect(executor.diagnostics.indirectBranchTargetCacheHits == 1)
       #expect(executor.diagnostics.indirectBranchTargetCacheMisses == 2)
       #expect(executor.diagnostics.indirectBranchTargetCacheFills == 2)
+      #expect(executor.diagnostics.directChainPatches == 0)
+      #expect(executor.diagnostics.directlyChainedBlocks == 1)
+      #expect(executor.diagnostics.shadowReturnStackPushes == 0)
+      #expect(executor.diagnostics.shadowReturnStackHits == 0)
+      #expect(executor.diagnostics.shadowReturnStackMisses == 0)
     #endif
   }
 
