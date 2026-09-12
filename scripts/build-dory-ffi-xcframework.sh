@@ -33,6 +33,9 @@ input_fingerprint() {
     cd "$ROOT"
     {
       printf 'rustc=%s\n' "$(rustc --version)"
+      printf 'clang=%s\n' "$(xcrun --find clang)"
+      printf 'clangVersion=%s\n' "$(xcrun clang --version | head -1)"
+      printf 'macosSDK=%s\n' "$(xcrun --sdk macosx --show-sdk-version)"
       printf 'macosDeploymentTarget=%s\n' "$DEPLOYMENT_TARGET"
       shasum -a 256 dory-core/Cargo.toml dory-core/Cargo.lock \
         scripts/build-dory-ffi-xcframework.sh scripts/verify-dory-ffi-deployment-targets.py
@@ -60,6 +63,22 @@ output_fingerprint() {
   )
 }
 
+if ! xcrun --find xcodebuild >/dev/null 2>&1; then
+  for candidate in /Applications/Xcode*.app/Contents/Developer; do
+    if [[ -x "$candidate/usr/bin/xcodebuild" ]]; then
+      export DEVELOPER_DIR="$candidate"
+      break
+    fi
+  done
+fi
+SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+CLANG="$(xcrun --find clang)"
+CLANGXX="$(xcrun --find clang++)"
+[ -d "$SDKROOT" ] || { echo "error: selected macOS SDK does not exist: $SDKROOT" >&2; exit 69; }
+[ -x "$CLANG" ] && [ -x "$CLANGXX" ] \
+  || { echo "error: selected Xcode clang toolchain is unavailable" >&2; exit 69; }
+export SDKROOT CC="$CLANG" CXX="$CLANGXX"
+
 INPUT_FINGERPRINT="$(input_fingerprint)"
 if [ "$mode" = "if-needed" ] \
    && [ -f "$ART/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a" ] \
@@ -73,14 +92,6 @@ if [ "$mode" = "if-needed" ] \
   exit 0
 fi
 
-if ! xcrun --find xcodebuild >/dev/null 2>&1; then
-  for candidate in /Applications/Xcode*.app/Contents/Developer; do
-    if [[ -x "$candidate/usr/bin/xcodebuild" ]]; then
-      export DEVELOPER_DIR="$candidate"
-      break
-    fi
-  done
-fi
 case "$DEPLOYMENT_TARGET" in
   14|14.0|14.0.0) DEPLOYMENT_TARGET=14.0 ;;
   *) echo "error: DORY_FFI_MACOSX_DEPLOYMENT_TARGET must be the supported floor 14.0" >&2; exit 64 ;;
