@@ -1074,10 +1074,20 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
                 physicalMemoryBytes: fixture.host.physicalMemoryBytes,
                 freeStorageBytes: fixture.host.freeStorageBytes + 1
             )
-            XCTAssertThrowsError(try fixture.ledger.revalidateForStart(
+            XCTAssertEqual(try fixture.ledger.revalidateForStart(
                 leaseID: bound.leaseID,
                 plan: plan,
                 hostFacts: changedHost
+            ), reserved.evidence)
+            let differentCapacityHost = DoryVMHostResources(
+                logicalCPUCount: fixture.host.logicalCPUCount + 1,
+                physicalMemoryBytes: fixture.host.physicalMemoryBytes,
+                freeStorageBytes: fixture.host.freeStorageBytes
+            )
+            XCTAssertThrowsError(try fixture.ledger.revalidateForStart(
+                leaseID: bound.leaseID,
+                plan: plan,
+                hostFacts: differentCapacityHost
             )) { error in
                 XCTAssertEqual(
                     error as? DoryVirtualMachineResourceAdmissionLedgerError,

@@ -533,9 +533,7 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
             guard allowedStates.contains(lease.state) else {
                 throw DoryVirtualMachineResourceAdmissionLedgerError.invalidLeaseState(lease.state)
             }
-            guard hostFacts == lease.hostFacts,
-                  DoryVirtualMachineResourceAdmissionLease.digest(hostFacts)
-                    == lease.hostFactsSHA256 else {
+            guard Self.sameHostCapacity(hostFacts, lease.hostFacts) else {
                 throw DoryVirtualMachineResourceAdmissionLedgerError.hostFactsMismatch
             }
             try Self.validate(plan, against: lease, requireBoundDigest: true)
@@ -591,8 +589,7 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
             guard lease.state == .stopped else {
                 throw DoryVirtualMachineResourceAdmissionLedgerError.invalidLeaseState(lease.state)
             }
-            guard hostFacts == lease.hostFacts,
-                  DoryVirtualMachineResourceAdmissionLease.digest(hostFacts) == lease.hostFactsSHA256 else {
+            guard Self.sameHostCapacity(hostFacts, lease.hostFacts) else {
                 throw DoryVirtualMachineResourceAdmissionLedgerError.hostFactsMismatch
             }
             try Self.validate(plan, against: lease, requireBoundDigest: true)
@@ -672,9 +669,7 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
             guard lease.state == .starting else {
                 throw DoryVirtualMachineResourceAdmissionLedgerError.invalidLeaseState(lease.state)
             }
-            guard hostFacts == lease.hostFacts,
-                  DoryVirtualMachineResourceAdmissionLease.digest(hostFacts)
-                    == lease.hostFactsSHA256 else {
+            guard Self.sameHostCapacity(hostFacts, lease.hostFacts) else {
                 throw DoryVirtualMachineResourceAdmissionLedgerError.hostFactsMismatch
             }
             try Self.validate(plan, against: lease, requireBoundDigest: true)
@@ -1381,6 +1376,18 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
               ) else {
             throw DoryVirtualMachineResourceAdmissionLedgerError.capacityUnavailable([])
         }
+    }
+
+    /// CPU and memory totals identify the physical host capacity captured by the lease. Free
+    /// storage and the admitted/reserved counters are live inputs: normal artifact publication
+    /// changes them between planning and spawn, so exact equality would reject every real launch.
+    /// The current dynamic values are instead checked by `validateCapacity` below each call site.
+    private static func sameHostCapacity(
+        _ current: DoryVMHostResources,
+        _ admitted: DoryVMHostResources
+    ) -> Bool {
+        current.logicalCPUCount == admitted.logicalCPUCount
+            && current.physicalMemoryBytes == admitted.physicalMemoryBytes
     }
 
     private static func sumFits(total: UInt64, _ values: UInt64...) -> Bool {
