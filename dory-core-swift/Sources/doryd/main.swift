@@ -121,9 +121,14 @@ let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { co
               trustFailure.permitsLegacyCompatibilityMigration else {
             // Integrity and runtime verification failures disable VM launch. Falling through to
             // legacy here would execute the same helper that production trust just rejected.
+            let trustDetail = failure.trustFailure.map {
+                "; \($0.code.rawValue): \($0.message)"
+            } ?? ""
             FileHandle.standardError.write(Data(
                 "doryd: VM launch unavailable "
-                    .appending("(\(failure.code.rawValue): \(failure.message))\n").utf8
+                    .appending(
+                        "(\(failure.code.rawValue): \(failure.message)\(trustDetail))\n"
+                    ).utf8
             ))
             return nil
         }
