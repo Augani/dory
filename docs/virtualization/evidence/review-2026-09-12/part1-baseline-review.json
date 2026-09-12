@@ -3,9 +3,9 @@
   "kind": "dory-part1-baseline-review",
   "observedAt": "2026-09-12",
   "startingSourceRevision": "7425872c207accaedb7471f9a25343eb1e728f64",
-  "acceptedSourceRevision": "d899bc3f64a7dad33efa415b959f458968be0a78",
+  "acceptedSourceRevision": "d5f577774e2662e301361fd044105301ed551303",
   "cleanBuildReceipt": "part1-clean-build.json",
-  "status": "accepted-baseline-with-open-qualification-dependencies",
+  "status": "part1-complete-with-later-qualification-dependencies",
   "releaseQualified": false,
   "host": {
     "model": "Mac14,10",
@@ -27,7 +27,9 @@
     "validCodeSigningIdentities": 3,
     "developerIDApplicationAvailable": true,
     "sparkleKeychainSigningProbe": "passed",
-    "completeFinalCandidateAssembled": false
+    "completeFinalCandidateAssembled": false,
+    "developerIDSignedPreviewCandidateAssembled": true,
+    "physicalCandidateLaunch": "passed"
   },
   "dispositions": [
     {
@@ -42,7 +44,10 @@
     {
       "area": "signed candidate-campaign authorization and production-graph activation",
       "disposition": "accepted-for-candidate-execution-only",
-      "limits": "Does not construct public qualification authority, advance the public catalog floor or authorize ordinary production launches. Physical candidate execution remains outstanding."
+      "evidence": [
+        "candidate-campaign-launch.json"
+      ],
+      "limits": "The exact Developer-ID-signed preview candidate passed constrained authorization, planning, authenticated handoff, physical x86 UEFI execution and clean stop. This does not construct public qualification authority, advance the public catalog floor or authorize ordinary production launches."
     },
     {
       "area": "qualification matrix and evidence audit",
@@ -61,9 +66,12 @@
     },
     {
       "area": "current x86 JIT boot regression at the starting revision",
-      "disposition": "open-assigned-to-part2",
+      "disposition": "resolved-by-stable-production-selection",
       "failure": "x86 instructionFetch touches unmapped memory at 0xfffffe8f for 5 bytes",
-      "limits": "Reproduced at starting revision 7425872c2 with both normal and tier-1-disabled JIT."
+      "evidence": [
+        "x86-stable-production-selection.json"
+      ],
+      "limits": "The regression was isolated to protected resident guest-code pages combined with direct generated writes. Production retains checked write callbacks; protected host pages remain an explicit disabled experiment pending the broader Part 2 campaign."
     }
   ],
   "checks": [
@@ -117,6 +125,26 @@
       "result": "passed-development-build",
       "codeSigningAllowed": false,
       "log": ".dory-build/review-2026-09-12/final-checks/app-build.log"
+    },
+    {
+      "name": "stable x86 production selection",
+      "result": "passed-development-baseline",
+      "tests": 226,
+      "serialMarker": "DORY-PC-UEFI-BOOT",
+      "evidence": "x86-stable-production-selection.json"
+    },
+    {
+      "name": "final candidate trust, planning and resource suites",
+      "result": "passed",
+      "tests": 89,
+      "log": "part1-final-focused-tests.log.gz",
+      "logSHA256": "a9c2237353ae400226fc3c78dc3448a6d26755e1a27ecaaac5f2c0a1494fb72b"
+    },
+    {
+      "name": "Developer-ID-signed physical candidate launch",
+      "result": "passed-development-candidate-launch",
+      "evidence": "candidate-campaign-launch.json",
+      "releaseQualified": false
     }
   ],
   "developmentBoots": {
@@ -139,12 +167,31 @@
       "log": ".dory-build/review-2026-09-12/current-arm-smoke/agent-ping.log"
     },
     "x86_64Linux": {
-      "currentRunnerResult": "failed",
-      "currentRunnerConfiguration": "Release",
-      "currentRunnerSourceContent": "c26367a3f59acd46e45cd4d80838d70a43612077",
-      "currentRunnerSHA256": "28d83dec2b07e6a9d484b17597d05192c46602b5ee08039ceecd63478dc9fa44",
-      "currentRunnerFailure": "x86 instructionFetch touches unmapped memory at 0xfffffe8f for 5 bytes",
-      "currentFirmwareSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+        "currentRunnerResult": "passed-stable-production-development-baseline",
+        "currentRunnerConfiguration": "Release",
+        "currentRunnerSourceContent": "8107debfef063e76adc130672420550600060b27",
+        "currentRunnerSHA256": "0164e9ef4a28b7114b9e59ed5b8a5a02aaf4260aa7c9c59aa9e60835ddf28c6d",
+        "currentRunnerFailure": null,
+        "currentFirmwareSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+        "stableProductionSelection": {
+          "executionTier": "optimizingJIT",
+          "tier1DirectChaining": true,
+          "jitWriteCoherencePolicy": "checked-callbacks",
+          "serialMarker": "DORY-PC-UEFI-BOOT",
+          "serialMarkerMatched": true,
+          "completedInstructions": 57698327,
+          "evidence": "x86-stable-production-selection.json"
+        },
+        "signedCandidateLaunch": {
+          "result": "passed-development-candidate-launch",
+          "sourceRevision": "d5f577774e2662e301361fd044105301ed551303",
+          "supportTier": "preview",
+          "planSHA256": "554b6e3ca1add7917c32214d3968dd16b04d9aae9cdce6d0f5b1498ef0a34d1d",
+          "physicalRunnerStarted": true,
+          "cleanStop": true,
+          "evidence": "candidate-campaign-launch.json",
+          "limit": "No GRUB, kernel, root-mount or init milestone was observed in the bounded installer launch; ordinary installation remains Part 2 work."
+        },
       "historicalReproductionCheck": {
         "result": "passed-with-known-good-source-bound-runner",
         "runnerSourceRevision": "9dc46de3",
@@ -166,7 +213,7 @@
   "openQualificationDependencies": [
     "Approved matrix host macOS 26.6.2 build 25G83 was unavailable; this host runs macOS 27.0 build 26A5425a.",
     "Final Xcode 26.6 build 17F113 was unavailable; installed Xcode is Release Candidate build 17F109.",
-    "Code-signing identities and the Sparkle keychain signer are available, but no complete immutable final candidate containing every required app, daemon, runner and worker artifact was assembled for a physical campaign.",
+    "Code-signing identities and the Sparkle keychain signer are available, but the physically exercised preview candidate is not a complete release candidate because the desktop-rootfs producer remains absent.",
     "No retained macOS guest/probe was available.",
     "Docker-backed fixture preflight reported docker-engine-unavailable.",
     "The starting revision's x86 JIT runner fails before the retained UEFI marker."
@@ -174,10 +221,10 @@
   "claims": {
     "cleanSourceReproducibility": true,
     "publicQualification": false,
-    "physicalCandidateCampaign": false,
+    "physicalCandidateCampaign": true,
     "firmwareHistoricalRegressionCleared": true,
     "armDevelopmentBaseline": true,
-    "x86CurrentBaseline": false,
+    "x86CurrentBaseline": true,
     "macGuestBaseline": false
   }
 }

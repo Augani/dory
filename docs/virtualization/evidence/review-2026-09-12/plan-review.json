@@ -3,8 +3,9 @@
   "kind": "dev.dory.five-part-plan-validation",
   "createdAt": "2026-09-12T18:21:06.617415+00:00",
   "baseCommit": "7425872c207accaedb7471f9a25343eb1e728f64",
+  "acceptedImplementationRevision": "d5f577774e2662e301361fd044105301ed551303",
   "workingTreeDirty": true,
-  "planSHA256": "bf90b7040d641c040795ccd16d0c4d6955b1303210fdcb644ac698adb21ae1ce",
+  "planSHA256": "dd3b65154d31e1f256ed9157d7ce4f0f44b4509756eb962458cad8da1bfbad95",
   "mainParts": [
     "Part 1 \u2014 Correct the baseline and finish the current review",
     "Part 2 \u2014 Complete the Linux machines and execution engines",
@@ -13,27 +14,35 @@
     "Part 5 \u2014 Qualify, harden and ship the complete infrastructure"
   ],
   "workPackageCount": 47,
-  "wordCount": 15107,
+  "wordCount": 15186,
   "localLinksAndAnchorsValid": true,
   "historicalAuditComplete": true,
   "historicalAuditQualification": false,
   "retainedX86LogDigestsVerified": true,
-  "liveCampaignRun": false,
+  "part1Status": "complete",
+  "liveCampaignRun": true,
+  "liveCampaignResult": "passed-development-candidate-launch",
+  "liveCampaignEvidence": "candidate-campaign-launch.json",
+  "stableX86ProductionSelection": "passed-development-baseline",
+  "stableX86Evidence": "x86-stable-production-selection.json",
   "releaseQualified": false,
   "limitations": [
-    "Structural/link/evidence checks validate the document and retained local review results, not physical VM support.",
+    "The physical campaign proves constrained signed candidate admission, planning, handoff and x86 UEFI execution; it does not prove an ordinary distribution install, guest-tools readiness, hardware graphics or presentation.",
     "The historical audit retains reacquisition-only and host-only limitations.",
-    "The full Part 1 exit gate remains open for candidate authority and live baseline work."
+    "Part 1 completion establishes the engineering baseline and candidate path only. Release qualification and all Parts 2-5 acceptance gates remain open."
   ],
   "postRewriteChecks": {
     "evidenceAuditorTests": 9,
     "noQEMUContractTests": 4,
+    "finalTrustPlanningResourceTests": 89,
     "gitDiffWhitespace": "passed",
     "reviewEvidenceUnignored": true
   },
   "atomicityAttachmentsVerified": true,
   "cleanup": {
     "isolatedReviewSwiftBuildRemoved": "/tmp/dory-review-x86-build",
+    "candidateCampaignStateRemoved": true,
+    "candidateCampaignDiskImageDetachedAndRemoved": true,
     "retainedEvidencePreserved": true,
     "preExistingUserBuildUntouched": true
   }

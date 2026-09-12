@@ -20,7 +20,7 @@ Part numbers organize the work; they do not prohibit parallel work. Once 1.5 est
 
 **Outcome:** a reproducible, honest starting point, reviewed current changes, a stable production configuration, an explicit list of remaining defects, and a usable engineering qualification path. “Clean slate” means known state and no untriaged regression in the admitted baseline. It does not mean deleting previous work, clearing the working tree by force, or claiming that unbuilt features are finished.
 
-**Current status:** the accepted implementation baseline is commit **c26367a3f**, followed by the selected-Xcode FFI producer repair at **d899bc3f64**. A detached clean checkout rebuilt the FFI twice byte-identically, built the Debug app, and reproduced the PC firmware digest. The [baseline review](docs/virtualization/evidence/review-2026-09-12/part1-baseline-review.json) and [clean build receipt](docs/virtualization/evidence/review-2026-09-12/part1-clean-build.json) retain exact results and limits. The full Part 1 exit gate remains open: the exact current x86 JIT baseline fails before the UEFI marker, and no exact-host production-signed physical candidate campaign ran. The unavailable retained Mac guest remains a named qualification dependency. No release-qualified VM cell is established by this review.
+**Current status:** Part 1 is complete. The accepted implementation baseline began at **c26367a3f**, incorporated the selected-Xcode FFI producer repair at **d899bc3f64**, and now includes the stable x86 production selection plus candidate-path repairs through **d5f577774**. A detached clean checkout rebuilt the FFI twice byte-identically, built the app, and reproduced the PC firmware digest. The [baseline review](docs/virtualization/evidence/review-2026-09-12/part1-baseline-review.json), [clean build receipt](docs/virtualization/evidence/review-2026-09-12/part1-clean-build.json), [stable x86 receipt](docs/virtualization/evidence/review-2026-09-12/x86-stable-production-selection.json), and [physical candidate launch](docs/virtualization/evidence/review-2026-09-12/candidate-campaign-launch.json) retain exact results and limits. The production x86 composition retains checked write callbacks with failed protected-page/direct-write combinations disabled; the current signed preview candidate passed constrained authority, exact planning, authenticated handoff, physical UEFI execution and clean stop. The unavailable retained Mac guest remains a named later qualification dependency. No release-qualified VM cell is established by this review.
 
 ### 1.1 What is actually implemented
 
@@ -185,14 +185,14 @@ The current qualification bootstrap cycle is an engineering issue: normal produc
 - [x] Current dirty implementation changes reviewed, repaired and assigned a disposition; focused review receipt retained.
 - [x] A reproducible accepted source set and coherent build inventory exist.
 - [x] Current source-derived firmware clears the historical EFI reproduction.
-- [ ] Stable x86 production selection is retained; failed chain combinations remain disabled.
+- [x] Stable x86 production selection is retained; failed chain combinations remain disabled.
 - [x] CPU atomicity and feature-policy issues have regression coverage; unsupported guarantees remain unadvertised.
-- [ ] Real candidate campaigns can launch through constrained, authenticated authority without circular qualification.
+- [x] Real candidate campaigns can launch through constrained, authenticated authority without circular qualification.
 - [x] One current baseline per available guest path is captured with exact inputs and explicit limits.
 - [x] Capability/matrix/evidence state agrees with the actual code and collected observations.
 - [x] Remaining work is assigned to Parts 2–5; no unresolved item is hidden behind a completed checkbox.
 
-Part 1 is complete only when these conditions hold. Until then, finish the open baseline work while independent feature development proceeds against the documented invariants.
+Part 1 is complete. Parts 2–5 remain governed by the documented invariants and their own acceptance gates; the Part 1 candidate launch does not promote any preview cell to public support.
 
 ### 1.10 Traceability from the old plan
 

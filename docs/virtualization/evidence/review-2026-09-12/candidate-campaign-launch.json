@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "kind": "dory-part1-candidate-campaign-launch",
+  "observedAt": "2026-09-12",
+  "result": "passed-development-candidate-launch",
+  "releaseQualified": false,
+  "source": {
+    "revision": "d5f577774e2662e301361fd044105301ed551303",
+    "developmentSourceTreeSHA256": "405cb7ade8a2b2bb5cb78424e321a8037783402b5565c198787a0f4ac40c93a9",
+    "developmentSourceBindingSHA256": "eff0ae85f8c0917d9d69c85bb0877b7e7e094e3972705377bdf04554347fcfd4",
+    "bindingVerification": "passed before final application sealing"
+  },
+  "host": {
+    "hardwareModelIdentifier": "Mac14,10",
+    "soc": "Apple M2 Pro",
+    "operatingSystemBuild": "26A5425a",
+    "physicalHypervisor": true
+  },
+  "application": {
+    "version": "0.4.6",
+    "build": "52",
+    "bundleIdentifier": "com.pythonxi.Dory",
+    "signatureVerification": "codesign --verify --deep --strict passed",
+    "signingCategory": "Developer ID Application",
+    "teamIdentifier": "864H636QW4",
+    "artifacts": [
+      {
+        "role": "app",
+        "byteCount": 98980960,
+        "sha256": "010d558e6f6cbbe9c25d7b0c34d8b346fd7fa65b090a4ef8eccf4f02b05c2634"
+      },
+      {
+        "role": "control",
+        "byteCount": 41823104,
+        "sha256": "0cf74ab7812a13167d2135525b4f108868c06b0d2c7170ed867e0cc3cd527aa2"
+      },
+      {
+        "role": "daemon",
+        "byteCount": 41395504,
+        "sha256": "f480cd3530908fd15b92ee2e415c21b7873def5514704c8d5b61005d6fd867ac"
+      },
+      {
+        "role": "dory-hv",
+        "byteCount": 74317216,
+        "sha256": "5cd21e0bae026a170d3313d27905d82af819c1dae641065652fef1a811af3523"
+      },
+      {
+        "role": "dory-vmm",
+        "byteCount": 42194000,
+        "sha256": "ce346b1ad7d59b0ee6e27617a272bf642a7199872cf90fda4c946b166c8e241e"
+      },
+      {
+        "role": "filesystem-worker",
+        "byteCount": 2565648,
+        "sha256": "ba791362b61c0c7afc060147b5ce8aa323b8ae33f826d49da291d51de1fde33e"
+      },
+      {
+        "role": "renderer-worker",
+        "byteCount": 10635504,
+        "sha256": "58aba847864f30e3d64fb5f46e16470e5936fb7ec882d6f393e4c7a918d05f7e"
+      }
+    ]
+  },
+  "candidate": {
+    "inventorySHA256": "dd557c8ca71f95e5e4ee9717a337c3586491a8efd91c88022d7ba5327dec99f7",
+    "inventoryStatus": "incomplete",
+    "sourceBinding": "verified-current-source-at-assembly",
+    "incompleteProducers": [
+      "desktop-rootfs"
+    ],
+    "sbomSHA256": "e089e365802d87769c201538aeb146149308d1ce087f0ab04d3e9cfad98acf65"
+  },
+  "authority": {
+    "campaignIdentifier": "part1-20260912-final-d5f5777",
+    "manifestSHA256": "25b9a5e070fa73b8ac16c409a22a9626a7065f1e5c81d57e27ac4ac0449cf18f",
+    "signatureFileSHA256": "a971d4743c992385c802fb41d675b2e5356b64211bc8c93041af11b0dbe5485f",
+    "signingKeyID": "726f1e887ca487673f1aa8a4443de21eda64aa3417e79482251936a33b120030",
+    "purpose": "candidate-qualification-campaign",
+    "issuedAt": "2026-09-12T23:37:29Z",
+    "expiresAt": "2026-09-13T23:37:29Z",
+    "revocationSequence": 1,
+    "machineIDPrefix": "part1pc-",
+    "stateDriveIdentifier": "a815d162-1c7e-4d31-b619-5fc0796bd8ff",
+    "activation": "perWorkspaceAuthority preview",
+    "publicQualificationMinted": false
+  },
+  "media": {
+    "kind": "installer-iso",
+    "architecture": "x86_64",
+    "byteCount": 17364992,
+    "sha256": "fe067ddd42f40cda070d33869178a900f68ad2d2ac0183c8ce6aa41c42ebd92b",
+    "efiExecutable": {
+      "byteCount": 4182016,
+      "sha256": "777c2879db15c6c4a2ccd618575d37312a09ce65092adac5cf5d580c6bb03479"
+    },
+    "kernel": {
+      "byteCount": 13104128,
+      "sha256": "d301a250643bd578413d4b6f17829d1253cc61838d9ebb4114ff6c69979252b4"
+    }
+  },
+  "launch": {
+    "machineID": "part1pc-smoke",
+    "createResult": "passed",
+    "startResult": "passed",
+    "observedState": "running",
+    "runnerPID": 81241,
+    "guest": {
+      "family": "linux",
+      "architecture": "x86_64"
+    },
+    "bootMode": "efi",
+    "backend": "dory-hypervisor",
+    "backendImplementationIdentifier": "dory.raw-hv-linux.compatibility.v1",
+    "backendRuntimeBuildIdentifier": "sha256:5cd21e0bae026a170d3313d27905d82af819c1dae641065652fef1a811af3523",
+    "graphics": "software",
+    "supportTier": "preview",
+    "planRevision": 1,
+    "planSHA256": "554b6e3ca1add7917c32214d3968dd16b04d9aae9cdce6d0f5b1498ef0a34d1d",
+    "resources": {
+      "virtualCPUCount": 2,
+      "memoryBytes": 4294967296,
+      "diskBytes": 42949672960,
+      "translationCacheBytes": 134217728
+    },
+    "physicalExecution": {
+      "runnerProcessAlive": true,
+      "vmStarted": true,
+      "executionModeObserved": "long64",
+      "optimizingInstructionsObservedAtLastSample": 374693469,
+      "maskableInterruptsObservedAtLastSample": 11418,
+      "installerReadRequestsObservedAtLastSample": 94,
+      "blockFailuresObserved": 0
+    },
+    "stopResult": "passed",
+    "finalState": "stopped"
+  },
+  "tests": {
+    "result": "passed",
+    "xctestCount": 26,
+    "swiftTestingCount": 63,
+    "total": 89,
+    "covered": [
+      "resource admission and start revalidation",
+      "candidate-campaign authorization, signature, lifetime, replay and binding",
+      "runtime planning",
+      "resolved-plan validation"
+    ],
+    "log": "part1-final-focused-tests.log.gz",
+    "logSHA256": "a9c2237353ae400226fc3c78dc3448a6d26755e1a27ecaaac5f2c0a1494fb72b"
+  },
+  "attachments": [
+    {
+      "path": "candidate-campaign-daemon.log.gz",
+      "sha256": "16e26cb2427ad7a39aab674b1b3b8f62f27cd20170876bf6bfd42d4f51f7f5fb"
+    },
+    {
+      "path": "candidate-campaign-resolved-plan.json.gz",
+      "sha256": "928a240276b51679ef28f155aaea18e5c6ed385157531a528083104e71bd4598"
+    },
+    {
+      "path": "candidate-campaign-running-status.json.gz",
+      "sha256": "52ae7fd9287441efdadb6f4ee6c750211c83e2c30ec220bf2181812df1f12ba8"
+    },
+    {
+      "path": "candidate-campaign-runner.log.gz",
+      "sha256": "33244e18fa482041ca2d1c71a74a301c9090e7939ddde4c5ff16dcc5b70ec540"
+    }
+  ],
+  "limits": [
+    "This candidate authority permits bounded measurement only and does not create public qualification or authorize ordinary user machines.",
+    "The candidate inventory intentionally remains incomplete because no desktop-rootfs producer is present; this launch does not convert it into a release candidate.",
+    "The run proves signed candidate admission, exact planning, authenticated handoff, real x86 UEFI execution and clean stop. It does not claim an ordinary distribution install, guest-tools readiness, graphics acceleration or presented pixels.",
+    "The installer run reached UEFI long mode and device I/O, but no GRUB, kernel, root-mount or init serial milestone was observed before the bounded stop. The separate stable-production receipt proves the retained DORY-PC-UEFI-BOOT marker with no installer attached.",
+    "The retained unavailable Mac guest remains a named later qualification dependency."
+  ]
+}
