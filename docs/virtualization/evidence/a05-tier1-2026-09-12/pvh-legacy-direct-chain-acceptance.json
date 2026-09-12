@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-legacy-direct-chain-acceptance",
+  "observedAt": "2026-09-12T06:03:19Z",
+  "status": "passed-local-production-reliability-check",
+  "qualification": "local A05.3 reliability isolation; not A05.3 closure, performance acceptance, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "071fa8e39725cd49ddc49f51f553a87b8d300de4",
+    "candidateRunnerSHA256": "8006572cdeccaf0f1066a99431a27b55e4b9496b4834ae21da53b589b3f3dac9",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "acceptedBoundary": "The production PC machine permits same-tier direct chaining only within legacy baseline and optimizing compiler ABIs. Tier-one execution remains enabled, but Tier-one blocks cannot initiate raw direct links and the existing compiler-ABI gate prevents them from accepting legacy links. The generated IBTC and shadow-return stack remain absent.",
+    "behavioralIntent": "Separate legacy-source direct edges from Tier-one-source direct edges after the combined direct-chain-only candidate reproduced intermittent guest corruption.",
+    "productionFinding": "Two runs of the exact same hashed release runner passed all seven authenticated workloads and powered off. Both exercised legacy direct chaining while compiling Tier-one blocks, and both recorded zero IBTC and shadow-return activity. This accepts legacy-source direct chaining as a bounded production reliability boundary and narrows the remaining direct-chain suspect to Tier-one-source edges or an interaction they enable."
+  },
+  "verification": {
+    "focused": "37 tests in two suites passed: three predictor-boundary regressions plus DoryPCDirectKernelMachineTests.",
+    "deterministicAggregate": "1,558 tests in 179 suites passed with test parallelism disabled.",
+    "productionAttempts": 2,
+    "passingDiagnosticReceiptsProduced": 2
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ]
+  },
+  "acceptedRuns": [
+    {
+      "runID": "ca5729f8-8289-4c86-bc1a-e4e890345450",
+      "diagnosticPath": "/private/tmp/dory-a05-legacy-direct-run1-CA5729F8.json",
+      "diagnosticReceiptSHA256": "5586e4e4cc755014e08aaa7c77254bff2a4466387487a083c22824219e8d8e6b",
+      "elapsedNanoseconds": 290760542792,
+      "retiredInstructions": 722291229,
+      "baselineJITInstructions": 719500389,
+      "interpreterInstructions": 2790840,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 74598,
+      "nativeDispatcherEntries": 198331718,
+      "directChainPatches": 162189,
+      "directChainUnlinks": 159360,
+      "directlyChainedBlocks": 31603538,
+      "withinRunDispatcherAvoidancePercent": 13.744537723262413,
+      "indirectBranchTargetCacheHits": 0,
+      "indirectBranchTargetCacheMisses": 0,
+      "indirectBranchTargetCacheFills": 0,
+      "shadowReturnStackHits": 0,
+      "shadowReturnStackMisses": 0,
+      "shadowReturnStackPushes": 0,
+      "tier1CompilationAttempts": 816897,
+      "tier1CompilationDeclines": 705838,
+      "tier1CompiledBlocks": 111059,
+      "nativeTraceAttempts": 559800,
+      "nativeTraceReplays": 378775
+    },
+    {
+      "runID": "5fa27b88-dfd3-4c78-aee9-fff7b87f80ca",
+      "diagnosticPath": "/private/tmp/dory-a05-legacy-direct-run2-5FA27B88.json",
+      "diagnosticReceiptSHA256": "3fc6faf709b89fdf7262ac478f39c847e4b76ce726aa2e9d2b2ff9e830b0d9e9",
+      "elapsedNanoseconds": 292484809959,
+      "retiredInstructions": 722484614,
+      "baselineJITInstructions": 719710155,
+      "interpreterInstructions": 2774459,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 74622,
+      "nativeDispatcherEntries": 198716381,
+      "directChainPatches": 164554,
+      "directChainUnlinks": 161717,
+      "directlyChainedBlocks": 31640796,
+      "withinRunDispatcherAvoidancePercent": 13.73553731299633,
+      "indirectBranchTargetCacheHits": 0,
+      "indirectBranchTargetCacheMisses": 0,
+      "indirectBranchTargetCacheFills": 0,
+      "shadowReturnStackHits": 0,
+      "shadowReturnStackMisses": 0,
+      "shadowReturnStackPushes": 0,
+      "tier1CompilationAttempts": 814943,
+      "tier1CompilationDeclines": 704269,
+      "tier1CompiledBlocks": 110674,
+      "nativeTraceAttempts": 516428,
+      "nativeTraceReplays": 337478
+    }
+  ],
+  "retainedBaseline": {
+    "evidence": "pvh-chain-target-rejection-ranking.json",
+    "withinRunDispatcherReductionPercent": 50.26310931351201,
+    "requiredDispatcherReductionPercent": 95,
+    "reason": "The accepted legacy-only reliability boundary intentionally excludes Tier-one direct sources, the IBTC, and shadow returns, so its 13.74-percent bypass share cannot replace the broader accepted enabled-path measurement."
+  },
+  "disposition": {
+    "candidateAccepted": true,
+    "legacyDirectSourceBoundaryAccepted": true,
+    "tier1DirectSourceBoundaryAccepted": false,
+    "a05_3DispatcherGatePassed": false,
+    "a05_3Complete": false,
+    "reason": "Production retains legacy-source direct chaining. A05.3 remains open because Tier-one direct initiation must be isolated and repaired or excluded, the remaining predictors require independent reintroduction, and the final enabled path must exceed 95-percent dispatcher avoidance."
+  },
+  "limitations": [
+    "Two passing local runs are a bounded reliability check, not cross-host qualification or proof that every intermittent failure has been eliminated.",
+    "The compiler-source split narrows the preceding direct-chain-only failure but does not identify a specific corrupting Tier-one edge or prove sole causality.",
+    "The measured 13.74-percent within-run avoidance is below the strict A05.3 performance threshold and receives no replacement credit over the accepted broader enabled-path baseline.",
+    "The raw diagnostic receipts remain in /private/tmp; this checked-in record binds their hashes and selected counters."
+  ]
+}
