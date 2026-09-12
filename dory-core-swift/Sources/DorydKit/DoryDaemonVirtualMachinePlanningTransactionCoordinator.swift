@@ -727,7 +727,10 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         do { preparation = try trust.preparePlanningTrust(for: inventoryRequest) }
         catch {
             try abortOrRetainAfterTrustFailure(&journal)
-            throw failure(.trustUnavailable, "Exact daemon planning trust is unavailable.")
+            throw failure(
+                .trustUnavailable,
+                "Exact daemon planning trust is unavailable: \(error)"
+            )
         }
 
         var lease = try reserveOrAdopt(
