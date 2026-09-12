@@ -20,7 +20,7 @@ Part numbers organize the work; they do not prohibit parallel work. Once 1.5 est
 
 **Outcome:** a reproducible, honest starting point, reviewed current changes, a stable production configuration, an explicit list of remaining defects, and a usable engineering qualification path. “Clean slate” means known state and no untriaged regression in the admitted baseline. It does not mean deleting previous work, clearing the working tree by force, or claiming that unbuilt features are finished.
 
-**Current status:** this review fixes bounded defects and rewrites the plan. The full Part 1 exit gate remains open until the source/build/candidate and live baseline requirements below pass. No release-qualified VM cell is established by this rewrite.
+**Current status:** the accepted implementation baseline is commit **c26367a3f**, followed by the selected-Xcode FFI producer repair at **d899bc3f64**. A detached clean checkout rebuilt the FFI twice byte-identically, built the Debug app, and reproduced the PC firmware digest. The [baseline review](docs/virtualization/evidence/review-2026-09-12/part1-baseline-review.json) and [clean build receipt](docs/virtualization/evidence/review-2026-09-12/part1-clean-build.json) retain exact results and limits. The full Part 1 exit gate remains open: the current x86 JIT runner fails before the UEFI marker, no retained Mac guest was available, and no exact-host production-signed physical candidate campaign ran. No release-qualified VM cell is established by this review.
 
 ### 1.1 What is actually implemented
 
@@ -81,7 +81,7 @@ Retained results: [CPU review and passing build log](docs/virtualization/evidenc
 | Plan evidence audit | Support one explicit baseline-evidence marker pair; reject ambiguous, empty or malformed regions; preserve old heading support for historical inputs. |
 | CMPXCHG16B atomicity | Fixed the aligned native helper with one lock-free 128-bit CAS and a concurrent ordinary-store regression; retained compiler output confirms ARM64 CASPAL. A helper-only mutex could not protect nonparticipating accesses. Cross-page/MMIO/interpreter fallbacks, DMA lifetime and the broader ordering campaign remain required in 2.8. |
 
-Review all remaining dirty files before creating a baseline commit. Classify each as accepted implementation, experiment kept disabled, historical evidence, generated output, or unresolved defect. Do not blindly stage the large evidence tree. Include provenance, intended ownership and meaningful behavioral validation for accepted changes.
+The focused baseline commit retained accepted implementation and review evidence only. Incomplete generated previews and local script prototypes remain uncommitted, and the unresolved x86 JIT boot is assigned to Part 2. The clean-build receipt binds the accepted source and generated inputs without treating those retained local files as qualification.
 
 ### 1.4 Stable architecture and source ownership
 
@@ -182,15 +182,15 @@ The current qualification bootstrap cycle is an engineering issue: normal produc
 
 ### 1.9 The Part 1 exit checklist
 
-- [ ] Current dirty implementation changes reviewed, repaired and assigned a disposition; focused review receipt retained.
-- [ ] A reproducible accepted source set and coherent build inventory exist.
-- [ ] Current source-derived firmware clears the historical EFI reproduction.
+- [x] Current dirty implementation changes reviewed, repaired and assigned a disposition; focused review receipt retained.
+- [x] A reproducible accepted source set and coherent build inventory exist.
+- [x] Current source-derived firmware clears the historical EFI reproduction.
 - [ ] Stable x86 production selection is retained; failed chain combinations remain disabled.
-- [ ] CPU atomicity and feature-policy issues have regression coverage; unsupported guarantees remain unadvertised.
+- [x] CPU atomicity and feature-policy issues have regression coverage; unsupported guarantees remain unadvertised.
 - [ ] Real candidate campaigns can launch through constrained, authenticated authority without circular qualification.
 - [ ] One current baseline per available guest path is captured with exact inputs and explicit limits.
-- [ ] Capability/matrix/evidence state agrees with the actual code and collected observations.
-- [ ] Remaining work is assigned to Parts 2–5; no unresolved item is hidden behind a completed checkbox.
+- [x] Capability/matrix/evidence state agrees with the actual code and collected observations.
+- [x] Remaining work is assigned to Parts 2–5; no unresolved item is hidden behind a completed checkbox.
 
 Part 1 is complete only when these conditions hold. Until then, finish the open baseline work while independent feature development proceeds against the documented invariants.
 

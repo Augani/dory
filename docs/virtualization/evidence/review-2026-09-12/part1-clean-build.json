@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.part1-clean-build",
+  "observedAt": "2026-09-12",
+  "sourceCommit": "d899bc3f64a7dad33efa415b959f458968be0a78",
+  "baselineImplementationCommit": "c26367a3f59acd46e45cd4d80838d70a43612077",
+  "result": "passed-development-build",
+  "releaseQualified": false,
+  "sourceCheckout": {
+    "kind": "detached-git-worktree",
+    "statusBeforeBuild": "clean",
+    "statusAfterBuild": "clean",
+    "ignoredGeneratedArtifacts": true
+  },
+  "host": {
+    "model": "Mac14,10",
+    "soc": "Apple M2 Pro",
+    "macOSVersion": "27.0",
+    "macOSBuild": "26A5425a"
+  },
+  "toolchain": {
+    "xcodeVersion": "26.6 Release Candidate",
+    "xcodeBuild": "17F109",
+    "macOSSDK": "26.5",
+    "developerDirectoryWasSelectedPerCommand": true,
+    "codeSigningAllowed": false
+  },
+  "ffi": {
+    "inputFingerprint": "3ece07ed78d54d9d0a9620140136f8fcef669625358c64b2ca2681e99e422674",
+    "outputFingerprint": "f2e6c5fb2cd7ab007b93d9cfe7deab3157b64a0ae6431a75d583089013e1adeb",
+    "librarySHA256": "a153308a0982a06a66591ef99f32c0b8db91f986284aaaada224578c35b38855",
+    "generatedSwiftSHA256": "21b38a24f51eee6a7388ceb35086215552a0ed00c63d91368ac6ca3337ab3fee",
+    "repeatResult": "byte-identical",
+    "repeatCount": 2
+  },
+  "application": {
+    "configuration": "Debug",
+    "buildResult": "succeeded",
+    "signatureCategory": "unsigned-development-only",
+    "payloadDigests": {
+      "Dory": "9fb7b2af667be874593c297c09cce7b244442e384426d3dafa2dd20a7ef0a326",
+      "dory-hv": "471099c386d5096774b04a74f56fc816206228c5d25668a97c7463b9f19631b5",
+      "DoryRendererWorker": "8119b2407426b3d4df6186187f2e086ec3b896a2ab5656b416b65b8eda39bed1",
+      "DoryFSWorker": "7c0e2e4e365e4ef79ad37892d676a4ed576d3c7ae6ac342b18391e9b193ea9a1"
+    }
+  },
+  "pcFirmware": {
+    "buildIdentifier": "dory-pc-v1-179de597cd4b5b9a4f8f",
+    "firmwareCodeSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+    "manifestSHA256": "e37406e3b84343fcd159aa2da7708df2a94acb9f6882a0c9aeb63112e004a4c9",
+    "sbomSHA256": "5e25fbaec0ec5d89756effc3e7fed87faa4b87d05840178cf09d74fbd51ff196",
+    "variableStoreTemplateSHA256": "80dbb9d55cd8975e7ca59e1abf2b750ff7498cd02976dcd66f29bce47909a032",
+    "repeatResult": "firmware-code-byte-identical-to-first-source-derived-build"
+  },
+  "postCommitChecks": {
+    "candidateAuthorizationTests": 4,
+    "runtimePlanningTests": 17,
+    "candidateConfigurationTests": 1,
+    "evidenceAuditTests": 9,
+    "componentPackagingTests": "passed"
+  },
+  "artifactSHA256": {
+    "arm-agent-ping.log.gz": "97a1e48bb033716ae476ac1ff1e9220e2e8939f3374c12086ee0d366ffbff90d",
+    "clean-app-build.log.gz": "e795f23965a9bd5f424171d543c7ebd811821db11ee8d884fcf96a6df62d7c50",
+    "clean-ffi-first-build.log.gz": "6b5593b430b0d1fc1ac0a0256a9f67f11fa889fd8bdbef656f7a2a255f130f33",
+    "clean-ffi-second-build.log.gz": "33c600dde3e81c56fe8a305695945ecd3cb6d7c77f76dd5c000744f6d52632ac",
+    "final-candidate-swift.log.gz": "b2a34a1adba42574d3fa0351edcd8c2a03c7c11d2a6003bf3d8580282621722c",
+    "final-config-swift.log.gz": "655a7c8915a32a499c64b86a06dba016177b6f68917d3ea829f8d5381ccfce94",
+    "final-planning-swift.log.gz": "f26ddcda4bf7a4a16ad5524fbde5baf2dc6eb78118e49ac1965f5ec5cd3174b8",
+    "pc-9dc-release-current-firmware.json.gz": "27801055745154a679d39d9eb9a35e53586ca787d15f454e1dee68e07cf2e17a",
+    "pc-current-firmware-boot.stderr.gz": "22528d8ac9a51045db4037a65d1f63b39f74546c3315250303ebbd57422ee59f",
+    "post-commit-components.log.gz": "3beba067f956e32b533e8b9276579e96b062aab6d0c5524c2004cca8765508ad",
+    "post-commit-evidence-audit.log.gz": "863dfd17281a8824435e7e4999b240feea64a8be3599c08cbd90b0dd7a027aa1"
+  },
+  "limits": [
+    "This is an unsigned Debug development build, not a signed/notarized candidate.",
+    "The host and Xcode build do not match the proposed Wave 0 qualification tuple.",
+    "The current x86 JIT runner still fails before the retained UEFI marker.",
+    "No physical candidate campaign or macOS guest campaign was available."
+  ]
+}

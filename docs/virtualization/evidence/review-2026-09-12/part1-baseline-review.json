@@ -3,7 +3,9 @@
   "kind": "dory-part1-baseline-review",
   "observedAt": "2026-09-12",
   "startingSourceRevision": "7425872c207accaedb7471f9a25343eb1e728f64",
-  "status": "accepted-for-focused-commit-with-open-qualification-dependencies",
+  "acceptedSourceRevision": "d899bc3f64a7dad33efa415b959f458968be0a78",
+  "cleanBuildReceipt": "part1-clean-build.json",
+  "status": "accepted-baseline-with-open-qualification-dependencies",
   "releaseQualified": false,
   "host": {
     "model": "Mac14,10",
@@ -161,7 +163,7 @@
     "The starting revision's x86 JIT runner fails before the retained UEFI marker."
   ],
   "claims": {
-    "cleanSourceReproducibility": false,
+    "cleanSourceReproducibility": true,
     "publicQualification": false,
     "physicalCandidateCampaign": false,
     "firmwareHistoricalRegressionCleared": true,
