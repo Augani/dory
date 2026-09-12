@@ -668,6 +668,47 @@ import Testing
     #endif
   }
 
+  @Test func legacyDirectPredictionCanExcludeTier1Links() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x16C0
+      let bytes: [UInt8] = [0xFF, 0xC0, 0xEB, 0, 0xFF, 0xC0, 0xEB, 0, 0xF4]
+      func patches(
+        tier1Enabled: Bool,
+        options: DoryARM64RawTargetPredictionOptions
+      ) throws -> UInt64 {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: tier1Enabled,
+          rawTargetPredictionOptions: options
+        )
+        for _ in 0..<2 {
+          var state = try DoryX86ArchitecturalState(rip: base)
+          let summary = try #require(executor.executeChainedSummary(
+            byteProvider: { address, count in
+              guard address >= base else { return [] }
+              let offset = Int(address - base)
+              guard bytes.indices.contains(offset) else { return [] }
+              return Array(bytes[offset..<min(bytes.count, offset + count)])
+            },
+            physicalRIPProvider: { $0 },
+            at: base,
+            mode: .long64,
+            addressSpaceID: 11,
+            maximumInstructions: 16,
+            state: &state
+          ))
+          #expect(summary.guestInstructionCount == 5)
+          #expect(state.registers.rax == 2)
+        }
+        return executor.diagnostics.directChainPatches
+      }
+
+      #expect(try patches(tier1Enabled: false, options: [.legacyDirectChain]) == 1)
+      #expect(try patches(tier1Enabled: true, options: [.legacyDirectChain]) == 0)
+      #expect(try patches(tier1Enabled: true, options: [.tier1DirectChain]) == 1)
+    #endif
+  }
+
   @Test func protectedCodeGenerationInvalidatesChainsWithoutWarmGraphScanning() throws {
     #if arch(arm64)
       let base: UInt64 = 0x1400

@@ -29,9 +29,11 @@ public struct DoryARM64RawTargetPredictionOptions: OptionSet, Sendable, Hashable
     self.rawValue = rawValue
   }
 
-  public static let directChain = Self(rawValue: 1 << 0)
-  public static let indirectBranchTargetCache = Self(rawValue: 1 << 1)
-  public static let shadowReturnStack = Self(rawValue: 1 << 2)
+  public static let legacyDirectChain = Self(rawValue: 1 << 0)
+  public static let tier1DirectChain = Self(rawValue: 1 << 1)
+  public static let directChain: Self = [.legacyDirectChain, .tier1DirectChain]
+  public static let indirectBranchTargetCache = Self(rawValue: 1 << 2)
+  public static let shadowReturnStack = Self(rawValue: 1 << 3)
   public static let all: Self = [.directChain, .indirectBranchTargetCache, .shadowReturnStack]
 }
 
@@ -7729,7 +7731,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }
     return chainSlots.isEmpty
       ? rawTargetPredictionOptions.contains(.indirectBranchTargetCache)
-      : rawTargetPredictionOptions.contains(.directChain)
+      : directChainPredictionEnabled(for: resident)
+  }
+
+  private func directChainPredictionEnabled(for resident: ResidentBlock) -> Bool {
+    switch resident.block.tier {
+    case .tier1:
+      rawTargetPredictionOptions.contains(.tier1DirectChain)
+    case .baseline, .optimizing:
+      rawTargetPredictionOptions.contains(.legacyDirectChain)
+    case .interpreterFallback:
+      false
+    }
   }
 
   private func canAcceptRuntimeChainTarget(_ resident: ResidentBlock) -> Bool {
@@ -7795,8 +7808,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     destinationGuestRIP: UInt64,
     memoryCallbacksAvailable: Bool
   ) {
-    guard rawTargetPredictionOptions.contains(.directChain),
-      canInitiateRuntimeChain(source),
+    guard directChainPredictionEnabled(for: source), canInitiateRuntimeChain(source),
       let slot = source.block.chainSlots?.first(where: {
         $0.targetGuestRIP == destinationGuestRIP
       })
