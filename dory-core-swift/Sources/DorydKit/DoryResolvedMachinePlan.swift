@@ -1578,7 +1578,8 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     private func validateHostQualification(
         into issues: inout [DoryResolvedMachinePlanValidationIssue]
     ) {
-        if usesPortableLinuxEFIBaseline || usesPreparedNativeMacOSBaseline { return }
+        if usesPortableLinuxEFIBaseline || usesPreparedNativeMacOSBaseline
+            || usesCandidateCampaignPreviewEnvelope { return }
         guard let host = hostQualification,
               Self.isSafeEvidenceIdentifier(host.qualificationIdentity),
               Self.isSHA256(host.qualificationReportSHA256),
@@ -1595,6 +1596,35 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             ))
             return
         }
+    }
+
+    /// Candidate campaigns deliberately do not mint public host-qualification evidence. This
+    /// accepts only their structurally exact preview envelope; the production inventory still
+    /// re-resolves the short-lived signed authority before publication and before every spawn.
+    private var usesCandidateCampaignPreviewEnvelope: Bool {
+        guard supportTier == .preview,
+              backend != .qemuHypervisorFramework,
+              bootMedia.media.source == .userProvided,
+              bootMedia.media.kind == .installerISO
+                || bootMedia.media.kind == .macOSRestoreImage,
+              qualificationEvidence.graphics == nil,
+              qualificationEvidence.runtime == nil,
+              hostQualification == nil,
+              let artifactSHA256 = bootMedia.media.artifactSHA256,
+              let inspection = bootMedia.inspectionEvidence,
+              inspection.inspectionIdentity.hasPrefix("candidate-"),
+              inspection.artifactSHA256 == artifactSHA256,
+              inspection.inspectionReportSHA256.utf8.count == 64,
+              Self.isSHA256(inspection.inspectionReportSHA256),
+              inspection.inspectorID == "dory.candidate-campaign.media-binding",
+              inspection.inspectorVersion
+                == DoryVirtualMachineCandidateCampaignAuthorization.schemaVersion,
+              inspection.catalogManifestEvidence == nil,
+              inspection.detectedArchitecture == guest.architecture,
+              inspection.detectedKind == bootMedia.media.kind else {
+            return false
+        }
+        return true
     }
 
     /// The only supported plan that intentionally omits exact signed runtime and host
