@@ -160,7 +160,6 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
         let machineManager = MachineManager(
             configuration: machineConfiguration,
             launchPolicy: .perWorkspaceAuthority,
-            allowsQualificationBootstrapLaunches: true,
             machineStateBroker: machineStateBroker,
             agentConnector: agentConnector
         )
@@ -353,6 +352,7 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
         let machineManager = MachineManager(
             configuration: machineConfiguration,
             launchPolicy: .perWorkspaceAuthority,
+            allowsQualificationBootstrapLaunches: true,
             machineStateBroker: machineStateBroker,
             agentConnector: agentConnector
         )
