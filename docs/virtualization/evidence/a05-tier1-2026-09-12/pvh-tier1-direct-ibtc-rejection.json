@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-direct-ibtc-rejection",
+  "observedAt": "2026-09-12T06:53:33Z",
+  "status": "rejected-production-crash",
+  "qualification": "local A05.3 reliability isolation failure; not performance evidence, cross-host evidence, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "341ec093c2f6dcde14811309ae7ad27a81a3a7fe",
+    "candidateRunnerSHA256": "9806edc9ea6d463ddc425488f3e06c605c4422f36a92149d4be40230c043412d",
+    "revertCommit": "1db538a3b895dbb2491ba4ca0563919628ddeb05",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "configuration": "Tier-one direct chaining and the generated IBTC enabled; legacy direct chaining and shadow returns disabled.",
+    "behavioralIntent": "Add the independently accepted IBTC to the higher-avoidance Tier-one-direct production boundary without enabling either previously rejected direct-source coexistence or shadow-return state.",
+    "productionFinding": "The first exact-binary run crashed before terminal output or a diagnostic receipt. The macOS crash report records a null instruction fetch with PC, LR, and FP all zero while generated memory callback pointers remained live in the callee-saved register bank. The combination is rejected despite both predictors passing their independent two-run gates."
+  },
+  "verification": {
+    "focused": "39 tests in two suites passed, covering predictor isolation, IBTC invalidation, shadow accounting isolation, and the PC machine.",
+    "deterministicAggregate": "1,558 tests in 179 suites passed with test parallelism disabled.",
+    "productionAttempts": 1,
+    "passingDiagnosticReceiptsProduced": 0,
+    "secondAttemptRun": false
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ]
+  },
+  "failedRun": {
+    "runID": "dc1bb0fe-2f16-43d0-938e-92563727f01d",
+    "diagnosticPath": "/private/tmp/dory-a05-tier1-direct-ibtc-run1-DC1BB0FE.json",
+    "diagnosticReceiptProduced": false,
+    "processExitStatus": 139,
+    "crashReportFileName": "dory-pc-linux-boot-runner-2026-09-12-065302.ips",
+    "crashReportSHA256": "366ea47a37b19663daf8ac4bb1394b6a9b45c2ee7179d23944fefb0a41bab303",
+    "incidentID": "24B01F74-975B-41C9-8532-F31B99289319",
+    "processLaunch": "2026-09-12 06:49:35.3747 +0000",
+    "captureTime": "2026-09-12 06:53:00.8355 +0000",
+    "exception": "EXC_BAD_ACCESS",
+    "signal": "SIGSEGV",
+    "faultAddress": 0,
+    "programCounter": 0,
+    "linkRegister": 0,
+    "framePointer": 0,
+    "registerObservation": "x19 and x20 resolve to generated JIT memory callback thunks while PC/LR/FP are zero.",
+    "workloadsPassed": null,
+    "retiredInstructions": null,
+    "predictorCounters": null
+  },
+  "disposition": {
+    "candidateAccepted": false,
+    "candidateReverted": true,
+    "restoredProductionBoundary": "Tier-one direct chaining only",
+    "a05_3DispatcherGatePassed": false,
+    "a05_3Complete": false,
+    "reason": "A production crash rejects the combination immediately. Independent predictor acceptance does not establish combination safety, and no missing-receipt counters are inferred."
+  },
+  "limitations": [
+    "The crash report proves null host control flow but does not identify the exact generated edge or preceding architectural divergence.",
+    "No diagnostic receipt was produced, so guest progress and predictor activity are unknown.",
+    "The result does not invalidate the separate Tier-one-direct-only or IBTC-only two-run acceptance boundaries.",
+    "A future combination attempt requires binary-layout-neutral or out-of-process first-divergence evidence rather than another blind reintroduction."
+  ]
+}

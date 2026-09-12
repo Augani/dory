@@ -145,6 +145,8 @@ Tier-one direct chaining only: two exact-binary frozen-fixture runs accepted tha
 isolated source class while legacy direct sources, the IBTC, and shadow returns
 remained disabled. The preceding legacy-only boundary also passed twice, but the
 combined direct-source configuration remains rejected after a one-of-two failure.
+Adding the generated IBTC to the Tier-one-direct production boundary is also
+rejected after its first exact-binary run returned through a null host address.
 Standalone executor use retains the complete predictor set by default.
 
 The Swift dispatcher also materializes a pending tier-1 record before entering a
