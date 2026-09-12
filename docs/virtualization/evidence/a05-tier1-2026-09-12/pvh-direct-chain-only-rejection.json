@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-direct-chain-only-rejection",
+  "observedAt": "2026-09-12T05:43:39Z",
+  "status": "one-pass-one-guest-corruption-reverted",
+  "qualification": "local A05.3 direct-chain reliability isolation; not A05.3 closure, performance acceptance, cross-host, G1-G5, or release qualification",
+  "source": {
+    "granularControlCommit": "f0e68e3c2",
+    "candidateCommit": "bf8dbdcededcd88b1c03e430e3de54afddc127d7",
+    "revertCommit": "825c5188c50d9a37c49ede7dd242676c9d7c37c4",
+    "candidateRunnerSHA256": "491ff81d765094d6c89ffd0bd8f99c3f9783582921d814b22bf598bd196601f4",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "scope": "Enable only direct and conditional generated branch patches in the production PC machine. Keep the IBTC and shadow-return stack absent from generated execution while preserving ordinary generated execution, Tier one, native trace replay, the physical block cache, and precise recovery.",
+    "behavioralIntent": "Determine whether direct branch patches are reliable independently of indirect raw host-address prediction.",
+    "productionFinding": "The first exact-binary run passed all seven workloads. The second qualifying run of the identical binary emitted corrupted NUL-containing kernel strings, passed only the first six workload records, faulted busybox at an inaccessible dynamic-loader address during the final workload, soft-locked in unmap_page_range, and exhausted one billion instructions without an authenticated terminal receipt. Direct chaining alone is therefore sufficient to reproduce the intermittent guest-corruption family under this fixture."
+  },
+  "verification": {
+    "focused": "The direct-only and all-off predictor regressions plus the DoryPCDirectKernelMachine suite passed 36 tests in two suites.",
+    "deterministicAggregate": "1,557 tests in 179 suites passed with test parallelism disabled; the environment-driven pinned boot test skipped because its variables were absent, then the same pinned inputs were executed explicitly.",
+    "qualifyingProductionAttempts": 2,
+    "passingDiagnosticReceiptsProduced": 1,
+    "failedDiagnosticReceiptsProduced": 1
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "rawTargetPredictionOptions": [
+      "directChain"
+    ],
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ]
+  },
+  "runs": [
+    {
+      "runID": "aa22b552-ad27-4d4b-998b-ea654021298f",
+      "diagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-direct-only-first.json",
+      "diagnosticReceiptSHA256": "db13f0f8ce521de6e602ed8375c5df160e24879c5779ce07dd9a310ba38b5158",
+      "elapsedNanoseconds": 366354296875,
+      "retiredInstructions": 722575944,
+      "baselineJITInstructions": 719793394,
+      "interpreterInstructions": 2782550,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "directChainPatches": 631265,
+      "directChainUnlinks": 616739,
+      "directlyChainedBlocks": 115259273,
+      "nativeDispatcherEntries": 115247358,
+      "withinRunAvoidancePercent": 50.00258452434716,
+      "indirectBranchTargetCacheActivity": 0,
+      "shadowReturnStackActivity": 0,
+      "nativeTraceAttempts": 424631,
+      "nativeTraceReplays": 288562,
+      "codeCacheWraps": 2
+    },
+    {
+      "runID": "3024b86e-90ec-48ba-a3a5-04dada218061",
+      "diagnosticPath": "/private/tmp/dory-a05-memory-chain.o5jCEK/pvh-direct-only-second.json",
+      "diagnosticReceiptSHA256": "f1eee0e23269d27ebdcbe75808f645c6e52df3291a9ae300e3757f881fb9f68b",
+      "elapsedNanoseconds": 367917653875,
+      "retiredInstructions": 1000000000,
+      "baselineJITInstructions": 996548719,
+      "interpreterInstructions": 3451281,
+      "outcome": "instruction-budget",
+      "exitCode": 1,
+      "guestReceiptSeen": false,
+      "workloadRecordsPassed": 6,
+      "firstMissingWorkload": "filesystem.write_read_sync",
+      "directChainPatches": 570263,
+      "directChainUnlinks": 550549,
+      "directlyChainedBlocks": 140086002,
+      "nativeDispatcherEntries": 168740584,
+      "failureRunAvoidancePercent": 45.360732641068665,
+      "indirectBranchTargetCacheActivity": 0,
+      "shadowReturnStackActivity": 0,
+      "nativeTraceAttempts": 398843,
+      "nativeTraceReplays": 267275,
+      "codeCacheWraps": 2,
+      "observedFailure": "NUL-corrupted RCU, PCI ECAM, and TSC strings; busybox PID 405 page fault at 0x7f6d49d81096 in the dynamic-loader mapping; CPU soft lockup in unmap_page_range and related page-table/scheduler paths."
+    }
+  ],
+  "excludedAttempt": {
+    "runID": "e58e7aec-a67d-425f-85cc-28a79c0e59a4",
+    "diagnosticReceiptPresent": false,
+    "terminalStatusAvailable": false,
+    "reason": "The process and observation handle did not survive the turn boundary. No result, counters, or guest progress are inferred, and this attempt is not counted."
+  },
+  "retainedBaseline": {
+    "evidence": "../a05-tier1-2026-09-10/pvh-chain-target-rejection-ranking.json",
+    "withinRunDispatcherReductionPercent": 50.26310931351201,
+    "requiredDispatcherReductionPercent": 95,
+    "reason": "The direct-only candidate failed correctness and is reverted, so neither its passing-run nor failure-run counter is accepted as performance evidence."
+  },
+  "disposition": {
+    "candidateAccepted": false,
+    "directChainProductionDefaultEnabled": false,
+    "granularControlRetained": true,
+    "a05_3DispatcherGatePassed": false,
+    "a05_3Complete": false,
+    "reason": "One passing run cannot override an identical-binary guest-corruption failure. The production PC default returns to the empty predictor set. The next direct-chain investigation must identify and exclude or repair the corrupting edge before any raw direct target is re-enabled."
+  },
+  "limitations": [
+    "The failure receipt proves corruption while only direct raw targets were enabled, but does not identify the first corrupting branch edge.",
+    "The guest reached six workload records before the terminal failure, so boot success or partial userspace progress is not a sufficient reliability proxy.",
+    "The isolated failure does not assess IBTC or shadow-return reliability because both remained disabled.",
+    "The raw diagnostic receipts remain in the local fixture directory; this checked-in record binds their hashes and selected counters."
+  ]
+}
