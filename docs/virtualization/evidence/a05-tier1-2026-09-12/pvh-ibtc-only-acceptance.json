@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-ibtc-only-acceptance",
+  "observedAt": "2026-09-12T06:29:10Z",
+  "status": "passed-local-production-reliability-check",
+  "qualification": "local A05.3 reliability isolation; not A05.3 closure, performance acceptance, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "ef39d96d29097fa70fdb34f05f0ac759e0168d99",
+    "candidateRunnerSHA256": "551c95f71fbbd9b04d0ab0211ae22b6091cb544df9b3b773a5d7813f00d66a29",
+    "postExperimentProductionCommit": "e965c424ccc88abf12d204970a527b34eefe5577",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "acceptedBoundary": "The experimental production PC machine exposed only the generated indirect-branch target cache. Both direct-source classes and the shadow-return stack were disabled.",
+    "behavioralIntent": "Test generated IBTC reliability independently from direct chaining and shadow-return prediction after raw host-target prediction was identified as a reliability boundary.",
+    "productionFinding": "Two runs of the exact same hashed release runner passed all seven authenticated workloads and powered off. Both exercised IBTC fills and hits while recording zero direct-chain patches and zero shadow-return activity. This accepts the IBTC as a bounded isolated reliability boundary, but its dispatcher avoidance is too small to displace the independently accepted Tier-one direct production default."
+  },
+  "verification": {
+    "focused": "38 tests in two suites passed, including an explicit IBTC-only warm-hit/invalidation regression plus predictor-boundary and PC machine coverage.",
+    "deterministicAggregate": "1,558 tests in 179 suites passed with test parallelism disabled.",
+    "productionAttempts": 2,
+    "passingDiagnosticReceiptsProduced": 2
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ]
+  },
+  "acceptedRuns": [
+    {
+      "runID": "4610493b-1062-4103-b01a-88214da17fc9",
+      "diagnosticPath": "/private/tmp/dory-a05-ibtc-only-run1-4610493B.json",
+      "diagnosticReceiptSHA256": "dfaf06b43f2460e0d399c9fb631c5d87ca9b4dfa457a491918baca9c81cd355e",
+      "elapsedNanoseconds": 208969530250,
+      "retiredInstructions": 733963807,
+      "baselineJITInstructions": 731161266,
+      "interpreterInstructions": 2802541,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 74627,
+      "nativeDispatcherEntries": 231913258,
+      "directChainPatches": 0,
+      "directChainUnlinks": 0,
+      "directlyChainedBlocks": 2120400,
+      "withinRunDispatcherAvoidancePercent": 0.9060235258981424,
+      "indirectBranchTargetCacheHits": 2125312,
+      "indirectBranchTargetCacheMisses": 13598587,
+      "indirectBranchTargetCacheFills": 101161,
+      "indirectBranchTargetCacheHitRatePPM": 135164,
+      "shadowReturnStackHits": 0,
+      "shadowReturnStackMisses": 0,
+      "shadowReturnStackPushes": 0,
+      "tier1CompilationAttempts": 808172,
+      "tier1CompilationDeclines": 697950,
+      "tier1CompiledBlocks": 110222,
+      "nativeTraceAttempts": 536505,
+      "nativeTraceReplays": 348967
+    },
+    {
+      "runID": "5dc0b34e-279c-49e9-b48b-e981e685281f",
+      "diagnosticPath": "/private/tmp/dory-a05-ibtc-only-run2-5DC0B34E.json",
+      "diagnosticReceiptSHA256": "266417da7d86d9362cae3d7f9d783289e74a4c750b35db797bcc4748c256499e",
+      "elapsedNanoseconds": 215567980208,
+      "retiredInstructions": 733597155,
+      "baselineJITInstructions": 730822496,
+      "interpreterInstructions": 2774659,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 74537,
+      "nativeDispatcherEntries": 232942614,
+      "directChainPatches": 0,
+      "directChainUnlinks": 0,
+      "directlyChainedBlocks": 2107684,
+      "withinRunDispatcherAvoidancePercent": 0.8966948852794052,
+      "indirectBranchTargetCacheHits": 2119641,
+      "indirectBranchTargetCacheMisses": 13593033,
+      "indirectBranchTargetCacheFills": 101524,
+      "indirectBranchTargetCacheHitRatePPM": 134900,
+      "shadowReturnStackHits": 0,
+      "shadowReturnStackMisses": 0,
+      "shadowReturnStackPushes": 0,
+      "tier1CompilationAttempts": 815961,
+      "tier1CompilationDeclines": 705800,
+      "tier1CompiledBlocks": 110161,
+      "nativeTraceAttempts": 526323,
+      "nativeTraceReplays": 336338
+    }
+  ],
+  "retainedProductionBoundary": {
+    "evidence": "pvh-tier1-direct-chain-acceptance.json",
+    "productionCommit": "e965c424ccc88abf12d204970a527b34eefe5577",
+    "reason": "Tier-one-only direct chaining produced approximately 36.45-percent within-run avoidance, versus approximately 0.90 percent for the isolated IBTC."
+  },
+  "disposition": {
+    "candidateAcceptedInIsolation": true,
+    "selectedAsProductionDefault": false,
+    "a05_3DispatcherGatePassed": false,
+    "a05_3Complete": false,
+    "reason": "The IBTC-specific regression is retained, but production returns to Tier-one-only direct chaining. A05.3 remains open for shadow-return isolation, safe predictor combinations, and a final enabled path exceeding 95-percent dispatcher avoidance."
+  },
+  "limitations": [
+    "Two passing local runs are a bounded reliability check, not cross-host qualification or proof that every intermittent failure has been eliminated.",
+    "The experiment establishes isolated IBTC behavior only; it does not establish safety when combined with either direct-source class or shadow returns.",
+    "The approximately 0.90-percent within-run avoidance is below the strict A05.3 performance threshold.",
+    "The raw diagnostic receipts remain in /private/tmp; this checked-in record binds their hashes and selected counters."
+  ]
+}
