@@ -385,7 +385,7 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
                             for: runtime.descriptor.identity
                         )
                     )
-                case .qemuHypervisorFramework:
+                default:
                     throw DoryDaemonVirtualMachineProductionActivationFailure(
                         code: .backendCompositionUnavailable,
                         message: "Candidate campaigns cannot authorize QEMU."

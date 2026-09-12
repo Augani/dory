@@ -264,7 +264,6 @@ public struct DoryCandidateCampaignVirtualMachineCapabilityPlanner:
         guard cells.count == 1,
               let cell = cells.first,
               inventory.backendRuntime(for: request.backend) != nil,
-              request.backend != .qemuHypervisorFramework,
               inventory.hostFacts.hostArchitecture == .arm64 else { return nil }
         switch request.backend {
         case .doryHypervisor:
@@ -272,7 +271,7 @@ public struct DoryCandidateCampaignVirtualMachineCapabilityPlanner:
                   inventory.hostFacts.doryHypervisorAvailable else { return nil }
         case .appleVirtualizationFramework:
             guard inventory.hostFacts.virtualizationFrameworkAvailable else { return nil }
-        case .qemuHypervisorFramework:
+        default:
             return nil
         }
         if request.graphics == .hardwareAccelerated3D {

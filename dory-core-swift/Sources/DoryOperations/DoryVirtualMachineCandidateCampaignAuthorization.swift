@@ -433,7 +433,8 @@ public enum DoryVirtualMachineCandidateCampaignAuthorityResolver {
             && cell.backendRuntimeBuildIdentifier.hasPrefix("sha256:")
             && isSHA256(String(cell.backendRuntimeBuildIdentifier.dropFirst(7)))
             && cell.capability.virtualHardwareABIVersion > 0
-            && cell.capability.backend != .qemuHypervisorFramework
+            && [.doryHypervisor, .appleVirtualizationFramework]
+                .contains(cell.capability.backend)
             && cell.resources.maximumVirtualCPUCount > 0
             && cell.resources.maximumMemoryBytes > 0
             && cell.resources.maximumStorageBytes > 0
