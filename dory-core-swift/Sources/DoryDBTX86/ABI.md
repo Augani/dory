@@ -137,7 +137,10 @@ Legacy-ABI direct chaining, Tier-one direct chaining, the indirect-branch target
 cache, and the shadow-return stack are independently selectable raw host-address
 predictors. A disabled predictor cannot initiate its runtime link and its storage
 is absent from the generated execution context. Shadow-return host targets depend
-on an enabled and populated IBTC. The production PC machine currently enables
+on an enabled and populated IBTC. In chained execution, enabling the shadow stack
+also admits generated chain accounting for direct-slot blocks so CALL can publish
+its return record; this does not enable direct-slot patch installation. The
+production PC machine currently enables
 Tier-one direct chaining only: two exact-binary frozen-fixture runs accepted that
 isolated source class while legacy direct sources, the IBTC, and shadow returns
 remained disabled. The preceding legacy-only boundary also passed twice, but the

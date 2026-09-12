@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-shadow-return-acceptance",
+  "observedAt": "2026-09-12T06:45:40Z",
+  "status": "passed-local-production-reliability-check",
+  "qualification": "local A05.3 reliability isolation; not A05.3 closure, performance acceptance, cross-host, G1-G5, or release qualification",
+  "source": {
+    "accountingFixCommit": "6d5dc540c20732c1705302f64eac3f9c20a197d7",
+    "candidateCommit": "a6975a53d0193229b33df921b64998ba9313594f",
+    "candidateRunnerSHA256": "a3317d13aa5a5039a8d4f4a3e09b5822917559e3af2d2601dcc99ddb417ee06d",
+    "postExperimentProductionCommit": "9cc9e866a8e9183f506f4a1af325f532465336f7",
+    "buildConfiguration": "release"
+  },
+  "candidate": {
+    "acceptedBoundary": "The experimental production PC machine exposed the generated IBTC and shadow-return stack while disabling both direct-source classes. Chained CALL blocks may enter generated accounting to publish shadow records, but direct patch installation remains independently disabled.",
+    "behavioralIntent": "Measure the shadow-return delta over the accepted IBTC-only boundary without enabling legacy or Tier-one direct links.",
+    "productionFinding": "Two runs of the exact same hashed release runner passed all seven authenticated workloads and powered off. Both exercised shadow pushes and hits plus IBTC fallback while recording zero direct-chain patches. This accepts the accounting fix and the shadow-return path as a bounded isolated reliability boundary. Total dispatcher avoidance remained effectively unchanged from IBTC-only, so production returns to the higher-avoidance Tier-one-direct boundary."
+  },
+  "verification": {
+    "focused": "39 tests in two suites passed, including explicit IBTC-only and IBTC-plus-shadow runtime boundaries plus PC machine coverage.",
+    "deterministicAggregate": "1,558 tests in 179 suites passed with test parallelism disabled.",
+    "productionAttempts": 2,
+    "passingDiagnosticReceiptsProduced": 2
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync"
+    ]
+  },
+  "acceptedRuns": [
+    {
+      "runID": "330b6f48-fdab-4943-8ff5-98c6ed038301",
+      "diagnosticPath": "/private/tmp/dory-a05-shadow-return-run1-330B6F48.json",
+      "diagnosticReceiptSHA256": "2d4798d3dbfcf2dcb2ca1a8e55941d347c511c2e7b8ff94867f4bbe333834c61",
+      "elapsedNanoseconds": 243228384417,
+      "retiredInstructions": 734072477,
+      "baselineJITInstructions": 731273089,
+      "interpreterInstructions": 2799388,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 74628,
+      "chainTargetAttempts": 13492471,
+      "chainTargetAccepts": 99982,
+      "chainTargetSourceShapeRejections": 0,
+      "nativeDispatcherEntries": 232003235,
+      "directChainPatches": 0,
+      "directChainUnlinks": 0,
+      "directlyChainedBlocks": 2122140,
+      "withinRunDispatcherAvoidancePercent": 0.9064117889827192,
+      "indirectBranchTargetCacheHits": 137256,
+      "indirectBranchTargetCacheMisses": 13599013,
+      "indirectBranchTargetCacheFills": 99982,
+      "indirectBranchTargetCacheHitRatePPM": 9992,
+      "shadowReturnStackHits": 1989688,
+      "shadowReturnStackMisses": 12871254,
+      "shadowReturnStackPushes": 14977628,
+      "shadowReturnStackHitRatePPM": 133887,
+      "tier1CompilationAttempts": 804429,
+      "tier1CompilationDeclines": 694002,
+      "tier1CompiledBlocks": 110427,
+      "nativeTraceAttempts": 516627,
+      "nativeTraceReplays": 343839
+    },
+    {
+      "runID": "7bdd69f3-9879-4748-9347-a464667f9585",
+      "diagnosticPath": "/private/tmp/dory-a05-shadow-return-run2-7BDD69F3.json",
+      "diagnosticReceiptSHA256": "5dcea69bbcc04491b1f4aca701584eb64f4f4994757059f99e6d82a0e6bd4166",
+      "elapsedNanoseconds": 236889658625,
+      "retiredInstructions": 732488385,
+      "baselineJITInstructions": 729688717,
+      "interpreterInstructions": 2799668,
+      "outcome": "userspace-workloads-powered-off",
+      "exitCode": 0,
+      "guestReceiptSeen": true,
+      "workloadsPassed": true,
+      "codeCacheWraps": 2,
+      "codeCacheEvictedBlocks": 74545,
+      "chainTargetAttempts": 13456203,
+      "chainTargetAccepts": 101469,
+      "chainTargetSourceShapeRejections": 0,
+      "nativeDispatcherEntries": 231511205,
+      "directChainPatches": 0,
+      "directChainUnlinks": 0,
+      "directlyChainedBlocks": 2115233,
+      "withinRunDispatcherAvoidancePercent": 0.9053911098879999,
+      "indirectBranchTargetCacheHits": 137072,
+      "indirectBranchTargetCacheMisses": 13572136,
+      "indirectBranchTargetCacheFills": 101469,
+      "indirectBranchTargetCacheHitRatePPM": 9998,
+      "shadowReturnStackHits": 1983247,
+      "shadowReturnStackMisses": 12844193,
+      "shadowReturnStackPushes": 14941149,
+      "shadowReturnStackHitRatePPM": 133755,
+      "tier1CompilationAttempts": 802036,
+      "tier1CompilationDeclines": 691571,
+      "tier1CompiledBlocks": 110465,
+      "nativeTraceAttempts": 538502,
+      "nativeTraceReplays": 348355
+    }
+  ],
+  "comparison": {
+    "controlEvidence": "pvh-ibtc-only-acceptance.json",
+    "finding": "Adding the shadow-return stack shifts warm return prediction from the IBTC to the shadow stack, but total generated bypasses and approximately 0.91-percent within-run dispatcher avoidance remain essentially unchanged."
+  },
+  "retainedProductionBoundary": {
+    "evidence": "pvh-tier1-direct-chain-acceptance.json",
+    "productionCommit": "9cc9e866a8e9183f506f4a1af325f532465336f7",
+    "reason": "Tier-one-only direct chaining produced approximately 36.45-percent within-run avoidance, versus approximately 0.91 percent for IBTC plus shadow returns."
+  },
+  "disposition": {
+    "accountingFixAccepted": true,
+    "shadowReturnBoundaryAcceptedInIsolation": true,
+    "selectedAsProductionDefault": false,
+    "a05_3DispatcherGatePassed": false,
+    "a05_3Complete": false,
+    "reason": "The shadow-specific implementation and regression are retained, but production returns to Tier-one-only direct chaining. A05.3 remains open for safe predictor combinations and a final enabled path exceeding 95-percent dispatcher avoidance."
+  },
+  "limitations": [
+    "Two passing local runs are a bounded reliability check, not cross-host qualification or proof that every intermittent failure has been eliminated.",
+    "The experiment establishes IBTC-plus-shadow behavior only; it does not establish safety when combined with either direct-source class.",
+    "The approximately 0.91-percent within-run avoidance is below the strict A05.3 performance threshold.",
+    "The raw diagnostic receipts remain in /private/tmp; this checked-in record binds their hashes and selected counters."
+  ]
+}
