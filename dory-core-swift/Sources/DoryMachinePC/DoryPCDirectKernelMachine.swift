@@ -534,6 +534,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let hostAddressSpaceByteCount: Int
   public let processorCount: Int
   public let executionTier: DoryPCExecutionTier
+  public let jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy
 
   private let lock = NSLock()
   // `run` intentionally owns `lock` for a deterministic execution quantum. Observability must not
@@ -635,6 +636,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     baselineJITRawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions = [
       .tier1DirectChain
     ],
+    jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy = .protectedHostPages,
     optimizingJITWarmupDispatches: UInt8 = 8,
     clockSource: DoryPCClockSource = .deterministic,
     instrumentationEnabled: Bool = false
@@ -656,6 +658,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     self.processorCount = processorCount
     self.executionTier = executionTier
+    self.jitWriteCoherencePolicy = jitWriteCoherencePolicy
     self.optimizingJITWarmupDispatches = optimizingJITWarmupDispatches
     self.clockSource = clockSource
     self.instrumentationEnabled = instrumentationEnabled
@@ -893,7 +896,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       DoryX86TranslatedMemory(
         physicalMemory: physicalMemory,
         pagingUnit: pagingUnit,
-        context: .init(state: .reset(), mode: .real16, profile: interpreter.profile)
+        context: .init(state: .reset(), mode: .real16, profile: interpreter.profile),
+        jitWriteCoherencePolicy: jitWriteCoherencePolicy
       )
     }
     interpreters = (0..<processorCount).map {

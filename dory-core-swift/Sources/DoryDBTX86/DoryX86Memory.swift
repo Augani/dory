@@ -224,6 +224,16 @@ public protocol DoryX86TranslatedCodeProtectionMemory: DoryX86Memory {
   var translatedCodeProtectionGeneration: UInt64 { get }
 }
 
+/// Chooses how generated stores preserve coherence with resident guest-code translations.
+/// Production PC machines retain checked callbacks until host-page protection has passed the
+/// complete UEFI and ordinary-guest qualification campaign. The protected mode is an explicit
+/// optimization experiment: direct JIT mappings are permitted only while translated code pages
+/// are revoked read-only and invalidated before the first subsequent store.
+public enum DoryX86JITWriteCoherencePolicy: String, Codable, Sendable {
+  case checkedCallbacks = "checked-callbacks"
+  case protectedHostPages = "protected-host-pages"
+}
+
 extension DoryX86Memory {
   public func validateRead(at address: UInt64, byteCount: Int) throws {
     _ = try read(at: address, byteCount: byteCount)

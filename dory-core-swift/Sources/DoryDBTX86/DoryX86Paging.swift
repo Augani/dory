@@ -795,6 +795,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   private let bulkPhysicalMemory: (any DoryX86BulkMemory)?
   private let codeGenerationPhysicalMemory: (any DoryX86CodeGenerationMemory)?
   private let pagingUnit: DoryX86PagingUnit
+  public let jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy
   // Control-register instructions must invalidate the supplied translated-memory cache too.
   var translationUnit: DoryX86PagingUnit { pagingUnit }
   private var context: DoryX86PagingContext
@@ -810,7 +811,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   public init(
     physicalMemory: any DoryX86Memory,
     pagingUnit: DoryX86PagingUnit,
-    context: DoryX86PagingContext
+    context: DoryX86PagingContext,
+    jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy = .protectedHostPages
   ) {
     self.physicalMemory = physicalMemory
     scalarPhysicalMemory = physicalMemory as? any DoryX86ScalarMemory
@@ -820,6 +822,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
     codeGenerationPhysicalMemory = physicalMemory as? any DoryX86CodeGenerationMemory
     self.pagingUnit = pagingUnit
     self.context = context
+    self.jitWriteCoherencePolicy = jitWriteCoherencePolicy
   }
 
   /// Refreshes the architectural view before a serialized vCPU dispatch. The owning machine must
@@ -842,7 +845,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   /// instruction-fetch translations used by decoding preserve execute permissions and fault
   /// identity; non-RAM/device fetches simply retain generation validation.
   public func protectTranslatedCode(at address: UInt64, byteCount: Int) throws -> Bool {
-    guard byteCount > 0,
+    guard jitWriteCoherencePolicy == .protectedHostPages, byteCount > 0,
       let protector = physicalMemory as? any DoryX86TranslatedCodeProtectionMemory
     else { return false }
     var linearAddress = address
@@ -872,7 +875,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   var hasTranslatedCodeProtection: Bool {
-    physicalMemory is any DoryX86TranslatedCodeProtectionMemory
+    jitWriteCoherencePolicy == .protectedHostPages
+      && physicalMemory is any DoryX86TranslatedCodeProtectionMemory
   }
 
   /// Permission-checks one generated-code miss through the architectural walker. Backing access
@@ -883,6 +887,10 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
     byteCount: Int,
     access: DoryX86MemoryAccessKind
   ) throws -> UInt64? {
+    // Direct generated stores bypass the checked physical-memory write APIs that advance code
+    // generation tokens. Keep them off the stable path unless host-page revocation supplies the
+    // corresponding synchronous invalidation boundary.
+    if access == .write, jitWriteCoherencePolicy == .checkedCallbacks { return nil }
     let translation = try pagingUnit.translate(
       linearAddress: linearAddress,
       access: access,

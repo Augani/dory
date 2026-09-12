@@ -1068,6 +1068,7 @@ private func run() throws {
     "bootOrder": bootOrder,
     "exceptionPolicy": arguments.exceptionPolicy == .stop ? "stop" : "deliver",
     "executionTier": arguments.executionTier.rawValue,
+    "jitWriteCoherencePolicy": composed.machine.jitWriteCoherencePolicy.rawValue,
     "completedInstructions": completedInstructions(for: stop),
     "architecturalStateSHA256": architecturalStateSHA256.map { $0 as Any } ?? NSNull(),
     "interpreterInstructions": executionStatistics.interpreterInstructions,

@@ -1359,7 +1359,8 @@ import Testing
       let translated = DoryX86TranslatedMemory(
         physicalMemory: physical,
         pagingUnit: paging,
-        context: .init(state: state, mode: .long64)
+        context: .init(state: state, mode: .long64),
+        jitWriteCoherencePolicy: .protectedHostPages
       )
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
 
@@ -1399,6 +1400,89 @@ import Testing
     #endif
   }
 
+  @Test func checkedWritePolicyKeepsSMCOnGenerationTrackedCallbacks() throws {
+    #if arch(arm64)
+      let physical = try DoryX86MmapMemory(validatingByteCount: 0x8000)
+      let paging = DoryX86PagingUnit()
+      let targetAddress: UInt64 = 0x100
+      let writerAddress: UInt64 = 0x5000
+      var state = try DoryX86ArchitecturalState(rip: targetAddress)
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: state, mode: .long64),
+        jitWriteCoherencePolicy: .checkedCallbacks
+      )
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 8_192)
+
+      try physical.write(at: targetAddress, bytes: [0xB8, 1, 0, 0, 0, 0x90, 0x90, 0x90])
+      try physical.write(at: writerAddress, bytes: [0x48, 0x89, 0x18])
+      _ = try #require(
+        executor.executeSummary(
+          byteProvider: { count in
+            try translated.instructionBytes(at: targetAddress, maximumCount: count)
+          },
+          codeGenerationProvider: { count in
+            try translated.codeGeneration(at: targetAddress, byteCount: count)
+          },
+          at: targetAddress,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(state.registers.rax == 1)
+      #expect(physical.protectedTranslatedCodePageCount == 0)
+
+      state.rip = writerAddress
+      state.registers.rax = targetAddress
+      state.registers.rbx = 0x9090_9000_0000_02B8
+      translated.updateContext(.init(state: state, mode: .long64))
+      _ = try #require(
+        executor.executeSummary(
+          byteProvider: { count in
+            try translated.instructionBytes(at: writerAddress, maximumCount: count)
+          },
+          codeGenerationProvider: { count in
+            try translated.codeGeneration(at: writerAddress, byteCount: count)
+          },
+          at: writerAddress,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(try physical.read(at: targetAddress, byteCount: 8) == [
+        0xB8, 2, 0, 0, 0, 0x90, 0x90, 0x90,
+      ])
+      #expect(physical.protectedTranslatedCodePageCount == 0)
+
+      state.rip = targetAddress
+      translated.updateContext(.init(state: state, mode: .long64))
+      _ = try #require(
+        executor.executeSummary(
+          byteProvider: { count in
+            try translated.instructionBytes(at: targetAddress, maximumCount: count)
+          },
+          codeGenerationProvider: { count in
+            try translated.codeGeneration(at: targetAddress, byteCount: count)
+          },
+          at: targetAddress,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(state.registers.rax == 2)
+      #expect(executor.diagnostics.codeGenerationMismatches == 1)
+      #expect(executor.diagnostics.translationCacheFills == 0)
+      #expect(executor.diagnostics.translationCacheFallbacks == 1)
+    #endif
+  }
+
   @Test func executorProtectsCompiledGuestCodeAndRecompilesAfterCheckedSMCWrite() throws {
     #if arch(arm64)
       let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
@@ -1407,7 +1491,8 @@ import Testing
       let translated = DoryX86TranslatedMemory(
         physicalMemory: physical,
         pagingUnit: paging,
-        context: .init(state: state, mode: .long64)
+        context: .init(state: state, mode: .long64),
+        jitWriteCoherencePolicy: .protectedHostPages
       )
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
 
@@ -1463,7 +1548,8 @@ import Testing
       let translated = DoryX86TranslatedMemory(
         physicalMemory: physical,
         pagingUnit: paging,
-        context: .init(state: state, mode: .long64)
+        context: .init(state: state, mode: .long64),
+        jitWriteCoherencePolicy: .protectedHostPages
       )
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 8_192)
       let targetAddress: UInt64 = 0x100
@@ -1554,7 +1640,8 @@ import Testing
       let translated = DoryX86TranslatedMemory(
         physicalMemory: physical,
         pagingUnit: paging,
-        context: .init(state: state, mode: .long64)
+        context: .init(state: state, mode: .long64),
+        jitWriteCoherencePolicy: .protectedHostPages
       )
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 8_192)
       func executeOne(at address: UInt64) throws {
