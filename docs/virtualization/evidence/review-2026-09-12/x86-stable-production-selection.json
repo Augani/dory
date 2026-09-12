@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "kind": "dory-x86-stable-production-selection",
+  "observedAt": "2026-09-12",
+  "sourceRevision": "8107debfef063e76adc130672420550600060b27",
+  "result": "passed-development-baseline",
+  "productionSelection": {
+    "machine": "DoryPCUEFIMachine",
+    "executionTier": "optimizingJIT",
+    "tier1Enabled": true,
+    "rawTargetPredictionOptions": [
+      "tier1DirectChain"
+    ],
+    "jitWriteCoherencePolicy": "checked-callbacks",
+    "disabledExperiment": "protected-host-pages",
+    "rationale": "Direct generated stores bypass checked physical-memory writes and their code-generation tokens. The shipped UEFI composition therefore retains checked callbacks until protected host pages pass the complete ordinary-guest qualification campaign."
+  },
+  "regressionIsolation": {
+    "startingRevision": "7425872c207accaedb7471f9a25343eb1e728f64",
+    "knownGoodRevision": "9dc46de3aa2e9e53c62d58272acf9b4d67577b24",
+    "firstBadRevision": "81ad3f00f3f85c6eb271a586bb32a9a2ecc0e500",
+    "firstBadSubject": "feat(x86): protect resident guest code",
+    "failure": "x86 instructionFetch touches unmapped memory at 0xfffffe8f for 5 bytes",
+    "diagnosticResult": "The current source reached the retained marker when protected host pages and direct JIT writes were disabled together, identifying the coherent checked-callback path retained by this change."
+  },
+  "verification": {
+    "focusedTests": {
+      "result": "passed",
+      "tests": 226,
+      "suites": 3,
+      "log": "x86-stable-policy-tests.log.gz",
+      "logSHA256": "811ad546f28d5e7550ad98a85de3d47a2640c01f1392551bbf1df08e88f819e4"
+    },
+    "uefiBoot": {
+      "result": "passed",
+      "configuration": "Release",
+      "runnerSHA256": "0164e9ef4a28b7114b9e59ed5b8a5a02aaf4260aa7c9c59aa9e60835ddf28c6d",
+      "firmwareSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+      "memoryBytes": 1073741824,
+      "processorCount": 1,
+      "maximumInstructions": 100000000,
+      "timeoutSeconds": 180,
+      "clockSource": "host-monotonic",
+      "initialRTCUnixSeconds": 1757376000,
+      "exceptionPolicy": "deliver",
+      "executionTier": "optimizingJIT",
+      "jitWriteCoherencePolicy": "checked-callbacks",
+      "completedInstructions": 57698327,
+      "stop": "poweredOff(instructionCount: 57698327)",
+      "serialMarker": "DORY-PC-UEFI-BOOT",
+      "serialMarkerMatched": true,
+      "receipt": "pc-current-stable-release.json.gz",
+      "receiptSHA256": "4ae5046b703067f689f588bde2566324b8bc9951df9e593a0802852be0a1a686"
+    }
+  },
+  "limits": [
+    "This is a source-bound development baseline, not public release qualification.",
+    "It proves the retained UEFI marker and checked-write coherence boundary, not an ordinary installed distribution, desktop, SMP or performance target.",
+    "Protected host-page write coherence remains available only as an explicit experiment and is not selected by the production UEFI composition."
+  ]
+}
