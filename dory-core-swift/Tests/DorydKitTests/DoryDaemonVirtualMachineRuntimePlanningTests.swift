@@ -6,6 +6,63 @@ import Testing
 
 @Suite("Daemon virtual-machine runtime planning")
 struct DoryDaemonVirtualMachineRuntimePlanningTests {
+    @Test("candidate authority produces preview only and ordinary planning remains closed")
+    func candidateCampaignIsDistinctFromQualification() throws {
+        let fixture = try Fixture()
+        var snapshot = fixture.inventory.snapshot
+        snapshot.runtimeQualifications = []
+        snapshot.capabilityQualifications = []
+        snapshot.backendRuntimes[0].hostQualification = nil
+        let qualifiedComponent = DoryVirtualMachineQualifiedComponent(
+            componentIdentifier: "dory-hv",
+            buildIdentifier: "raw-runtime-1",
+            artifactSHA256: digest("c")
+        )
+        let cell = DoryCandidateCampaignCell(
+            cellIdentifier: "linux-arm64-baseline",
+            capability: fixture.capability.request,
+            backendImplementationIdentifier: "dory.rawhv",
+            backendRuntimeBuildIdentifier: "raw-runtime-1",
+            components: [qualifiedComponent],
+            resources: DoryCandidateCampaignResourceLimit(
+                maximumVirtualCPUCount: 4,
+                maximumMemoryBytes: 8 * 1_024 * 1_024 * 1_024,
+                maximumStorageBytes: 64 * 1_024 * 1_024 * 1_024
+            )
+        )
+        snapshot.candidateCampaignCells = [DoryResolvedCandidateCampaignCell(
+            campaignIdentifier: "wave0-test",
+            manifestSHA256: String(repeating: "d", count: 64),
+            signingKeyID: String(repeating: "e", count: 64),
+            cell: cell
+        )]
+
+        let ordinary = DoryAppleSiliconDaemonVirtualMachineCapabilityPlanner().plan(
+            fixture.plannerRequest, inventory: snapshot
+        )
+        #expect(ordinary.selectedDescriptor == nil)
+
+        let candidate = DoryCandidateCampaignVirtualMachineCapabilityPlanner().plan(
+            fixture.plannerRequest, inventory: snapshot
+        )
+        let selected = try #require(candidate.selectedDescriptor)
+        #expect(selected.availability.supportTier == .preview)
+        #expect(selected.availability.reason?.code == .candidateCampaignAuthorized)
+        #expect(selected.graphicsQualificationEvidence == nil)
+        #expect(selected.runtimeQualificationEvidence == nil)
+
+        let exact = DoryCandidateCampaignDaemonVirtualMachineExactCapabilityEvaluator().evaluate(
+            fixture.capability.request, inventory: snapshot
+        )
+        #expect(exact.availability.supportTier == .preview)
+        var changed = fixture.capability.request
+        changed.bootMedia.artifactSHA256 = String(repeating: "f", count: 64)
+        let rejected = DoryCandidateCampaignDaemonVirtualMachineExactCapabilityEvaluator().evaluate(
+            changed, inventory: snapshot
+        )
+        #expect(!rejected.availability.isUsable)
+    }
+
     @Test("definition networking maps exactly into capability planning")
     func definitionNetworkingMapsExactly() throws {
         let fixture = try Fixture()

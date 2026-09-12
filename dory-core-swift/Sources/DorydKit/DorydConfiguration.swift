@@ -265,12 +265,22 @@ public struct DorydEnvironment: Sendable {
         bool("DORYD_HOST_CLI", default: true)
     }
 
-    /// Allows an exact local candidate to create compatibility-labeled machines while live
-    /// qualification is collected for the first schema-2 catalog. This never upgrades those
-    /// machines to production authority, is off unless explicitly configured, and must not be
-    /// enabled by public release builds.
-    public var vmQualificationBootstrapEnabled: Bool {
-        bool("DORYD_VM_QUALIFICATION_BOOTSTRAP", default: false)
+    /// Paths only locate a signed campaign envelope; environment values never become authority.
+    /// Supplying an incomplete set fails closed at startup rather than enabling the historical
+    /// boolean bootstrap bypass.
+    public func vmCandidateCampaignConfiguration() -> (
+        authorityPath: String, signaturePath: String, applicationRoot: String
+    )? {
+        guard let authority = string("DORYD_VM_CANDIDATE_CAMPAIGN_AUTHORITY"),
+              let signature = string("DORYD_VM_CANDIDATE_CAMPAIGN_SIGNATURE"),
+              let application = string("DORYD_VM_CANDIDATE_APPLICATION_ROOT") else {
+            return nil
+        }
+        return (
+            URL(fileURLWithPath: authority).standardizedFileURL.path,
+            URL(fileURLWithPath: signature).standardizedFileURL.path,
+            URL(fileURLWithPath: application).standardizedFileURL.path
+        )
     }
 
     public var hostCLIReconcileIntervalSeconds: TimeInterval {

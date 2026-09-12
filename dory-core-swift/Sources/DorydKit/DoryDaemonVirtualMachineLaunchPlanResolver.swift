@@ -131,6 +131,27 @@ public struct DoryAppleSiliconDaemonVirtualMachineExactCapabilityEvaluator:
     }
 }
 
+/// Revalidates an exact candidate-campaign cell at every start. The ordinary evaluator remains
+/// the default everywhere else, so a campaign authorization cannot leak into public planning.
+public struct DoryCandidateCampaignDaemonVirtualMachineExactCapabilityEvaluator:
+    DoryDaemonVirtualMachineExactCapabilityEvaluating
+{
+    public init() {}
+
+    public func evaluate(
+        _ request: DoryVirtualMachineCapabilityRequest,
+        inventory: DoryDaemonVirtualMachineTrustedInventorySnapshot
+    ) -> DoryVirtualMachineCapabilityDescriptor {
+        DoryCandidateCampaignVirtualMachineCapabilityPlanner.candidateDescriptor(
+            request,
+            inventory: inventory
+        ) ?? DoryAppleSiliconDaemonVirtualMachineExactCapabilityEvaluator().evaluate(
+            request,
+            inventory: inventory
+        )
+    }
+}
+
 public struct DoryDaemonVirtualMachineStartEvidenceCollection: Sendable, Equatable {
     public var capability: DoryVirtualMachineCapabilityDescriptor
     public var runtimeEvidence: DoryResolvedMachineRuntimeEvidence

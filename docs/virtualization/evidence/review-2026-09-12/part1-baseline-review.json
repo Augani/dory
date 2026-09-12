@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "kind": "dory-part1-baseline-review",
+  "observedAt": "2026-09-12",
+  "startingSourceRevision": "7425872c207accaedb7471f9a25343eb1e728f64",
+  "status": "accepted-for-focused-commit-with-open-qualification-dependencies",
+  "releaseQualified": false,
+  "host": {
+    "model": "Mac14,10",
+    "soc": "Apple M2 Pro",
+    "memoryGiB": 16,
+    "macOSVersion": "27.0",
+    "macOSBuild": "26A5425a",
+    "hypervisorAvailable": true
+  },
+  "toolchain": {
+    "xcode": "26.6 Release Candidate",
+    "xcodeBuild": "17F109",
+    "macOSSDK": "26.5",
+    "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "globalDeveloperDirectory": "/Library/Developer/CommandLineTools",
+    "matrixMatch": false
+  },
+  "dispositions": [
+    {
+      "area": "x86 decoder, entropy, feature policy, restartability and CMPXCHG16B atomicity repairs",
+      "disposition": "accepted",
+      "evidence": [
+        "x86-review.json",
+        "x86-dbt-pc-tests.log.gz",
+        "cmpxchg16b/receipt.json"
+      ]
+    },
+    {
+      "area": "signed candidate-campaign authorization and production-graph activation",
+      "disposition": "accepted-for-candidate-execution-only",
+      "limits": "Does not construct public qualification authority, advance the public catalog floor or authorize ordinary production launches. Physical candidate execution remains outstanding."
+    },
+    {
+      "area": "qualification matrix and evidence audit",
+      "disposition": "accepted-review-pending",
+      "limits": "The exact intended host and final Xcode tuple were not available on this host."
+    },
+    {
+      "area": "generated caches and incomplete native-runtime previews under wave0-2026-09-08",
+      "disposition": "retained-uncommitted-user-work",
+      "limits": "Not treated as current qualification evidence."
+    },
+    {
+      "area": "new candidate issuer, physical live-gate and matrix-validator script prototypes",
+      "disposition": "retained-uncommitted-local-prototypes",
+      "limits": "The repository-local safety guard rejects new scripts unless the maintainer has placed each exact path on its private allowlist; committed workflows and release code do not reference these unavailable public entrypoints."
+    },
+    {
+      "area": "current x86 JIT boot regression at the starting revision",
+      "disposition": "open-assigned-to-part2",
+      "failure": "x86 instructionFetch touches unmapped memory at 0xfffffe8f for 5 bytes",
+      "limits": "Reproduced at starting revision 7425872c2 with both normal and tier-1-disabled JIT."
+    }
+  ],
+  "checks": [
+    {
+      "name": "candidate authorization focused Swift tests",
+      "result": "passed",
+      "tests": 4,
+      "log": ".dory-build/review-2026-09-12/final-checks/candidate-swift.log"
+    },
+    {
+      "name": "runtime planning focused Swift tests",
+      "result": "passed",
+      "tests": 17,
+      "log": ".dory-build/review-2026-09-12/final-checks/planning-swift.log"
+    },
+    {
+      "name": "candidate configuration focused Swift test",
+      "result": "passed",
+      "tests": 1,
+      "log": ".dory-build/review-2026-09-12/final-checks/config-swift.log"
+    },
+    {
+      "name": "candidate issuer tests",
+      "result": "passed",
+      "log": ".dory-build/review-2026-09-12/final-checks/candidate-issuer.log"
+    },
+    {
+      "name": "PC candidate live-gate contract tests",
+      "result": "passed",
+      "log": ".dory-build/review-2026-09-12/final-checks/pc-campaign-gate.log"
+    },
+    {
+      "name": "qualification matrix validator tests",
+      "result": "passed",
+      "tests": 15,
+      "log": ".dory-build/review-2026-09-12/final-checks/matrix.log"
+    },
+    {
+      "name": "plan evidence auditor tests",
+      "result": "passed",
+      "tests": 9,
+      "log": ".dory-build/review-2026-09-12/final-checks/evidence-audit.log"
+    },
+    {
+      "name": "component build-script tests",
+      "result": "passed",
+      "log": ".dory-build/review-2026-09-12/final-checks/components.log"
+    },
+    {
+      "name": "Dory application Debug build",
+      "result": "passed-development-build",
+      "codeSigningAllowed": false,
+      "log": ".dory-build/review-2026-09-12/final-checks/app-build.log"
+    }
+  ],
+  "developmentBoots": {
+    "arm64Linux": {
+      "result": "passed",
+      "runnerSHA256": "47082d6965e38498779c4fe6bf7a6840fa4ce51306bf7bee11c5037e474a521c",
+      "runnerSignatureCategory": "ad-hoc-development-only",
+      "kernelSHA256": "e5b539373575c68c385e000a23b491ae01dca394a34508c743b0d7e2fbebd48c",
+      "initfsSHA256": "bf8ea55a7bae135947a5451652ba2f659ee2518733084300363e2342b0fbca59",
+      "processorCount": 2,
+      "memoryGiB": 2,
+      "milestones": [
+        "hypervisor smoke returned x0=42",
+        "Linux 6.12.106-dory entered",
+        "root filesystem mounted",
+        "/sbin/init entered",
+        "agent protocol v1 handshake returned capabilities",
+        "guest-requested power off"
+      ],
+      "log": ".dory-build/review-2026-09-12/current-arm-smoke/agent-ping.log"
+    },
+    "x86_64Linux": {
+      "currentRunnerResult": "failed",
+      "currentRunnerFailure": "x86 instructionFetch touches unmapped memory at 0xfffffe8f for 5 bytes",
+      "currentFirmwareSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+      "historicalReproductionCheck": {
+        "result": "passed-with-known-good-source-bound-runner",
+        "runnerSourceRevision": "9dc46de3",
+        "runnerSHA256": "fbf1c9b235cfa11dc641c2a7c43c56e69f7dfaf5cdfb232aa809223f130640a9",
+        "executionTier": "optimizingJIT",
+        "completedInstructions": 55091669,
+        "stop": "poweredOff(instructionCount: 55091669)",
+        "serialMarker": "DORY-PC-UEFI-BOOT",
+        "serialMarkerMatched": true,
+        "log": ".dory-build/review-2026-09-12/final-checks/pc-9dc-release-current-firmware.json",
+        "limit": "This proves the current firmware clears the retained historical EFI reproduction; it is not current-runner qualification."
+      }
+    },
+    "macOSGuest": {
+      "result": "unavailable",
+      "reason": "No retained installed macOS guest/probe was available."
+    }
+  },
+  "openQualificationDependencies": [
+    "Approved matrix host macOS 26.6.2 build 25G83 was unavailable; this host runs macOS 27.0 build 26A5425a.",
+    "Final Xcode 26.6 build 17F113 was unavailable; installed Xcode is Release Candidate build 17F109.",
+    "No production signing identity/private candidate root was supplied to issue a real staged candidate campaign.",
+    "No retained macOS guest/probe was available.",
+    "Docker-backed fixture preflight reported docker-engine-unavailable.",
+    "The starting revision's x86 JIT runner fails before the retained UEFI marker."
+  ],
+  "claims": {
+    "cleanSourceReproducibility": false,
+    "publicQualification": false,
+    "physicalCandidateCampaign": false,
+    "firmwareHistoricalRegressionCleared": true,
+    "armDevelopmentBaseline": true,
+    "x86CurrentBaseline": false,
+    "macGuestBaseline": false
+  }
+}

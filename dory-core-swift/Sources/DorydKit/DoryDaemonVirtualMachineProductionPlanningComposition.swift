@@ -139,6 +139,8 @@ public final class DoryDaemonVirtualMachineProductionPlanningCompositionFactory:
     private let recoveryProvider: (any DoryDaemonVirtualMachinePlanningRecoveryProviding)?
     private let inventoryBuilder: InventoryBuilder
     private let capabilityPlanner: any DoryDaemonVirtualMachineCapabilityPlanning
+    private let exactCapabilityEvaluator:
+        any DoryDaemonVirtualMachineExactCapabilityEvaluating
     private let verifiedBackendDescriptors: [MachineBackendDescriptor]?
 
     init(
@@ -148,6 +150,9 @@ public final class DoryDaemonVirtualMachineProductionPlanningCompositionFactory:
         recoveryProvider: (any DoryDaemonVirtualMachinePlanningRecoveryProviding)?,
         capabilityPlanner: any DoryDaemonVirtualMachineCapabilityPlanning =
             DoryAppleSiliconDaemonVirtualMachineCapabilityPlanner(),
+        exactCapabilityEvaluator:
+            any DoryDaemonVirtualMachineExactCapabilityEvaluating =
+                DoryAppleSiliconDaemonVirtualMachineExactCapabilityEvaluator(),
         verifiedBackendDescriptors: [MachineBackendDescriptor]? = nil,
         inventoryBuilder: @escaping InventoryBuilder
     ) {
@@ -158,6 +163,7 @@ public final class DoryDaemonVirtualMachineProductionPlanningCompositionFactory:
         self.mutationAuthority = mutationAuthority
         self.recoveryProvider = recoveryProvider
         self.capabilityPlanner = capabilityPlanner
+        self.exactCapabilityEvaluator = exactCapabilityEvaluator
         self.verifiedBackendDescriptors = verifiedBackendDescriptors?.sorted {
             $0.identity.rawValue < $1.identity.rawValue
         }
@@ -201,6 +207,64 @@ public final class DoryDaemonVirtualMachineProductionPlanningCompositionFactory:
                 }
                 return DoryProductionDaemonVirtualMachineTrustInventory(
                     qualificationAuthority: qualificationAuthority,
+                    artifactAuthority: artifactAuthority,
+                    resourceLedger: resourceLedger,
+                    stateDirectory: stateDirectory,
+                    armVirtFirmwareBundlePath: armVirtFirmwareBundlePath,
+                    pcFirmwareBundlePath: pcFirmwareBundlePath,
+                    runtimeSpecifications: specifications,
+                    runtimeVerifier: runtimeVerifier,
+                    hostProbe: hostProbe,
+                    rendererReleaseIdentityProvider:
+                        rendererReleaseIdentityProvider,
+                    rendererCrashSuppressionStore:
+                        rendererCrashSuppressionStore
+                )
+            }
+        )
+    }
+
+    convenience init(
+        stateDirectory: String,
+        backends: [any MachineBackend],
+        candidateCampaignAuthority:
+            DoryVerifiedVirtualMachineCandidateCampaignAuthority,
+        runtimes: [DoryDaemonVerifiedBackendRuntime],
+        armVirtFirmwareBundlePath: String? = nil,
+        pcFirmwareBundlePath: String? = nil,
+        runtimeVerifier: @escaping DoryDaemonVirtualMachineProductionTrustFactory.RuntimeVerifier,
+        hostProbe: @escaping DoryDaemonVirtualMachineProductionTrustFactory.HostProbe,
+        rendererReleaseIdentityProvider:
+            any DoryRendererReleaseIdentityProviding,
+        rendererCrashSuppressionStore:
+            DoryRendererCrashSuppressionStore? = nil,
+        mutationAuthority: (any DoryDaemonVirtualMachinePlanningMutationAuthorizing)?,
+        recoveryProvider: (any DoryDaemonVirtualMachinePlanningRecoveryProviding)?
+    ) {
+        let specifications = runtimes.compactMap { runtime
+            -> DoryDaemonBackendRuntimeSpecification? in
+            guard let component = runtime.components.first else { return nil }
+            return DoryDaemonBackendRuntimeSpecification(
+                descriptor: runtime.descriptor,
+                executablePath: runtime.executablePath,
+                componentIdentifier: component.componentIdentifier
+            )
+        }
+        self.init(
+            stateDirectory: stateDirectory,
+            backends: backends,
+            mutationAuthority: mutationAuthority,
+            recoveryProvider: recoveryProvider,
+            capabilityPlanner: DoryCandidateCampaignVirtualMachineCapabilityPlanner(),
+            exactCapabilityEvaluator:
+                DoryCandidateCampaignDaemonVirtualMachineExactCapabilityEvaluator(),
+            verifiedBackendDescriptors: runtimes.map(\.descriptor),
+            inventoryBuilder: { artifactAuthority, resourceLedger in
+                guard specifications.count == runtimes.count else {
+                    throw DoryDaemonProductionTrustInventoryError.backendUnavailable
+                }
+                return DoryProductionDaemonVirtualMachineTrustInventory(
+                    candidateCampaignAuthority: candidateCampaignAuthority,
                     artifactAuthority: artifactAuthority,
                     resourceLedger: resourceLedger,
                     stateDirectory: stateDirectory,
@@ -369,7 +433,8 @@ public final class DoryDaemonVirtualMachineProductionPlanningCompositionFactory:
                 }
                 let collector = DoryDaemonVirtualMachineStartEvidenceCollector(
                     registry: registry,
-                    inventory: inventory
+                    inventory: inventory,
+                    evaluator: exactCapabilityEvaluator
                 )
                 let resolver = DoryDaemonVirtualMachineLaunchPlanResolver(
                     registry: registry,

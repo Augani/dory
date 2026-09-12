@@ -628,6 +628,14 @@ public struct DoryX86Interpreter: Sendable {
         setFlag(.zero, value == 0, in: &state.rflags)
         setFlag(.sign, false, in: &state.rflags)
         setFlag(.overflow, false, in: &state.rflags)
+      case .randomRead:
+        // RDRAND/RDSEED require a real entropy source. No profile advertises
+        // these features until one is wired into the guest (A03.4), so the
+        // feature policy faults with #UD before reaching this handler. If a
+        // future profile advertises the feature, this path must supply real
+        // entropy rather than a deterministic value.
+        // Unreachable while the feature remains unadvertised.
+        return invalidOpcode(at: originalRIP)
       case .byteSwap(let operand):
         let value = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)

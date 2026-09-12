@@ -1,0 +1,246 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.wave0-qualification-matrix",
+  "selectionDate": "2026-09-08",
+  "selectionStatus": "proposed-review-required",
+  "releaseQualified": false,
+  "candidateCatalog": "Config/DoryVirtualizationGuestCandidates.json",
+  "vendorSupportEvidence": [
+    {
+      "subject": "Ubuntu 24.04 LTS",
+      "url": "https://ubuntu.com/about/release-cycle?product=ubuntu&release=ubuntu&version=24.04+LTS",
+      "selectionReason": "Current official lifecycle lists arm64 and amd64 and standard security maintenance through May 2029."
+    },
+    {
+      "subject": "Fedora Linux 44",
+      "url": "https://fedoramagazine.org/announcing-fedora-linux-44/",
+      "selectionReason": "The Fedora Project's official magazine records Fedora Linux 44 as released on 28 April 2026; release approval must still reconfirm lifecycle status before publication."
+    },
+    {
+      "subject": "Apple Virtualization framework",
+      "url": "https://developer.apple.com/documentation/virtualization",
+      "selectionReason": "The supported product path is Dory's native Virtualization.framework/raw-Hypervisor composition, not a QEMU runtime."
+    }
+  ],
+  "hostClasses": [
+    {
+      "id": "m2-pro-16g-macos-26.6.2-25g83",
+      "architecture": "arm64",
+      "model": "Mac14,10",
+      "soc": "Apple M2 Pro",
+      "memoryMiB": 16384,
+      "operatingSystem": {
+        "version": "26.6.2",
+        "build": "25G83"
+      },
+      "releaseAdmission": "A release run must use this exact OS/build or add and approve a separately frozen host class; the current macOS 27 development host is not a substitute."
+    }
+  ],
+  "resourceClasses": [
+    {
+      "id": "linux-standard",
+      "guestCPUs": 4,
+      "guestMemoryMiB": 8192,
+      "guestDiskGiB": 64,
+      "display": "1920x1080@60",
+      "workloads": [
+        "cold-boot",
+        "agent-command",
+        "package-install",
+        "storage-recovery"
+      ]
+    },
+    {
+      "id": "linux-graphics",
+      "guestCPUs": 6,
+      "guestMemoryMiB": 12288,
+      "guestDiskGiB": 96,
+      "display": "2560x1440@60",
+      "workloads": [
+        "cold-boot",
+        "guest-drm-identity",
+        "shader-pixel",
+        "present",
+        "worker-loss"
+      ]
+    },
+    {
+      "id": "macos-standard",
+      "guestCPUs": 4,
+      "guestMemoryMiB": 8192,
+      "guestDiskGiB": 96,
+      "display": "1920x1080@60",
+      "workloads": [
+        "restore-install",
+        "cold-reopen",
+        "metal-compute",
+        "suspend-restore"
+      ]
+    }
+  ],
+  "cpuProfiles": [
+    {
+      "id": "dory.arm64.raw-hv-v1",
+      "architecture": "arm64",
+      "executionOwner": "Dory native Hypervisor.framework runner",
+      "status": "implementation-only"
+    },
+    {
+      "id": "dory.x86_64.intel-compatible-v1",
+      "architecture": "x86_64",
+      "executionOwner": "DoryDBT",
+      "status": "implementation-only",
+      "notAdvertised": [
+        "x86-64-v2",
+        "x86-64-v3",
+        "XSAVE",
+        "AVX",
+        "AVX2"
+      ]
+    },
+    {
+      "id": "apple-mac-arm64-vz-v1",
+      "architecture": "arm64",
+      "executionOwner": "Dory VZMac adapter",
+      "status": "implementation-only"
+    }
+  ],
+  "graphicsProfiles": [
+    {
+      "id": "arm64-virgl2-angle-metal",
+      "guestArchitecture": "arm64",
+      "guestPageKiB": 4,
+      "hostPath": "VirGL2 -> ANGLE -> Metal",
+      "status": "unqualified",
+      "kernel": {
+        "path": "guest/out/Image-desktop",
+        "sha256": "d60981a8d87287fff2ee111264080f0c3a009394001df64e7851059a4d7c2eb1"
+      },
+      "mesa": {
+        "path": "guest/out/dory-mesa-virgl2-arm64.tar.zst",
+        "sha256": "ff13fe0c73fd2596f098d8008526c21886a63aba9f981c65d43e3fbe2e82e319"
+      }
+    },
+    {
+      "id": "arm64-venus-moltenvk-metal",
+      "guestArchitecture": "arm64",
+      "guestPageKiB": 16,
+      "hostPath": "Venus -> MoltenVK -> Metal",
+      "kernel": {
+        "path": "guest/out/Image-gpu",
+        "sha256": "fb8a381992afec20f3522bc6242868548829f82c209b261e0efd57e01498494f"
+      },
+      "mesa": {
+        "path": "guest/out/dory-mesa-venus-arm64.tar.zst",
+        "sha256": "fa12e2bef9855dd382c3cd7f1dcd434f65302fc13471ae06367179f1ad37124c"
+      },
+      "status": "unqualified"
+    },
+    {
+      "id": "x86_64-virgl2-angle-metal",
+      "guestArchitecture": "x86_64",
+      "guestPageKiB": 4,
+      "hostPath": "VirGL2 -> ANGLE -> Metal",
+      "kernel": {
+        "path": "guest/out/vmlinux-x86-pc-virgl2",
+        "sha256": "7b25d6c81f8c42624fad40f410baaddee3f4f9694a9239bf1e3c5cd41d72093d"
+      },
+      "mesa": {
+        "path": "guest/out/dory-mesa-virgl2-x86_64.tar.zst",
+        "sha256": "410e364a0f9a93ed9f370c4eae90c88a625416be1dffa96dd8af5952a6558450"
+      },
+      "status": "unqualified"
+    },
+    {
+      "id": "macos-metal-vz",
+      "guestArchitecture": "arm64",
+      "guestPageKiB": 16,
+      "hostPath": "Apple VZMac graphics -> guest Metal",
+      "status": "unqualified"
+    }
+  ],
+  "guestCells": [
+    {
+      "id": "linux-arm64-ubuntu-24.04.4",
+      "guest": "linux",
+      "architecture": "arm64",
+      "mediaID": "ubuntu-server-24.04.4-arm64",
+      "cpuProfile": "dory.arm64.raw-hv-v1",
+      "resourceClasses": [
+        "linux-standard",
+        "linux-graphics"
+      ],
+      "graphicsProfiles": [
+        "arm64-virgl2-angle-metal",
+        "arm64-venus-moltenvk-metal"
+      ]
+    },
+    {
+      "id": "linux-arm64-fedora-44",
+      "guest": "linux",
+      "architecture": "arm64",
+      "mediaID": "fedora-server-44-arm64",
+      "cpuProfile": "dory.arm64.raw-hv-v1",
+      "resourceClasses": [
+        "linux-standard",
+        "linux-graphics"
+      ],
+      "graphicsProfiles": [
+        "arm64-virgl2-angle-metal",
+        "arm64-venus-moltenvk-metal"
+      ]
+    },
+    {
+      "id": "linux-x86_64-ubuntu-24.04.4",
+      "guest": "linux",
+      "architecture": "x86_64",
+      "mediaID": "ubuntu-server-24.04.4-x86_64",
+      "cpuProfile": "dory.x86_64.intel-compatible-v1",
+      "resourceClasses": [
+        "linux-standard",
+        "linux-graphics"
+      ],
+      "graphicsProfiles": [
+        "x86_64-virgl2-angle-metal"
+      ]
+    },
+    {
+      "id": "linux-x86_64-fedora-44",
+      "guest": "linux",
+      "architecture": "x86_64",
+      "mediaID": "fedora-server-44-x86_64",
+      "cpuProfile": "dory.x86_64.intel-compatible-v1",
+      "resourceClasses": [
+        "linux-standard",
+        "linux-graphics"
+      ],
+      "graphicsProfiles": [
+        "x86_64-virgl2-angle-metal"
+      ]
+    },
+    {
+      "id": "macos-arm64-26.6.2-25g83",
+      "guest": "macos",
+      "architecture": "arm64",
+      "mediaID": "macos-26.6.2-25G83-arm64",
+      "cpuProfile": "apple-mac-arm64-vz-v1",
+      "resourceClasses": [
+        "macos-standard"
+      ],
+      "graphicsProfiles": [
+        "macos-metal-vz"
+      ]
+    }
+  ],
+  "review": {
+    "status": "pending",
+    "requiredApprovals": [
+      "release owner",
+      "runtime owner",
+      "security reviewer"
+    ],
+    "approvalRule": "Each required role must record reviewer identity, UTC review time and an HTTPS review record binding approvalPayloadSHA256 emitted by the validator. That digest includes the catalog digest and all tuples, excluding only approval records and status fields. Review records document human approval, not a cryptographic signature.",
+    "approvals": []
+  },
+  "candidateCatalogSHA256": "be7e5f9a171f6b487334886eb089fa121aa0f7959cba805381572f1766285ad1"
+}

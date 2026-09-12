@@ -1,0 +1,253 @@
+{
+  "auditorSHA256": "9820ef1d6cc2cc0684c7f4ca909d7e9df45b37226b87058fcc371713534fbaae",
+  "citationBindings": [
+    {
+      "path": "docs/virtualization/evidence/p05-arm-2026-09-05/actual-manager-desktop-installer-detach-cold-reopen.json",
+      "status": "available-file"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/container-concurrent-shader-compute.json",
+      "status": "available-file"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/container-standard-gpu-shader.json",
+      "status": "available-file"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-pc-2026-09-06/tier-comparison-rpcdiag.json",
+      "status": "available-file"
+    },
+    {
+      "path": "docs/virtualization/evidence/p07-macos-2026-09-05/actual-managed-suspend-restore.json",
+      "status": "available-file"
+    },
+    {
+      "path": "docs/virtualization/evidence/p07-macos-2026-09-05/host-metal-compute.json",
+      "status": "available-file"
+    },
+    {
+      "path": "docs/virtualization/evidence/p07-macos-2026-09-05/macos-metal-observation.json",
+      "status": "available-file"
+    },
+    {
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/current-source-bound-gate-preview.json",
+      "status": "available-file"
+    },
+    {
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-efi-runtime-current-firmware.json",
+      "status": "available-file"
+    },
+    {
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-gpu-daemon-test-root-rejection.json",
+      "status": "available-file"
+    },
+    {
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/verification.json",
+      "status": "available-file"
+    },
+    {
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/wave1-arm-agent-ping.json",
+      "status": "available-file"
+    },
+    {
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/wave1-arm-smp.json",
+      "status": "available-file"
+    }
+  ],
+  "documents": [
+    {
+      "admission": "reacquisition-only",
+      "attachments": [
+        {
+          "expectedSHA256": "9b3c197371a619cff4c8701c9170b0841682f0499c5998e9a4225814ab52c7b3",
+          "label": "artifacts.coldPostCommandSerialReceipt",
+          "name": "/private/tmp/dory-rawarm-manager-0905.405d3e5a/actual-manager-cold-reopen-serial.log",
+          "status": "external-unavailable"
+        },
+        {
+          "expectedSHA256": "9b3c197371a619cff4c8701c9170b0841682f0499c5998e9a4225814ab52c7b3",
+          "label": "artifacts.firstPostCommandSerialReceipt",
+          "name": "/private/tmp/dory-rawarm-manager-0905.405d3e5a/actual-manager-detach-serial.log",
+          "status": "external-unavailable"
+        },
+        {
+          "expectedSHA256": "4d832184b6356745227896042e7e5f9c50fead3a843ddf4d543f5257ce811c69",
+          "label": "artifacts.fullConsoleLog",
+          "name": "fullConsoleLog",
+          "status": "external-unavailable"
+        },
+        {
+          "expectedSHA256": "050d2cac5019a1622b52b095a20e6fa477dab1c92bac9c6cd33d3f906d8aeeab",
+          "label": "artifacts.machineJSON",
+          "name": "/Users/Shared/dra-7A537F82/Library/Application Support/Dory/Dory.dorydrive/machines/rawarm-alpine/machine.json",
+          "status": "external-unavailable"
+        },
+        {
+          "expectedSHA256": "dd5a4fa5356532c26fea9c9b2b1f4cf5c633b0bb7fbe4093643e3baa564ef9bc",
+          "label": "artifacts.uefiVariables",
+          "name": "uefiVariables",
+          "status": "external-unavailable"
+        }
+      ],
+      "commitBindings": [],
+      "path": "docs/virtualization/evidence/p05-arm-2026-09-05/actual-manager-desktop-installer-detach-cold-reopen.json",
+      "receiptReferences": [],
+      "status": "incomplete-local-payload"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [],
+      "commitBindings": [],
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/container-concurrent-shader-compute.json",
+      "receiptReferences": [],
+      "status": "preserved-document"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [],
+      "commitBindings": [],
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/container-standard-gpu-shader.json",
+      "receiptReferences": [],
+      "status": "preserved-document"
+    },
+    {
+      "admission": "reacquisition-only",
+      "attachments": [],
+      "commitBindings": [
+        {
+          "label": "sourceCommit",
+          "status": "reachable",
+          "value": "051c97f25b4ae803b6e8f20963b3c6e7f418eaee"
+        }
+      ],
+      "path": "docs/virtualization/evidence/p06-pc-2026-09-06/clock-stall-rescope.json",
+      "receiptReferences": [
+        {
+          "name": "rpcdiag-bindready-rpc-true.json",
+          "status": "available"
+        }
+      ],
+      "status": "preserved-document"
+    },
+    {
+      "admission": "reacquisition-only",
+      "attachments": [],
+      "commitBindings": [
+        {
+          "label": "sourceCommit",
+          "status": "reachable",
+          "value": "051c97f25b4ae803b6e8f20963b3c6e7f418eaee"
+        }
+      ],
+      "path": "docs/virtualization/evidence/p06-pc-2026-09-06/tier-comparison-rpcdiag.json",
+      "receiptReferences": [],
+      "status": "preserved-document"
+    },
+    {
+      "admission": "reacquisition-only",
+      "attachments": [],
+      "commitBindings": [],
+      "path": "docs/virtualization/evidence/p07-macos-2026-09-05/actual-managed-suspend-restore.json",
+      "receiptReferences": [],
+      "status": "preserved-document"
+    },
+    {
+      "admission": "host-only-not-guest",
+      "attachments": [],
+      "commitBindings": [],
+      "path": "docs/virtualization/evidence/p07-macos-2026-09-05/host-metal-compute.json",
+      "receiptReferences": [],
+      "status": "preserved-document"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [],
+      "commitBindings": [],
+      "path": "docs/virtualization/evidence/p07-macos-2026-09-05/macos-metal-observation.json",
+      "receiptReferences": [],
+      "status": "preserved-document"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [],
+      "commitBindings": [],
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/current-source-bound-gate-preview.json",
+      "receiptReferences": [],
+      "status": "preserved-document"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [],
+      "commitBindings": [],
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-efi-runtime-current-firmware.json",
+      "receiptReferences": [],
+      "status": "preserved-document"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [],
+      "commitBindings": [],
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-gpu-daemon-test-root-rejection.json",
+      "receiptReferences": [],
+      "status": "preserved-document"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [],
+      "commitBindings": [
+        {
+          "label": "baseCommit",
+          "status": "reachable",
+          "value": "9e78da159996104e64fb68fa2578285e64b1357d"
+        }
+      ],
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/verification.json",
+      "receiptReferences": [],
+      "status": "preserved-document"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [],
+      "commitBindings": [
+        {
+          "label": "sourceCommit",
+          "status": "reachable",
+          "value": "4fb4396e8459759a9987d5294b4b926310871fd5"
+        }
+      ],
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/wave1-arm-agent-ping.json",
+      "receiptReferences": [],
+      "status": "preserved-document"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [],
+      "commitBindings": [
+        {
+          "label": "sourceCommit",
+          "status": "reachable",
+          "value": "58f141a5fd69970914b1ecb82cb13ef46db00462"
+        }
+      ],
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/wave1-arm-smp.json",
+      "receiptReferences": [],
+      "status": "preserved-document"
+    }
+  ],
+  "evidenceSection": "baseline-evidence",
+  "historicalEvidenceOnly": true,
+  "incompleteDocuments": [
+    "docs/virtualization/evidence/p05-arm-2026-09-05/actual-manager-desktop-installer-detach-cold-reopen.json"
+  ],
+  "kind": "dory.plan-evidence-audit",
+  "planSHA256": "bf90b7040d641c040795ccd16d0c4d6955b1303210fdcb644ac698adb21ae1ce",
+  "qualificationBlockingDocuments": [],
+  "reacquisitionOnlyDocuments": [
+    "docs/virtualization/evidence/p05-arm-2026-09-05/actual-manager-desktop-installer-detach-cold-reopen.json",
+    "docs/virtualization/evidence/p06-pc-2026-09-06/clock-stall-rescope.json",
+    "docs/virtualization/evidence/p06-pc-2026-09-06/tier-comparison-rpcdiag.json",
+    "docs/virtualization/evidence/p07-macos-2026-09-05/actual-managed-suspend-restore.json"
+  ],
+  "schemaVersion": 1,
+  "unresolvedCitations": []
+}

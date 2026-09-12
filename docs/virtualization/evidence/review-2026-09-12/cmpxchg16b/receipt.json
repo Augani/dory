@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "kind": "dory-cmpxchg16b-ordinary-store-atomicity-review",
+  "releaseQualified": false,
+  "scope": "Aligned direct ARM64 CMPXCHG16B helper atomicity against a generated ordinary STLR/LDAR writer; no whole-VM SMP, DMA-lifecycle, MMIO, cross-page or interpreter-fallback qualification.",
+  "beforeRevision": "7425872c207accaedb7471f9a25343eb1e728f64",
+  "beforeExtraction": [
+    "git",
+    "show",
+    "HEAD:dory-core-swift/Sources/DoryJITRuntimeC/DoryJITRuntimeC.c"
+  ],
+  "buildCommands": {
+    "before": [
+      "xcrun",
+      "clang",
+      "-arch",
+      "arm64",
+      "-mmacosx-version-min=14.0",
+      "-std=c11",
+      "-O2",
+      "-Werror",
+      "-I",
+      "dory-core-swift/Sources/DoryJITRuntimeC/include",
+      "/tmp/dory-review-cmpxchg16b-before.c",
+      "/tmp/dory-review-cmpxchg16b-repro.c",
+      "/tmp/dory-review-cmpxchg-writer.s",
+      "-Wl,-undefined,dynamic_lookup",
+      "-o",
+      "/tmp/dory-review-cmpxchg16b-before"
+    ],
+    "after": [
+      "xcrun",
+      "clang",
+      "-arch",
+      "arm64",
+      "-mmacosx-version-min=14.0",
+      "-std=c11",
+      "-O2",
+      "-Werror",
+      "-I",
+      "dory-core-swift/Sources/DoryJITRuntimeC/include",
+      "/Users/augustusotu/Projects/Dory/dory-core-swift/Sources/DoryJITRuntimeC/DoryJITRuntimeC.c",
+      "/tmp/dory-review-cmpxchg16b-repro.c",
+      "/tmp/dory-review-cmpxchg-writer.s",
+      "-Wl,-undefined,dynamic_lookup",
+      "-o",
+      "/tmp/dory-review-cmpxchg16b-after"
+    ]
+  },
+  "linkScope": "Unused Swift memory callback symbols are left dynamically resolved for this isolated C harness; its prefilled TLB never invokes them. Production regression runs normally linked in the package test target.",
+  "compilerProof": "ARM64 macOS14 -O2 emits one CASPAL for the complete 128-bit compare-exchange; __atomic_always_lock_free(16,0) is compile-time required. Non-ARM64 returns FALLBACK for 16-byte direct operations and x86_64 -fsyntax-only passes.",
+  "files": {
+    "beforeC": {
+      "path": "/tmp/dory-review-cmpxchg16b-before.c",
+      "sha256": "94ab0e1ee6136c45098c9c0cbdf8efcb3fe409c462ffc414e2e306875bc95f53",
+      "retainedPath": "docs/virtualization/evidence/review-2026-09-12/cmpxchg16b/beforeC.gz",
+      "retainedSHA256": "07609a373a12cbe4baf10705f681fd430c13393014bb5c0fc264db6959e1b655"
+    },
+    "afterC": {
+      "path": "/Users/augustusotu/Projects/Dory/dory-core-swift/Sources/DoryJITRuntimeC/DoryJITRuntimeC.c",
+      "sha256": "ce6a5bdffe9c17357d02902b41baa136e921013f5d553587087de6c0df0ca2e9",
+      "retainedPath": "docs/virtualization/evidence/review-2026-09-12/cmpxchg16b/afterC.gz",
+      "retainedSHA256": "7d793ae250db5a8367e8b66a0382ee3b99beaa71e78160a2abe8e04b8efc9eed"
+    },
+    "concurrentHarness": {
+      "path": "/tmp/dory-review-cmpxchg16b-repro.c",
+      "sha256": "664b457241fbaef93dc0b2a961f223e0d5f771a7dd4cbaf59812d4250b608048",
+      "retainedPath": "docs/virtualization/evidence/review-2026-09-12/cmpxchg16b/concurrentHarness.gz",
+      "retainedSHA256": "087fa8360b23c4ff348226b6e0de39d25583e916b096b8a51e368c0b82b9ac8d"
+    },
+    "ordinaryWriterAssembly": {
+      "path": "/tmp/dory-review-cmpxchg-writer.s",
+      "sha256": "02fa15693dc349dccf7f340fbd688f126edfce4e4d8a03e54fbea4afe51010b0",
+      "retainedPath": "docs/virtualization/evidence/review-2026-09-12/cmpxchg16b/ordinaryWriterAssembly.gz",
+      "retainedSHA256": "62316cf6079550c21c1237395e1c798e43364dfdfec916013c3e58d9919661fe"
+    },
+    "retainedSwiftRegression": {
+      "path": "/Users/augustusotu/Projects/Dory/dory-core-swift/Tests/DoryDBTX86Tests/DoryX86NativePairAtomicityTests.swift",
+      "sha256": "5473c9f87daa17b4cde26d99a1d247bd9f582b582dd2a3e4025600c806306154",
+      "retainedPath": "docs/virtualization/evidence/review-2026-09-12/cmpxchg16b/retainedSwiftRegression.gz",
+      "retainedSHA256": "09346047d518ad511d3a60d5b0706ec0f40caa0ef7a0717e8082e9bd97082291"
+    },
+    "afterDisassembly": {
+      "path": "/tmp/dory-review-cmpxchg16b.s",
+      "sha256": "6a3b99dad4f12ae32ddba3fdb66e97387c6f62fe4db95643013c457ca8ec2458",
+      "retainedPath": "docs/virtualization/evidence/review-2026-09-12/cmpxchg16b/afterDisassembly.gz",
+      "retainedSHA256": "f59c8716d4577ef9fd2f4972c1f0d82fb8bbd1f13cfcd3ed09f7feaa3ba63b29"
+    }
+  },
+  "runs": {
+    "before": {
+      "command": [
+        "/tmp/dory-review-cmpxchg16b-before"
+      ],
+      "exitCode": 1,
+      "result": {
+        "casIterations": 500000,
+        "ordinaryStores": 840798,
+        "overwrittenStores": 956,
+        "badResults": 0,
+        "finalMemory": 840798
+      },
+      "stdoutjsonAttachment": {
+        "path": "docs/virtualization/evidence/review-2026-09-12/cmpxchg16b/before.stdout.json",
+        "sha256": "9c76ce7ea78dc1e91f565bd7934b0049fbb0327efc108a5b3d7824634e038825"
+      },
+      "stderrtxtAttachment": {
+        "path": "docs/virtualization/evidence/review-2026-09-12/cmpxchg16b/before.stderr.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "after": {
+      "command": [
+        "/tmp/dory-review-cmpxchg16b-after"
+      ],
+      "exitCode": 0,
+      "result": {
+        "casIterations": 500000,
+        "ordinaryStores": 544419,
+        "overwrittenStores": 0,
+        "badResults": 0,
+        "finalMemory": 544419
+      },
+      "stdoutjsonAttachment": {
+        "path": "docs/virtualization/evidence/review-2026-09-12/cmpxchg16b/after.stdout.json",
+        "sha256": "930dd1f75027ac28ca92ec68fb1444f07b994a5ac1c42694cb73b1fb4e5cdbf8"
+      },
+      "stderrtxtAttachment": {
+        "path": "docs/virtualization/evidence/review-2026-09-12/cmpxchg16b/after.stderr.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  },
+  "retentionNote": "Original execution paths and commands are preserved; every source/disassembly input also has a repository-relative compressed retainedPath and digest. Decompress retained inputs to replay under chosen local paths."
+}

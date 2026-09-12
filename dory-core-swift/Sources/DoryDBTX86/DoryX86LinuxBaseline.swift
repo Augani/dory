@@ -191,10 +191,73 @@ public enum DoryX86LinuxBaselineSemanticQualification: Codable, Sendable, Hashab
 /// copying its identifier onto a different feature or identity envelope does
 /// not qualify that profile. Higher ISA levels remain unqualified until their
 /// complete requirements and semantic gates have separate evidence.
+///
+/// The prospective registry names and current admission assessment are kept here:
+/// - `dory.x86_64.baseline@N`, `dory.x86_64.v2@N`, `dory.x86_64.v3@N` are the
+///   reserved registry names for the corresponding ISA levels. The selected
+///   profiles still use their existing compat-v1/intel-compatible-v1 identifiers;
+///   these names do not create qualified profiles or migrate persisted state.
+/// - Promotion from a lower level to a higher level requires every mandatory
+///   row in the target level's requirements to be qualified with evidence.
+/// - A profile whose semantic qualification is `.unqualified` cannot be
+///   promoted, regardless of its advertised features.
+/// - Selected baseline profiles retain their current Codable meaning. An
+///   unqualified feature request is filtered at public construction/decoding;
+///   this is not a migration strategy for future qualified v2/v3 saved states.
 public enum DoryX86LinuxBaselinePolicy {
   public static let firstSupportedLevel: DoryX86LinuxISALevel = .baseline
   public static let qualificationEvidenceIdentifier =
     "p02-linux-cpu-baseline-selected-profiles-2026-09-04"
+
+  /// Frozen versioned profile identifiers. The version suffix is incremented
+  /// only when the advertised feature set or semantic contract changes; it is
+  /// not incremented for evidence-only updates. A03.5 freezes these at `@1`
+  /// because no qualified v2 or v3 profile exists yet.
+  public enum ProfileIdentifier: String, Codable, Sendable, Hashable {
+    case baselineV1 = "dory.x86_64.baseline@1"
+    case v2V1 = "dory.x86_64.v2@1"
+    case v3V1 = "dory.x86_64.v3@1"
+
+    public var isaLevel: DoryX86LinuxISALevel {
+      switch self {
+      case .baselineV1: .baseline
+      case .v2V1: .v2
+      case .v3V1: .v3
+      }
+    }
+  }
+
+  /// Promotion result: either the target level is admitted with evidence, or
+  /// it is rejected with the missing requirements that block promotion.
+  public enum PromotionResult: Sendable, Hashable {
+    case admitted(level: DoryX86LinuxISALevel, evidenceIdentifier: String)
+    case rejected(level: DoryX86LinuxISALevel, missingFeatures: Set<DoryX86Feature>)
+    case rejectedUnqualified(level: DoryX86LinuxISALevel)
+  }
+
+  /// Assesses whether a profile is admitted at the target ISA level; it does
+  /// not modify a profile, select a new identifier, or migrate saved state.
+  /// Admission requires:
+  /// 1. The profile advertises every mandatory CPUID feature for the level.
+  /// 2. The profile has semantic qualification evidence for the level.
+  /// 3. Guest-controlled requirements (CR4/XCR0/EFER) are satisfiable.
+  /// A rejected promotion reports the missing features or the unqualified
+  /// semantic state, so callers cannot infer qualification from advertisement.
+  public static func promote(
+    profile: DoryX86CPUProfile,
+    to level: DoryX86LinuxISALevel
+  ) -> PromotionResult {
+    let assessment = profile.linuxBaselineAssessment(for: level)
+    guard assessment.advertisement.satisfiesRequirements else {
+      return .rejected(
+        level: level,
+        missingFeatures: assessment.advertisement.missingProfileFeatures)
+    }
+    guard case .qualified(let evidence) = assessment.semanticQualification else {
+      return .rejectedUnqualified(level: level)
+    }
+    return .admitted(level: level, evidenceIdentifier: evidence)
+  }
 
   fileprivate static func semanticQualification(
     for profile: DoryX86CPUProfile,

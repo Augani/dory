@@ -88,6 +88,10 @@ public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
     /// Resolver-selected record for one exact start request. The evaluator still verifies every
     /// media, backend-build, ABI, graphics, and device binding before treating it as authority.
     public var exactStartRuntimeQualification: DoryTrustedVirtualMachineRuntimeQualification?
+    /// Signature-verified measurement permission. These cells are deliberately separate from
+    /// runtime/capability qualifications and are projected as preview support with no public
+    /// qualification evidence.
+    public var candidateCampaignCells: [DoryResolvedCandidateCampaignCell]
 
     public init(
         hostFacts: DoryAppleSiliconHostFacts,
@@ -99,6 +103,7 @@ public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
         capabilityQualifications:
             [DoryTrustedVirtualMachineCapabilityQualification] = [],
         exactStartRuntimeQualification: DoryTrustedVirtualMachineRuntimeQualification? = nil,
+        candidateCampaignCells: [DoryResolvedCandidateCampaignCell] = [],
         persistence: DoryResolvedMachinePersistence? = nil
     ) {
         self.hostFacts = hostFacts
@@ -109,6 +114,9 @@ public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
         self.runtimeQualifications = runtimeQualifications
         self.capabilityQualifications = capabilityQualifications
         self.exactStartRuntimeQualification = exactStartRuntimeQualification
+        self.candidateCampaignCells = candidateCampaignCells.sorted {
+            $0.cell.cellIdentifier < $1.cell.cellIdentifier
+        }
         self.persistence = persistence
     }
 
@@ -236,6 +244,102 @@ public struct DoryAppleSiliconDaemonVirtualMachineCapabilityPlanner:
             trustedMutableBootMediaProvenance: inventory.media.mutableProvenance,
             trustedRuntimeQualifications: inventory.runtimeQualifications,
             trustedCapabilityQualifications: inventory.capabilityQualifications
+        )
+    }
+}
+
+/// Campaign planning starts from the normal product ordering and replaces only an exact
+/// signature-verified campaign cell with a preview descriptor. This never fabricates a trusted
+/// runtime or graphics qualification and cannot be selected by the ordinary production planner.
+public struct DoryCandidateCampaignVirtualMachineCapabilityPlanner:
+    DoryDaemonVirtualMachineCapabilityPlanning
+{
+    public init() {}
+
+    static func candidateDescriptor(
+        _ request: DoryVirtualMachineCapabilityRequest,
+        inventory: DoryDaemonVirtualMachineTrustedInventorySnapshot
+    ) -> DoryVirtualMachineCapabilityDescriptor? {
+        let cells = inventory.candidateCampaignCells.filter { $0.cell.capability == request }
+        guard cells.count == 1,
+              let cell = cells.first,
+              inventory.backendRuntime(for: request.backend) != nil,
+              request.backend != .qemuHypervisorFramework,
+              inventory.hostFacts.hostArchitecture == .arm64 else { return nil }
+        switch request.backend {
+        case .doryHypervisor:
+            guard inventory.hostFacts.hypervisorFrameworkAvailable,
+                  inventory.hostFacts.doryHypervisorAvailable else { return nil }
+        case .appleVirtualizationFramework:
+            guard inventory.hostFacts.virtualizationFrameworkAvailable else { return nil }
+        case .qemuHypervisorFramework:
+            return nil
+        }
+        if request.graphics == .hardwareAccelerated3D {
+            guard inventory.hostFacts.metalAvailable,
+                  inventory.hostFacts.doryAcceleratedRendererAvailable else { return nil }
+        }
+        return DoryVirtualMachineCapabilityDescriptor(
+            evaluatorVersion: DoryVirtualMachineCapabilityDescriptor.appleSiliconEvaluatorVersion,
+            request: request,
+            availability: DoryCapabilityAvailability(
+                supportTier: .preview,
+                state: .available,
+                reason: DoryCapabilityReason(
+                    code: .candidateCampaignAuthorized,
+                    message: "This exact candidate cell may run only for the signed qualification campaign."
+                )
+            ),
+            resolvedDevices: request.devices,
+            graphicsQualificationEvidence: nil,
+            bootMediaInspectionEvidence: cell.bootMediaInspectionEvidence,
+            mutableBootMediaProvenanceEvidence:
+                inventory.media.mutableProvenance?.persistedAuditEvidence,
+            runtimeQualificationEvidence: nil
+        )
+    }
+
+    public func plan(
+        _ request: DoryVirtualMachineBackendPlanRequest,
+        inventory: DoryDaemonVirtualMachineTrustedInventorySnapshot
+    ) -> DoryVirtualMachineBackendPlanResult {
+        let baseline = DoryAppleSiliconVirtualMachineBackendPlanner.plan(
+            request,
+            host: inventory.hostFacts,
+            trustedBootMediaInspection: inventory.media.bootInspection,
+            trustedMutableBootMediaProvenance: inventory.media.mutableProvenance
+        )
+        guard !baseline.evaluatedDescriptors.isEmpty else { return baseline }
+        let evaluated = baseline.evaluatedDescriptors.map { descriptor in
+            Self.candidateDescriptor(descriptor.request, inventory: inventory) ?? descriptor
+        }
+        let requiredGraphics: Set<DoryGraphicsAccelerationLevel>
+        if request.graphicsRecovery {
+            requiredGraphics = Set(request.acceptableGraphics)
+        } else if let first = request.acceptableGraphics.first {
+            requiredGraphics = [first]
+        } else {
+            requiredGraphics = []
+        }
+        let selected = evaluated.first {
+            $0.availability.isUsable
+                && $0.availability.supportTier == .preview
+                && requiredGraphics.contains($0.request.graphics)
+        }
+        guard let selected else {
+            return DoryVirtualMachineBackendPlanResult(
+                selectedDescriptor: nil,
+                evaluatedDescriptors: evaluated,
+                failure: baseline.failure ?? DoryVirtualMachineBackendPlanningFailure(
+                    code: .noCandidate,
+                    message: "No exact signed candidate-campaign cell satisfies the request."
+                )
+            )
+        }
+        return DoryVirtualMachineBackendPlanResult(
+            selectedDescriptor: selected,
+            evaluatedDescriptors: evaluated,
+            failure: nil
         )
     }
 }

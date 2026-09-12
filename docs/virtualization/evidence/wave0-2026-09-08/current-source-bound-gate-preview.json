@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.wave0-current-source-bound-gate-preview",
+  "createdAt": "2026-09-08T21:30:35Z",
+  "releaseQualified": false,
+  "classification": "local-developer-id-development-preview",
+  "sourceBinding": {
+    "headCommit": "9e78da159996104e64fb68fa2578285e64b1357d",
+    "worktreeDirty": true,
+    "worktreeStatusSHA256": "c975b11f66ac8f1dc88d566510eb711df06c94e95a8867dfd1ea1dfb9a6f0c63",
+    "sourceTreeSHA256": "3d2279af47502059590b80872b76a05f75353fae0f93cd47ff43fc311c70725a",
+    "entryCount": 2216,
+    "verification": "passed"
+  },
+  "signing": {
+    "identity": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "teamIdentifier": "864H636QW4",
+    "outerBundleStrictVerification": "passed"
+  },
+  "artifacts": {
+    "appSha256": "a1d7331764c58a78a96fb45ca6ad250549141822b305456d594673082881fd4a",
+    "daemonSha256": "c004da1770bb8ecde820eac113c1a2ff032f78243807866c5040a842456c9f4b",
+    "runnerSha256": "2d2577f9bd0eda74f3eb501eef538fd55b36813444d3a488e5827994a1cea074",
+    "runnerCodeDirectoryHash": "c68f6caeb44927b0fb0c70872b93053e5951d04e",
+    "rendererWorkerSha256": "7e82a32eb641a1ed04098ef21a127b8d1b40a1a044f772836645f749075a4e33",
+    "rendererWorkerCodeDirectoryHash": "c4fb0fd26123d348dc3253cc0caabcea42c97af5"
+  },
+  "rendererTuple": {
+    "inventorySha256": "9558fc606bf45e5f03b5d492751de88e4a1dfee683357d046d597102b5c12d27",
+    "arm64QualificationSha256": "a214b4fc80e9b43a44981f072b26a2e44aa9d9a4813b88b4e3fb5f9c5b36aa81",
+    "pcVirgl2QualificationSha256": "85e6920821f98d1678684392ef225b566f1b596ae4de291bf77fc724c3a40cff",
+    "verification": "passed with the exact ARM GPU kernel and PC VirGL2 kernel/Mesa producer artifacts"
+  },
+  "limits": [
+    "The source tree is a dirty local development snapshot.",
+    "Preview renderer receipts are not detached release qualifications.",
+    "This receipt does not represent physical PC GPU execution or an approved qualification matrix."
+  ]
+}

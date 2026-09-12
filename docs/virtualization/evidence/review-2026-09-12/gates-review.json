@@ -1,0 +1,178 @@
+{
+  "baseCommit": "7425872c207accaedb7471f9a25343eb1e728f64",
+  "changes": [
+    {
+      "change": "Reject catalog or graphics artifact paths traversing symbolic-link parents, reject nonexistent calendar dates, and validate the canonical catalog path before loading it.",
+      "files": [
+        "scripts/validate-wave0-qualification-matrix.py",
+        "scripts/test-validate-wave0-qualification-matrix.py"
+      ]
+    },
+    {
+      "change": "Run the frozen host/toolchain preflight before mandatory matrix approval validation, preserving both rejection gates and restoring host-policy regression coverage.",
+      "files": [
+        "scripts/release.sh"
+      ]
+    },
+    {
+      "change": "Canonicalize relative candidate, firmware and installer input paths before daemon launch. Label the result a runtime-selection smoke, retain exact command/expected substring/resources, hash local raw diagnostic attachments, and explicitly leave guest GPU execution/pixels/presentation/recovery unverified.",
+      "files": [
+        "scripts/pc-gpu-daemon-live-gate.sh",
+        "scripts/test-pc-gpu-daemon-live-gate.sh"
+      ]
+    },
+    {
+      "change": "Accept exactly one explicit baseline-evidence marker pair; reject missing, empty, duplicate, unpaired or reversed regions; retain legacy section compatibility.",
+      "files": [
+        "scripts/audit-plan-evidence.py",
+        "scripts/test-audit-plan-evidence.py"
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "command": "python3 -B scripts/test-validate-wave0-qualification-matrix.py -v",
+      "exitCode": 0,
+      "failures": 0,
+      "tests": 15
+    },
+    {
+      "command": "python3 -B scripts/test-audit-plan-evidence.py -v",
+      "exitCode": 0,
+      "failures": 0,
+      "tests": 9
+    },
+    {
+      "command": "bash scripts/test-pc-gpu-daemon-live-gate.sh",
+      "exitCode": 0,
+      "observedResult": "PC gate polling success, terminal state, deadline, absolute input path, and bounded evidence-claim tests passed"
+    },
+    {
+      "command": "bash scripts/test-build-components.sh",
+      "exitCode": 0,
+      "observedResult": "component packaging test passed; includes PC gate tests"
+    },
+    {
+      "command": "python3 .github/scripts/test-release-host-policy.py",
+      "exitCode": 0,
+      "failures": 0,
+      "tests": 13
+    },
+    {
+      "command": "python3 .github/scripts/test-release-orchestrator.py",
+      "exitCode": 0,
+      "failures": 0,
+      "tests": 4
+    },
+    {
+      "command": "python3 .github/scripts/test-no-qemu-production.py",
+      "exitCode": 0,
+      "failures": 0,
+      "scope": "contract and fixture audits; not a physical VM campaign",
+      "tests": 4
+    },
+    {
+      "command": "bash scripts/test-clean-release-source.sh",
+      "exitCode": 0,
+      "observedResult": "clean release source tests passed"
+    },
+    {
+      "command": "python3 -B scripts/test-development-source-binding.py -v",
+      "exitCode": 0,
+      "failures": 0,
+      "tests": 8
+    },
+    {
+      "command": "bash -n scripts/release.sh scripts/test-build-components.sh",
+      "exitCode": 0,
+      "scope": "Bash syntax validation of release.sh; test-build-components.sh was also executed in full separately"
+    },
+    {
+      "command": "git diff --check -- scripts .github/workflows/tests.yml Config/DoryWave0QualificationMatrix.json",
+      "exitCode": 0,
+      "scope": "tracked diff whitespace; does not validate untracked file content"
+    },
+    {
+      "command": "python3 -B scripts/validate-wave0-qualification-matrix.py",
+      "exitCode": 0,
+      "observedResult": {
+        "approvalPayloadSHA256": "c0ab2f49936e2200d563ee9039087ef3e31bee8d204bd6a67d2d91a504dff194",
+        "graphicsProfiles": 4,
+        "guestCells": 5,
+        "status": "review-pending",
+        "unpinnedGraphicsInputs": []
+      }
+    },
+    {
+      "command": "python3 -B scripts/validate-wave0-qualification-matrix.py --require-approved",
+      "exitCode": 1,
+      "expectedFailure": true,
+      "observedError": "Wave 0 qualification matrix: matrix has not received the required approvals"
+    },
+    {
+      "command": "python3 -B scripts/audit-plan-evidence.py --require-complete --output /tmp/dory-plan-evidence-review-20260912.json",
+      "exitCode": 0,
+      "observedResult": {
+        "evidenceSection": "Where we actually are",
+        "incompleteDocuments": [
+          "docs/virtualization/evidence/p05-arm-2026-09-05/actual-manager-desktop-installer-detach-cold-reopen.json"
+        ],
+        "qualificationBlockingDocuments": [],
+        "reacquisitionOnlyDocuments": [
+          "docs/virtualization/evidence/p05-arm-2026-09-05/actual-manager-desktop-installer-detach-cold-reopen.json",
+          "docs/virtualization/evidence/p06-pc-2026-09-06/clock-stall-rescope.json",
+          "docs/virtualization/evidence/p06-pc-2026-09-06/tier-comparison-rpcdiag.json",
+          "docs/virtualization/evidence/p07-macos-2026-09-05/actual-managed-suspend-restore.json"
+        ],
+        "unresolvedCitations": []
+      },
+      "planSHA256": "ab07245e79f5dc0556a0877c68bba3082d9d5cb2fb73f0dde822dc92127aeb59",
+      "scope": "Pre-rewrite PLAN historical citation audit; must be rerun for the final rewritten plan"
+    }
+  ],
+  "createdAt": "2026-09-12T18:07:11Z",
+  "evidenceLimitations": [
+    "No physical Linux ARM64, Linux x86_64 or macOS ARM64 guest workload was launched by this review.",
+    "The matrix remains review-pending and cannot authorize release publication.",
+    "Passing historical citation completeness does not establish guest qualification; known reacquisition-only and host-only evidence retain those classifications.",
+    "The repaired PC smoke gate does not independently establish guest DRM identity, shader/pixel correctness, host Metal execution, presentation, or worker-loss recovery.",
+    "No previously recorded preview or historical evidence receipt was promoted or rewritten as a release qualification."
+  ],
+  "initialRegressionFound": {
+    "cause": "The newly inserted pending-matrix rejection ran before the frozen-host preflight and masked the expected host-policy failure.",
+    "command": "python3 .github/scripts/test-release-host-policy.py",
+    "exitCode": 1,
+    "failingTest": "ReleaseScriptPreflightTests.test_public_entrypoint_invokes_the_host_gate",
+    "failures": 1,
+    "fixedAndRerun": true,
+    "tests": 13
+  },
+  "kind": "dev.dory.local-gates-code-review",
+  "liveCampaignRun": false,
+  "rawLogsRetained": false,
+  "releasePublished": false,
+  "releaseQualified": false,
+  "resultProvenance": "Commands and results were observed in task tool stdout/stderr. No raw test logs were saved to this evidence directory. The prior-plan auditor JSON remains a temporary local output, not a portable attachment.",
+  "reviewedFilesSHA256": {
+    ".github/workflows/tests.yml": "faf37e6f698d39cba87296d202cc1f04933b0a1421140e23b7800481682a5aa7",
+    "Config/DoryWave0QualificationMatrix.json": "f39beb2bdd4a7bcb1737f81fde400ea32662c9f870a7d69fcd2b3418d3ceb968",
+    "scripts/audit-plan-evidence.py": "9820ef1d6cc2cc0684c7f4ca909d7e9df45b37226b87058fcc371713534fbaae",
+    "scripts/pc-gpu-daemon-live-gate.sh": "14b47bb0a670877564be445392d218bcb678ca825d8fcb7079bb7d77704dc59d",
+    "scripts/release.sh": "1dd6ac390575cca2b566622cf8b8d097fa10a9836461121ee11ab78ab1464795",
+    "scripts/test-audit-plan-evidence.py": "abf5c0fae21584cff506f681e3697576dc7fab4bbb2b99da0ecadb39c6c71554",
+    "scripts/test-build-components.sh": "3eb1daa478b3c21ca8eaa5b2d1f11ed8eb44d635b8dd0b5261ca2adecb1e64f3",
+    "scripts/test-pc-gpu-daemon-live-gate.sh": "b96ef7f13f6c878df50a6d2fed4e8b511daa0435cfb59dc128a5ac0d9fa02553",
+    "scripts/test-validate-wave0-qualification-matrix.py": "ada1883f4913fdef4be4423b7b8e0cead47ff45c5e4f248b065475ab53e0c375",
+    "scripts/validate-wave0-qualification-matrix.py": "0cb96fe2652f53477559d6d97c74d70fd1cb7ee1c2ce54092bed5806a33c75dd"
+  },
+  "schemaVersion": 1,
+  "sourceBinding": {
+    "fullSourceSnapshotCaptured": false,
+    "headCommitAtReceipt": "7425872c207accaedb7471f9a25343eb1e728f64",
+    "limitation": "This records a review of an existing dirty worktree, not an immutable application or complete source-tree qualification binding. Selected current source digests are recorded below.",
+    "reviewStartCommit": "7425872c207accaedb7471f9a25343eb1e728f64",
+    "statusAtReceiptSHA256": "1e1400bd6d344c146ddd04e1a520c03791589120a8417b0af9390e8928f1bc2e",
+    "worktreeDirtyAtReceipt": true,
+    "worktreeDirtyAtReviewStart": true
+  }
+}

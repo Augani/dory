@@ -41,6 +41,9 @@ enum DoryX86InstructionFeaturePolicy {
       return profile.supports(.cmov)
     case .populationCount:
       return profile.supports(.popcnt)
+    case .randomRead(_, let source):
+      // RDRAND/RDSEED must have real entropy or be unadvertised (A03.4).
+      return profile.supports(source == .rdrand ? .rdrand : .rdseed)
     case .compareExchangePair(_, let doubleQuadword):
       return profile.supports(doubleQuadword ? .cmpxchg16b : .cmpxchg8b)
     case .duplicateVectorScalar:

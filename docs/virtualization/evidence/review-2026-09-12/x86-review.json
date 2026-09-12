@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.review.x86-development-corrections",
+  "observedAt": "2026-09-12T18:14:33.706430+00:00",
+  "status": "passed-local-development-tests",
+  "releaseQualified": false,
+  "scope": "Review corrections to the x86 decoder/profile tests, removal of an invalid chain-corruption detector, and an aligned native CMPXCHG16B atomicity fix. This receipt is not CPU ISA certification, a live VM campaign, performance qualification, SMP qualification, or release evidence.",
+  "source": {
+    "baseCommit": "7425872c207accaedb7471f9a25343eb1e728f64",
+    "workingTreeState": "dirty-with-preserved-preexisting-work-and-untracked-review-tests",
+    "inputManifest": {
+      "path": "docs/virtualization/evidence/review-2026-09-12/x86-source-input-manifest.json.gz",
+      "compression": "gzip",
+      "sha256": "bfb828420fc8b9a8bd92ffc4c996031f44949e48095d8345b5ae082c7efbc29e",
+      "uncompressedSHA256": "a67420c4d118e92c8edd37359d8b903a92d9d9417c0acfeae4ef0c7c4662212d",
+      "uncompressedBytes": 42518
+    },
+    "inputCount": 243,
+    "inputHashesUnchangedAcrossAcceptedBuild": true,
+    "inputScope": "DoryDBTX86, DoryMachinePC, DoryJITRuntimeC, DoryIR, DoryJITRuntime, their DBTX86/PC test suites, and Package.swift; this is a bounded source manifest, not the entire product dependency graph."
+  },
+  "environment": {
+    "hostArchitecture": "arm64",
+    "hostOS": "macOS 27.0 (26A5425a)",
+    "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "swift": "Apple Swift 6.3.3 (swiftlang-6.3.3.1.1 clang-2100.1.1.101)",
+    "scratchPath": "/tmp/dory-review-x86-build"
+  },
+  "verification": {
+    "preparationCommand": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer xcrun swift package --package-path dory-core-swift --scratch-path /tmp/dory-review-x86-build clean",
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer xcrun swift test --package-path dory-core-swift --scratch-path /tmp/dory-review-x86-build --jobs 4 --filter 'DoryDBTX86Tests|DoryMachinePCTests'",
+    "exitCode": 0,
+    "testCount": 1600,
+    "suiteCount": 182,
+    "testDurationSeconds": 3.814,
+    "log": {
+      "path": "docs/virtualization/evidence/review-2026-09-12/x86-dbt-pc-tests.log.gz",
+      "compression": "gzip",
+      "sha256": "99cdd725fd2a9cb316411ea74906450545b3fe7eb93b5eef107f55fa3dbd8d72",
+      "uncompressedSHA256": "7431ff590d465ac94433bfee35cf3df31255acf64f68bfa91411a1abb69186be",
+      "uncompressedBytes": 546171
+    },
+    "note": "The filtered run builds the package test bundle; only DBTX86 and MachinePC suites are counted. Duration is test execution, not clean compilation wall time."
+  },
+  "buildRetry": {
+    "status": "superseded-incremental-link-failure",
+    "reason": "After removal of the uncommitted initializer parameter, SwiftPM retained a PC test object referencing the obsolete initializer ABI. The accepted run followed a clean of only the isolated scratch build. No runtime tests executed in the failed link attempt.",
+    "log": {
+      "path": "docs/virtualization/evidence/review-2026-09-12/x86-superseded-incremental-link-failure.log.gz",
+      "compression": "gzip",
+      "sha256": "40e698a7ae0c4f9a46840481f17b6e890a991899cb82fce4b5bea8ba476d95c7",
+      "uncompressedSHA256": "606be8c9ca002f37cd99fae97a3598e93a47dfdaaa36d75a19fe4bfa0f697119",
+      "uncompressedBytes": 86177
+    }
+  },
+  "corrections": [
+    "Ignore REX preceding later legacy prefixes; preserve correct high-byte register selection and replacement REX semantics.",
+    "Decode entropy instruction operand widths by execution mode and reject REP-prefixed aliases as entropy operations.",
+    "Filter unsupported entropy features through public and persisted profile construction until CPUID and execution are implemented together.",
+    "Correct ModRM-group generation and malformed/mislabeled SSE3/AVX negative-test vectors.",
+    "Document reserved profile names and admission assessment without claiming implemented persisted-profile migration.",
+    "Replace non-atomic two-half CMPXCHG16B with a genuinely lock-free aligned 128-bit compare-exchange on ARM64, retaining conservative fallback elsewhere; validate against concurrent ordinary generated stores."
+  ],
+  "rejectedExperiment": {
+    "name": "chainTransitionInvariantVerification",
+    "disposition": "removed-with-original-patch-preserved",
+    "patchPath": ".dory-build/review-2026-09-12/rejected-chain-invariant-detector.patch",
+    "patchSHA256": "430ab9aab0af767b010c8829b920ae93abac59d6ffdc6bcf8191e3ddbf27200d",
+    "reasons": [
+      "The Swift check surrounds an entire native dispatcher entry, not every raw chain edge, and cannot identify the first corrupting block.",
+      "Baseline memory prologues legitimately refresh context FP/LR words.",
+      "Tier-one uses a separate saved host register bank; the added tier-one register-only test never initializes or arms the checked words.",
+      "Unchanged generated code layout does not prove unchanged timing, and post-return context comparisons do not establish ABI preservation."
+    ]
+  },
+  "atomicityEvidence": {
+    "path": "docs/virtualization/evidence/review-2026-09-12/cmpxchg16b/receipt.json",
+    "sha256": "8f839d57782a31ef70b3388794a0e303d71b949492032ee29150cedb379d1acb",
+    "beforeOverwrittenOrdinaryStores": 956,
+    "afterOverwrittenOrdinaryStores": 0,
+    "comparisonAttemptsPerRun": 500000
+  },
+  "limitations": [
+    "No live VM or candidate-bound production workload was run in this review.",
+    "The removed detector was not replaced by a valid native boundary oracle; combined predictor reliability remains open.",
+    "The atomicity regression qualifies a bounded aligned direct helper path, not all SMP, split-lock, MMIO, DMA or memory-ordering behavior.",
+    "Historical passing fixtures and these tests do not qualify new release bytes.",
+    "The user's existing build directory and pre-existing long-running SwiftPM process were preserved."
+  ]
+}

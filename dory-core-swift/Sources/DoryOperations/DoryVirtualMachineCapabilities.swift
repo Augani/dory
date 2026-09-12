@@ -534,6 +534,7 @@ public enum DoryCapabilityReasonCode: String, Codable, Sendable, CaseIterable, H
     case runtimeQualificationEvidenceInvalid = "runtime-qualification-evidence-invalid"
     case runtimeQualificationRequestMismatch = "runtime-qualification-request-mismatch"
     case runtimeQualificationHostMismatch = "runtime-qualification-host-mismatch"
+    case candidateCampaignAuthorized = "candidate-campaign-authorized"
     case backendSupportIsExperimental = "backend-support-is-experimental"
     case windowsSupportIsExperimental = "windows-support-is-experimental"
 }

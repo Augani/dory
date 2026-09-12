@@ -84,17 +84,33 @@ var productionPlanningController:
     (any DoryDaemonVirtualMachineProductionPlanningControlling)?
 var machineImportEnvironment = DoryMachineImportEnvironment.unverified
 let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { configuration -> MachineManager? in
-    let readiness = DoryDaemonVirtualMachineProductionTrustFactory(
+    let factory = DoryDaemonVirtualMachineProductionTrustFactory(
         engineResources: dockerTier == nil ? nil : dorydEnvironment.engineResourceReservation
-    ).activate(
-        store: DoryComponentStore(drive: dataDrive),
-        machineConfiguration: configuration
     )
+    let componentStore = DoryComponentStore(drive: dataDrive)
+    let campaign = dorydEnvironment.vmCandidateCampaignConfiguration()
+    let readiness = if let campaign {
+        factory.activateCandidateCampaign(
+            authorityPath: campaign.authorityPath,
+            signaturePath: campaign.signaturePath,
+            applicationRoot: campaign.applicationRoot,
+            store: componentStore,
+            machineConfiguration: configuration
+        )
+    } else {
+        factory.activate(
+            store: componentStore,
+            machineConfiguration: configuration
+        )
+    }
     switch readiness {
     case let .activated(context):
         FileHandle.standardError.write(Data(
             "doryd: VM launch policy perWorkspaceAuthority "
-                .appending("(production planning recovered and activated)\n").utf8
+                .appending(campaign == nil
+                    ? "(production planning recovered and activated)\n"
+                    : "(signed candidate campaign planning recovered and activated as preview)\n"
+                ).utf8
         ))
         productionPlanningController = context.planningController
         machineImportEnvironment = context.machineImportEnvironment

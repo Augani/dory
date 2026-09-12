@@ -69,6 +69,39 @@ class PlanEvidenceAuditTests(unittest.TestCase):
             ["preserved", "preserved-jsonl"],
         )
 
+    def test_explicit_baseline_region_survives_heading_changes(self) -> None:
+        temporary, root = self.make_root()
+        self.addCleanup(temporary.cleanup)
+        receipt = "docs/virtualization/evidence/receipt/result.json"
+        (root / receipt).write_text("{}")
+        (root / "PLAN.md").write_text(
+            "## Part 1: Repair the baseline\n<!-- baseline-evidence:start -->\n"
+            + receipt + "\n<!-- baseline-evidence:end -->\n"
+            "## Part 2: Implementation\ndocs/virtualization/evidence/future.json\n"
+        )
+        result = self.run_audit(root, "--require-complete")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["evidenceSection"], "baseline-evidence")
+        self.assertEqual([item["path"] for item in payload["citationBindings"]], [receipt])
+
+    def test_rejects_missing_empty_duplicate_and_unpaired_baseline_regions(self) -> None:
+        temporary, root = self.make_root()
+        self.addCleanup(temporary.cleanup)
+        start = "<!-- baseline-evidence:start -->"
+        end = "<!-- baseline-evidence:end -->"
+        receipt = "docs/virtualization/evidence/receipt/result.json"
+        (root / receipt).write_text("{}")
+        legacy = "## Where we actually are\n" + receipt + "\n"
+        for body in ("## Part 1\n", start + end, start + receipt, end + receipt,
+                     end + receipt + start, start + receipt + end + start + receipt + end,
+                     legacy + start, legacy + legacy):
+            with self.subTest(body=body):
+                (root / "PLAN.md").write_text(body)
+                result = self.run_audit(root)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("plan evidence audit:", result.stderr)
+
     def test_preserves_a_standalone_json_document_without_promoting_it(self) -> None:
         temporary, root = self.make_root()
         self.addCleanup(temporary.cleanup)

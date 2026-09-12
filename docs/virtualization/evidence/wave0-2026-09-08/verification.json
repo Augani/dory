@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "kind": "dory-wave0-partial-implementation-verification",
+  "date": "2026-09-08",
+  "baseCommit": "9e78da159996104e64fb68fa2578285e64b1357d",
+  "sourceBinding": "The exact current app embeds and verifies the complete dirty development-source snapshot 4d0a8472bc261e8a8816863b6bc4de99ab97f5060de5ce5a6209c40cfbb7f11a. Evidence outputs are excluded from that snapshot. This is supporting development evidence, not a release qualification receipt.",
+  "host": {
+    "architecture": "arm64",
+    "macOS": "27.0 (26A5425a)"
+  },
+  "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+  "changedFilesSHA256": {
+    "scripts/build-dory-ffi-xcframework.sh": "43e2fff92c1109575834be525323d854c572eb150727ccc31669c897de8e47b8",
+    "scripts/build.sh": "eda8ae3915f52a1c47d329ee794a00168883e899db304191133cd6569fca473e",
+    "scripts/fixtures/signed-launch-handoff-peer.c": "567d14dac2e493875ac6f13c7a05dd4ef765a7015f5faaa6ff2325f6f249493b",
+    "scripts/qualify-signed-launch-handoff.py": "33b31f5872115e2330f6a56dcd3eee208044985bdc994693c959ad50c1607653",
+    "scripts/test-qualify-signed-launch-handoff.py": "9b9dc897b009df5bf4cc45b12450dc9508bca84d5205937bc603f9d16f442c90",
+    "scripts/test-verify-dory-ffi-deployment-targets.py": "03744493057168626340ca6119645c7d416d15947a82d2bfb923f41bf2655054",
+    "scripts/verify-dory-ffi-deployment-targets.py": "c4a2cb179c23d10e8ff82fcf8ac2e1b131e45cd14ad9c32fb1d0cd02a626b3d9"
+  },
+  "ffi": {
+    "command": "scripts/build-dory-ffi-xcframework.sh --if-needed",
+    "librarySHA256": "ee59c027b28537d6ab6769f2ce66367e0374f755672b0903cfd3f1937da3dd86",
+    "maximumSupportedMacOS": "14.0.0",
+    "slices": {
+      "arm64": {
+        "objectCount": 1184,
+        "minimumMacOSCounts": {
+          "11.0.0": 384,
+          "14.0.0": 800
+        }
+      },
+      "x86_64": {
+        "objectCount": 1099,
+        "minimumMacOSCounts": {
+          "10.12.0": 286,
+          "14.0.0": 813
+        }
+      }
+    }
+  },
+  "scopedReleaseCandidate": {
+    "appPathType": "local DerivedData; source-bound development preview, not a portable or renderer-qualified candidate",
+    "identity": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "teamIdentifier": "864H636QW4",
+    "appSHA256": "b0f37baf269732e49b1a6752c8fe6ad7b48426eb1db1471c87960e5b2cb92e4f",
+    "runnerSHA256": "cccfb2138e279a2602abaa3a21a363227aeca02d5306f7f0845fec2891c91aa8",
+    "daemonSHA256": "3a74e5f8ce8177fb066a3113f4029a11fb30cf15a44914229d0439bb43d433fa",
+    "dataplaneProxySHA256": "d21acbfca006c8c9ca47dff31dd7fc724e59d45dab94dacf0ba468351372dbc9",
+    "codesignDeepStrict": "passed",
+    "minimumMacOS": {
+      "appAndSwiftHelpers": "14.0",
+      "runner": "15.0"
+    }
+  },
+  "checks": [
+    {
+      "command": "xcrun swift test --package-path dory-core-swift --jobs 4 --filter 'DoryApplicationLaunchHandoffTests|DorydXPCSecurityTests'",
+      "exitCode": 0,
+      "xctestExecuted": 32,
+      "xctestFailures": 0
+    },
+    {
+      "command": "python3 -B scripts/test-verify-dory-ffi-deployment-targets.py -v",
+      "exitCode": 0,
+      "tests": 4,
+      "failures": 0
+    },
+    {
+      "command": "python3 -B scripts/test-qualify-signed-launch-handoff.py -v",
+      "exitCode": 0,
+      "tests": 2,
+      "failures": 0
+    },
+    {
+      "command": "python3 .github/scripts/test-renderer-production-tuple.py && python3 .github/scripts/test-release-host-policy.py && python3 scripts/test-prepare-virtualization-fixtures.py && bash scripts/test-build-components.sh",
+      "exitCode": 0,
+      "testCounts": [8, 13, 53],
+      "componentPackaging": "passed"
+    }
+  ],
+  "signedLaunchHandoff": {
+    "legacyBypassEnvironmentWasSet": true,
+    "validPeer": "runner exited 0; peer reported token=1 descriptor=1 acknowledgement=1",
+    "wrongIdentity": "runner rejected with dynamicCodeRejected(-67050); peer reported token=0 descriptor=0 acknowledgement=0",
+    "unsigned": "runner rejected with dynamicCodeRejected(-67050); peer reported token=0 descriptor=0 acknowledgement=0",
+    "absent": "runner exited 1 before connection",
+    "malformed": "runner exited 1 before connection",
+    "wrongTeam": "unavailable: the Developer ID, Apple Development and Apple Distribution identities all resolve to Dory's production team; harness exited 3"
+  },
+  "limitations": [
+    "No installed Apple signing identity from a different team was available. The local Apple Development identity was explicitly rejected as a wrong-team input because its actual TeamIdentifier is also Dory's production team, so the required wrong-team packaged-peer case remains open.",
+    "The scoped Developer-ID Release app is not a renderer-qualified release candidate; it contains no physical GPU campaign result.",
+    "A01 historical-evidence validation, reviewer-approved support matrix, owned fixture acquisition/rebuild, and a clean release-signing candidate remain open."
+  ],
+  "releaseQualified": false
+}

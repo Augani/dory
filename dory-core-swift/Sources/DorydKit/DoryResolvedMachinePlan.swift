@@ -1461,7 +1461,8 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     private func validateQualifications(
         into issues: inout [DoryResolvedMachinePlanValidationIssue]
     ) {
-        if backend == .doryHypervisor, graphics != .none, !usesPortableLinuxEFIBaseline {
+        if supportTier == .supported, backend == .doryHypervisor,
+           graphics != .none, !usesPortableLinuxEFIBaseline {
             guard let graphicsEvidence = qualificationEvidence.graphics else {
                 issues.append(DoryResolvedMachinePlanValidationIssue(
                     code: .missingGraphicsQualification,

@@ -163,6 +163,8 @@ docs/
 !/docs/virtualization/evidence/
 /docs/virtualization/evidence/*
 !/docs/virtualization/evidence/wave0-2026-09-08/
+!/docs/virtualization/evidence/review-2026-09-12/
+!/docs/virtualization/evidence/review-2026-09-12/**
 !/docs/virtualization/evidence/p01-control-plane-2026-09-03/
 !/docs/virtualization/evidence/p01-control-plane-2026-09-04/
 !/docs/virtualization/evidence/p01-parallel-review-2026-09-04/

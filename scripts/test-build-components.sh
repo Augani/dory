@@ -166,7 +166,7 @@ if (
 fi
 grep -Fq 'public component publication is blocked' "$TMP/component-preflight.out" \
   || { echo "component packaging test: public preflight failed for the wrong reason" >&2; exit 1; }
-grep -Fq 'no physical Linux VM campaign producer is wired after immutable candidate assembly and SBOM generation' \
+grep -Fq 'DORY_VM_CAMPAIGN_PRODUCER must name the physical Linux VM campaign producer' \
   "$TMP/component-preflight.out" \
   || { echo "component packaging test: public preflight does not identify the producer/order gap" >&2; exit 1; }
 
@@ -189,9 +189,18 @@ if (
   echo "component packaging test: dummy pre-candidate evidence bypassed the public stop line" >&2
   exit 1
 fi
-grep -Fq 'pre-candidate or synthetic qualification evidence cannot authorize schema-2 finalization' \
+grep -Fq 'DORY_VM_CAMPAIGN_PRODUCER must name the physical Linux VM campaign producer' \
   "$TMP/component-preflight-dummy.out" \
   || { echo "component packaging test: dummy evidence failed for the wrong reason" >&2; exit 1; }
+
+printf '#!/bin/sh\n[ "$1" = --help ]\n' > "$TMP/vm-campaign-producer"
+chmod 0700 "$TMP/vm-campaign-producer"
+(
+  export DORY_RELEASE_SOURCE_ONLY=1
+  export DORY_VM_CAMPAIGN_PRODUCER="$TMP/vm-campaign-producer"
+  source "$ROOT/scripts/release.sh" 9.8.7 42
+  preflight_component_supply_chain
+) || { echo "component packaging test: valid post-assembly producer contract was rejected" >&2; exit 1; }
 
 SOURCE="$TMP/source"
 CORE_APP="$TMP/Dory.app"

@@ -539,22 +539,26 @@ def verify_toolchain(toolchain: Dict[str, Any]) -> Dict[str, str]:
     )
     if edk2_host_architecture is None:
         raise BuildFailure("firmware toolchain host is unsupported by EDK2 BaseTools")
+    sdk_root = (
+        developer_directory
+        / "Platforms"
+        / "MacOSX.platform"
+        / "Developer"
+        / "SDKs"
+        / "MacOSX.sdk"
+    )
     environment.update(
         {
             "arch": edk2_host_architecture,
             "HOST_ARCH": edk2_host_architecture,
-            "CC": toolchain["compiler"]["executable"],
+            # Homebrew LLVM's host clang configuration can pin the active CommandLineTools SDK.
+            # That SDK may be newer than the locked compiler understands. An explicit command-line
+            # sysroot takes precedence and binds BaseTools host links to the verified Xcode SDK.
+            "CC": f"{toolchain['compiler']['executable']} -isysroot {sdk_root}",
             "DEVELOPER_DIR": str(developer_directory),
             "LC_ALL": "C",
             "PYTHONHASHSEED": "0",
-            "SDKROOT": str(
-                developer_directory
-                / "Platforms"
-                / "MacOSX.platform"
-                / "Developer"
-                / "SDKs"
-                / "MacOSX.sdk"
-            ),
+            "SDKROOT": str(sdk_root),
             "TZ": "UTC",
         }
     )

@@ -951,21 +951,20 @@ final class DorydConfigurationTests: XCTestCase {
         )
     }
 
-    func testVMQualificationBootstrapIsExplicitAndOffByDefault() {
-        XCTAssertFalse(
-            DorydEnvironment(values: [:], home: "/tmp/doryd-home")
-                .vmQualificationBootstrapEnabled
-        )
-        XCTAssertTrue(
+    func testVMCandidateCampaignRequiresACompleteSignedEnvelopeLocation() {
+        XCTAssertNil(
             DorydEnvironment(values: [
                 "DORYD_VM_QUALIFICATION_BOOTSTRAP": "1",
-            ], home: "/tmp/doryd-home").vmQualificationBootstrapEnabled
+            ], home: "/tmp/doryd-home").vmCandidateCampaignConfiguration()
         )
-        XCTAssertFalse(
-            DorydEnvironment(values: [
-                "DORYD_VM_QUALIFICATION_BOOTSTRAP": "unexpected",
-            ], home: "/tmp/doryd-home").vmQualificationBootstrapEnabled
-        )
+        let configuration = DorydEnvironment(values: [
+            "DORYD_VM_CANDIDATE_CAMPAIGN_AUTHORITY": "/campaign/authority.json",
+            "DORYD_VM_CANDIDATE_CAMPAIGN_SIGNATURE": "/campaign/authority.json.sig",
+            "DORYD_VM_CANDIDATE_APPLICATION_ROOT": "/candidate/Dory.app",
+        ], home: "/tmp/doryd-home").vmCandidateCampaignConfiguration()
+        XCTAssertEqual(configuration?.authorityPath, "/campaign/authority.json")
+        XCTAssertEqual(configuration?.signaturePath, "/campaign/authority.json.sig")
+        XCTAssertEqual(configuration?.applicationRoot, "/candidate/Dory.app")
     }
 
     func testNetworkRouteReconcileIntervalDefaultsToFiveSecondsAndClamps() {

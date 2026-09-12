@@ -218,9 +218,8 @@ preflight_public_toolchain() {
 preflight_component_supply_chain() {
   # The supported order is immutable candidate -> exact app-tree SBOM -> physical Linux VM
   # campaign -> signed candidate-bound qualification -> schema-2 catalog finalization. The repo
-  # has strict assemblers and verifiers for those artifacts, but no release workflow job currently
-  # produces the physical campaign evidence from the freshly signed candidate. A directory supplied
-  # before candidate assembly cannot prove that ordering and must never authorize publication.
+  # has strict assemblers and verifiers for those artifacts. The configured producer is invoked
+  # only after this run has assembled the candidate and generated its exact app-tree SBOM.
   [ "${DORY_COMPONENT_CATALOG_SCHEMA:-2}" = 2 ] \
     || release_error "public component publication requires catalog schema 2"
   [ -f scripts/build-components.py ] && [ ! -L scripts/build-components.py ] \
@@ -230,7 +229,13 @@ preflight_component_supply_chain() {
     scripts/build-components.py "$command" --help >/dev/null \
       || release_error "schema-2 component pipeline does not provide '$command'"
   done
-  release_error "public component publication is blocked: no physical Linux VM campaign producer is wired after immutable candidate assembly and SBOM generation; pre-candidate or synthetic qualification evidence cannot authorize schema-2 finalization"
+  [ -n "${DORY_VM_CAMPAIGN_PRODUCER:-}" ] \
+    || release_error "public component publication is blocked: DORY_VM_CAMPAIGN_PRODUCER must name the physical Linux VM campaign producer invoked after immutable candidate assembly and SBOM generation"
+  [ -f "$DORY_VM_CAMPAIGN_PRODUCER" ] && [ ! -L "$DORY_VM_CAMPAIGN_PRODUCER" ] \
+    && [ -x "$DORY_VM_CAMPAIGN_PRODUCER" ] \
+    || release_error "DORY_VM_CAMPAIGN_PRODUCER must be a direct executable file"
+  "$DORY_VM_CAMPAIGN_PRODUCER" --help >/dev/null \
+    || release_error "physical Linux VM campaign producer does not provide --help"
 }
 
 preflight_public_release() {
@@ -252,7 +257,6 @@ preflight_public_release() {
   [ "$SOURCE_COMMIT" = "$(git rev-parse HEAD)" ] \
     || release_error "public release source commit $SOURCE_COMMIT does not match checkout $(git rev-parse HEAD)"
   preflight_public_toolchain
-
   [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] \
     || release_error "public releases must bundle the engine"
   [ "$RELEASE_VARIANTS" = "arm64" ] \
@@ -1394,6 +1398,37 @@ if [ -n "$DESKTOP_APP" ] && [ -d "$DESKTOP_APP" ]; then
     --app "$DESKTOP_APP" --version "$VERSION" --source-commit "$SOURCE_COMMIT" --output "$DESKTOP_SBOM"
   scripts/verify-release-sbom.py \
     --sbom "$DESKTOP_SBOM" --app "$DESKTOP_APP" --version "$VERSION" --source-commit "$SOURCE_COMMIT"
+fi
+
+if [ "$(printenv DORY_PUBLIC_RELEASE 2>/dev/null || printf 0)" = 1 ] \
+  && [ -d "$COMPONENT_CANDIDATE_DIR" ]; then
+  [ -n "$ARM64_APP" ] && [ -d "$ARM64_APP" ] \
+    || release_error "physical VM campaign requires the exact arm64 Dory.app"
+  [ -n "$SBOM" ] && [ -f "$SBOM" ] \
+    || release_error "physical VM campaign requires the exact app-tree SBOM"
+  CAMPAIGN_WORKROOT="$BUILD_DIR/vm-qualification-campaign"
+  CAMPAIGN_PRODUCER_RECEIPT="$BUILD_DIR/vm-campaign-producer.receipt.json"
+  [ ! -e "$CAMPAIGN_WORKROOT" ] && [ ! -e "$COMPONENT_OUTPUT_DIR" ] \
+    || release_error "physical campaign outputs must not predate candidate assembly"
+  echo "==> Running exact-candidate physical VM campaign and catalog finalization..."
+  "$DORY_VM_CAMPAIGN_PRODUCER" \
+    --application "$ARM64_APP" \
+    --component-candidate "$COMPONENT_CANDIDATE_DIR" \
+    --sbom "$SBOM" \
+    --output "$COMPONENT_OUTPUT_DIR" \
+    --workroot "$CAMPAIGN_WORKROOT" \
+    --producer-receipt "$CAMPAIGN_PRODUCER_RECEIPT" \
+    --version "$VERSION" \
+    --source-commit "$SOURCE_COMMIT" \
+    --sign-update "$DORY_SPARKLE_SIGN_UPDATE"
+  assert_file_exists "$CAMPAIGN_PRODUCER_RECEIPT" "physical VM campaign producer receipt"
+  assert_file_exists "$COMPONENT_OUTPUT_DIR/catalog.json" "finalized component catalog"
+  assert_file_exists "$COMPONENT_OUTPUT_DIR/catalog.json.sig" "finalized component catalog signature"
+  assert_file_exists "$COMPONENT_OUTPUT_DIR/catalog.json.sha256" "finalized component catalog digest"
+  while IFS= read -r component_asset; do
+    COMPONENT_ASSETS+=("$component_asset")
+  done < <(find "$COMPONENT_OUTPUT_DIR" -maxdepth 1 -type f -print | LC_ALL=C sort)
+  COMPONENT_ASSETS+=("$CAMPAIGN_PRODUCER_RECEIPT")
 fi
 
 DEFAULT_ZIP="${COMPAT_ZIP:-${UNIVERSAL_ZIP:-${ZIPS[0]:-}}}"

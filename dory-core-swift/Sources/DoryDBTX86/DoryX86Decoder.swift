@@ -81,6 +81,10 @@ public struct DoryX86Decoder: Sendable {
           consumed = false
         }
         guard consumed else { break }
+        // A REX prefix is effective only after the last legacy prefix.
+        // Intel SDM Vol. 2A, §2.2.1: other placements are ignored. Discard
+        // all extension bits, including the high-byte-register suppression.
+        if !(0x40...0x4F).contains(byte) { prefixes.rex = nil }
         _ = try cursor.readByte()
       }
     }
@@ -2102,20 +2106,45 @@ public struct DoryX86Decoder: Sendable {
         cursor: &cursor, width: operandWidth, prefixes: prefixes, mode: mode)
       operation = .exchangeAdd(destination: operands.rm, source: operands.reg)
     case 0xC7:
+      // RDRAND/RDSEED use the mode's operand size, modified by 66/REX.W; CMPXCHG8B/16B
+      // ignores it because its operand is always 8 or 16 bytes. Using the
+      // 66-aware width here is safe because CMPXCHG8B/16B decodes a memory
+      // operand whose width is unaffected by this parameter.
       let operands = try decodeModRM(
         cursor: &cursor,
-        width: prefixes.rex?.w == true ? .quadword : .doubleword,
+        width: width,
         prefixes: prefixes,
         mode: mode
       )
-      guard operands.group == 1, case .memory(let destination) = operands.rm else {
+      switch operands.group {
+      case 1:
+        guard case .memory(let destination) = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "CMPXCHG8B/16B requires a memory /1 operand")
+        }
+        operation = .compareExchangePair(
+          destination: destination,
+          doubleQuadword: prefixes.rex?.w == true
+        )
+      case 6:
+        // RDRAND r16/32/64 (0F C7 /6). Memory encodings select other families.
+        guard prefixes.repeatPrefix == nil, case .register = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "RDRAND requires a register /6 operand without F2/F3")
+        }
+        operation = .randomRead(destination: operands.rm, source: .rdrand)
+      case 7:
+        // RDSEED r16/32/64 (0F C7 /7). Memory encodings select other families.
+        // F3 selects RDPID, which must not inherit RDSEED's feature policy.
+        guard prefixes.repeatPrefix == nil, case .register = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "RDSEED requires a register /7 operand without F2/F3")
+        }
+        operation = .randomRead(destination: operands.rm, source: .rdseed)
+      default:
         throw DoryX86DecodeError.invalidEncoding(
-          address: address, detail: "CMPXCHG8B/16B requires a memory /1 operand")
+          address: address, detail: "0F C7 /\(operands.group) is not a recognized encoding")
       }
-      operation = .compareExchangePair(
-        destination: destination,
-        doubleQuadword: prefixes.rex?.w == true
-      )
     case 0xC8...0xCF:
       let target = register(Int(second - 0xC8), extensionBit: prefixes.rex?.b == true)
       operation = .byteSwap(

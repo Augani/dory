@@ -423,6 +423,16 @@ struct DoryDaemonVirtualMachineVerifiedTrustMaterial: Sendable {
     var hostProbe: @Sendable (String) throws -> DoryDaemonProductionHostObservation
 }
 
+struct DoryDaemonVirtualMachineVerifiedCandidateCampaignMaterial: Sendable {
+    var authority: DoryVerifiedVirtualMachineCandidateCampaignAuthority
+    var runtimes: [DoryDaemonVerifiedBackendRuntime]
+    var rendererReleaseIdentityProvider: any DoryRendererReleaseIdentityProviding
+    var runtimeVerifier: @Sendable (
+        String, MachineBackendDescriptor, String
+    ) throws -> DoryDaemonVerifiedBackendRuntime
+    var hostProbe: @Sendable (String) throws -> DoryDaemonProductionHostObservation
+}
+
 struct DoryDaemonBackendRuntimeSpecification: Sendable, Equatable {
     var descriptor: MachineBackendDescriptor
     var executablePath: String
@@ -470,6 +480,7 @@ private struct DoryDaemonProductionPlanningMaterial: Sendable {
     var launchArtifacts: [DoryResolvedMachineLaunchArtifact]
     var runtimes: [DoryDaemonVerifiedBackendRuntime]
     var qualifications: [DoryResolvedTrustedVirtualMachineQualification]
+    var candidateCampaignCells: [DoryResolvedCandidateCampaignCell]
     var media: DoryDaemonVirtualMachineResolvedMedia
     var backendInventories: [DoryDaemonVirtualMachineBackendRuntimeInventory]
     var hostFacts: DoryAppleSiliconHostFacts
@@ -492,6 +503,17 @@ private struct DoryDaemonProductionPlanningMaterial: Sendable {
             $0.qualificationIdentity < $1.qualificationIdentity
         }
     }
+
+    var campaignCellBindings: [String] {
+        candidateCampaignCells.map {
+            $0.cell.cellIdentifier + ":" + $0.manifestSHA256
+        }.sorted()
+    }
+}
+
+private enum DoryDaemonVirtualMachineQualificationMode: Sendable {
+    case publicCatalog(DoryVerifiedVirtualMachineQualificationAuthority)
+    case candidateCampaign(DoryVerifiedVirtualMachineCandidateCampaignAuthority)
 }
 
 /// Production inventory backed exclusively by opaque verified authorities. It deliberately does
@@ -504,7 +526,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
     DoryDaemonVirtualMachinePreSpawnAuthorizationProviding,
     @unchecked Sendable
 {
-    private let qualificationAuthority: DoryVerifiedVirtualMachineQualificationAuthority
+    private let qualificationMode: DoryDaemonVirtualMachineQualificationMode
     private let artifactAuthority: DoryVirtualMachineArtifactAuthority
     private let resourceLedger: DoryVirtualMachineResourceAdmissionLedger
     private let stateDirectory: String
@@ -535,7 +557,38 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         rendererCrashSuppressionStore:
             DoryRendererCrashSuppressionStore? = nil
     ) {
-        self.qualificationAuthority = qualificationAuthority
+        qualificationMode = .publicCatalog(qualificationAuthority)
+        self.artifactAuthority = artifactAuthority
+        self.resourceLedger = resourceLedger
+        self.stateDirectory = stateDirectory
+        self.armVirtFirmwareBundlePath = armVirtFirmwareBundlePath
+        self.pcFirmwareBundlePath = pcFirmwareBundlePath
+        self.runtimeSpecifications = Dictionary(uniqueKeysWithValues: runtimeSpecifications.map {
+            ($0.descriptor.identity, $0)
+        })
+        self.runtimeVerifier = runtimeVerifier
+        self.hostProbe = hostProbe
+        self.rendererReleaseIdentityProvider = rendererReleaseIdentityProvider
+        self.rendererCrashSuppressionStore = rendererCrashSuppressionStore
+    }
+
+    init(
+        candidateCampaignAuthority:
+            DoryVerifiedVirtualMachineCandidateCampaignAuthority,
+        artifactAuthority: DoryVirtualMachineArtifactAuthority,
+        resourceLedger: DoryVirtualMachineResourceAdmissionLedger,
+        stateDirectory: String,
+        armVirtFirmwareBundlePath: String? = nil,
+        pcFirmwareBundlePath: String? = nil,
+        runtimeSpecifications: [DoryDaemonBackendRuntimeSpecification],
+        runtimeVerifier: @escaping DoryDaemonVirtualMachineProductionTrustFactory.RuntimeVerifier,
+        hostProbe: @escaping DoryDaemonVirtualMachineProductionTrustFactory.HostProbe,
+        rendererReleaseIdentityProvider:
+            any DoryRendererReleaseIdentityProviding,
+        rendererCrashSuppressionStore:
+            DoryRendererCrashSuppressionStore? = nil
+    ) {
+        qualificationMode = .candidateCampaign(candidateCampaignAuthority)
         self.artifactAuthority = artifactAuthority
         self.resourceLedger = resourceLedger
         self.stateDirectory = stateDirectory
@@ -578,6 +631,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                     capabilityQualifications: initial.qualifications.map(
                         \.capabilityQualification
                     ),
+                    candidateCampaignCells: initial.candidateCampaignCells,
                     persistence: persistence
                 )
             },
@@ -595,7 +649,9 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                           current.launchArtifacts == initial.launchArtifacts,
                           current.backendInventories == initial.backendInventories,
                           current.runtimes == initial.runtimes,
-                          current.qualificationRecords == initial.qualificationRecords else {
+                          current.qualificationRecords == initial.qualificationRecords,
+                          current.campaignCellBindings
+                            == initial.campaignCellBindings else {
                         throw DoryDaemonProductionTrustInventoryError.invalidRequest
                     }
                 }
@@ -649,6 +705,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         }
 
         var qualifications: [DoryResolvedTrustedVirtualMachineQualification] = []
+        var candidateCampaignCells: [DoryResolvedCandidateCampaignCell] = []
         for runtime in runtimes {
             for graphics in request.acceptableGraphics {
                 let capability = DoryVirtualMachineCapabilityRequest(
@@ -659,29 +716,52 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                     devices: request.devices,
                     virtualHardwareABIVersion: request.virtualHardwareABIVersion
                 )
-                if let qualification = try? qualificationAuthority.resolve(
-                    request: capability,
-                    backendImplementationIdentifier:
-                        runtime.descriptor.implementationIdentifier,
-                    backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
-                    hostHardwareModelIdentifier: host.hardwareModelIdentifier,
-                    hostOperatingSystemBuild: host.operatingSystemBuild,
-                    installedComponents: runtime.components
-                ) {
-                    qualifications.append(qualification)
+                switch qualificationMode {
+                case let .publicCatalog(authority):
+                    if let qualification = try? authority.resolve(
+                        request: capability,
+                        backendImplementationIdentifier:
+                            runtime.descriptor.implementationIdentifier,
+                        backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
+                        hostHardwareModelIdentifier: host.hardwareModelIdentifier,
+                        hostOperatingSystemBuild: host.operatingSystemBuild,
+                        installedComponents: runtime.components
+                    ) {
+                        qualifications.append(qualification)
+                    }
+                case let .candidateCampaign(authority):
+                    if let cell = try? authority.resolve(
+                        request: capability,
+                        backendImplementationIdentifier:
+                            runtime.descriptor.implementationIdentifier,
+                        backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
+                        hostHardwareModelIdentifier: host.hardwareModelIdentifier,
+                        hostOperatingSystemBuild: host.operatingSystemBuild,
+                        installedComponents: runtime.components,
+                        machineID: request.machineID,
+                        virtualCPUCount: request.resources.virtualCPUCount,
+                        memoryBytes: request.resources.memoryBytes,
+                        storageBytes: request.resources.diskBytes
+                    ) {
+                        candidateCampaignCells.append(cell)
+                    }
                 }
             }
         }
-        let portableRuntime = Self.portableRuntime(
-            for: request,
-            media: artifact.media,
-            runtimes: runtimes
-        )
+        let portableRuntime: DoryDaemonVerifiedBackendRuntime?
+        if case .publicCatalog = qualificationMode {
+            portableRuntime = Self.portableRuntime(
+                for: request, media: artifact.media, runtimes: runtimes
+            )
+        } else {
+            portableRuntime = nil
+        }
         let portableSoftwareQualification = qualifications.first {
             $0.record.backend == .appleVirtualizationFramework
                 && $0.record.graphics == .software
         }
-        guard !qualifications.isEmpty || portableRuntime != nil else {
+        guard !qualifications.isEmpty || !candidateCampaignCells.isEmpty
+                || portableRuntime != nil else {
             throw DoryDaemonProductionTrustInventoryError.qualificationUnavailable
         }
 
@@ -689,7 +769,9 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         switch artifact.media.kind {
         case .installerISO:
             do {
-                if let qualification = portableSoftwareQualification
+                if !candidateCampaignCells.isEmpty {
+                    inspection = nil
+                } else if let qualification = portableSoftwareQualification
                     ?? (portableRuntime == nil ? qualifications.first : nil) {
                     inspection = try DoryQualifiedBootMediaInspector.inspectInstallerISO(
                         atPath: artifact.path,
@@ -728,13 +810,17 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             }
             inspection = nil
         case .macOSRestoreImage:
-            do {
-                inspection = try preparedNativeMacOSRestoreInspection(
-                    artifact: artifact,
-                    launchArtifacts: launchArtifacts
-                ).inspection
-            } catch {
-                throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+            if !candidateCampaignCells.isEmpty {
+                inspection = nil
+            } else {
+                do {
+                    inspection = try preparedNativeMacOSRestoreInspection(
+                        artifact: artifact,
+                        launchArtifacts: launchArtifacts
+                    ).inspection
+                } catch {
+                    throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+                }
             }
         }
 
@@ -765,6 +851,22 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                 )
             )
         }
+        var campaignRuntimeIdentities: Set<DoryVirtualizationBackendIdentity> = []
+        for campaign in candidateCampaignCells {
+            let record = campaign.cell
+            guard let runtime = runtimeByIdentity[record.capability.backend],
+                  runtime.runtimeBuildIdentifier
+                    == record.backendRuntimeBuildIdentifier else { continue }
+            guard campaignRuntimeIdentities.insert(record.capability.backend).inserted else {
+                continue
+            }
+            inventories.append(DoryDaemonVirtualMachineBackendRuntimeInventory(
+                backend: record.capability.backend,
+                runtimeBuildIdentifier: runtime.runtimeBuildIdentifier,
+                components: runtime.componentEvidence,
+                hostQualification: nil
+            ))
+        }
         var portableInventoryCount = 0
         if portableSoftwareQualification == nil {
             let portableIdentities: [DoryVirtualizationBackendIdentity]
@@ -790,7 +892,8 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                 portableInventoryCount += 1
             }
         }
-        guard inventories.count == qualifications.count + portableInventoryCount else {
+        guard inventories.count == qualifications.count
+                + campaignRuntimeIdentities.count + portableInventoryCount else {
             throw DoryDaemonProductionTrustInventoryError.backendUnavailable
         }
         for index in inventories.indices {
@@ -806,6 +909,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             launchArtifacts: launchArtifacts,
             runtimes: runtimes,
             qualifications: qualifications,
+            candidateCampaignCells: candidateCampaignCells,
             media: DoryDaemonVirtualMachineResolvedMedia(
                 reference: artifact.reference,
                 media: artifact.media,
@@ -891,14 +995,51 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             throw DoryDaemonProductionTrustInventoryError.mediaInvalid
         }
 
+        let isCandidateCampaign: Bool
+        if case .candidateCampaign = qualificationMode {
+            isCandidateCampaign = true
+        } else {
+            isCandidateCampaign = false
+        }
         let usesPortableBaseline = Self.planUsesPortableLinuxEFIBaseline(plan)
             || Self.planUsesPreparedNativeMacOSBaseline(plan)
         let qualification: DoryResolvedTrustedVirtualMachineQualification?
-        if usesPortableBaseline {
+        var candidateCampaignCell: DoryResolvedCandidateCampaignCell?
+        if isCandidateCampaign {
+            guard plan.supportTier == .preview,
+                  plan.qualificationEvidence.runtime == nil,
+                  plan.qualificationEvidence.graphics == nil,
+                  plan.hostQualification == nil,
+                  let resources = plan.resources,
+                  case let .candidateCampaign(authority) = qualificationMode else {
+                throw DoryDaemonProductionTrustInventoryError.qualificationUnavailable
+            }
+            do {
+                candidateCampaignCell = try authority.resolve(
+                    request: plan.exactCapabilityRequest,
+                    backendImplementationIdentifier:
+                        runtime.descriptor.implementationIdentifier,
+                    backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
+                    hostHardwareModelIdentifier: host.hardwareModelIdentifier,
+                    hostOperatingSystemBuild: host.operatingSystemBuild,
+                    installedComponents: runtime.components,
+                    machineID: plan.machineID,
+                    virtualCPUCount: resources.virtualCPUCount,
+                    memoryBytes: resources.memoryBytes,
+                    storageBytes: resources.diskBytes
+                )
+                qualification = nil
+            } catch {
+                throw DoryDaemonProductionTrustInventoryError.qualificationUnavailable
+            }
+        } else if usesPortableBaseline {
             qualification = nil
         } else {
             do {
-                qualification = try qualificationAuthority.resolve(
+                guard case let .publicCatalog(authority) = qualificationMode else {
+                    throw DoryDaemonProductionTrustInventoryError.qualificationUnavailable
+                }
+                qualification = try authority.resolve(
                     request: plan.exactCapabilityRequest,
                     backendImplementationIdentifier:
                         runtime.descriptor.implementationIdentifier,
@@ -916,7 +1057,13 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         switch artifact.media.kind {
         case .installerISO:
             do {
-                if let qualification {
+                if let candidateCampaignCell {
+                    guard candidateCampaignCell.bootMediaInspectionEvidence
+                            == plan.bootMedia.inspectionEvidence else {
+                        throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+                    }
+                    inspection = nil
+                } else if let qualification {
                     inspection = try DoryQualifiedBootMediaInspector.inspectInstallerISO(
                         atPath: artifact.path,
                         qualification: qualification
@@ -958,17 +1105,25 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             }
             inspection = nil
         case .macOSRestoreImage:
-            do {
-                let prepared = try preparedNativeMacOSRestoreInspection(
-                    artifact: artifact,
-                    launchArtifacts: launchArtifacts
-                )
-                guard prepared.auditEvidence == plan.bootMedia.inspectionEvidence else {
+            if let candidateCampaignCell {
+                guard candidateCampaignCell.bootMediaInspectionEvidence
+                        == plan.bootMedia.inspectionEvidence else {
                     throw DoryDaemonProductionTrustInventoryError.mediaInvalid
                 }
-                inspection = prepared.inspection
-            } catch {
-                throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+                inspection = nil
+            } else {
+                do {
+                    let prepared = try preparedNativeMacOSRestoreInspection(
+                        artifact: artifact,
+                        launchArtifacts: launchArtifacts
+                    )
+                    guard prepared.auditEvidence == plan.bootMedia.inspectionEvidence else {
+                        throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+                    }
+                    inspection = prepared.inspection
+                } catch {
+                    throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+                }
             }
         }
 
@@ -1027,6 +1182,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             backendRuntimes: [runtimeInventory],
             resourceAdmission: admission,
             exactStartRuntimeQualification: qualification?.runtime,
+            candidateCampaignCells: candidateCampaignCell.map { [$0] } ?? [],
             persistence: persistence
         )
     }
@@ -1780,6 +1936,90 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
             authority: authority,
             runtimes: runtimes,
             permitsLegacyCompatibilityMigration: mayUseLegacyMigration,
+            rendererReleaseIdentityProvider: rendererReleaseIdentityProvider,
+            runtimeVerifier: runtimeVerifier,
+            hostProbe: hostProbe
+        ))
+    }
+
+    func verifiedCandidateCampaignMaterial(
+        authorityPath: String,
+        signaturePath: String,
+        applicationRoot: String,
+        machineConfiguration: MachineManagerConfiguration,
+        publicKey: String = DoryComponentDefaults.publicKey,
+        minimumRevocationSequence: UInt64 = 1
+    ) -> Result<
+        DoryDaemonVirtualMachineVerifiedCandidateCampaignMaterial,
+        DoryDaemonVirtualMachineProductionTrustUnavailable
+    > {
+        let expectedDaemon = URL(fileURLWithPath: applicationRoot)
+            .appendingPathComponent("Contents/Helpers/doryd")
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        guard Bundle.main.executableURL?.resolvingSymlinksInPath()
+                .standardizedFileURL.path == expectedDaemon else {
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: .daemonSignatureUnavailable,
+                message: "Candidate authority does not bind the running daemon executable."
+            ))
+        }
+        guard daemonIdentityVerifier() else {
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: .daemonSignatureUnavailable,
+                message: "Candidate campaigns require the production-signed Dory daemon."
+            ))
+        }
+        do { _ = try hostProbe(machineConfiguration.stateDirectory) }
+        catch {
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: .hostFactsUnavailable,
+                message: "Exact candidate-campaign host facts are unavailable."
+            ))
+        }
+        let authority: DoryVerifiedVirtualMachineCandidateCampaignAuthority
+        do {
+            authority = try DoryVirtualMachineCandidateCampaignAuthorityResolver.resolve(
+                authorityPath: authorityPath,
+                signaturePath: signaturePath,
+                publicKeyBase64: publicKey,
+                expectedStateRoot: machineConfiguration.stateDirectory,
+                expectedApplicationRoot: applicationRoot,
+                minimumRevocationSequence: minimumRevocationSequence
+            )
+        } catch {
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: .qualificationAuthorityUnavailable,
+                message: "Candidate campaign authority could not be verified: \(error)"
+            ))
+        }
+        var runtimes: [DoryDaemonVerifiedBackendRuntime] = []
+        do {
+            runtimes.append(try runtimeVerifier(
+                machineConfiguration.vmmExecutablePath,
+                VirtualizationFrameworkLinuxMachineBackend.backendDescriptor,
+                "dory-vmm"
+            ))
+        } catch {
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: .backendRuntimeUnavailable,
+                message: "The candidate Virtualization.framework helper failed verification."
+            ))
+        }
+        if let rawPath = machineConfiguration.acceleratedDesktopExecutablePath,
+           let runtime = try? runtimeVerifier(
+               rawPath, RawHVLinuxMachineBackend.backendDescriptor, "dory-hv"
+           ) {
+            runtimes.append(runtime)
+        }
+        guard authority.stateRoot == machineConfiguration.stateDirectory else {
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: .qualificationAuthorityUnavailable,
+                message: "Candidate campaign state authority does not match the selected drive."
+            ))
+        }
+        return .success(DoryDaemonVirtualMachineVerifiedCandidateCampaignMaterial(
+            authority: authority,
+            runtimes: runtimes,
             rendererReleaseIdentityProvider: rendererReleaseIdentityProvider,
             runtimeVerifier: runtimeVerifier,
             hostProbe: hostProbe

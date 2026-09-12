@@ -42,6 +42,11 @@ public enum DoryX86Feature: String, Codable, CaseIterable, Sendable, Hashable {
   case bmi2
   case lzcnt
   case movbe
+  // RDRAND/RDSEED: entropy instructions. A03.4 requires real entropy or
+  // unadvertised; no profile advertises these until a real entropy source
+  // is wired into the guest, so they fault with #UD by default.
+  case rdrand
+  case rdseed
   fileprivate var membershipBit: UInt64 {
     switch self {
     case .x87: return 1 << 0
@@ -83,6 +88,8 @@ public enum DoryX86Feature: String, Codable, CaseIterable, Sendable, Hashable {
     case .bmi2: return 1 << 36
     case .lzcnt: return 1 << 37
     case .movbe: return 1 << 38
+    case .rdrand: return 1 << 39
+    case .rdseed: return 1 << 40
     }
   }
 
@@ -132,6 +139,10 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     .f16c, .fma, .bmi1, .bmi2, .lzcnt, .movbe,
   ]
 
+  /// No entropy instruction may be selected through a public or persisted
+  /// profile until its execution and CPUID contracts are implemented together.
+  private static let unimplementedEntropyFeatures: Set<DoryX86Feature> = [.rdrand, .rdseed]
+
   /// Creates a guest profile, omitting optional SIMD and extended-state
   /// capabilities that are not part of Dory's qualified public CPU contract.
   public init(
@@ -168,6 +179,7 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     self.features = allowingUnqualifiedSIMDAndExtendedState
       ? features
       : features.subtracting(Self.unqualifiedSIMDAndExtendedStateFeatures)
+        .subtracting(Self.unimplementedEntropyFeatures)
     // The requested feature set is immutable. Resolve dependency chains once instead of
     // hashing the same features recursively on every instruction and page-table access.
     let admittedFeatures = self.features

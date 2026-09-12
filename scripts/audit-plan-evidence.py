@@ -16,6 +16,8 @@ from typing import Any
 EVIDENCE_SECTION = re.compile(
     r"^## Where we actually are\s*$\n(?P<body>.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL
 )
+BASELINE_START = "<!-- baseline-evidence:start -->"
+BASELINE_END = "<!-- baseline-evidence:end -->"
 EVIDENCE_REFERENCE = re.compile(
     r"docs/virtualization/evidence/[A-Za-z0-9._/-]+"
 )
@@ -37,6 +39,23 @@ class AuditError(RuntimeError):
 
 def fail(message: str) -> None:
     raise AuditError(f"plan evidence audit: {message}")
+
+
+def evidence_section(plan: str) -> tuple[str, str]:
+    """Prefer an explicit region so changing plan headings cannot omit evidence."""
+    starts, ends = plan.count(BASELINE_START), plan.count(BASELINE_END)
+    if starts or ends:
+        if starts != 1 or ends != 1:
+            fail("PLAN.md must contain exactly one matching baseline evidence marker pair")
+        start = plan.index(BASELINE_START) + len(BASELINE_START)
+        end = plan.index(BASELINE_END)
+        if end < start:
+            fail("PLAN.md baseline evidence markers are out of order")
+        return "baseline-evidence", plan[start:end]
+    sections = list(EVIDENCE_SECTION.finditer(plan))
+    if len(sections) != 1:
+        fail("PLAN.md must contain one baseline evidence region or one 'Where we actually are' section")
+    return "Where we actually are", sections[0].group("body")
 
 
 def direct_regular(path: Path) -> bool:
@@ -299,12 +318,10 @@ def main() -> int:
     if not direct_regular(plan):
         fail(f"plan must be a direct regular file: {plan}")
     plan_bytes = plan.read_bytes()
-    match = EVIDENCE_SECTION.search(plan_bytes.decode("utf-8"))
-    if match is None:
-        fail("PLAN.md has no 'Where we actually are' section")
-    citations = sorted({item.group(0).rstrip(".") for item in EVIDENCE_REFERENCE.finditer(match.group("body"))})
+    section_name, section_body = evidence_section(plan_bytes.decode("utf-8"))
+    citations = sorted({item.group(0).rstrip(".") for item in EVIDENCE_REFERENCE.finditer(section_body)})
     if not citations:
-        fail("'Where we actually are' cites no evidence paths")
+        fail(f"{section_name} cites no evidence paths")
     citation_bindings = [citation_status(root, relative) for relative in citations]
     supplemental = sorted(
         relative for relative in REACQUISITION_ONLY | HOST_ONLY if (root / relative).exists()
@@ -332,7 +349,7 @@ def main() -> int:
         "auditorSHA256": digest(Path(__file__).resolve()),
         "planSHA256": hashlib.sha256(plan_bytes).hexdigest(),
         "historicalEvidenceOnly": True,
-        "evidenceSection": "Where we actually are",
+        "evidenceSection": section_name,
         "citationBindings": citation_bindings,
         "documents": documents,
         "incompleteDocuments": incomplete,

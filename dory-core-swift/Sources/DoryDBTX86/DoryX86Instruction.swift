@@ -902,6 +902,11 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case moveVectorToMMX(destination: UInt8, source: UInt8)
   /// `POPCNT r16/32/64, r/m16/32/64`: count set bits in the source operand.
   case populationCount(destination: DoryX86Operand, source: DoryX86Operand)
+  /// `RDRAND r16/32/64` (`0F C7 /6`): read a hardware random value into the
+  /// destination register and set CF=1 on success or CF=0 on failure. The
+  /// feature is unadvertised until a real entropy source is wired into the
+  /// guest, so the interpreter faults with #UD by default.
+  case randomRead(destination: DoryX86Operand, source: DoryX86EntropySource)
 }
 
 public struct DoryX86DecodedInstruction: Codable, Sendable, Hashable {
@@ -924,4 +929,10 @@ public struct DoryX86DecodedInstruction: Codable, Sendable, Hashable {
 
   public var length: UInt8 { UInt8(bytes.count) }
   public var nextInstructionAddress: UInt64 { address &+ UInt64(bytes.count) }
+}
+
+/// The entropy source for a `RDRAND` or `RDSEED` instruction.
+public enum DoryX86EntropySource: String, Codable, Sendable, Hashable {
+  case rdrand
+  case rdseed
 }

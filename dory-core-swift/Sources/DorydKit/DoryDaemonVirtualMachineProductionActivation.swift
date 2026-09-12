@@ -301,6 +301,171 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
         ))
     }
 
+    /// Activates the same production resolver/planner/handoff graph for a separately signed,
+    /// time-bounded physical qualification campaign. The resulting plans are preview records,
+    /// carry no public qualification evidence, and never advance the production catalog floor.
+    public func activateCandidateCampaign(
+        authorityPath: String,
+        signaturePath: String,
+        applicationRoot: String,
+        store: DoryComponentStore,
+        machineConfiguration: MachineManagerConfiguration
+    ) -> DoryDaemonVirtualMachineProductionActivationResult {
+        let canonicalStateDirectory = store.drive.machinesDirectory
+        guard machineConfiguration.stateDirectory == canonicalStateDirectory,
+              machineConfiguration.passMachineArguments else {
+            return unavailableActivation(
+                .stateAuthorityUnavailable,
+                "Candidate campaign state must be the selected drive's exact machines root."
+            )
+        }
+        let machineStateBroker: DoryMachineStateBroker
+        do {
+            machineStateBroker = try DoryMachineStateBroker(
+                canonicalStateRootPath: canonicalStateDirectory
+            )
+        } catch {
+            return unavailableActivation(
+                .stateAuthorityUnavailable,
+                "Candidate campaign machine-state authority could not be acquired."
+            )
+        }
+        let material: DoryDaemonVirtualMachineVerifiedCandidateCampaignMaterial
+        switch verifiedCandidateCampaignMaterial(
+            authorityPath: authorityPath,
+            signaturePath: signaturePath,
+            applicationRoot: applicationRoot,
+            machineConfiguration: machineConfiguration
+        ) {
+        case let .success(value): material = value
+        case let .failure(reason):
+            return .unavailable(DoryDaemonVirtualMachineProductionActivationFailure(
+                code: .trustUnavailable,
+                message: "Candidate campaign trust preparation failed.",
+                trustFailure: reason
+            ))
+        }
+
+        let rendererCrashSuppressionStore = DoryRendererCrashSuppressionStore(
+            stateDirectory: canonicalStateDirectory
+        )
+        let machineManager = MachineManager(
+            configuration: machineConfiguration,
+            launchPolicy: .perWorkspaceAuthority,
+            machineStateBroker: machineStateBroker,
+            agentConnector: agentConnector
+        )
+        do {
+            try machineManager.installRendererCrashSuppressionStore(
+                rendererCrashSuppressionStore
+            )
+        } catch {
+            return unavailableActivation(
+                .installationRejected,
+                "MachineManager rejected candidate renderer runtime-health authority."
+            )
+        }
+
+        let backends: [any MachineBackend]
+        do {
+            backends = try material.runtimes.map { runtime -> any MachineBackend in
+                switch runtime.descriptor.identity {
+                case .appleVirtualizationFramework:
+                    return VirtualizationFrameworkLinuxMachineBackend(
+                        executablePath: runtime.executablePath,
+                        operations: machineManager.resolvedLaunchCompatibilityOperations(
+                            for: runtime.descriptor.identity
+                        )
+                    )
+                case .doryHypervisor:
+                    return RawHVLinuxMachineBackend(
+                        executablePath: runtime.executablePath,
+                        operations: machineManager.resolvedLaunchCompatibilityOperations(
+                            for: runtime.descriptor.identity
+                        )
+                    )
+                case .qemuHypervisorFramework:
+                    throw DoryDaemonVirtualMachineProductionActivationFailure(
+                        code: .backendCompositionUnavailable,
+                        message: "Candidate campaigns cannot authorize QEMU."
+                    )
+                }
+            }
+        } catch let failure as DoryDaemonVirtualMachineProductionActivationFailure {
+            return .unavailable(failure)
+        } catch {
+            return unavailableActivation(
+                .backendCompositionUnavailable,
+                "Candidate backend adapters could not be composed."
+            )
+        }
+
+        let composition = DoryDaemonVirtualMachineProductionPlanningCompositionFactory(
+            stateDirectory: canonicalStateDirectory,
+            backends: backends,
+            candidateCampaignAuthority: material.authority,
+            runtimes: material.runtimes,
+            armVirtFirmwareBundlePath: machineConfiguration.armVirtFirmwareBundlePath,
+            pcFirmwareBundlePath: machineConfiguration.pcFirmwareBundlePath,
+            runtimeVerifier: material.runtimeVerifier,
+            hostProbe: material.hostProbe,
+            rendererReleaseIdentityProvider:
+                material.rendererReleaseIdentityProvider,
+            rendererCrashSuppressionStore: rendererCrashSuppressionStore,
+            mutationAuthority: machineManager,
+            recoveryProvider: DoryDaemonVirtualMachineProductionRecoveryProvider(
+                stateDirectory: canonicalStateDirectory
+            )
+        )
+        let planning: DoryDaemonVirtualMachineProductionPlanningContext
+        switch composition.resolve() {
+        case let .ready(value): planning = value
+        case let .unavailable(reason):
+            return .unavailable(DoryDaemonVirtualMachineProductionActivationFailure(
+                code: .planningUnavailable,
+                message: "Candidate planning recovery or composition failed.",
+                planningFailure: reason
+            ))
+        }
+        let planningController = DoryDaemonVirtualMachineProductionPlanningController(
+            planning: planning
+        )
+        do {
+            try machineManager.installResolvedLaunchInfrastructure(
+                registry: planning.registry,
+                resolver: planning.launchResolver,
+                plans: planning.plans,
+                expectedPlanRevision: { machineID in
+                    try? planning.plans.read(id: machineID).planRevision
+                },
+                productionPlanningController: planningController,
+                resourceAdmissionLedger: planning.resourceLedger
+            )
+            try material.authority.activateReplayFloor()
+            try machineManager.completeRecoveredInstallerOperations()
+        } catch {
+            return unavailableActivation(
+                .installationRejected,
+                "Candidate campaign launch infrastructure or replay floor could not be installed."
+            )
+        }
+        let identifiers = Dictionary(uniqueKeysWithValues: material.runtimes.map {
+            ($0.descriptor.identity, $0.runtimeBuildIdentifier)
+        })
+        return .activated(DoryDaemonVirtualMachineProductionActivationContext(
+            machineManager: machineManager,
+            planning: planning,
+            planningController: planningController,
+            backendRuntimeBuildIdentifiers: identifiers,
+            machineImportEnvironment: DoryMachineImportEnvironment(
+                backendRuntimeBuildIdentifiers: identifiers,
+                backendComponents: Dictionary(uniqueKeysWithValues: material.runtimes.map {
+                    ($0.descriptor.identity, $0.componentEvidence)
+                })
+            )
+        ))
+    }
+
     private func unavailableActivation(
         _ code: DoryDaemonVirtualMachineProductionActivationFailureCode,
         _ message: String

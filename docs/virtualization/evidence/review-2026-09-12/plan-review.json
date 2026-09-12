@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.five-part-plan-validation",
+  "createdAt": "2026-09-12T18:21:06.617415+00:00",
+  "baseCommit": "7425872c207accaedb7471f9a25343eb1e728f64",
+  "workingTreeDirty": true,
+  "planSHA256": "bf90b7040d641c040795ccd16d0c4d6955b1303210fdcb644ac698adb21ae1ce",
+  "mainParts": [
+    "Part 1 \u2014 Correct the baseline and finish the current review",
+    "Part 2 \u2014 Complete the Linux machines and execution engines",
+    "Part 3 \u2014 Deliver hardware graphics on both Linux architectures",
+    "Part 4 \u2014 Complete macOS and the everyday VM product",
+    "Part 5 \u2014 Qualify, harden and ship the complete infrastructure"
+  ],
+  "workPackageCount": 47,
+  "wordCount": 15107,
+  "localLinksAndAnchorsValid": true,
+  "historicalAuditComplete": true,
+  "historicalAuditQualification": false,
+  "retainedX86LogDigestsVerified": true,
+  "liveCampaignRun": false,
+  "releaseQualified": false,
+  "limitations": [
+    "Structural/link/evidence checks validate the document and retained local review results, not physical VM support.",
+    "The historical audit retains reacquisition-only and host-only limitations.",
+    "The full Part 1 exit gate remains open for candidate authority and live baseline work."
+  ],
+  "postRewriteChecks": {
+    "evidenceAuditorTests": 9,
+    "noQEMUContractTests": 4,
+    "gitDiffWhitespace": "passed",
+    "reviewEvidenceUnignored": true
+  },
+  "atomicityAttachmentsVerified": true,
+  "cleanup": {
+    "isolatedReviewSwiftBuildRemoved": "/tmp/dory-review-x86-build",
+    "retainedEvidencePreserved": true,
+    "preExistingUserBuildUntouched": true
+  }
+}

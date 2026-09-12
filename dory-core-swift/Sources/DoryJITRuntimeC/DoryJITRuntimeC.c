@@ -1320,6 +1320,12 @@ int dory_jit_atomic_compare_exchange_pair_from_context(
         return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
     }
 
+#if !defined(__aarch64__)
+    if (byte_count == 16) {
+        return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
+    }
+#endif
+
     dory_jit_atomic_lock();
     if (byte_count == 8) {
         const uint64_t expected =
@@ -1336,21 +1342,34 @@ int dory_jit_atomic_compare_exchange_pair_from_context(
         );
         values->observed_low = (uint32_t)observed;
         values->observed_high = observed >> 32;
-    } else {
-        uint64_t *const host = (uint64_t *)(uintptr_t)resolution.host_address;
-        const uint64_t observed_low = __atomic_load_n(&host[0], __ATOMIC_SEQ_CST);
-        const uint64_t observed_high = __atomic_load_n(&host[1], __ATOMIC_SEQ_CST);
-        const int equal = observed_low == values->expected_low &&
-            observed_high == values->expected_high;
-        __atomic_store_n(
-            &host[0], equal ? values->desired_low : observed_low, __ATOMIC_SEQ_CST
-        );
-        __atomic_store_n(
-            &host[1], equal ? values->desired_high : observed_high, __ATOMIC_SEQ_CST
-        );
-        values->observed_low = observed_low;
-        values->observed_high = observed_high;
     }
+#if defined(__aarch64__)
+    else {
+        // The mutex serializes cooperating interpreter helpers, but ordinary generated
+        // loads/stores and DMA do not take it. CMPXCHG16B therefore needs one hardware
+        // atomic operation over the entire aligned operand. In particular, writing back
+        // two separately observed halves on mismatch can overwrite a concurrent store.
+        // Do not permit a compiler/library lock-based implementation of this operation.
+        _Static_assert(__atomic_always_lock_free(16, 0), "128-bit CAS must be lock-free");
+        typedef unsigned __int128 dory_atomic_uint128;
+        dory_atomic_uint128 observed =
+            (dory_atomic_uint128)values->expected_low |
+            ((dory_atomic_uint128)values->expected_high << 64);
+        const dory_atomic_uint128 desired =
+            (dory_atomic_uint128)values->desired_low |
+            ((dory_atomic_uint128)values->desired_high << 64);
+        (void)__atomic_compare_exchange_n(
+            (dory_atomic_uint128 *)(uintptr_t)resolution.host_address,
+            &observed,
+            desired,
+            0,
+            __ATOMIC_SEQ_CST,
+            __ATOMIC_SEQ_CST
+        );
+        values->observed_low = (uint64_t)observed;
+        values->observed_high = (uint64_t)(observed >> 64);
+    }
+#endif
     dory_jit_atomic_unlock();
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
