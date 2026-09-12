@@ -9170,7 +9170,13 @@ import Testing
         0xC3,
         0xF4,
       ]
-      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 32 * 1024)
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 32 * 1024,
+        rawTargetPredictionOptions: [
+          .indirectBranchTargetCache,
+          .shadowReturnStack,
+        ]
+      )
       let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
       func run() throws -> (DoryARM64ExecutionSummary, DoryX86ArchitecturalState, UInt64) {
         var state = try DoryX86ArchitecturalState(
@@ -9220,6 +9226,8 @@ import Testing
       #expect(executor.diagnostics.shadowReturnStackHits == 1)
       #expect(executor.diagnostics.shadowReturnStackMisses == 1)
       #expect(executor.diagnostics.shadowReturnStackHitRate == 0.5)
+      #expect(executor.diagnostics.directChainPatches == 0)
+      #expect(executor.diagnostics.directlyChainedBlocks == 1)
     #endif
   }
 

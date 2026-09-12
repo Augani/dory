@@ -6594,7 +6594,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             if hasCheckpoint {
               for index in context.indices { checkpoint[index] = context[index] }
             }
-            let usesGeneratedChainAccounting = canInitiateRuntimeChain(resident)
+            let usesGeneratedChainAccounting = canUseGeneratedChainAccounting(resident)
             context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] =
               usesGeneratedChainAccounting ? 1 : 0
             context[DoryARM64Tier1ABI.ContextWord.chainRemainingInstructions.rawValue] =
@@ -7732,6 +7732,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     return chainSlots.isEmpty
       ? rawTargetPredictionOptions.contains(.indirectBranchTargetCache)
       : directChainPredictionEnabled(for: resident)
+  }
+
+  private func canUseGeneratedChainAccounting(_ resident: ResidentBlock) -> Bool {
+    if canInitiateRuntimeChain(resident) { return true }
+    guard rawTargetPredictionOptions.contains(.shadowReturnStack),
+      let chainSlots = resident.block.chainSlots, !chainSlots.isEmpty,
+      !resident.endsTimeBoundary
+    else { return false }
+    // CALL uses an ordinary direct slot but must enter chain mode to publish its shadow-return
+    // record. Direct patch installation remains independently gated by canInitiateRuntimeChain.
+    return true
   }
 
   private func directChainPredictionEnabled(for resident: ResidentBlock) -> Bool {
