@@ -508,7 +508,10 @@ public final class DoryDaemonVirtualMachineLaunchPlanResolver:
         let fresh: DoryDaemonVirtualMachineStartEvidenceCollection
         do { fresh = try evidenceCollector.collectFreshEvidence(for: plan, purpose: request.purpose) }
         catch {
-            throw failure(.freshEvidenceUnavailable, "Fresh trusted runtime evidence is unavailable.")
+            throw failure(
+                .freshEvidenceUnavailable,
+                "Fresh trusted runtime evidence is unavailable: \(error)"
+            )
         }
         let revalidation = DoryResolvedMachinePlanStartValidator.revalidate(
             plan,
