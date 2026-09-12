@@ -5065,7 +5065,7 @@ private func doryJITInvalidatePageTableWrite(
 /// Returning `FILLED` means the physical address was permission checked and may be cached;
 /// page faults retain their exact linear address and error code for the native exit path.
 @_cdecl("dory_x86_jit_translate")
-func doryX86JITTranslate(
+public func doryX86JITTranslate(
   _ opaque: UnsafeMutableRawPointer?,
   _ linearAddress: UInt64,
   _ rawAccess: UInt32,
