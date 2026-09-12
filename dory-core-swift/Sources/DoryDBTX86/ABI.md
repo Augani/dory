@@ -138,9 +138,11 @@ cache, and the shadow-return stack are independently selectable raw host-address
 predictors. A disabled predictor cannot initiate its runtime link and its storage
 is absent from the generated execution context. Shadow-return host targets depend
 on an enabled and populated IBTC. The production PC machine currently enables
-legacy-ABI direct chaining only: two exact-binary frozen-fixture runs accepted
-legacy sources while Tier-one direct sources, the IBTC, and shadow returns remained
-disabled. Standalone executor use retains the complete predictor set by default.
+Tier-one direct chaining only: two exact-binary frozen-fixture runs accepted that
+isolated source class while legacy direct sources, the IBTC, and shadow returns
+remained disabled. The preceding legacy-only boundary also passed twice, but the
+combined direct-source configuration remains rejected after a one-of-two failure.
+Standalone executor use retains the complete predictor set by default.
 
 The Swift dispatcher also materializes a pending tier-1 record before entering a
 legacy baseline or optimizing resident in the same chain. Those emitters consume
