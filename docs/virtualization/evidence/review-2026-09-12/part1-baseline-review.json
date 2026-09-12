@@ -134,6 +134,9 @@
     },
     "x86_64Linux": {
       "currentRunnerResult": "failed",
+      "currentRunnerConfiguration": "Release",
+      "currentRunnerSourceContent": "c26367a3f59acd46e45cd4d80838d70a43612077",
+      "currentRunnerSHA256": "28d83dec2b07e6a9d484b17597d05192c46602b5ee08039ceecd63478dc9fa44",
       "currentRunnerFailure": "x86 instructionFetch touches unmapped memory at 0xfffffe8f for 5 bytes",
       "currentFirmwareSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
       "historicalReproductionCheck": {

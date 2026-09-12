@@ -20,7 +20,7 @@ Part numbers organize the work; they do not prohibit parallel work. Once 1.5 est
 
 **Outcome:** a reproducible, honest starting point, reviewed current changes, a stable production configuration, an explicit list of remaining defects, and a usable engineering qualification path. “Clean slate” means known state and no untriaged regression in the admitted baseline. It does not mean deleting previous work, clearing the working tree by force, or claiming that unbuilt features are finished.
 
-**Current status:** the accepted implementation baseline is commit **c26367a3f**, followed by the selected-Xcode FFI producer repair at **d899bc3f64**. A detached clean checkout rebuilt the FFI twice byte-identically, built the Debug app, and reproduced the PC firmware digest. The [baseline review](docs/virtualization/evidence/review-2026-09-12/part1-baseline-review.json) and [clean build receipt](docs/virtualization/evidence/review-2026-09-12/part1-clean-build.json) retain exact results and limits. The full Part 1 exit gate remains open: the current x86 JIT runner fails before the UEFI marker, no retained Mac guest was available, and no exact-host production-signed physical candidate campaign ran. No release-qualified VM cell is established by this review.
+**Current status:** the accepted implementation baseline is commit **c26367a3f**, followed by the selected-Xcode FFI producer repair at **d899bc3f64**. A detached clean checkout rebuilt the FFI twice byte-identically, built the Debug app, and reproduced the PC firmware digest. The [baseline review](docs/virtualization/evidence/review-2026-09-12/part1-baseline-review.json) and [clean build receipt](docs/virtualization/evidence/review-2026-09-12/part1-clean-build.json) retain exact results and limits. The full Part 1 exit gate remains open: the exact current x86 JIT baseline fails before the UEFI marker, and no exact-host production-signed physical candidate campaign ran. The unavailable retained Mac guest remains a named qualification dependency. No release-qualified VM cell is established by this review.
 
 ### 1.1 What is actually implemented
 
@@ -188,7 +188,7 @@ The current qualification bootstrap cycle is an engineering issue: normal produc
 - [ ] Stable x86 production selection is retained; failed chain combinations remain disabled.
 - [x] CPU atomicity and feature-policy issues have regression coverage; unsupported guarantees remain unadvertised.
 - [ ] Real candidate campaigns can launch through constrained, authenticated authority without circular qualification.
-- [ ] One current baseline per available guest path is captured with exact inputs and explicit limits.
+- [x] One current baseline per available guest path is captured with exact inputs and explicit limits.
 - [x] Capability/matrix/evidence state agrees with the actual code and collected observations.
 - [x] Remaining work is assigned to Parts 2–5; no unresolved item is hidden behind a completed checkbox.
 
