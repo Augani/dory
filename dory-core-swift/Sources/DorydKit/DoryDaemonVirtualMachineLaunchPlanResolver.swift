@@ -248,7 +248,10 @@ public final class DoryDaemonVirtualMachineStartEvidenceCollector:
         do {
             snapshot = try inventory.startInventory(for: inventoryRequest)
         } catch {
-            throw failure(.inventoryUnavailable, "Fresh trusted start inventory could not be resolved.")
+            throw failure(
+                .inventoryUnavailable,
+                "Fresh trusted start inventory could not be resolved: \(error)"
+            )
         }
         guard snapshot.media.reference == reference else {
             throw failure(.mediaInventoryMismatch, "Fresh media resolved under a different identity.")
