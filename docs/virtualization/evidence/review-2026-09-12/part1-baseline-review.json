@@ -23,6 +23,12 @@
     "globalDeveloperDirectory": "/Library/Developer/CommandLineTools",
     "matrixMatch": false
   },
+  "signingInventory": {
+    "validCodeSigningIdentities": 3,
+    "developerIDApplicationAvailable": true,
+    "sparkleKeychainSigningProbe": "passed",
+    "completeFinalCandidateAssembled": false
+  },
   "dispositions": [
     {
       "area": "x86 decoder, entropy, feature policy, restartability and CMPXCHG16B atomicity repairs",
@@ -160,7 +166,7 @@
   "openQualificationDependencies": [
     "Approved matrix host macOS 26.6.2 build 25G83 was unavailable; this host runs macOS 27.0 build 26A5425a.",
     "Final Xcode 26.6 build 17F113 was unavailable; installed Xcode is Release Candidate build 17F109.",
-    "No production signing identity/private candidate root was supplied to issue a real staged candidate campaign.",
+    "Code-signing identities and the Sparkle keychain signer are available, but no complete immutable final candidate containing every required app, daemon, runner and worker artifact was assembled for a physical campaign.",
     "No retained macOS guest/probe was available.",
     "Docker-backed fixture preflight reported docker-engine-unavailable.",
     "The starting revision's x86 JIT runner fails before the retained UEFI marker."
