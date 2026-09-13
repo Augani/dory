@@ -2831,6 +2831,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words: inout [UInt32]
   ) {
     let byteCount = UInt32(width.rawValue / 8)
+    // Defensive: if x19 (architectural context) is NULL the prologue was skipped.
+    // Exit to the interpreter instead of loading from address 0 + offset.
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 19, 31, 31))
+    emitInterpreterUnless(condition: .notEqual, usesMemory: true, into: &words)
     words.append(encodeStore64(register: addressRegister, base: 31, byteOffset: 88))
     // A scalar spanning two linear pages cannot use one direct-mapped entry. Preserve the
     // callback path before consulting the table.
@@ -3003,6 +3007,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words: inout [UInt32]
   ) {
     let byteCount = UInt32(width.rawValue / 8)
+    // Defensive: if x19 (architectural context) is NULL the prologue was skipped.
+    // Exit to the interpreter instead of loading from address 0 + offset.
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 19, 31, 31))
+    emitInterpreterUnless(condition: .notEqual, usesMemory: true, into: &words)
     words.append(encodeStore64(register: addressRegister, base: 31, byteOffset: 88))
     words.append(encodeStore64(register: valueRegister, base: 31, byteOffset: 96))
     // A scalar spanning two linear pages cannot use one direct-mapped entry.
