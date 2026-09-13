@@ -1039,6 +1039,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         at: DoryPCV1ABI.uefiResetAddress,
         maximumCount: 1
       )
+      // Combined ACPI/SMBIOS admission runs before any table write and before
+      // consumedPayload changes so a custom SMBIOS range overlapping an ACPI
+      // range is rejected atomically with the full firmware-table layout.
+      try validateUEFITableLayout(acpi: acpi)
       consumedPayload = true
       do {
         try acpi.install(into: memory)
@@ -1051,6 +1055,44 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         loadedStates[index] = ProcessorState(applicationProcessorResetState())
       }
       haltedProcessors = [Bool](repeating: false, count: processorCount)
+    }
+  }
+
+  /// Combined ACPI/SMBIOS table admission for UEFI boot. Every write range selected by
+  /// the ACPI and SMBIOS layouts is collected and validated before any guest-RAM write
+  /// or payload-consumption state change. Ranges must be non-empty, guest-RAM writable,
+  /// and mutually non-overlapping across both table families, so a custom SMBIOS
+  /// entry-point range that overlaps an ACPI range is rejected atomically instead of
+  /// silently corrupting guest firmware discovery.
+  private func validateUEFITableLayout(acpi: DoryPCACPITables) throws {
+    func range(_ address: UInt64, _ count: UInt64) throws -> Range<UInt64> {
+      let (end, overflow) = address.addingReportingOverflow(count)
+      guard count > 0, count <= UInt64(Int.max), !overflow else {
+        throw DoryPCMachineError.invalidBootRange
+      }
+      return address..<end
+    }
+    let tables: [(UInt64, [UInt8])] = [
+      (acpi.layout.rsdp, acpi.rsdp), (acpi.layout.xsdt, acpi.xsdt),
+      (acpi.layout.madt, acpi.madt), (acpi.layout.hpet, acpi.hpet),
+      (acpi.layout.mcfg, acpi.mcfg), (acpi.layout.fadt, acpi.fadt),
+      (acpi.layout.facs, acpi.facs), (acpi.layout.dsdt, acpi.dsdt),
+      (smbios.layout.entryPoint, smbios.entryPoint),
+      (smbios.layout.structureTable, smbios.structureTable),
+    ]
+    let tableRanges = try tables.filter { !$0.1.isEmpty }.map {
+      try range($0.0, UInt64($0.1.count))
+    }
+    let ranges = tableRanges.sorted { $0.lowerBound < $1.lowerBound }
+    guard !zip(ranges, ranges.dropFirst()).contains(where: { $0.0.overlaps($0.1) }) else {
+      throw DoryPCMachineError.overlappingBootArtifacts
+    }
+    for item in tableRanges {
+      // RAM-only validation rejects writable MMIO overlays as well as ROM, holes
+      // and unmapped addresses; preflight cannot trigger a device write.
+      try physicalMemory.validateDMA(
+        at: item.lowerBound, byteCount: Int(item.count), deviceWillWrite: true
+      )
     }
   }
 
