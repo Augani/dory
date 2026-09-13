@@ -5111,7 +5111,6 @@ struct DoryJITMemoryCallbackContext {
   var failed = false
   var failedCallbackHostPC: UInt64?
   var failedExecutionContext: [UInt64]?
-  var pageTableWriteObserved = false
 }
 
 private func doryJITRecordMemoryFailure(
@@ -5127,13 +5126,11 @@ private func doryJITRecordMemoryFailure(
 private func doryJITInvalidatePageTableWrite(
   _ context: UnsafeMutablePointer<DoryJITMemoryCallbackContext>
 ) {
-  guard !context.pointee.pageTableWriteObserved,
-    let translatedMemory = context.pointee.capabilities.memory as? DoryX86TranslatedMemory,
-    translatedMemory.hasPendingPageTableWrite
+  guard let translatedMemory = context.pointee.capabilities.memory as? DoryX86TranslatedMemory,
+    translatedMemory.consumePendingPageTableWrite()
   else { return }
   translatedMemory.translationUnit.invalidateAll()
   context.pointee.translationTLB?.invalidateAll()
-  context.pointee.pageTableWriteObserved = true
 }
 
 /// C-callable architectural translation boundary used only by the JIT TLB miss resolver.
