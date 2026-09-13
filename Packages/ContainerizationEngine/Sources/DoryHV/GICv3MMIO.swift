@@ -7,6 +7,16 @@ import Hypervisor
 /// inside Hypervisor.framework; only the memory-mapped configuration surface passes through here.
 /// Offsets the framework does not model read as zero and ignore writes, which matches RAZ/WI
 /// behavior for optional GICv3 registers (WAKER, CTLR sleep bits, LPI tables).
+///
+/// GIC state coverage (P2-02 item 4):
+/// The in-kernel GIC owns all interrupt state transitions: pending/active, edge/level trigger
+/// type, SGI generation, PPI delivery (including the architectural timer PPIs), priority drop,
+/// and EOI. DoryHV only bridges the MMIO configuration surface and asserts SPIs via
+/// `hv_gic_set_spi`. The distributor and redistributor layouts are validated against the frozen
+/// `dory.armvirt@1` ABI in `ARMVirtMachineContractTests`. SPI INTID derivation (32 + GSI) is
+/// tested in `ARMPSCILifecycleTests`. Full distributor/redistributor state transition tests
+/// require a live Hypervisor.framework VM and are covered by integration qualification, not
+/// unit tests, because the in-kernel GIC state is not directly observable from userspace.
 public final class GICDistributorMMIO: MMIODevice {
     public let baseAddress: UInt64
     public let size: UInt64

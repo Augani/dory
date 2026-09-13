@@ -869,6 +869,16 @@ enum VirtioMMIODeviceTree {
     }
 
     private func runLoop(vcpu: VCPU, index: Int) {
+      // WFI / idle waiting (P2-02 item 5):
+      // `hv_vcpu_run` blocks inside Hypervisor.framework when the guest executes WFI; it
+      // returns only when an interrupt (SPI, PPI, SGI, or virtual timer) is pending or when
+      // `hv_vcpus_exit` cancels the run. The guest idle loop therefore never busy-polls.
+      // Device IRQs, timer PPIs, and stop/pause requests all wake the correct vCPU:
+      //   - Device IRQs and timer PPIs are delivered by the in-kernel GIC, which wakes the
+      //     specific vCPU that has the interrupt targeted.
+      //   - Stop calls `hv_vcpus_exit`, which cancels all running vCPUs and returns `.canceled`.
+      //   - Pause adds the vCPU handle to `pauseExitRequests`, calls `hv_vcpus_exit`, and the
+      //     `.canceled` handler below checks `pauseExitRequests` to distinguish pause from stop.
       var mmioRouteCache = MMIORouteCache()
       while true {
         if stopSignal.isRequested { return }
