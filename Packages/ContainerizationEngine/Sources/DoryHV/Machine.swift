@@ -309,6 +309,9 @@ enum VirtioMMIODeviceTree {
 
     func validateDoryARMVirtV1() throws {
       do {
+        // Validate the frozen physical address map before hvCreateVM() so a malformed
+        // ABI layout fails during configuration admission rather than after allocation.
+        try DoryARMVirtV1ABI.validateRegions()
         try DoryARMVirtV1ABI.validateMemoryBytes(memoryBytes)
         try DoryARMVirtV1ABI.validateVCPUCount(cpuCount)
       } catch {

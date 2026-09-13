@@ -641,6 +641,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     clockSource: DoryPCClockSource = .deterministic,
     instrumentationEnabled: Bool = false
   ) throws {
+    // Validate the frozen physical address map before any JIT construction or RAM
+    // allocation so a malformed ABI layout fails during admission rather than after
+    // resources are committed. The ABI error propagates directly per PC convention.
+    try DoryPCV1ABI.validateRegions()
     guard memoryBytes >= 1024 * 1024,
       memoryBytes % (1024 * 1024) == 0,
       UInt64(memoryBytes) <= DoryPCV1ABI.maximumMemoryBytes
