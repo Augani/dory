@@ -52,6 +52,11 @@ enum DoryX86InstructionFeaturePolicy {
       // with the F3 prefix ignored when it is not. The operation is always
       // architecturally valid; the interpreter selects the correct semantics.
       return true
+    case .countTrailingZeros:
+      // F3 0F BC is TZCNT when CPUID.7:EBX.BMI1 is advertised, or BSF with the
+      // F3 prefix ignored when it is not. The operation is always architecturally
+      // valid; the interpreter selects the correct semantics.
+      return true
     case .compareExchangePair(_, let doubleQuadword):
       return profile.supports(doubleQuadword ? .cmpxchg16b : .cmpxchg8b)
     case .duplicateVectorScalar:

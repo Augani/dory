@@ -2061,6 +2061,15 @@ public struct DoryX86Decoder: Sendable {
           destination: operands.reg,
           source: operands.rm
         )
+      } else if second == 0xBC, prefixes.repeatPrefix == 0xF3 {
+        // F3 0F BC is TZCNT when CPUID.7:EBX.BMI1 is advertised, or BSF with the
+        // F3 prefix ignored when it is not. Decode as a distinct operation so the
+        // interpreter can apply the correct semantics; the IR lowering falls back
+        // to the interpreter (default case), preserving Tier1 correctness.
+        operation = .countTrailingZeros(
+          destination: operands.reg,
+          source: operands.rm
+        )
       } else {
         operation = .bitScan(
           reverse: second == 0xBD,

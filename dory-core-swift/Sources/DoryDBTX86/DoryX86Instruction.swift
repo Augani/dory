@@ -385,6 +385,10 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   /// When CPUID.0x8000_0001:ECX.LZCNT is clear, `F3 0F BD` is BSR with the F3
   /// prefix ignored; the interpreter falls back to BSR semantics in that case.
   case countLeadingZeros(destination: DoryX86Operand, source: DoryX86Operand)
+  /// TZCNT (`F3 0F BC`): counts trailing zero bits in `source` into `destination`.
+  /// When CPUID.7:EBX.BMI1 is clear, `F3 0F BC` is BSF with the F3 prefix ignored;
+  /// the interpreter falls back to BSF semantics in that case.
+  case countTrailingZeros(destination: DoryX86Operand, source: DoryX86Operand)
   case byteSwap(DoryX86Operand)
   /// MOVBE: load from or store to memory with byte-swap. The register operand is
   /// always `register`; the memory operand is always `memory`. When `load` is
