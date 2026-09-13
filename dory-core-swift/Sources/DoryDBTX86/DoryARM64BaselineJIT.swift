@@ -5729,6 +5729,105 @@ struct DoryARM64NativeBatchExecution: Sendable, Hashable {
   let exitCode: DoryJITExitCode
 }
 
+/// Immutable diagnostic receipt for the first causal chain divergence observed during a native
+/// trace replay. A divergence occurs when a trace edge's actual guest RIP does not equal the
+/// expected continuation recorded for that edge. The receipt is captured before invalidation or
+/// dispatch can discard the trace metadata, and is retained in a bounded ring owned outside the
+/// trace frame so an invalidated or retired trace cannot erase it. Ordinary successful trace
+/// completion never creates a receipt.
+public struct DoryARM64TraceChainDivergenceReceipt: Sendable, Hashable {
+  /// The guest RIP at which the recorded trace begins.
+  public let traceGuestStart: UInt64
+  /// The address space in which the trace was recorded.
+  public let addressSpaceID: UInt64
+  /// The execution mode of the trace.
+  public let executionMode: DoryX86ExecutionMode
+  /// The privilege level of the trace.
+  public let privilegeLevel: UInt8
+  /// Whether paging was enabled for the trace.
+  public let pagingEnabled: Bool
+  /// The code-cache epoch when the trace was recorded.
+  public let codeCacheEpoch: UInt64
+  /// The edge index within the recorded trace where the actual guest RIP first differed from the
+  /// expected continuation. This is the number of blocks that executed successfully before the
+  /// divergence.
+  public let edgeIndex: Int
+  /// The total number of blocks in the recorded trace.
+  public let traceBlockCount: Int
+  /// The guest RIP the trace expected at the divergent edge.
+  public let expectedGuestRIP: UInt64
+  /// The actual guest RIP observed at the divergent edge.
+  public let actualGuestRIP: UInt64
+  /// The exit code of the last successfully executed block before divergence. A causal chain
+  /// divergence always has a dispatch terminal because the batch stopped at the RIP guard before
+  /// the next block could execute.
+  public let terminalExitCode: DoryJITExitCode
+  /// The guest start RIP of the source block whose execution produced the divergent target.
+  public let sourceBlockGuestStart: UInt64
+  /// The code-cache offset of the source block.
+  public let sourceBlockOffset: Int
+  /// The compilation tier of the source block.
+  public let sourceBlockTier: DoryARM64CompilationTier
+  /// A bounded copy of the source block's emitted machine words, sufficient for post-mortem
+  /// inspection. Truncated to ``DoryARM64TraceChainDivergenceReceipt.maximumMachineWordCopy``.
+  public let sourceBlockMachineWords: [UInt32]
+  /// The guest start RIP of the block the trace expected to enter at the divergent edge.
+  public let expectedBlockGuestStart: UInt64
+  /// The code-cache offset of the expected target block.
+  public let expectedBlockOffset: Int
+  /// The compilation tier of the expected target block.
+  public let expectedBlockTier: DoryARM64CompilationTier
+  /// A bounded copy of the expected target block's emitted machine words.
+  public let expectedBlockMachineWords: [UInt32]
+
+  /// Maximum number of machine words retained per block in a receipt.
+  public static let maximumMachineWordCopy = 64
+
+  public init(
+    traceGuestStart: UInt64,
+    addressSpaceID: UInt64,
+    executionMode: DoryX86ExecutionMode,
+    privilegeLevel: UInt8,
+    pagingEnabled: Bool,
+    codeCacheEpoch: UInt64,
+    edgeIndex: Int,
+    traceBlockCount: Int,
+    expectedGuestRIP: UInt64,
+    actualGuestRIP: UInt64,
+    terminalExitCode: DoryJITExitCode,
+    sourceBlockGuestStart: UInt64,
+    sourceBlockOffset: Int,
+    sourceBlockTier: DoryARM64CompilationTier,
+    sourceBlockMachineWords: [UInt32],
+    expectedBlockGuestStart: UInt64,
+    expectedBlockOffset: Int,
+    expectedBlockTier: DoryARM64CompilationTier,
+    expectedBlockMachineWords: [UInt32]
+  ) {
+    self.traceGuestStart = traceGuestStart
+    self.addressSpaceID = addressSpaceID
+    self.executionMode = executionMode
+    self.privilegeLevel = privilegeLevel
+    self.pagingEnabled = pagingEnabled
+    self.codeCacheEpoch = codeCacheEpoch
+    self.edgeIndex = edgeIndex
+    self.traceBlockCount = traceBlockCount
+    self.expectedGuestRIP = expectedGuestRIP
+    self.actualGuestRIP = actualGuestRIP
+    self.terminalExitCode = terminalExitCode
+    self.sourceBlockGuestStart = sourceBlockGuestStart
+    self.sourceBlockOffset = sourceBlockOffset
+    self.sourceBlockTier = sourceBlockTier
+    self.sourceBlockMachineWords = Array(
+      sourceBlockMachineWords.prefix(Self.maximumMachineWordCopy))
+    self.expectedBlockGuestStart = expectedBlockGuestStart
+    self.expectedBlockOffset = expectedBlockOffset
+    self.expectedBlockTier = expectedBlockTier
+    self.expectedBlockMachineWords = Array(
+      expectedBlockMachineWords.prefix(Self.maximumMachineWordCopy))
+  }
+}
+
 /// Owns one bounded MAP_JIT region and dispatches exact, helper-free baseline blocks through it.
 /// Unsupported blocks never enter executable memory and return `nil` so the caller can execute
 /// the instruction at the unchanged guest RIP with the interpreter.
@@ -5745,6 +5844,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   static let instructionPageByteCount = 4_096
   static let maximumRecordedNativeTraceBlocks = 256
   static let codeCacheGenerationCount = 2
+  /// Maximum number of trace-chain divergence receipts retained in the bounded ring. The ring
+  /// is owned outside the trace frame so an invalidated or retired trace cannot erase evidence.
+  static let divergenceReceiptCapacity = 16
 
   /// One executor has one serialized native entry, so its context can remain at a stable address.
   /// The final byte is the only field written concurrently by device/coordination threads.
@@ -5973,6 +6075,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var codeCacheEvictedBlockCount: UInt64 = 0
   private var nativeTraceAttemptCount: UInt64 = 0
   private var nativeTraceReplayCount: UInt64 = 0
+  /// Bounded ring of retained trace-chain divergence receipts. Owned outside the trace frame so
+  /// an invalidated or retired trace cannot erase the first causal divergence evidence.
+  private var divergenceReceiptsBuffer: [DoryARM64TraceChainDivergenceReceipt] = []
   private var codeGenerationCheckCount: UInt64 = 0
   private var codeGenerationMismatchCount: UInt64 = 0
   private var chainedExecutionCallCount: UInt64 = 0
@@ -6056,6 +6161,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   }
   public var nativeBatchExecutionCount: UInt64 {
     lock.withLock { nativeBatchExecutionCountValue }
+  }
+
+  /// Returns a copy-safe snapshot of retained trace-chain divergence receipts. The backing ring
+  /// is private and mutable; this accessor returns an independent value array so callers cannot
+  /// modify internal storage. Receipts survive trace invalidation and cache clears.
+  public func divergenceReceipts() -> [DoryARM64TraceChainDivergenceReceipt] {
+    lock.withLock { divergenceReceiptsBuffer }
   }
 
   /// Requests a bounded native exit. The release store is observed by the generated byte poll at
@@ -7747,12 +7859,64 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     )
     guard execution.residentBlockCount > 0 else { return .unavailable }
     nativeBatchExecutionCountValue &+= 1
+    // A causal chain divergence occurs when the batch stopped at a RIP guard before all recorded
+    // blocks executed: the last block exited with dispatch and the next block's expected guest
+    // RIP did not match the actual continuation. Capture the receipt before the caller can
+    // invalidate the trace or dispatch can discard the resident metadata.
+    if execution.exitCode == .dispatch,
+      Int(execution.residentBlockCount) < trace.offsets.count
+    {
+      recordTraceChainDivergence(
+        trace,
+        divergentEdgeIndex: Int(execution.residentBlockCount),
+        actualGuestRIP: context[DoryARM64Tier1ABI.ContextWord.rip.rawValue],
+        terminalExitCode: execution.exitCode
+      )
+    }
     return .executed(
       NativeReplay(
         guestInstructionCount: Int(execution.guestInstructionCount),
         residentBlockCount: Int(execution.residentBlockCount),
         exitCode: execution.exitCode
       ))
+  }
+
+  /// Captures the first causal chain divergence for a trace replay into the bounded receipt ring.
+  /// The trace's strong resident references are still live at this point, so emitted machine
+  /// words and offsets can be copied before invalidation or retirement can discard them.
+  private func recordTraceChainDivergence(
+    _ trace: NativeTrace,
+    divergentEdgeIndex: Int,
+    actualGuestRIP: UInt64,
+    terminalExitCode: DoryJITExitCode
+  ) {
+    let sourceResident = trace.residents[divergentEdgeIndex - 1]
+    let expectedResident = trace.residents[divergentEdgeIndex]
+    let receipt = DoryARM64TraceChainDivergenceReceipt(
+      traceGuestStart: trace.key.guestStart,
+      addressSpaceID: trace.key.addressSpaceID,
+      executionMode: trace.key.executionMode,
+      privilegeLevel: trace.key.privilegeLevel,
+      pagingEnabled: trace.key.pagingEnabled,
+      codeCacheEpoch: trace.codeCacheEpoch,
+      edgeIndex: divergentEdgeIndex,
+      traceBlockCount: trace.offsets.count,
+      expectedGuestRIP: trace.expectedGuestRIPs[divergentEdgeIndex],
+      actualGuestRIP: actualGuestRIP,
+      terminalExitCode: terminalExitCode,
+      sourceBlockGuestStart: sourceResident.block.guestStart,
+      sourceBlockOffset: sourceResident.offset,
+      sourceBlockTier: sourceResident.block.tier,
+      sourceBlockMachineWords: sourceResident.block.machineWords,
+      expectedBlockGuestStart: expectedResident.block.guestStart,
+      expectedBlockOffset: expectedResident.offset,
+      expectedBlockTier: expectedResident.block.tier,
+      expectedBlockMachineWords: expectedResident.block.machineWords
+    )
+    if divergenceReceiptsBuffer.count >= Self.divergenceReceiptCapacity {
+      divergenceReceiptsBuffer.removeFirst()
+    }
+    divergenceReceiptsBuffer.append(receipt)
   }
 
   private func readCodeGeneration(

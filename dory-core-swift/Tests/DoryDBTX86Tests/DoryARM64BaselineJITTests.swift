@@ -10633,6 +10633,159 @@ import Testing
     #expect(execution.block.guestInstructionCount == 2)
     #expect(translated == interpreted)
   }
+
+  // MARK: - P2-09 trace-chain divergence receipts
+
+  /// Byte layout used by the divergence receipt tests. A conditional branch whose direction
+  /// depends on `eax` lets a second run diverge from the recorded trace without changing code
+  /// bytes or the code-generation token.
+  ///
+  ///   base+0x00: cmp eax, 1       (3 bytes)
+  ///   base+0x03: jne base+0x20     (2 bytes)
+  ///   base+0x05: jmp base+0x10     (2 bytes)
+  ///   base+0x07: nop * 9
+  ///   base+0x10: mov ebx, 11      (5 bytes)
+  ///   base+0x15: hlt              (1 byte)
+  ///   base+0x16: nop * 10
+  ///   base+0x20: mov ebx, 22      (5 bytes)
+  ///   base+0x25: hlt              (1 byte)
+  private static func traceChainDivergenceBytes() -> [UInt8] {
+    [
+      0x83, 0xF8, 0x01,
+      0x75, 0x1B,
+      0xEB, 0x09,
+      0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+      0xBB, 0x0B, 0x00, 0x00, 0x00,
+      0xF4,
+      0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+      0xBB, 0x16, 0x00, 0x00, 0x00,
+      0xF4,
+    ]
+  }
+
+  /// Runs the divergence byte sequence at `base` with `eax` set to `eaxValue`. A constant
+  /// code-generation token lets the trace replay even after the conditional path changes.
+  private static func runTraceChainDivergenceSequence(
+    executor: DoryARM64BaselineExecutor,
+    base: UInt64,
+    eaxValue: UInt64
+  ) throws -> DoryARM64ExecutionSummary {
+    let bytes = traceChainDivergenceBytes()
+    var state = try DoryX86ArchitecturalState(registers: .init(rax: eaxValue), rip: base)
+    return try #require(
+      executor.executeChainedSummary(
+        byteProvider: { address, count in
+          guard address >= base else { return [] }
+          let offset = Int(address - base)
+          guard bytes.indices.contains(offset) else { return [] }
+          return Array(bytes[offset..<min(bytes.count, offset + count)])
+        },
+        codeGenerationProvider: { _, _ in 1 },
+        at: base,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 16,
+        state: &state
+      ))
+  }
+
+  @Test func traceChainDivergenceRecordsFirstReceiptWithExpectedAndActualTarget() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x40_000
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 64 * 1024)
+
+      // First run: eax == 1, jne not taken, records trace [base, base+5, base+0x10].
+      let first = try Self.runTraceChainDivergenceSequence(executor: executor, base: base, eaxValue: 1)
+      #expect(first.exitCode == .halt)
+      #expect(executor.diagnostics.nativeTraceReplays == 0)
+      #expect(executor.divergenceReceipts().isEmpty)
+
+      // Second run: eax == 2, jne taken, diverges at edge 1 (actual base+0x20 != expected base+5).
+      let second = try Self.runTraceChainDivergenceSequence(executor: executor, base: base, eaxValue: 2)
+      #expect(second.exitCode == .halt)
+
+      let receipts = executor.divergenceReceipts()
+      #expect(receipts.count == 1)
+      let receipt = try #require(receipts.first)
+      #expect(receipt.traceGuestStart == base)
+      #expect(receipt.addressSpaceID == 0)
+      #expect(receipt.executionMode == .long64)
+      #expect(receipt.edgeIndex == 1)
+      #expect(receipt.traceBlockCount == 3)
+      #expect(receipt.expectedGuestRIP == base + 0x05)
+      #expect(receipt.actualGuestRIP == base + 0x20)
+      #expect(receipt.terminalExitCode == .dispatch)
+      #expect(receipt.sourceBlockGuestStart == base)
+      #expect(receipt.expectedBlockGuestStart == base + 0x05)
+      #expect(receipt.sourceBlockTier == receipt.expectedBlockTier)
+      #expect(!receipt.sourceBlockMachineWords.isEmpty)
+      #expect(!receipt.expectedBlockMachineWords.isEmpty)
+      #expect(
+        receipt.sourceBlockMachineWords.count
+          <= DoryARM64TraceChainDivergenceReceipt.maximumMachineWordCopy)
+      #expect(
+        receipt.expectedBlockMachineWords.count
+          <= DoryARM64TraceChainDivergenceReceipt.maximumMachineWordCopy)
+    #endif
+  }
+
+  @Test func traceChainDivergenceReceiptSurvivesTraceInvalidationAndCacheClear() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x48_000
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 64 * 1024)
+
+      _ = try Self.runTraceChainDivergenceSequence(executor: executor, base: base, eaxValue: 1)
+      _ = try Self.runTraceChainDivergenceSequence(executor: executor, base: base, eaxValue: 2)
+      #expect(executor.divergenceReceipts().count == 1)
+
+      // Invalidate all traces and cache state. The receipt ring is owned outside the trace
+      // frame, so the evidence must survive.
+      executor.invalidateAll()
+      let receipts = executor.divergenceReceipts()
+      #expect(receipts.count == 1)
+      let receipt = try #require(receipts.first)
+      #expect(receipt.traceGuestStart == base)
+      #expect(receipt.expectedGuestRIP == base + 0x05)
+      #expect(receipt.actualGuestRIP == base + 0x20)
+      #expect(receipt.edgeIndex == 1)
+    #endif
+  }
+
+  @Test func normalTraceReplayCreatesNoDivergenceReceipt() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x50_000
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 64 * 1024)
+
+      // First run records the trace.
+      _ = try Self.runTraceChainDivergenceSequence(executor: executor, base: base, eaxValue: 1)
+      #expect(executor.divergenceReceipts().isEmpty)
+
+      // Second run with the same state replays the trace successfully. No divergence occurs.
+      _ = try Self.runTraceChainDivergenceSequence(executor: executor, base: base, eaxValue: 1)
+      #expect(executor.diagnostics.nativeTraceAttempts == 1)
+      #expect(executor.diagnostics.nativeTraceReplays == 1)
+      #expect(executor.divergenceReceipts().isEmpty)
+    #endif
+  }
+
+  @Test func divergenceReceiptRingRetainsAtMostCapacityEntries() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 256 * 1024)
+      let capacity = DoryARM64BaselineExecutor.divergenceReceiptCapacity
+      // Induce one more divergence than the ring capacity. Each base address creates a distinct
+      // trace key, so each divergence appends a separate receipt.
+      for index in 0..<(capacity + 1) {
+        let base = UInt64(0x60_000 + index * 0x100)
+        _ = try Self.runTraceChainDivergenceSequence(executor: executor, base: base, eaxValue: 1)
+        _ = try Self.runTraceChainDivergenceSequence(executor: executor, base: base, eaxValue: 2)
+      }
+      let receipts = executor.divergenceReceipts()
+      #expect(receipts.count == capacity)
+      // The oldest receipt (index 0) was evicted; the remaining entries start at index 1.
+      #expect(receipts.first?.traceGuestStart == UInt64(0x60_000 + 1 * 0x100))
+      #expect(receipts.last?.traceGuestStart == UInt64(0x60_000 + capacity * 0x100))
+    #endif
+  }
 }
 
 private final class ConcurrentAtomicLitmusResults: @unchecked Sendable {
