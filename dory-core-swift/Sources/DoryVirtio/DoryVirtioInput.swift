@@ -141,6 +141,10 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
   private var pendingEvents: [DoryVirtioInputEvent] = []
   private var eventReadySink: (@Sendable () -> Void)?
   private var droppedEvents = 0
+  // P2-15: ledger of currently pressed EV_KEY codes, updated only after a host
+  // batch is successfully enqueued. Used to synthesize deterministic release
+  // events on host focus loss so the guest cannot be left with a stuck key.
+  private var pressedKeys: Set<UInt16> = []
 
   public init(
     descriptor: DoryVirtioInputDescriptor,
@@ -166,6 +170,7 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
   public var hasPendingEvent: Bool { lock.withLock { !pendingEvents.isEmpty } }
   public var pendingEventCount: Int { lock.withLock { pendingEvents.count } }
   public var droppedEventCount: Int { lock.withLock { droppedEvents } }
+  public var pressedKeyCount: Int { lock.withLock { pressedKeys.count } }
 
   public func connectEventReadySink(_ sink: @escaping @Sendable () -> Void) {
     let ready = lock.withLock {
@@ -184,6 +189,15 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
         return (false, nil)
       }
       pendingEvents += events
+      for event in events where event.type == 1 {
+        if event.value == 1 {
+          pressedKeys.insert(event.code)
+        } else if event.value == 0 {
+          pressedKeys.remove(event.code)
+        }
+        // Autorepeat (value 2) leaves the ledger untouched: the key is already
+        // recorded as pressed and must not be double-counted.
+      }
       return (true, eventReadySink)
     }
     delivery.1?()
@@ -193,6 +207,37 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
   @discardableResult
   public func enqueueSynchronized(_ events: [DoryVirtioInputEvent]) -> Bool {
     enqueue(events + [.synchronize])
+  }
+
+  /// P2-15: synthesize a deterministic release for every currently pressed key
+  /// when the host loses input focus. Enqueues one EV_KEY release (value 0) per
+  /// pressed code in ascending order, followed by exactly one SYN event.
+  ///
+  /// The operation is retry-safe: if the queue cannot accept the complete
+  /// release batch, nothing is enqueued, the pressed-key ledger is retained,
+  /// and `false` is returned so a caller can retry once capacity is available.
+  /// On success the released keys are cleared from the ledger and `true` is
+  /// returned. When no keys are pressed this is a no-op that returns `true`.
+  @discardableResult
+  public func releasePressedKeysForFocusLoss() -> Bool {
+    let delivery: (Bool, (@Sendable () -> Void)?) = lock.withLock {
+      let codes = pressedKeys.sorted()
+      guard !codes.isEmpty else { return (true, nil) }
+      var releases: [DoryVirtioInputEvent] = []
+      releases.reserveCapacity(codes.count + 1)
+      for code in codes {
+        releases.append(.init(type: 1, code: code, value: 0))
+      }
+      releases.append(.synchronize)
+      guard releases.count <= maximumPendingEvents - pendingEvents.count else {
+        return (false, nil)
+      }
+      pendingEvents += releases
+      pressedKeys.removeAll()
+      return (true, eventReadySink)
+    }
+    delivery.1?()
+    return delivery.0
   }
 
   public func configuration(select: UInt8, subselect: UInt8) -> [UInt8] {
@@ -279,7 +324,10 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
   }
 
   public func reset() {
-    lock.withLock { pendingEvents.removeAll(keepingCapacity: true) }
+    lock.withLock {
+      pendingEvents.removeAll(keepingCapacity: true)
+      pressedKeys.removeAll()
+    }
   }
 
   private func bitmap(_ values: Set<UInt16>) -> [UInt8] {
