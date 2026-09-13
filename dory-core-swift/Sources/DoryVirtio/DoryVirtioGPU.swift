@@ -446,6 +446,10 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     let requestType = read32(request, 0)
     let command = Command(rawValue: requestType)
     let cursorCommand = command == .updateCursor || command == .moveCursor
+    // Preflight every writable response target before command execution so a malformed later
+    // descriptor cannot let a command mutate device/renderer state or partially scatter an
+    // earlier response before the request fails.
+    try validateWritableTargets(writable, memory: memory)
     do {
       let responseBytes: [UInt8]
       if (queue == Self.cursorQueue) != cursorCommand {
@@ -501,6 +505,10 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     let requestType = read32(request, 0)
     let command = Command(rawValue: requestType)
     let cursorCommand = command == .updateCursor || command == .moveCursor
+    // Preflight writable response targets before scheduling any deferred command side effects
+    // so an invalid later descriptor cannot let a deferred completion mutate state or partially
+    // scatter a response.
+    try validateWritableTargets(writable, memory: memory)
     let publish: @Sendable ([UInt8]) -> Bool = { [weak self] responseBytes in
       guard let self else { return false }
       let published = completion(responseBytes)
@@ -1290,6 +1298,23 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       offset += count
     }
     guard offset == bytes.count else { throw DoryVirtioGPUError.malformedRequest }
+  }
+
+  /// Validates every writable response target up front using the guest-memory validation
+  /// contract, before command execution or deferred scheduling. Rejecting the offered
+  /// writable chain here prevents a malformed later descriptor from letting a command
+  /// mutate device/renderer state or partially scattering an earlier response.
+  private func validateWritableTargets(
+    _ descriptors: [DoryVirtioDescriptor],
+    memory: any DoryVirtioGuestMemory
+  ) throws {
+    for descriptor in descriptors {
+      try memory.validate(
+        at: descriptor.address,
+        byteCount: Int(descriptor.length),
+        deviceWillWrite: true
+      )
+    }
   }
 
   private func resourceByteCount(width: UInt32, height: UInt32) -> UInt64? {

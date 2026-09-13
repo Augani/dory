@@ -372,6 +372,84 @@ import Testing
     #expect(read32(try command(device, bytes: bind, memory: memory), 0) == 0x1202)
   }
 
+  @Test func preflightsInvalidLaterResponseTargetBeforeStateChange() throws {
+    let device = try makeDevice()
+    let memory = GPUGuestMemory(byteCount: 0x5000)
+    let create =
+      header(0x0101) + littleEndian(UInt32(7)) + littleEndian(UInt32(1))
+      + littleEndian(UInt32(4)) + littleEndian(UInt32(2))
+    memory.put(create, at: 0x1000)
+    // Early valid writable response element followed by a later out-of-bounds element.
+    let chain = DoryVirtioDescriptorChain(
+      headIndex: 0,
+      descriptors: [
+        .init(address: 0x1000, length: UInt32(create.count), flags: 0, next: 1),
+        .init(address: 0x4000, length: 24, flags: 2, next: 2),
+        .init(address: 0x5000, length: 24, flags: 2, next: 0),
+      ],
+      readableByteCount: UInt64(create.count),
+      writableByteCount: 48
+    )
+    #expect(throws: DoryVirtioGPUError.self) {
+      _ = try device.process(queue: 0, chain: chain, memory: memory)
+    }
+    // No partial response bytes scattered into the valid early element.
+    #expect(try memory.read(at: 0x4000, byteCount: 24) == [UInt8](repeating: 0, count: 24))
+    // No device state mutation: the resource slot is still free, so a retry succeeds.
+    let retry = try command(device, bytes: create, memory: memory)
+    #expect(read32(retry, 0) == 0x1100)
+  }
+
+  @Test func preflightsDeferredInvalidResponseTargetBeforeScheduling() throws {
+    let authority = try GPUAccelerationAuthority(
+      features: [.gpuVirgl, .gpuContextInit],
+      capsets: [.init(id: 2, maximumVersion: 2, data: [1])]
+    )
+    let device = try makeDevice(authority: authority)
+    let memory = GPUGuestMemory(byteCount: 0x20_000)
+    let contextID: UInt32 = 17
+
+    var contextName = [UInt8](repeating: 0, count: 64)
+    contextName.replaceSubrange(0..<4, with: Array("mesa".utf8))
+    let createContext =
+      header(0x0200, contextID: contextID) + littleEndian(UInt32(4))
+      + littleEndian(UInt32(2)) + contextName
+    #expect(read32(try command(device, bytes: createContext, memory: memory), 0) == 0x1100)
+
+    let submit =
+      header(0x0207, flags: 1, fence: 5, contextID: contextID)
+      + littleEndian(UInt32(4)) + littleEndian(UInt32(0))
+      + [0xAA, 0xBB, 0xCC, 0xDD]
+    memory.put(submit, at: 0x1000)
+    // Early valid writable response element followed by a later out-of-bounds element.
+    let chain = DoryVirtioDescriptorChain(
+      headIndex: 0,
+      descriptors: [
+        .init(address: 0x1000, length: UInt32(submit.count), flags: 0, next: 1),
+        .init(address: 0x5000, length: 24, flags: 2, next: 2),
+        .init(address: 0x20_000, length: 24, flags: 2, next: 0),
+      ],
+      readableByteCount: UInt64(submit.count),
+      writableByteCount: 48
+    )
+    let responses = GPUResponseRecorder()
+    #expect(throws: DoryVirtioGPUError.self) {
+      try device.processDeferred(
+        queue: 0,
+        chain: chain,
+        memory: memory,
+        completion: { response in
+          responses.append(response)
+          return true
+        }
+      )
+    }
+    // No fenced submit was scheduled and no completion was published.
+    #expect(authority.operations == ["context-create:17:2:mesa"])
+    #expect(responses.values.isEmpty)
+    #expect(try memory.read(at: 0x5000, byteCount: 24) == [UInt8](repeating: 0, count: 24))
+  }
+
   private func makeDevice(
     sink: GPUDisplaySink? = nil,
     authority: GPUAccelerationAuthority? = nil
