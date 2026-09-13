@@ -281,6 +281,19 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
     guard chain.writableByteCount >= UInt64(Self.eventByteCount) else {
       throw DoryVirtioInputError.eventBufferTooSmall(chain.writableByteCount)
     }
+    // Preflight every output descriptor against the guest-memory validation
+    // contract before any write. Without this, a valid early segment could
+    // receive partial event bytes via scatter before a later invalid segment
+    // throws, leaving the event pending for retry with side effects already
+    // visible to the guest. Validating all targets up front makes the
+    // operation all-or-nothing for guest-visible writes.
+    for descriptor in chain.descriptors {
+      try memory.validate(
+        at: descriptor.address,
+        byteCount: Int(descriptor.length),
+        deviceWillWrite: true
+      )
+    }
     guard let event = lock.withLock({ pendingEvents.first }) else {
       throw DoryVirtioInputError.noPendingEvent
     }

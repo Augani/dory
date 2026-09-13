@@ -34,6 +34,64 @@ import Testing
     #expect(!device.hasPendingEvent)
   }
 
+  // P2-14: preflight must validate every output descriptor before the first
+  // guest write. A valid early segment followed by an invalid later segment
+  // must throw without writing any event bytes, and the pending event must
+  // remain queued so a later valid chain can deliver it.
+  @Test func preflightRejectsInvalidLaterSegmentWithoutPartialWrite() throws {
+    let device = try DoryVirtioInputDevice(descriptor: .keyboard())
+    let memory = InputGuestMemory(byteCount: 0x1000)
+    #expect(device.enqueue([.init(type: 1, code: 30, value: 1)]))
+    #expect(device.hasPendingEvent)
+
+    // First segment is valid and large enough to receive partial event bytes
+    // if scatter ran; the second segment is out of bounds and must be caught
+    // by preflight before any write occurs.
+    let chain = DoryVirtioDescriptorChain(
+      headIndex: 0,
+      descriptors: [
+        .init(address: 0x100, length: 4, flags: 2, next: 0),
+        .init(address: 0x2000, length: 8, flags: 2, next: 0),
+      ],
+      readableByteCount: 0,
+      writableByteCount: 12
+    )
+    #expect(throws: DoryVirtioInputError.self) {
+      try device.processEvent(chain, memory: memory)
+    }
+    // No partial event bytes reached the valid first segment.
+    #expect(try memory.read(at: 0x100, byteCount: 4) == [0, 0, 0, 0])
+    // The event stays pending for a later valid retry.
+    #expect(device.hasPendingEvent)
+
+    let written = try device.processEvent(writableChain(at: 0x100), memory: memory)
+    #expect(written == 8)
+    #expect(try memory.read(at: 0x100, byteCount: 8) == event(type: 1, code: 30, value: 1))
+    #expect(!device.hasPendingEvent)
+  }
+
+  // P2-14: a fully valid split descriptor chain still delivers the event across
+  // segments and dequeues only after the write succeeds.
+  @Test func deliversEventAcrossValidSplitDescriptorChain() throws {
+    let device = try DoryVirtioInputDevice(descriptor: .keyboard())
+    let memory = InputGuestMemory(byteCount: 0x1000)
+    #expect(device.enqueue([.init(type: 1, code: 30, value: 1)]))
+
+    let chain = DoryVirtioDescriptorChain(
+      headIndex: 0,
+      descriptors: [
+        .init(address: 0x100, length: 4, flags: 2, next: 0),
+        .init(address: 0x104, length: 4, flags: 2, next: 0),
+      ],
+      readableByteCount: 0,
+      writableByteCount: 8
+    )
+    let written = try device.processEvent(chain, memory: memory)
+    #expect(written == 8)
+    #expect(try memory.read(at: 0x100, byteCount: 8) == event(type: 1, code: 30, value: 1))
+    #expect(!device.hasPendingEvent)
+  }
+
   @Test func forwardsGuestStatusEventsAndBoundsHostIngress() throws {
     let sink = InputStatusSink()
     let device = try DoryVirtioInputDevice(
