@@ -889,7 +889,8 @@ public final class DoryPCVirtioNetworkPCIDevice: DoryPCPCIFunction, DoryPCPCIMSI
       offeredFeatures: networkDevice.offeredFeatures.union([
         .indirectDescriptors, .eventIndex,
       ]),
-      deviceConfiguration: networkDevice.configuration
+      deviceConfiguration: networkDevice.configuration,
+      onReset: { [networkDevice] in networkDevice.reset() }
     )
     networkDevice.connectReceiveReadySink { [weak transport = pciFunction.transport] in
       transport?.processQueue(DoryVirtioNetworkDevice.receiveQueue)

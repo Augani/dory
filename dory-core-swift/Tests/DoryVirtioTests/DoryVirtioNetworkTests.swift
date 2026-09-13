@@ -66,6 +66,34 @@ import Testing
     #expect(backend.transmittedFrames.isEmpty)
   }
 
+  @Test func resetDropsPendingReceiveFramesWithoutDeliveringThem() throws {
+    let backend = DoryVirtioInMemoryNetworkBackend()
+    let device = try DoryVirtioNetworkDevice(
+      backend: backend,
+      macAddress: [0x02, 1, 2, 3, 4, 5]
+    )
+    let memory = NetworkGuestMemory(byteCount: 0x1000)
+    let frame = ethernetFrame(payloadByte: 0x77, count: 64)
+    #expect(device.receive(frame: frame))
+    #expect(device.pendingReceiveCount == 1)
+    #expect(device.canReceive)
+
+    device.reset()
+
+    #expect(device.pendingReceiveCount == 0)
+    #expect(!device.canReceive)
+    #expect(throws: DoryVirtioNetworkError.noReceivedFrame) {
+      try device.processReceive(
+        chain([descriptor(0x100, 128, writable: true)]),
+        memory: memory
+      )
+    }
+    // Link state and diagnostic history are preserved across reset.
+    #expect(device.droppedReceiveCount == 0)
+    let statusBytes = device.configuration
+    #expect(statusBytes[6] == 1)
+  }
+
   private func descriptor(
     _ address: UInt64,
     _ length: UInt32,

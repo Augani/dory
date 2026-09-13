@@ -61,6 +61,78 @@ import Testing
     #expect(try machine.physicalMemory.read(at: bar + 0x200, byteCount: 1)[0] & 2 == 2)
   }
 
+  @Test func resetDropsPendingHostIngressBeforeRenegotiation() throws {
+    let backend = DoryVirtioInMemoryNetworkBackend()
+    let network = try DoryPCVirtioNetworkPCIDevice(
+      address: .init(bus: 0, device: 5, function: 0),
+      initialBARAddress: 0xD000_3000,
+      backend: backend,
+      macAddress: [0x02, 0xD0, 0x52, 0, 0, 2]
+    )
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [network]
+    )
+    try network.writeConfiguration(offset: 4, bytes: [2, 0])
+    try network.writeConfiguration(offset: 0x54, bytes: littleEndian(UInt32(0xFEE0_0000)))
+    try network.writeConfiguration(offset: 0x5C, bytes: [0x76, 0])
+    try network.writeConfiguration(offset: 0x52, bytes: [1, 0])
+
+    let bar: UInt64 = 0xD000_3000
+    // Negotiate VERSION_1 and bring the device to DRIVER_OK with queue 0 enabled but no
+    // available receive descriptors, so an injected host frame stays pending.
+    try write32(machine, bar + 0x08, 1)
+    try write32(machine, bar + 0x0C, 1)
+    try write8(machine, bar + 0x14, 0x0F)
+    try write16(machine, bar + 0x16, 0)
+    try write16(machine, bar + 0x18, 8)
+    try write64(machine, bar + 0x20, 0x1000)
+    try write64(machine, bar + 0x28, 0x2000)
+    try write64(machine, bar + 0x30, 0x3000)
+    try write16(machine, bar + 0x1C, 1)
+
+    let staleFrame = ethernetFrame(count: 64)
+    backend.injectReceivedFrame(staleFrame)
+    #expect(network.networkDevice.pendingReceiveCount == 1)
+
+    // Trigger the real PCI virtio reset path: writing status 0 resets the device and queues,
+    // and the transport onReset callback must drop the pending host ingress.
+    try write8(machine, bar + 0x14, 0x00)
+    #expect(network.networkDevice.pendingReceiveCount == 0)
+
+    // Re-negotiate and re-enable queue 0, then post a receive descriptor and kick. The stale
+    // frame must not be delivered: the used ring stays empty and the descriptor buffer untouched.
+    try write32(machine, bar + 0x08, 1)
+    try write32(machine, bar + 0x0C, 1)
+    try write8(machine, bar + 0x14, 0x0F)
+    try write16(machine, bar + 0x16, 0)
+    try write16(machine, bar + 0x18, 8)
+    try write64(machine, bar + 0x20, 0x1000)
+    try write64(machine, bar + 0x28, 0x2000)
+    try write64(machine, bar + 0x30, 0x3000)
+    try write16(machine, bar + 0x1C, 1)
+
+    try machine.physicalMemory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(2048))
+        + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
+    )
+    try machine.physicalMemory.write(at: 0x2000, bytes: [0, 0, 1, 0])
+    try write16(machine, bar + 0x100, 0)
+
+    #expect(read16(try machine.physicalMemory.read(at: 0x3002, byteCount: 2)) == 0)
+    #expect(
+      try machine.physicalMemory.read(at: 0x4000, byteCount: 12 + staleFrame.count)
+        == [UInt8](repeating: 0, count: 12 + staleFrame.count)
+    )
+    // A freshly injected frame is still delivered normally after reset, proving receive
+    // behavior is intact and only the stale pre-reset ingress was dropped.
+    let freshFrame = ethernetFrame(count: 60)
+    backend.injectReceivedFrame(freshFrame)
+    #expect(read16(try machine.physicalMemory.read(at: 0x3002, byteCount: 2)) == 1)
+    #expect(try machine.physicalMemory.read(at: 0x400C, byteCount: freshFrame.count) == freshFrame)
+  }
+
   private func ethernetFrame(count: Int) -> [UInt8] {
     [
       0x02, 0xD0, 0x52, 0, 0, 1,

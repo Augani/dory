@@ -92,6 +92,13 @@ public final class DoryVirtioNetworkDevice: @unchecked Sendable {
     }
   }
 
+  /// Drops queued host ingress so a pre-reset frame cannot be delivered after the receive queue
+  /// has been reset and renegotiated. Link state, immutable configuration, the backend
+  /// connection, and diagnostic counters are preserved.
+  public func reset() {
+    lock.withLock { pendingReceiveFrames.removeAll(keepingCapacity: true) }
+  }
+
   @discardableResult
   public func receive(frame: [UInt8]) -> Bool {
     guard validFrameLength(frame.count) else {
