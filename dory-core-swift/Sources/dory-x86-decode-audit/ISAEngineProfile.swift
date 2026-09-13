@@ -225,31 +225,33 @@ public struct ISAEngineProfileSample: Codable, Sendable, Hashable {
 /// P2-05 item 2: A profiler that measures wall time around engine execution
 /// and collects diagnostics from the existing executor counters.
 public enum ISAEngineProfiler {
-  /// Measure a block of engine work, returning a profile sample with
-  /// wall time and diagnostics. The caller provides the configuration,
-  /// workload identity, and a closure that returns the diagnostics and
-  /// retired instruction count.
-  public static func measure(
+  /// Build a profile sample from explicit engine diagnostics, retired
+  /// instruction count, and compilation time.  This is the reusable
+  /// diagnostics-to-sample mapping shared by both the measured
+  /// ``measure`` entry point and the live-receipt snapshot builder.
+  ///
+  /// `wallTimeNanoseconds` is taken verbatim from the caller; a snapshot
+  /// collected at a live-run boundary passes the host-timing wall time so
+  /// the resulting sample (and any cost report derived from it) reflects
+  /// the real run duration rather than the instantaneous snapshot cost.
+  public static func sample(
     configuration: ISAEngineProfileConfiguration,
     workloadName: String,
     workloadRevision: String,
-    translationCacheMaximumBytes: UInt64,
-    body: () throws -> (diagnostics: DoryARM64BaselineExecutorDiagnostics,
-                       retiredInstructions: UInt64,
-                       compilationTimeNanoseconds: UInt64)
-  ) rethrows -> ISAEngineProfileSample {
-    let start = DispatchTime.now()
-    let result = try body()
-    let elapsed = DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
-
-    let diag = result.diagnostics
+    wallTimeNanoseconds: UInt64,
+    diagnostics: DoryARM64BaselineExecutorDiagnostics,
+    retiredInstructions: UInt64,
+    compilationTimeNanoseconds: UInt64,
+    translationCacheMaximumBytes: UInt64
+  ) -> ISAEngineProfileSample {
+    let diag = diagnostics
     return ISAEngineProfileSample(
       configuration: configuration,
       workloadName: workloadName,
       workloadRevision: workloadRevision,
-      wallTimeNanoseconds: elapsed,
-      retiredGuestInstructions: result.retiredInstructions,
-      compilationTimeNanoseconds: result.compilationTimeNanoseconds,
+      wallTimeNanoseconds: wallTimeNanoseconds,
+      retiredGuestInstructions: retiredInstructions,
+      compilationTimeNanoseconds: compilationTimeNanoseconds,
       compilationAttempts: diag.compiledBlocks,
       compilationDeclines: diag.declinedCompilations,
       translationCacheEntryCount: diag.translationCacheEntryCount,
@@ -279,5 +281,33 @@ public enum ISAEngineProfiler {
       negativeCacheHits: diag.negativeCacheHits,
       negativeCacheMisses: diag.negativeCacheMisses,
       pendingWorkExits: diag.pendingWorkExits)
+  }
+
+  /// Measure a block of engine work, returning a profile sample with
+  /// wall time and diagnostics. The caller provides the configuration,
+  /// workload identity, and a closure that returns the diagnostics and
+  /// retired instruction count.
+  public static func measure(
+    configuration: ISAEngineProfileConfiguration,
+    workloadName: String,
+    workloadRevision: String,
+    translationCacheMaximumBytes: UInt64,
+    body: () throws -> (diagnostics: DoryARM64BaselineExecutorDiagnostics,
+                       retiredInstructions: UInt64,
+                       compilationTimeNanoseconds: UInt64)
+  ) rethrows -> ISAEngineProfileSample {
+    let start = DispatchTime.now()
+    let result = try body()
+    let elapsed = DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
+
+    return sample(
+      configuration: configuration,
+      workloadName: workloadName,
+      workloadRevision: workloadRevision,
+      wallTimeNanoseconds: elapsed,
+      diagnostics: result.diagnostics,
+      retiredInstructions: result.retiredInstructions,
+      compilationTimeNanoseconds: result.compilationTimeNanoseconds,
+      translationCacheMaximumBytes: translationCacheMaximumBytes)
   }
 }

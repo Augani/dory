@@ -1,4 +1,5 @@
 import DoryDBTX86
+import DoryMachinePC
 import dory_x86_decode_audit
 import Foundation
 import Testing
@@ -475,5 +476,352 @@ import Testing
     #expect(attributions[0].estimatedRuntimeExitCount == 500)
     #expect(attributions[1].guestRIP == 0x2000)
     #expect(attributions[1].declineReason == "nativeEmitter")
+  }
+}
+
+// MARK: - P2-05 live receipt
+
+@Suite struct ISAEngineRunResultMappingTests {
+  @Test func mapsPoweredOffStop() {
+    let result = ISAEngineRunResult(.poweredOff(instructionCount: 1234))
+    if case .poweredOff(let n) = result {
+      #expect(n == 1234)
+    } else {
+      Issue.record("expected poweredOff")
+    }
+    #expect(result.description == "poweredOff(instructions=1234)")
+  }
+
+  @Test func mapsHaltedStop() {
+    let result = ISAEngineRunResult(.halted(instructionCount: 5678))
+    if case .halted(let n) = result {
+      #expect(n == 5678)
+    } else {
+      Issue.record("expected halted")
+    }
+  }
+
+  @Test func mapsResetStop() {
+    let result = ISAEngineRunResult(.reset(instructionCount: 9))
+    if case .reset(let n) = result {
+      #expect(n == 9)
+    } else {
+      Issue.record("expected reset")
+    }
+  }
+
+  @Test func mapsInstructionBudgetStop() {
+    let result = ISAEngineRunResult(.instructionBudget(1_000_000))
+    if case .instructionBudget(let n) = result {
+      #expect(n == 1_000_000)
+    } else {
+      Issue.record("expected instructionBudget")
+    }
+  }
+}
+
+@Suite struct ISAEngineReceiptOutcomeTests {
+  private func zeroSample() -> ISAEngineProfileSample {
+    ISAEngineProfileSample(
+      configuration: .init(
+        tier: "Tier1-direct-only", cpuProfile: "compatibleV1",
+        schedulingMode: "serialized", firmwareVersion: "v1",
+        kernelInitrdDiskHash: String(repeating: "a", count: 64)),
+      workloadName: "w", workloadRevision: "r",
+      wallTimeNanoseconds: 0, retiredGuestInstructions: 0,
+      compilationTimeNanoseconds: 0, compilationAttempts: 0, compilationDeclines: 0,
+      translationCacheEntryCount: 0, translationCacheAllocatedBytes: 0,
+      translationCacheMaximumBytes: 128 * 1024 * 1024,
+      translationCacheHits: 0, translationCacheMisses: 0, translationCacheInvalidations: 0,
+      tier1DeclineInterpreterHelper: 0, tier1DeclineNativeEmitter: 0,
+      tier1CompiledBlocks: 0, tier1CompilationAttempts: 0, tier1CompilationDeclines: 0,
+      nativeDispatcherEntries: 0, directlyChainedBlocks: 0,
+      chainTargetAttempts: 0, chainTargetAccepts: 0,
+      indirectBranchTargetCacheHits: 0, indirectBranchTargetCacheMisses: 0,
+      shadowReturnStackHits: 0, shadowReturnStackMisses: 0,
+      helperCalls: 0, memoryFaultSlowPaths: 0, lazyFlagMaterializations: 0,
+      codeCacheWraps: 0, codeCacheEvictedBlocks: 0,
+      negativeCacheHits: 0, negativeCacheMisses: 0, pendingWorkExits: 0)
+  }
+
+  private func makeReceipt(result: ISAEngineRunResult, condition: ISAEngineCompletionCondition)
+    -> ISAEngineProfileReceipt
+  {
+    ISAEngineReceiptBuilder.build(
+      configuration: .init(
+        tier: "Tier1-direct-only", cpuProfile: "compatibleV1",
+        schedulingMode: "serialized", firmwareVersion: "v1",
+        kernelInitrdDiskHash: String(repeating: "a", count: 64)),
+      workloadName: "w", workloadRevision: "r",
+      completionCondition: condition,
+      startSample: zeroSample(), endSample: zeroSample(),
+      hostTiming: .init(startNanoseconds: 0, endNanoseconds: 0),
+      result: result)
+  }
+
+  @Test func completedWhenStopMatchesCondition() {
+    let receipt = makeReceipt(
+      result: .poweredOff(instructionCount: 100),
+      condition: .poweredOff)
+    #expect(receipt.outcome == .completed)
+    #expect(receipt.isCompleted)
+  }
+
+  @Test func stoppedWhenStopDoesNotMatchCondition() {
+    let receipt = makeReceipt(
+      result: .halted(instructionCount: 100),
+      condition: .poweredOff)
+    #expect(receipt.outcome == .stopped)
+    #expect(!receipt.isCompleted)
+  }
+
+  @Test func stoppedWhenInstructionBudgetExhaustedBeforePowerOff() {
+    let receipt = makeReceipt(
+      result: .instructionBudget(1_000_000),
+      condition: .poweredOff)
+    #expect(receipt.outcome == .stopped)
+    #expect(!receipt.isCompleted)
+  }
+
+  @Test func completedForInstructionBudgetCondition() {
+    let receipt = makeReceipt(
+      result: .instructionBudget(1_000_000),
+      condition: .instructionBudget(instructionCount: 1_000_000))
+    #expect(receipt.outcome == .completed)
+    #expect(receipt.isCompleted)
+  }
+
+  @Test func stopsWhenInstructionBudgetCountDoesNotMatchCondition() {
+    let receipt = makeReceipt(
+      result: .instructionBudget(999_999),
+      condition: .instructionBudget(instructionCount: 1_000_000))
+    #expect(receipt.outcome == .stopped)
+    #expect(!receipt.isCompleted)
+  }
+
+  @Test func timeoutForWallTimeBudgetResult() {
+    let receipt = makeReceipt(result: .wallTimeBudget, condition: .wallTimeBudget(seconds: 1))
+    #expect(receipt.outcome == .timeout)
+    #expect(!receipt.isCompleted)
+  }
+
+  @Test func failedForFailedResult() {
+    let receipt = makeReceipt(result: .failed("boom"), condition: .poweredOff)
+    #expect(receipt.outcome == .failed)
+    #expect(!receipt.isCompleted)
+  }
+
+  @Test func stopReasonCarriesResultDescription() {
+    let receipt = makeReceipt(result: .failed("boom"), condition: .poweredOff)
+    #expect(receipt.stopReason == "failed(boom)")
+  }
+}
+
+@Suite struct ISAEngineCostReportReceiptGatingTests {
+  private func sample(retired: UInt64 = 1_000_000, wallTime: UInt64 = 1_000_000_000)
+    -> ISAEngineProfileSample
+  {
+    ISAEngineProfileSample(
+      configuration: .init(
+        tier: "Tier1-direct-only", cpuProfile: "compatibleV1",
+        schedulingMode: "serialized", firmwareVersion: "v1",
+        kernelInitrdDiskHash: String(repeating: "a", count: 64)),
+      workloadName: "w", workloadRevision: "r",
+      wallTimeNanoseconds: wallTime, retiredGuestInstructions: retired,
+      compilationTimeNanoseconds: 100_000_000, compilationAttempts: 100, compilationDeclines: 10,
+      translationCacheEntryCount: 500, translationCacheAllocatedBytes: 64 * 1024 * 1024,
+      translationCacheMaximumBytes: 128 * 1024 * 1024,
+      translationCacheHits: 9000, translationCacheMisses: 1000, translationCacheInvalidations: 5,
+      tier1DeclineInterpreterHelper: 5, tier1DeclineNativeEmitter: 5,
+      tier1CompiledBlocks: 90, tier1CompilationAttempts: 100, tier1CompilationDeclines: 10,
+      nativeDispatcherEntries: 800, directlyChainedBlocks: 400,
+      chainTargetAttempts: 500, chainTargetAccepts: 400,
+      indirectBranchTargetCacheHits: 300, indirectBranchTargetCacheMisses: 50,
+      shadowReturnStackHits: 200, shadowReturnStackMisses: 10,
+      helperCalls: 5000, memoryFaultSlowPaths: 20, lazyFlagMaterializations: 100,
+      codeCacheWraps: 0, codeCacheEvictedBlocks: 0,
+      negativeCacheHits: 80, negativeCacheMisses: 20, pendingWorkExits: 100)
+  }
+
+  private func makeReceipt(outcome: ISAEngineReceiptOutcome) -> ISAEngineProfileReceipt {
+    let result: ISAEngineRunResult = switch outcome {
+    case .completed: .poweredOff(instructionCount: 1_000_000)
+    case .timeout: .wallTimeBudget
+    case .stopped: .halted(instructionCount: 100)
+    case .failed: .failed("boom")
+    }
+    return ISAEngineReceiptBuilder.build(
+      configuration: .init(
+        tier: "Tier1-direct-only", cpuProfile: "compatibleV1",
+        schedulingMode: "serialized", firmwareVersion: "v1",
+        kernelInitrdDiskHash: String(repeating: "a", count: 64)),
+      workloadName: "w", workloadRevision: "r",
+      completionCondition: .poweredOff,
+      startSample: sample(retired: 0, wallTime: 0), endSample: sample(),
+      hostTiming: .init(startNanoseconds: 0, endNanoseconds: 1_000_000_000),
+      result: result)
+  }
+
+  @Test func completedReceiptProducesCostReport() {
+    let receipt = makeReceipt(outcome: .completed)
+    let report = ISAEngineCostReportGenerator.generate(from: receipt)
+    #expect(report != nil)
+    #expect(report?.retiredGuestInstructions == 1_000_000)
+    #expect(report?.wallTimeNanoseconds == 1_000_000_000)
+  }
+
+  @Test func timeoutReceiptProducesNoCostReport() {
+    let receipt = makeReceipt(outcome: .timeout)
+    #expect(ISAEngineCostReportGenerator.generate(from: receipt) == nil)
+  }
+
+  @Test func stoppedReceiptProducesNoCostReport() {
+    let receipt = makeReceipt(outcome: .stopped)
+    #expect(ISAEngineCostReportGenerator.generate(from: receipt) == nil)
+  }
+
+  @Test func failedReceiptProducesNoCostReport() {
+    let receipt = makeReceipt(outcome: .failed)
+    #expect(ISAEngineCostReportGenerator.generate(from: receipt) == nil)
+  }
+}
+
+@Suite struct DoryPCDirectKernelMachineSnapshotTests {
+  private let configuration = ISAEngineProfileConfiguration(
+    tier: "Tier1-direct-only", cpuProfile: "compatibleV1",
+    schedulingMode: "serialized", firmwareVersion: "edk2-pc-v1",
+    kernelInitrdDiskHash: String(repeating: "a", count: 64))
+
+  @Test func interpreterMachinePreRunSampleIsZero() throws {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 64 * 1024 * 1024, executionTier: .interpreter)
+    let sample = ISAEngineReceiptBuilder.sample(
+      from: machine,
+      configuration: configuration,
+      workloadName: "pre-run",
+      workloadRevision: "rev",
+      wallTimeNanoseconds: 0,
+      translationCacheMaximumBytes: 128 * 1024 * 1024)
+    #expect(sample.retiredGuestInstructions == 0)
+    #expect(sample.wallTimeNanoseconds == 0)
+    #expect(sample.compilationAttempts == 0)
+    #expect(sample.translationCacheMaximumBytes == 128 * 1024 * 1024)
+    #expect(sample.translationCacheHits == 0)
+    #expect(sample.translationCacheMisses == 0)
+  }
+
+  @Test func baselineJITMachinePreRunSampleIsZero() throws {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 64 * 1024 * 1024, executionTier: .baselineJIT,
+      instrumentationEnabled: true)
+    let sample = ISAEngineReceiptBuilder.sample(
+      from: machine,
+      configuration: configuration,
+      workloadName: "pre-run",
+      workloadRevision: "rev",
+      wallTimeNanoseconds: 0,
+      translationCacheMaximumBytes: 128 * 1024 * 1024)
+    #expect(sample.retiredGuestInstructions == 0)
+    #expect(sample.compilationAttempts == 0)
+    #expect(sample.translationCacheHits == 0)
+    #expect(sample.translationCacheMisses == 0)
+    #expect(sample.nativeDispatcherEntries == 0)
+    #expect(sample.pendingWorkExits == 0)
+  }
+
+  @Test func runRejectsUnloadedMachine() throws {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 64 * 1024 * 1024, executionTier: .interpreter)
+    #expect(throws: DoryPCMachineError.notLoaded) {
+      _ = try ISAEngineReceiptBuilder.run(
+        machine: machine,
+        configuration: configuration,
+        workloadName: "unloaded",
+        workloadRevision: "rev",
+        completionCondition: .instructionBudget(instructionCount: 100),
+        translationCacheMaximumBytes: 128 * 1024 * 1024)
+    }
+  }
+
+  @Test func loadedMachineRunProducesCompletedLiveReceiptAndCostReport() throws {
+    #if arch(arm64)
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        executionTier: .baselineJIT,
+        baselineJITMaximumCodeBytes: 16 * 1024,
+        instrumentationEnabled: true)
+      // NOP; JMP $: a deterministic, bounded direct-kernel workload that
+      // retires through the real machine boundary until its declared budget.
+      try machine.load(kernel: makeMinimalELF(code: [0x90, 0xEB, 0xFE]), commandLine: "x")
+
+      let receipt = try ISAEngineReceiptBuilder.run(
+        machine: machine,
+        configuration: configuration,
+        workloadName: "p2-05-live-budget",
+        workloadRevision: "fixture-v1",
+        completionCondition: .instructionBudget(instructionCount: 8),
+        translationCacheMaximumBytes: 16 * 1024)
+
+      #expect(receipt.outcome == .completed)
+      #expect(receipt.isCompleted)
+      #expect(receipt.endSample.retiredGuestInstructions == 8)
+      #expect(machine.executionStatistics.baselineJITInstructions == 8)
+      #expect(receipt.endSample.wallTimeNanoseconds == receipt.hostTiming.wallTimeNanoseconds)
+      #expect(receipt.hostTiming.endNanoseconds >= receipt.hostTiming.startNanoseconds)
+      #expect(ISAEngineCostReportGenerator.generate(from: receipt) != nil)
+    #endif
+  }
+
+  private func makeMinimalELF(code: [UInt8]) -> Data {
+    let segmentOffset = 0x200
+    var data = Data(repeating: 0, count: segmentOffset + code.count)
+    data.replaceSubrange(0..<4, with: [0x7F, 0x45, 0x4C, 0x46])
+    data[4] = 2
+    data[5] = 1
+    data[6] = 1
+    writeLittleEndian(UInt16(2), to: &data, at: 16)
+    writeLittleEndian(UInt16(0x3E), to: &data, at: 18)
+    writeLittleEndian(UInt32(1), to: &data, at: 20)
+    writeLittleEndian(UInt64(0x10_0000), to: &data, at: 24)
+    writeLittleEndian(UInt64(0x40), to: &data, at: 32)
+    writeLittleEndian(UInt16(64), to: &data, at: 52)
+    writeLittleEndian(UInt16(56), to: &data, at: 54)
+    writeLittleEndian(UInt16(2), to: &data, at: 56)
+    writeELFProgramHeader(
+      to: &data, at: 0x40, type: 1, fileOffset: UInt64(segmentOffset),
+      physicalAddress: 0x10_0000, size: UInt64(code.count))
+    writeELFProgramHeader(
+      to: &data, at: 0x78, type: 4, fileOffset: 0x180,
+      physicalAddress: 0, size: 20)
+    writeLittleEndian(UInt32(4), to: &data, at: 0x180)
+    writeLittleEndian(UInt32(4), to: &data, at: 0x184)
+    writeLittleEndian(UInt32(0x12), to: &data, at: 0x188)
+    data.replaceSubrange(0x18C..<0x190, with: [0x58, 0x65, 0x6E, 0])
+    writeLittleEndian(UInt32(0x10_0000), to: &data, at: 0x190)
+    data.replaceSubrange(segmentOffset..<(segmentOffset + code.count), with: code)
+    return data
+  }
+
+  private func writeELFProgramHeader(
+    to data: inout Data,
+    at offset: Int,
+    type: UInt32,
+    fileOffset: UInt64,
+    physicalAddress: UInt64,
+    size: UInt64
+  ) {
+    writeLittleEndian(type, to: &data, at: offset)
+    writeLittleEndian(fileOffset, to: &data, at: offset + 8)
+    writeLittleEndian(physicalAddress, to: &data, at: offset + 24)
+    writeLittleEndian(size, to: &data, at: offset + 32)
+    writeLittleEndian(size, to: &data, at: offset + 40)
+  }
+
+  private func writeLittleEndian<T: FixedWidthInteger>(
+    _ value: T, to data: inout Data, at offset: Int
+  ) {
+    for index in 0..<MemoryLayout<T>.size {
+      data[offset + index] = UInt8(truncatingIfNeeded: value >> T(index * 8))
+    }
   }
 }

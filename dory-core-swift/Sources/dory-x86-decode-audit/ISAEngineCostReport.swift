@@ -90,6 +90,19 @@ public struct ISAEngineCostReport: Codable, Sendable, Hashable {
 
 /// P2-05 acceptance: Generates a ranked cost report from a profile sample.
 public enum ISAEngineCostReportGenerator {
+  /// Generate a comparable ranked cost report from a live receipt.
+  ///
+  /// Returns `nil` unless the receipt's outcome is `.completed`.  A
+  /// partial, timeout, stopped, or failed receipt must not masquerade as
+  /// completed evidence, so it produces no comparable cost report.  When
+  /// the receipt is completed, the report is built from the receipt's live
+  /// end sample (collected at the terminal machine boundary), not from
+  /// hand-assembled test data.
+  public static func generate(from receipt: ISAEngineProfileReceipt) -> ISAEngineCostReport? {
+    guard receipt.isCompleted else { return nil }
+    return generate(from: receipt.endSample)
+  }
+
   public static func generate(from sample: ISAEngineProfileSample) -> ISAEngineCostReport {
     let wall = sample.wallTimeNanoseconds
     let categories = rankCostCategories(from: sample, wallTime: wall)

@@ -416,12 +416,12 @@ let package = Package(
     .executableTarget(name: "dory-x86-generation-benchmark", dependencies: ["DoryDBTX86"]),
     .executableTarget(
       name: "dory-x86-decode-audit",
-      dependencies: ["DoryDBTX86"],
+      dependencies: ["DoryDBTX86", "DoryMachinePC"],
       resources: [.copy("Vectors")]
     ),
     .testTarget(
       name: "DoryX86DecodeAuditTests",
-      dependencies: ["dory-x86-decode-audit"]
+      dependencies: ["dory-x86-decode-audit", "DoryMachinePC"]
     ),
     .executableTarget(
       name: "dory-pc-linux-boot-runner",

@@ -77,6 +77,7 @@ private enum DoryX86DecodeAudit {
       )
     }
 
+    print("audit mode: decoder-only (no engine execution; no live profile receipt)")
     print("mode: \(options.mode.rawValue)")
     print("modules: \(inputs.count)")
     print("static binary decoded: \(result.decoded)/\(result.total)")
