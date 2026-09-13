@@ -32,6 +32,44 @@ public enum DoryPCV1ABI {
   public static let variableStoreFormatIdentity = "dory.uefi.variables.pc@1"
   public static let variableBridgeIdentity = "dory.uefi.variable-bridge.pc@1"
 
+  // P2-01 item 4 — Guest-physical layout vs host mapping granule:
+  //
+  // The x86 guest uses 4-KiB pages. On Apple Silicon the host page size is 16 KiB.
+  // DoryDBT's stage-2 mapping uses the host page size, so every 4-KiB guest page is
+  // backed by a 16-KiB host mapping. This means:
+  //   - Guest RAM is mapped at 16-KiB granularity; 4-KiB-aligned guest addresses within
+  //     the same 16-KiB host page share one host mapping.
+  //   - MMIO regions (PCIe MMIO, ECAM, IOAPIC, HPET, local APIC, firmware) are at
+  //     4-KiB boundaries in the guest physical map but are backed by 16-KiB host
+  //     mappings. The DBT memory provider must handle 4-KiB guest-page faults within
+  //     a 16-KiB host page correctly (see DoryX86MmapMemory).
+  //   - Shared-memory apertures (renderer blob mappings, filesystem workers) use the
+  //     host page size for backing. Guest 4-KiB pages within a shared 16-KiB host page
+  //     are all accessible to the worker that mapped the host page.
+  //   - Huge pages (2 MiB, 1 GiB) are not used in v1; all RAM is mapped at the host
+  //     page size. Guest huge-page requests are satisfied by mapping multiple host
+  //     pages.
+  //
+  // P2-01 item 2 — Reserved ranges:
+  //
+  // PCIe ECAM (0xE000_0000, 256 MiB) and PCIe MMIO (0xD000_0000, 256 MiB) are active
+  // in ABI v1: the PCI host bridge enumerates devices and the guest discovers them
+  // via ACPI/PNP0A03. All BAR addresses are allocated from the frozen PCIe MMIO
+  // aperture. USB (xHCI at device 7) is active when a USB controller is instantiated.
+  // GPU (VirtIO GPU at device 2) is active when a graphics device is instantiated.
+  // A device slot that is not instantiated is a reservation: the PCI address is
+  // allocated but no device function is exposed to the guest.
+  //
+  // P2-01 item 6 — Migration behavior:
+  //
+  // The ABI identity ("dory.pc@1") and schemaVersion (1) are persisted with each
+  // VM's configuration. On reopen, the firmware configuration block stores
+  // schemaVersion and rejects a mismatched version before any disk mutation.
+  // A newer schema version is rejected, not silently reinterpreted as v1.
+  // This ensures an old machine is never silently reinterpreted as a different
+  // platform. Migration to a newer ABI requires an explicit upgrade path that is
+  // not yet implemented; until then, a version mismatch is a hard error.
+
   public static let minimumProductMemoryBytes: UInt64 = 512 << 20
   public static let maximumMemoryBytes: UInt64 = 512 << 30
   public static let maximumVCPUCount = 255
@@ -172,6 +210,36 @@ public enum DoryPCV1ABI {
     }
   }
 
+  /// Validates the frozen region list for overlaps, integer overflow, and alignment.
+  /// Called at construction time to ensure the physical address map is well-formed before
+  /// any guest memory is mapped. The frozen regions are compile-time constants, so this
+  /// validator catches accidental ABI edits that would create overlapping reservations.
+  public static func validateRegions() throws {
+    try Self.validateRegions(regions)
+  }
+
+  /// Validates an arbitrary region list for overlaps and zero-length regions.
+  /// Each region's byteCount must be positive (DoryGuestAddressRange already checks
+  /// overflow at construction), and no two regions may overlap. Regions are expected
+  /// sorted by base address for deterministic validation.
+  public static func validateRegions(_ regions: [DoryPCV1Region]) throws {
+    var previous: DoryGuestAddressRange? = nil
+    for region in regions {
+      guard region.range.byteCount > 0 else {
+        throw DoryPCV1ABIError.zeroLengthRegion(kind: region.kind)
+      }
+      if let prev = previous {
+        guard !prev.overlaps(region.range) else {
+          throw DoryPCV1ABIError.overlappingRegions(
+            previous: prev,
+            current: region.range
+          )
+        }
+      }
+      previous = region.range
+    }
+  }
+
   public static let markdown = """
     # DoryPC-v1 ABI
 
@@ -274,4 +342,6 @@ public enum DoryPCV1ABIError: Error, Sendable, Equatable {
   case memoryAboveMaximum(maximum: UInt64, actual: UInt64)
   case unalignedMemory(UInt64)
   case invalidVCPUCount(maximum: Int, actual: Int)
+  case zeroLengthRegion(kind: DoryPCV1RegionKind)
+  case overlappingRegions(previous: DoryGuestAddressRange, current: DoryGuestAddressRange)
 }

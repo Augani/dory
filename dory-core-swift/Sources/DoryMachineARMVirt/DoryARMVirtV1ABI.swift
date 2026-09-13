@@ -75,6 +75,38 @@ public enum DoryARMVirtV1ABI {
   public static let minimumMemoryBytes: UInt64 = 1 << 30
   public static let maximumVCPUCount = 256
 
+  // P2-01 item 4 — Guest-physical layout vs host mapping granule:
+  //
+  // The ARM guest uses 4-KiB pages. On Apple Silicon the host page size is 16 KiB.
+  // Hypervisor.framework's stage-2 mapping granule is the host page size, so every
+  // 4-KiB guest page is backed by a 16-KiB host mapping. This means:
+  //   - Guest RAM is mapped at 16-KiB granularity; 4-KiB-aligned guest addresses within
+  //     the same 16-KiB host page share one host mapping.
+  //   - MMIO regions must be at least 16-KiB-aligned on the host side to avoid
+  //     overlapping a RAM mapping with a device mapping. The ABI places MMIO at
+  //     0x0c00_0000+ which is 16-KiB-aligned.
+  //   - Shared-memory apertures (renderer, filesystem workers) use the host page size
+  //     for their backing mappings. Guest 4-KiB pages within a shared 16-KiB host page
+  //     are all accessible to the worker that mapped the host page.
+  //   - Huge pages are not used in v1; all RAM is mapped at the host page size.
+  //
+  // P2-01 item 2 — Reserved ranges:
+  //
+  // PCIe ECAM (0x1000_0000, 256 MiB) and PCIe MMIO (0x4000_0000, 1 GiB) are reserved
+  // ranges in ABI v1. They are reservations, not active devices: no PCIe root port
+  // or ECAM driver is exposed to the guest until a PCIe device and its discovery path
+  // are implemented per P2-15. The virtio-mmio transport is the active device bus in v1.
+  //
+  // P2-01 item 6 — Migration behavior:
+  //
+  // The ABI identity ("dory.armvirt@1") and schemaVersion (1) are persisted with each
+  // VM's topology. On reopen, DoryARMVirtV1Topology rejects an unsupported schemaVersion
+  // or incompatible machineABIIdentity before any disk mutation. A newer schema version
+  // (e.g. v2) is rejected, not silently reinterpreted as v1. This ensures an old machine
+  // is never silently reinterpreted as a different platform. Migration to a newer ABI
+  // requires an explicit upgrade path that is not yet implemented; until then, a version
+  // mismatch is a hard error.
+
   public static let firmwareCodeBase: UInt64 = 0x0000_0000
   public static let firmwareCodeBytes: UInt64 = 0x0400_0000
   public static let firmwareVariableBase: UInt64 = 0x0400_0000
@@ -198,6 +230,35 @@ public enum DoryARMVirtV1ABI {
     }
   }
 
+  /// Validates the frozen region list for overlaps, integer overflow, and alignment.
+  /// Called at construction time to ensure the physical address map is well-formed before
+  /// any guest memory is mapped. The frozen regions are compile-time constants, so this
+  /// validator catches accidental ABI edits that would create overlapping reservations.
+  public static func validateRegions() throws {
+    try Self.validateRegions(regions)
+  }
+
+  /// Validates an arbitrary region list for overlaps, integer overflow, and alignment.
+  /// Each region's base must be non-zero, its end must not overflow UInt64, and no two
+  /// regions may overlap. Regions must be sorted by base address for deterministic validation.
+  public static func validateRegions(_ regions: [DoryARMVirtV1Region]) throws {
+    var previous: DoryGuestAddressRange? = nil
+    for region in regions {
+      guard region.range.byteCount > 0 else {
+        throw DoryARMVirtV1ABIError.zeroLengthRegion(kind: region.kind)
+      }
+      if let prev = previous {
+        guard !prev.overlaps(region.range) else {
+          throw DoryARMVirtV1ABIError.overlappingRegions(
+            previous: prev,
+            current: region.range
+          )
+        }
+      }
+      previous = region.range
+    }
+  }
+
   public static let markdown = """
     # DoryARMVirt-v1 ABI
 
@@ -266,4 +327,6 @@ public enum DoryARMVirtV1ABIError: Error, Equatable, Sendable {
   case memoryBelowMinimum(minimum: UInt64, actual: UInt64)
   case memoryOverlapsDAXWindow(maximum: UInt64, actual: UInt64)
   case invalidVCPUCount(maximum: Int, actual: Int)
+  case zeroLengthRegion(kind: DoryARMVirtV1RegionKind)
+  case overlappingRegions(previous: DoryGuestAddressRange, current: DoryGuestAddressRange)
 }

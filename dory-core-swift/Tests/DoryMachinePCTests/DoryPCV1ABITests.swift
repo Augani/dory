@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 
+import DoryExecutionContracts
 @testable import DoryMachinePC
 
 @Suite struct DoryPCV1ABITests {
@@ -56,5 +57,35 @@ import Testing
       .appendingPathComponent("Firmware/DoryPC/abi.txt")
     let checkedIn = try String(contentsOf: document, encoding: .utf8)
     #expect(checkedIn == DoryPCV1ABI.markdown + "\n")
+  }
+
+  // MARK: - P2-01 region validation
+
+  @Test func frozenRegionsPassValidation() throws {
+    try DoryPCV1ABI.validateRegions()
+  }
+
+  @Test func overlappingRegionsAreRejected() {
+    #expect(throws: DoryPCV1ABIError.self) {
+      let overlapping = [
+        try DoryPCV1Region(kind: .ioAPIC, base: 0x1000, byteCount: 0x2000),
+        try DoryPCV1Region(kind: .hpet, base: 0x1000, byteCount: 0x1000),
+      ]
+      try DoryPCV1ABI.validateRegions(overlapping)
+    }
+  }
+
+  @Test func zeroLengthRegionIsRejected() {
+    #expect(throws: DoryExecutionContractError.self) {
+      _ = try DoryPCV1Region(kind: .ioAPIC, base: 0x1000, byteCount: 0)
+    }
+  }
+
+  @Test func adjacentRegionsDoNotOverlap() throws {
+    let adjacent = [
+      try DoryPCV1Region(kind: .ioAPIC, base: 0x1000, byteCount: 0x1000),
+      try DoryPCV1Region(kind: .hpet, base: 0x2000, byteCount: 0x1000),
+    ]
+    try DoryPCV1ABI.validateRegions(adjacent)
   }
 }

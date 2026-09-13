@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 
+import DoryExecutionContracts
 @testable import DoryMachineARMVirt
 
 @Suite struct DoryARMVirtV1ABITests {
@@ -90,5 +91,35 @@ import Testing
       .appendingPathComponent("Firmware/DoryARMVirt/abi.txt")
     let checkedIn = try String(contentsOf: specificationURL, encoding: .utf8)
     #expect(checkedIn == DoryARMVirtV1ABI.markdown + "\n")
+  }
+
+  // MARK: - P2-01 region validation
+
+  @Test func frozenRegionsPassValidation() throws {
+    try DoryARMVirtV1ABI.validateRegions()
+  }
+
+  @Test func overlappingRegionsAreRejected() {
+    #expect(throws: DoryARMVirtV1ABIError.self) {
+      let overlapping = [
+        try DoryARMVirtV1Region(kind: .uart, base: 0x1000, byteCount: 0x2000),
+        try DoryARMVirtV1Region(kind: .rtc, base: 0x1000, byteCount: 0x1000),
+      ]
+      try DoryARMVirtV1ABI.validateRegions(overlapping)
+    }
+  }
+
+  @Test func zeroLengthRegionIsRejected() {
+    #expect(throws: DoryExecutionContractError.self) {
+      _ = try DoryARMVirtV1Region(kind: .uart, base: 0x1000, byteCount: 0)
+    }
+  }
+
+  @Test func adjacentRegionsDoNotOverlap() throws {
+    let adjacent = [
+      try DoryARMVirtV1Region(kind: .uart, base: 0x1000, byteCount: 0x1000),
+      try DoryARMVirtV1Region(kind: .rtc, base: 0x2000, byteCount: 0x1000),
+    ]
+    try DoryARMVirtV1ABI.validateRegions(adjacent)
   }
 }
