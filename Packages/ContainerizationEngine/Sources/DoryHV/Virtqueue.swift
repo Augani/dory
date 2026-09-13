@@ -202,19 +202,22 @@ public struct VirtqueueChain: @unchecked Sendable {
     public let containsZeroLengthDescriptor: Bool
     private let resolvedSegments: [VirtqueueSegment]
     private let leaseAuthority: VirtqueueLeaseAuthority
+    fileprivate let claimID: UUID?
 
     fileprivate init(
         head: UInt16,
         segments: [VirtqueueSegment],
         containsZeroLengthDescriptor: Bool,
         lease: VirtqueueLease,
-        leaseAuthority: VirtqueueLeaseAuthority
+        leaseAuthority: VirtqueueLeaseAuthority,
+        claimID: UUID?
     ) {
         self.head = head
         self.resolvedSegments = segments
         self.containsZeroLengthDescriptor = containsZeroLengthDescriptor
         self.lease = lease
         self.leaseAuthority = leaseAuthority
+        self.claimID = claimID
     }
 
     public var isLeaseValid: Bool { leaseAuthority.validates(lease) }
@@ -322,6 +325,7 @@ public final class Virtqueue {
     private var usedRing: UInt64 = 0
     private var lastAvailIndex: UInt16 = 0
     private var usedIndex: UInt16 = 0
+    private var outstandingClaims: [UInt16: UUID] = [:]
     private let memory: GuestMemory
     private let limits: VirtqueueLimits
     private let leaseAuthority = VirtqueueLeaseAuthority()
@@ -383,6 +387,7 @@ public final class Virtqueue {
     public func setNegotiatedFeatures(_ features: UInt64) {
         guard negotiatedFeatures != features else { return }
         leaseAuthority.invalidate()
+        outstandingClaims = [:]
         negotiatedFeatures = features
     }
 
@@ -395,6 +400,7 @@ public final class Virtqueue {
         usedRing: UInt64
     ) -> Bool {
         leaseAuthority.invalidate()
+        outstandingClaims = [:]
         guard let size = UInt16(exactly: requestedSize),
               Self.isValidSize(requestedSize),
               descriptorTable % 16 == 0,
@@ -438,6 +444,7 @@ public final class Virtqueue {
     @discardableResult
     public func setReady(_ isReady: Bool) -> Bool {
         leaseAuthority.invalidate()
+        outstandingClaims = [:]
         guard !isReady || Self.isValidSize(UInt64(size)) else {
             ready = false
             return false
@@ -452,6 +459,7 @@ public final class Virtqueue {
 
     public func reset() {
         leaseAuthority.invalidate()
+        outstandingClaims = [:]
         negotiatedFeatures = 0
         invalidateConfiguration()
     }
@@ -464,6 +472,7 @@ public final class Virtqueue {
         usedRing = 0
         lastAvailIndex = 0
         usedIndex = 0
+        outstandingClaims = [:]
     }
 
     public var hasPending: Bool {
@@ -507,7 +516,8 @@ public final class Virtqueue {
             throw VMError.unexpectedExit("virtqueue available ring overrun")
         }
 
-        let slot = UInt64(lastAvailIndex % size)
+        let currentAvailIndex = lastAvailIndex
+        let slot = UInt64(currentAvailIndex % size)
         let slotOffset = try checkedMultiply(slot, 2, "available-ring slot offset")
         let ringOffset = try checkedAdd(4, slotOffset, "available-ring element offset")
         let headAddress = try checkedAdd(availRing, ringOffset, "available-ring element address")
@@ -529,12 +539,25 @@ public final class Virtqueue {
         guard isLeaseValid(lease) else {
             throw VMError.unexpectedExit("virtqueue changed while resolving descriptor chain")
         }
+        let claimID: UUID?
+        if consume {
+            let newClaimID = UUID()
+            guard outstandingClaims[head] == nil else {
+                lastAvailIndex = currentAvailIndex
+                throw VMError.unexpectedExit("virtqueue descriptor head is already outstanding")
+            }
+            outstandingClaims[head] = newClaimID
+            claimID = newClaimID
+        } else {
+            claimID = nil
+        }
         return VirtqueueChain(
             head: head,
             segments: segments,
             containsZeroLengthDescriptor: traversal.containsZeroLengthDescriptor,
             lease: lease,
-            leaseAuthority: leaseAuthority
+            leaseAuthority: leaseAuthority,
+            claimID: claimID
         )
     }
 
@@ -649,6 +672,9 @@ public final class Virtqueue {
         // the replacement queue or a different queue. The typed API exposes that revocation.
         let publication = try leaseAuthority.withValidLease(chain.lease) {
             guard ready, size > 0 else { return false }
+            guard outstandingClaims[chain.head] == chain.claimID else {
+                throw VMError.unexpectedExit("virtqueue descriptor head is not outstanding")
+            }
             guard let written = UInt32(exactly: written) else {
                 throw VMError.unexpectedExit("virtqueue used length is not representable")
             }
@@ -658,9 +684,11 @@ public final class Virtqueue {
             let elementAddress = try checkedAdd(usedRing, elementOffset, "used-ring element address")
             try memory.write(UInt32(chain.head), at: elementAddress)
             try memory.write(written, at: checkedAdd(elementAddress, 4, "used-ring length address"))
-            usedIndex &+= 1
+            let newUsedIndex = usedIndex &+ 1
             OSMemoryBarrier()  // used entries visible before the index publish
-            try memory.write(usedIndex, at: checkedAdd(usedRing, 2, "used-index address"))
+            try memory.write(newUsedIndex, at: checkedAdd(usedRing, 2, "used-index address"))
+            usedIndex = newUsedIndex
+            outstandingClaims.removeValue(forKey: chain.head)
             let availFlags = try memory.read(UInt16.self, at: availRing)
             return availFlags & 1 == 0  // VRING_AVAIL_F_NO_INTERRUPT
         }

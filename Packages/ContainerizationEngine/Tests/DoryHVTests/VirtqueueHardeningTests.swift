@@ -132,6 +132,67 @@ import Testing
         #expect(throws: (any Error).self) { _ = try queue.pop() }
     }
 
+    @Test func rejectsInFlightHeadReuseAndRequiresTheExactCompletionClaim() throws {
+        let memory = try makeMemory()
+        let queue = try makeReadyQueue(memory: memory)
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 0,
+            address: dataA,
+            length: 4,
+            flags: 2
+        )
+        try publish(memory)
+
+        let first = try #require(try queue.pop())
+
+        // The second available slot reuses head 0 before the first operation completes.
+        try memory.write(UInt16(0), at: availRing + 6)
+        try memory.write(UInt16(2), at: availRing + 2)
+        #expect(throws: (any Error).self) { _ = try queue.pop() }
+
+        #expect(try queue.pushOutcome(first, written: 4) == .published(wantsInterrupt: true))
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+
+        // Head reuse is valid after completion, but the older chain cannot consume the new claim.
+        let reused = try #require(try queue.pop())
+        #expect(throws: (any Error).self) { _ = try queue.pushOutcome(first, written: 4) }
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try queue.pushOutcome(reused, written: 4) == .published(wantsInterrupt: true))
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 2)
+    }
+
+    @Test func resetAndReconfigureRevokeHeadClaimsWithoutPublishingStaleChains() throws {
+        let memory = try makeMemory()
+        let queue = try makeReadyQueue(memory: memory)
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 0,
+            address: dataA,
+            length: 4,
+            flags: 2
+        )
+        try publish(memory)
+        let stale = try #require(try queue.pop())
+
+        queue.reset()
+        #expect(queue.configure(
+            size: 8,
+            descriptorTable: descriptorTable,
+            availRing: availRing,
+            usedRing: usedRing
+        ))
+        #expect(queue.setReady(true))
+        let replacement = try #require(try queue.pop())
+
+        #expect(try queue.pushOutcome(stale, written: 4) == .revoked)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        #expect(try queue.pushOutcome(replacement, written: 4) == .published(wantsInterrupt: true))
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+    }
+
     @Test func oneIndirectTableRemainsSupported() throws {
         let memory = try makeMemory()
         let queue = try makeReadyQueue(memory: memory)

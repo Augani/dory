@@ -19,6 +19,7 @@ public enum DoryVirtioQueueError: Error, Sendable, Equatable {
   case guestAddressOverflow(address: UInt64, offset: UInt64)
   case descriptorBudgetExceeded(UInt64)
   case invalidIndirectDescriptor(UInt16)
+  case duplicateOutstandingHead(UInt16)
   case duplicateCompletion(UInt16)
   case invalidCompletionLength(UInt32)
 }
@@ -48,6 +49,7 @@ public struct DoryVirtioDescriptorChain: Sendable, Hashable {
   public let descriptors: [DoryVirtioDescriptor]
   public let readableByteCount: UInt64
   public let writableByteCount: UInt64
+  fileprivate let claimID: UUID?
 
   public init(
     headIndex: UInt16,
@@ -59,6 +61,21 @@ public struct DoryVirtioDescriptorChain: Sendable, Hashable {
     self.descriptors = descriptors
     self.readableByteCount = readableByteCount
     self.writableByteCount = writableByteCount
+    claimID = nil
+  }
+
+  fileprivate init(
+    headIndex: UInt16,
+    descriptors: [DoryVirtioDescriptor],
+    readableByteCount: UInt64,
+    writableByteCount: UInt64,
+    claimID: UUID
+  ) {
+    self.headIndex = headIndex
+    self.descriptors = descriptors
+    self.readableByteCount = readableByteCount
+    self.writableByteCount = writableByteCount
+    self.claimID = claimID
   }
 }
 
@@ -91,6 +108,7 @@ public final class DoryVirtioSplitQueue: @unchecked Sendable {
   private var lastAvailableIndex: UInt16 = 0
   private var lastUsedIndex: UInt16 = 0
   private var outstandingHeads: Set<UInt16> = []
+  private var outstandingClaims: [UInt16: UUID] = [:]
 
   public init(maximumSize: UInt16 = 256, maximumChainBytes: UInt64 = 64 * 1024 * 1024) {
     precondition(maximumSize > 0 && maximumSize.nonzeroBitCount == 1)
@@ -126,6 +144,7 @@ public final class DoryVirtioSplitQueue: @unchecked Sendable {
       lastAvailableIndex = 0
       lastUsedIndex = 0
       outstandingHeads = []
+      outstandingClaims = [:]
     }
   }
 
@@ -135,6 +154,7 @@ public final class DoryVirtioSplitQueue: @unchecked Sendable {
       lastAvailableIndex = 0
       lastUsedIndex = 0
       outstandingHeads = []
+      outstandingClaims = [:]
     }
   }
 
@@ -184,12 +204,17 @@ public final class DoryVirtioSplitQueue: @unchecked Sendable {
         allowIndirectDescriptors: allowIndirectDescriptors,
         indirect: false
       )
+      guard !outstandingHeads.contains(head) else {
+        throw DoryVirtioQueueError.duplicateOutstandingHead(head)
+      }
       let nextAvailableIndex = lastAvailableIndex &+ 1
       if eventIndexNegotiated {
         try armAvailableNotification(nextAvailableIndex, configuration: configuration, memory: memory)
       }
-      lastAvailableIndex = nextAvailableIndex
+      let claimID = UUID()
       outstandingHeads.insert(head)
+      outstandingClaims[head] = claimID
+      lastAvailableIndex = nextAvailableIndex
       return .init(
         headIndex: head,
         descriptors: chain,
@@ -198,7 +223,8 @@ public final class DoryVirtioSplitQueue: @unchecked Sendable {
         },
         writableByteCount: chain.filter(\.deviceWillWrite).reduce(0) {
           $0 + UInt64($1.length)
-        }
+        },
+        claimID: claimID
       )
     }
   }
@@ -230,7 +256,7 @@ public final class DoryVirtioSplitQueue: @unchecked Sendable {
   ) throws -> Bool {
     try lock.withLock {
       let configuration = try activeConfigurationLocked()
-      guard outstandingHeads.contains(chain.headIndex) else {
+      guard outstandingClaims[chain.headIndex] == chain.claimID else {
         throw DoryVirtioQueueError.duplicateCompletion(chain.headIndex)
       }
       guard UInt64(bytesWritten) <= chain.writableByteCount else {
@@ -267,6 +293,7 @@ public final class DoryVirtioSplitQueue: @unchecked Sendable {
       memory.synchronize()
       lastUsedIndex = newUsedIndex
       outstandingHeads.remove(chain.headIndex)
+      outstandingClaims.removeValue(forKey: chain.headIndex)
       return notifyDriver
     }
   }

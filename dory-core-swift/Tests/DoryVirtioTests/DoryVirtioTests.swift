@@ -60,6 +60,75 @@ import Testing
     #expect(memory.synchronizationCount == 2)
   }
 
+  @Test func rejectsInFlightHeadReuseAndRequiresTheExactCompletionClaim() throws {
+    let memory = TestVirtioMemory(byteCount: 0x1000)
+    let queue = DoryVirtioSplitQueue(maximumSize: 8)
+    try queue.configure(
+      size: 8,
+      descriptorAddress: 0x100,
+      driverAddress: 0x200,
+      deviceAddress: 0x300,
+      enabled: true
+    )
+    memory.writeDescriptor(at: 0x100, address: 0x400, length: 4, flags: 2, next: 0)
+    memory.put(UInt16(0), at: 0x204)
+    memory.put(UInt16(1), at: 0x202)
+
+    let first = try #require(try queue.popAvailable(memory: memory, allowIndirectDescriptors: false))
+
+    // The second available slot reuses head 0 before the first operation completes.
+    memory.put(UInt16(0), at: 0x206)
+    memory.put(UInt16(2), at: 0x202)
+    #expect(throws: DoryVirtioQueueError.duplicateOutstandingHead(0)) {
+      try queue.popAvailable(memory: memory, allowIndirectDescriptors: false)
+    }
+    #expect(queue.snapshot().outstandingHeads == [0])
+
+    try queue.complete(first, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
+    #expect(memory.get(UInt16.self, at: 0x302) == 1)
+
+    // Head reuse is valid after completion, but the older chain cannot consume the new claim.
+    let reused = try #require(try queue.popAvailable(memory: memory, allowIndirectDescriptors: false))
+    #expect(throws: DoryVirtioQueueError.duplicateCompletion(0)) {
+      try queue.complete(first, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
+    }
+    #expect(memory.get(UInt16.self, at: 0x302) == 1)
+    try queue.complete(reused, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
+    #expect(memory.get(UInt16.self, at: 0x302) == 2)
+  }
+
+  @Test func resetAndReconfigureRevokeHeadClaimsWithoutPublishingStaleChains() throws {
+    let memory = TestVirtioMemory(byteCount: 0x1000)
+    let queue = DoryVirtioSplitQueue(maximumSize: 8)
+    try queue.configure(
+      size: 8,
+      descriptorAddress: 0x100,
+      driverAddress: 0x200,
+      deviceAddress: 0x300,
+      enabled: true
+    )
+    memory.writeDescriptor(at: 0x100, address: 0x400, length: 4, flags: 2, next: 0)
+    memory.put(UInt16(0), at: 0x204)
+    memory.put(UInt16(1), at: 0x202)
+    let stale = try #require(try queue.popAvailable(memory: memory, allowIndirectDescriptors: false))
+
+    queue.reset()
+    try queue.configure(
+      size: 8,
+      descriptorAddress: 0x100,
+      driverAddress: 0x200,
+      deviceAddress: 0x300,
+      enabled: true
+    )
+    let replacement = try #require(try queue.popAvailable(memory: memory, allowIndirectDescriptors: false))
+    #expect(throws: DoryVirtioQueueError.duplicateCompletion(0)) {
+      try queue.complete(stale, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
+    }
+    #expect(memory.get(UInt16.self, at: 0x302) == 0)
+    try queue.complete(replacement, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
+    #expect(memory.get(UInt16.self, at: 0x302) == 1)
+  }
+
   @Test func rejectsCyclesOutOfRangeHeadsAndExcessAvailability() throws {
     let memory = TestVirtioMemory(byteCount: 0x1000)
     let queue = DoryVirtioSplitQueue(maximumSize: 8)
