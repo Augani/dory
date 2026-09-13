@@ -137,6 +137,48 @@ import Testing
     #expect(try storage.read(offset: 1024, byteCount: 512) == [UInt8](repeating: 0xAA, count: 512))
   }
 
+  @Test func preflightsAllReadAndIdentityOutputsBeforeScattering() throws {
+    let storage = DoryVirtioInMemoryBlockStorage(
+      byteCount: 4096,
+      initialBytes: [UInt8](repeating: 0xAA, count: 4096)
+    )
+    let device = try DoryVirtioBlockDevice(storage: storage, identifier: "preflight")
+    let memory = BlockGuestMemory(byteCount: 0x1000)
+
+    memory.put(header(type: 0, sector: 0), at: 0x100)
+    let read = chain([
+      descriptor(0x100, 16, false), descriptor(0x200, 256, true),
+      descriptor(0xF80, 256, true), descriptor(0x400, 1, true),
+    ])
+    #expect(try device.process(read, memory: memory).status == 1)
+    #expect(try memory.read(at: 0x200, byteCount: 256) == [UInt8](repeating: 0, count: 256))
+
+    memory.put(header(type: 8, sector: 0), at: 0x500)
+    let identity = chain([
+      descriptor(0x500, 16, false), descriptor(0x600, 10, true),
+      descriptor(0xFFC, 10, true), descriptor(0x700, 1, true),
+    ])
+    #expect(try device.process(identity, memory: memory).status == 1)
+    #expect(try memory.read(at: 0x600, byteCount: 10) == [UInt8](repeating: 0, count: 10))
+  }
+
+  @Test func preflightsStatusTargetBeforeMutatingStorage() throws {
+    let storage = DoryVirtioInMemoryBlockStorage(byteCount: 4096)
+    let device = try DoryVirtioBlockDevice(storage: storage, identifier: "preflight")
+    let memory = BlockGuestMemory(byteCount: 0x1000)
+    memory.put(header(type: 1, sector: 0), at: 0x100)
+    memory.put([UInt8](repeating: 0xA5, count: 512), at: 0x200)
+    let write = chain([
+      descriptor(0x100, 16, false), descriptor(0x200, 512, false),
+      descriptor(0x1000, 1, true),
+    ])
+
+    #expect(throws: DoryVirtioBlockError.malformedRequest) {
+      try device.process(write, memory: memory)
+    }
+    #expect(try storage.read(offset: 0, byteCount: 512) == [UInt8](repeating: 0, count: 512))
+  }
+
   @Test func rejectsOutOfBoundsAndDirectionConfusionWithoutTouchingStorage() throws {
     let storage = DoryVirtioInMemoryBlockStorage(byteCount: 4096)
     let device = try DoryVirtioBlockDevice(storage: storage, identifier: "bounded")

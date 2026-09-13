@@ -164,6 +164,7 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
     let requestType = uint32(header, at: 0)
     let sector = uint64(header, at: 8)
     let payload = Array(chain.descriptors.dropFirst().dropLast())
+    try validateWritableTargets([statusDescriptor], memory: memory)
     recordRequest()
     let result: DoryVirtioBlockResult
     do {
@@ -187,6 +188,7 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
     switch type {
     case 0:
       try requireDirection(payload, deviceWillWrite: true)
+      try validateWritableTargets(payload, memory: memory)
       let byteCount = try totalLength(payload)
       guard byteCount > 0, byteCount % Self.sectorSize == 0 else {
         throw DoryVirtioBlockError.malformedRequest
@@ -220,6 +222,7 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
       return .init(bytesWritten: 1, status: Self.successStatus)
     case 8:
       try requireDirection(payload, deviceWillWrite: true)
+      try validateWritableTargets(payload, memory: memory)
       let writable = try totalLength(payload)
       var id = [UInt8](repeating: 0, count: min(20, Int(writable)))
       id.replaceSubrange(0..<min(id.count, identifier.count), with: identifier.prefix(id.count))
@@ -323,6 +326,19 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
         throw DoryVirtioBlockError.malformedRequest
       }
       return updated
+    }
+  }
+
+  private func validateWritableTargets(
+    _ descriptors: [DoryVirtioDescriptor],
+    memory: any DoryVirtioGuestMemory
+  ) throws {
+    for descriptor in descriptors {
+      try memory.validate(
+        at: descriptor.address,
+        byteCount: Int(descriptor.length),
+        deviceWillWrite: true
+      )
     }
   }
 
