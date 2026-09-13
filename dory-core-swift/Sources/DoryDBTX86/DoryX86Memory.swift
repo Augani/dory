@@ -224,6 +224,42 @@ public protocol DoryX86TranslatedCodeProtectionMemory: DoryX86Memory {
   var translatedCodeProtectionGeneration: UInt64 { get }
 }
 
+/// An owned, checked guest-physical byte range that a DMA engine or shared-mapping adapter
+/// presents before reusing its backing. The owning memory validates the range with checked
+/// arithmetic before any generation or protection bookkeeping changes. Guest code pages are
+/// exactly 4 KiB, independent of the host page granule; a host page larger than 4 KiB may
+/// cover several guest code pages, so the adapter must invalidate every page it owns.
+public struct DoryX86GuestCodePageRange: Sendable, Equatable {
+  /// Guest code pages are exactly 4 KiB, independent of the host page granule.
+  public static let guestCodePageByteCount = 4_096
+
+  public let address: UInt64
+  public let byteCount: Int
+
+  public init(address: UInt64, byteCount: Int) {
+    self.address = address
+    self.byteCount = byteCount
+  }
+}
+
+/// Checked guest-page generation/lifetime contract for backing ranges that may be reused by
+/// DMA engines or shared mappings. An adapter presents an owned `DoryX86GuestCodePageRange`
+/// and the memory implementation applies the same generation invalidation used by CPU stores,
+/// so no writer can reuse backing while resident translations remain valid. The range is
+/// validated with checked arithmetic; out-of-RAM or overflow inputs are rejected without
+/// partial bookkeeping mutation. This contract is narrow: it supplies the invalidation hook
+/// and value type only and does not fabricate a device implementation.
+public protocol DoryX86TranslatedCodeLifetimeMemory: DoryX86CodeGenerationMemory {
+  /// Invalidates translated-code generations for an owned guest range before backing reuse.
+  /// DMA/shared-mapping adapters call this before remapping or reusing backing storage. The
+  /// implementation validates the range with checked arithmetic, releases any host-page
+  /// protection overlapping the range, and bumps the generation of every 4-KiB guest page in
+  /// the range—mirroring CPU stores so a later adapter cannot bypass code-generation tracking.
+  /// Returns true when an intersecting host page had its protection released.
+  @discardableResult
+  func invalidateTranslatedCodeGenerations(in range: DoryX86GuestCodePageRange) throws -> Bool
+}
+
 /// Chooses how generated stores preserve coherence with resident guest-code translations.
 /// Production PC machines retain checked callbacks until host-page protection has passed the
 /// complete UEFI and ordinary-guest qualification campaign. The protected mode is an explicit

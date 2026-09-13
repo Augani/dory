@@ -45,7 +45,8 @@ public struct DoryX86MmapReadOnlyMapping: Sendable, Equatable {
 /// 16 GB of host physical memory — only pages that are actually touched cost RAM.
 public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory,
   DoryX86DirectHostAddressSpaceMemory, DoryX86PageTableWriteTrackingMemory,
-  DoryX86TranslatedCodeProtectionMemory, @unchecked Sendable
+  DoryX86TranslatedCodeProtectionMemory, DoryX86TranslatedCodeLifetimeMemory,
+  @unchecked Sendable
 {
   public let baseAddress: UInt64
   public let byteCount: Int
@@ -62,6 +63,18 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
   private var codeProtectionGeneration: UInt64 = 0
 
   var trackedCodePageCount: Int { lock.withLock { codePageGenerations.count } }
+
+  /// Test-only accessor for the raw generation counter of a single 4-KiB guest page.
+  /// Returns 0 for out-of-range addresses so tests can distinguish exactly-once from
+  /// double increments without relying on the hashed code-generation token.
+  func rawCodePageGeneration(at address: UInt64) -> UInt64 {
+    lock.withLock {
+      guard address >= baseAddress else { return 0 }
+      let distance = address - baseAddress
+      guard distance < UInt64(byteCount) else { return 0 }
+      return codePageGenerations[Int(distance / 4_096), default: 0]
+    }
+  }
 
   public var protectedTranslatedCodePageCount: Int {
     lock.withLock { protectedCodePagesByHostPage.values.reduce(0) { $0 + $1.count } }
@@ -421,10 +434,46 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     guard byteCount > 0 else { return false }
     return try lock.withLock {
       let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
-      return try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: byteCount)
+      let released = try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: byteCount)
+      markCodePagesWritten(offset: offset, byteCount: byteCount)
+      return released
     }
   }
 
+  public func invalidateTranslatedCodeGenerations(
+    in range: DoryX86GuestCodePageRange
+  ) throws -> Bool {
+    guard range.byteCount > 0 else {
+      throw DoryX86MemoryError.addressOverflow(
+        address: range.address, byteCount: range.byteCount)
+    }
+    return try lock.withLock {
+      // Validate the full range with checked arithmetic before touching any bookkeeping,
+      // so an out-of-RAM or overflow range is rejected without partial mutation.
+      let offset = try checkedOffset(
+        address: range.address,
+        byteCount: range.byteCount,
+        access: .write
+      )
+      let releasedProtection = try prepareTranslatedCodePagesForWrite(
+        offset: offset, byteCount: range.byteCount
+      )
+      // Bump generations for every 4-KiB guest page in the owned range, mirroring CPU
+      // stores so a DMA/shared-mapping adapter cannot bypass code-generation tracking.
+      markCodePagesWritten(offset: offset, byteCount: range.byteCount)
+      return releasedProtection
+    }
+  }
+
+  /// Releases host-page protection for every host granule that contains an intersected
+  /// tracked guest code page, making the host page writable again. This is the sole
+  /// responsibility of this helper: it never bumps guest-page generations. Generation
+  /// marking is the exclusive responsibility of ``markCodePagesWritten`` so every
+  /// intersected 4-KiB guest page is incremented exactly once per operation, whether
+  /// the caller is a CPU store, an explicit invalidation, or the DMA/shared-lifetime
+  /// hook. A sibling code page sharing the same host granule loses its hardware
+  /// protection here but keeps its generation because its bytes did not change; the
+  /// generation check remains the fallback that detects the stale translation.
   @discardableResult
   private func prepareTranslatedCodePagesForWrite(offset: Int, byteCount: Int) throws -> Bool {
     guard byteCount > 0, !protectedCodePagesByHostPage.isEmpty else { return false }
@@ -438,7 +487,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       hostPages.insert(hostOffset / hostPageByteCount)
     }
     for hostPage in hostPages {
-      guard let codePages = protectedCodePagesByHostPage[hostPage] else { continue }
+      guard protectedCodePagesByHostPage[hostPage] != nil else { continue }
       guard
         mprotect(
           pointer.advanced(by: hostPage * hostPageByteCount),
@@ -453,7 +502,6 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
         )
       }
       protectedCodePagesByHostPage.removeValue(forKey: hostPage)
-      for codePage in codePages { codePageGenerations[codePage, default: 0] &+= 1 }
       changed = true
     }
     if changed { codeProtectionGeneration &+= 1 }
