@@ -91,7 +91,7 @@ public struct DoryVirtioInputDescriptor: Sendable, Hashable {
       identity: .init(product: 2),
       eventCodes: [
         1: [0x110, 0x111, 0x112],
-        2: [0, 1, 6, 8],
+        2: [0, 1, 6, 8, 11, 12],
       ]
     )
   }

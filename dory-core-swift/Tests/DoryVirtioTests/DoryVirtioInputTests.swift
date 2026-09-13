@@ -116,32 +116,50 @@ import Testing
   }
 
   // P2-15: relative pointer motion and wheel events are delivered through the same
-  // transport-neutral event pipeline. REL_X (0), REL_Y (1), REL_HWHEEL (6), and
-  // REL_WHEEL (8) are advertised in the relative pointer descriptor.
+  // transport-neutral event pipeline. REL_X (0), REL_Y (1), REL_HWHEEL (6),
+  // REL_WHEEL (8), REL_WHEEL_HI_RES (11), and REL_HWHEEL_HI_RES (12) are advertised
+  // in the relative pointer descriptor.
   @Test func deliversRelativePointerMotionAndWheelEvents() throws {
     let device = try DoryVirtioInputDevice(descriptor: .relativePointer())
     let memory = InputGuestMemory(byteCount: 0x1000)
 
-    // Verify the relative pointer advertises REL_X, REL_Y, REL_HWHEEL, REL_WHEEL.
+    // Verify the relative pointer advertises REL_X, REL_Y, REL_HWHEEL, REL_WHEEL,
+    // and the high-resolution wheel axes.
     let relBits = device.configuration(select: 0x11, subselect: 2)
-    // Payload starts at offset 8; bitmap covers bits 0-8 (2 bytes).
+    // Payload starts at offset 8; bitmap covers bits 0-12 (2 bytes).
     #expect(relBits[2] == 2)  // payload size
     #expect(relBits[8] & 1 != 0)  // REL_X (bit 0)
     #expect(relBits[8] & (1 << 1) != 0)  // REL_Y (bit 1)
     #expect(relBits[8] & (1 << 6) != 0)  // REL_HWHEEL (bit 6)
     #expect(relBits[9] & 1 != 0)  // REL_WHEEL (bit 8)
+    #expect(relBits[9] & (1 << 3) != 0)  // REL_WHEEL_HI_RES (bit 11)
+    #expect(relBits[9] & (1 << 4) != 0)  // REL_HWHEEL_HI_RES (bit 12)
 
-    // Deliver motion + wheel events.
+    // Deliver motion + wheel events, including high-resolution axes.
     #expect(device.enqueueSynchronized([
       .init(type: 2, code: 0, value: 10),   // REL_X = 10
       .init(type: 2, code: 1, value: UInt32(bitPattern: -5)),   // REL_Y = -5
       .init(type: 2, code: 8, value: 1),    // REL_WHEEL = 1
+      .init(type: 2, code: 11, value: 120),  // REL_WHEEL_HI_RES = 120
+      .init(type: 2, code: 12, value: 120),  // REL_HWHEEL_HI_RES = 120
     ]))
-    #expect(device.pendingEventCount == 4)  // 3 events + SYN
+    #expect(device.pendingEventCount == 6)  // 5 events + SYN
 
     let first = try device.processEvent(writableChain(at: 0x100), memory: memory)
     #expect(first == 8)
     #expect(try memory.read(at: 0x100, byteCount: 8) == event(type: 2, code: 0, value: 10))
+
+    // The high-resolution wheel events follow the same delivery path, ending
+    // with the SYN frame appended by enqueueSynchronized.
+    _ = try device.processEvent(writableChain(at: 0x200), memory: memory)  // REL_Y
+    _ = try device.processEvent(writableChain(at: 0x300), memory: memory)  // REL_WHEEL
+    _ = try device.processEvent(writableChain(at: 0x400), memory: memory)  // REL_WHEEL_HI_RES
+    #expect(try memory.read(at: 0x400, byteCount: 8) == event(type: 2, code: 11, value: 120))
+    _ = try device.processEvent(writableChain(at: 0x500), memory: memory)  // REL_HWHEEL_HI_RES
+    #expect(try memory.read(at: 0x500, byteCount: 8) == event(type: 2, code: 12, value: 120))
+    _ = try device.processEvent(writableChain(at: 0x600), memory: memory)  // SYN
+    #expect(try memory.read(at: 0x600, byteCount: 8) == event(type: 0, code: 0, value: 0))
+    #expect(!device.hasPendingEvent)
   }
 
   // P2-15: focus loss must synthesize a release + SYN for every pressed key.
