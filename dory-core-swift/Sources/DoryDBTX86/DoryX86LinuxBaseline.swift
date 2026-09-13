@@ -192,11 +192,8 @@ public enum DoryX86LinuxBaselineSemanticQualification: Codable, Sendable, Hashab
 /// not qualify that profile. Higher ISA levels remain unqualified until their
 /// complete requirements and semantic gates have separate evidence.
 ///
-/// The prospective registry names and current admission assessment are kept here:
-/// - `dory.x86_64.baseline@N`, `dory.x86_64.v2@N`, `dory.x86_64.v3@N` are the
-///   reserved registry names for the corresponding ISA levels. The selected
-///   profiles still use their existing compat-v1/intel-compatible-v1 identifiers;
-///   these names do not create qualified profiles or migrate persisted state.
+/// The current admission assessment is kept here. Registry resolution and
+/// persisted-state migration live in `DoryX86ProfileRegistry`.
 /// - Promotion from a lower level to a higher level requires every mandatory
 ///   row in the target level's requirements to be qualified with evidence.
 /// - A profile whose semantic qualification is `.unqualified` cannot be
@@ -209,23 +206,8 @@ public enum DoryX86LinuxBaselinePolicy {
   public static let qualificationEvidenceIdentifier =
     "p02-linux-cpu-baseline-selected-profiles-2026-09-04"
 
-  /// Frozen versioned profile identifiers. The version suffix is incremented
-  /// only when the advertised feature set or semantic contract changes; it is
-  /// not incremented for evidence-only updates. A03.5 freezes these at `@1`
-  /// because no qualified v2 or v3 profile exists yet.
-  public enum ProfileIdentifier: String, Codable, Sendable, Hashable {
-    case baselineV1 = "dory.x86_64.baseline@1"
-    case v2V1 = "dory.x86_64.v2@1"
-    case v3V1 = "dory.x86_64.v3@1"
-
-    public var isaLevel: DoryX86LinuxISALevel {
-      switch self {
-      case .baselineV1: .baseline
-      case .v2V1: .v2
-      case .v3V1: .v3
-      }
-    }
-  }
+  /// Compatibility spelling for the closed profile-registry identifier.
+  public typealias ProfileIdentifier = DoryX86ProfileRegistry.Identifier
 
   /// Promotion result: either the target level is admitted with evidence, or
   /// it is rejected with the missing requirements that block promotion.
