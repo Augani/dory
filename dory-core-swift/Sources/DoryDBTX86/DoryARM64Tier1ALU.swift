@@ -153,10 +153,11 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
-  /// Loads one scalar memory operand through the preserved read callback. The effective address
-  /// is complete before guest registers are checkpointed, and the callback result is staged in
-  /// the context RIP slot until all original GPRs are restored. The pinned x27 RIP remains the
-  /// source of truth and overwrites that temporary slot at the normal exit boundary.
+  /// Loads one scalar memory operand. A same-page read-TLB hit with a verified host mapping
+  /// writes the destination GPR directly; every other case uses the preserved read callback.
+  /// The callback result is staged in the context RIP slot until all original GPRs are restored.
+  /// The pinned x27 RIP remains the source of truth and overwrites that temporary slot at the
+  /// normal exit boundary.
   func emitMemoryLoad(
     width: DoryIRIntegerWidth,
     destinationGuestRegister: Int,
@@ -165,33 +166,12 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
   ) -> Bool {
     guard (0..<16).contains(destinationGuestRegister) else { return false }
     var fragment: [UInt32] = []
-    guard Self.emitMemoryRead(width: width, address: address, into: &fragment) else {
-      return false
-    }
-    fragment.append(Self.encodeLoad64(register: 16, word: .rip))
-
-    let destination = UInt32(destinationGuestRegister)
-    switch width {
-    case .i32, .i64:
-      fragment.append(
-        Self.encodeMove(
-          destination: destination,
-          source: 16,
-          is64Bit: width == .i64
-        ))
-    case .i8, .i16:
-      let mask = Self.mask(for: width)
-      Self.emitImmediate(mask, register: 17, into: &fragment)
-      fragment.append(
-        Self.encodeLogical(.and, is64Bit: true, left: 16, right: 17, destination: 16))
-      Self.emitImmediate(~mask, register: 17, into: &fragment)
-      fragment.append(
-        Self.encodeLogical(
-          .and, is64Bit: true, left: destination, right: 17, destination: destination))
-      fragment.append(
-        Self.encodeLogical(
-          .or, is64Bit: true, left: destination, right: 16, destination: destination))
-    }
+    guard Self.emitMemoryAddress(address, into: &fragment) else { return false }
+    Self.emitInlineReadTLBThenCallback(
+      width: width,
+      destinationGuestRegister: destinationGuestRegister,
+      into: &fragment
+    )
     words.append(contentsOf: fragment)
     return true
   }
@@ -2956,6 +2936,180 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     }
   }
 
+  /// Attempts a same-page read-TLB hit into the destination GPR. Misses, stale/malformed
+  /// entries, missing tables, host-bound failures, and cross-page accesses fall through to the
+  /// existing callback lowering. The C resolver is never invoked from this path.
+  private static func emitInlineReadTLBThenCallback(
+    width: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    into words: inout [UInt32]
+  ) {
+    let byteCount = UInt32(width.rawValue / 8)
+    let destination = UInt32(destinationGuestRegister)
+    // Guest GPRs occupy x0...x15. Borrow x14/x15 as lookup scratch after checkpointing them.
+    words.append(encodeStore64(register: 14, word: .r14))
+    words.append(encodeStore64(register: 15, word: .r15))
+
+    emitImmediate(0xfff, register: 17, into: &words)
+    words.append(
+      encodeLogical(.and, is64Bit: true, left: 16, right: 17, destination: 17))
+    emitImmediate(UInt64(4_097 - byteCount), register: 15, into: &words)
+    words.append(
+      encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 17, right: 15, destination: 31))
+    let crossPageBranch = words.count
+    words.append(0)
+
+    words.append(
+      encodeLogical(
+        .or,
+        is64Bit: true,
+        left: 31,
+        right: 16,
+        shiftAmount: 12,
+        logicalRightShift: true,
+        destination: 15
+      ))
+    words.append(
+      encodeLogical(.or, is64Bit: true, left: 31, right: 15, shiftAmount: 28, destination: 15))
+    words.append(encodeLoad64(register: 17, word: .tlbAddressSpaceGeneration))
+    words.append(encodeLogical(.or, is64Bit: true, left: 15, right: 17, destination: 15))
+    words.append(
+      encodeLogical(
+        .or,
+        is64Bit: true,
+        left: 31,
+        right: 16,
+        shiftAmount: 12,
+        logicalRightShift: true,
+        destination: 17
+      ))
+    words.append(encodeLoad64(register: 14, word: .tlbEntryMask))
+    words.append(encodeLogical(.and, is64Bit: true, left: 17, right: 14, destination: 17))
+    words.append(encodeLoad64(register: 14, word: .readTLBBase))
+    words.append(
+      encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 14, right: 31, destination: 31))
+    let missingTLBBranch = words.count
+    words.append(0)
+    words.append(
+      encodeAddSubtract(
+        add: true,
+        is64Bit: true,
+        left: 14,
+        right: 17,
+        leftShift: 4,
+        destination: 14
+      ))
+    words.append(encodeIndexedLoad64(register: 17, base: 14, byteOffset: 0))
+    words.append(encodeIndexedLoad64(register: 14, base: 14, byteOffset: 8))
+    words.append(
+      encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 17, right: 15, destination: 31))
+    let missBranch = words.count
+    words.append(0)
+
+    words.append(
+      encodeAddSubtract(
+        add: true, is64Bit: true, left: 16, right: 14, destination: 17))
+    words.append(encodeLoad64(register: 15, word: .hostAddressSpaceBase))
+    words.append(
+      encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 17, right: 15, destination: 15))
+    let hostBoundsLowBranch = words.count
+    words.append(0)
+    words.append(encodeLoad64(register: 14, word: .hostAddressSpaceByteCount))
+    words.append(
+      encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 15, right: 14, destination: 31))
+    let hostBoundsHighBranch = words.count
+    words.append(0)
+    words.append(encodeDirectLoad(width: width, register: 17, base: 17))
+    words.append(encodeMove(destination: 16, source: 17, is64Bit: true))
+
+    words.append(encodeLoad64(register: 14, word: .readTLBHitCounter))
+    words.append(
+      encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 14, right: 31, destination: 31))
+    let missingHitCounterBranch = words.count
+    words.append(0)
+    words.append(encodeIndexedLoad64(register: 15, base: 14, byteOffset: 0))
+    words.append(
+      encodeAddSubtractImmediate(
+        add: true, is64Bit: true, left: 15, immediate: 1, destination: 15))
+    words.append(encodeIndexedStore64(register: 15, base: 14, byteOffset: 0))
+    let afterHitCounter = words.count
+    words[missingHitCounterBranch] = encodeConditionalBranch(
+      condition: .equal,
+      wordOffset: afterHitCounter - missingHitCounterBranch
+    )
+    words.append(encodeLoad64(register: 14, word: .r14))
+    words.append(encodeLoad64(register: 15, word: .r15))
+    emitApplyLoadedScalar(width: width, destination: destination, value: 16, into: &words)
+    let hitDoneBranch = words.count
+    words.append(0)
+
+    let restoreScratch = words.count
+    words.append(encodeLoad64(register: 14, word: .r14))
+    words.append(encodeLoad64(register: 15, word: .r15))
+
+    words[crossPageBranch] = encodeConditionalBranch(
+      condition: .carrySet,
+      wordOffset: restoreScratch - crossPageBranch
+    )
+    words[missingTLBBranch] = encodeConditionalBranch(
+      condition: .equal,
+      wordOffset: restoreScratch - missingTLBBranch
+    )
+    words[missBranch] = encodeConditionalBranch(
+      condition: .notEqual,
+      wordOffset: restoreScratch - missBranch
+    )
+    words[hostBoundsLowBranch] = encodeConditionalBranch(
+      condition: .carryClear,
+      wordOffset: restoreScratch - hostBoundsLowBranch
+    )
+    words[hostBoundsHighBranch] = encodeConditionalBranch(
+      condition: .carrySet,
+      wordOffset: restoreScratch - hostBoundsHighBranch
+    )
+    emitMemoryReadAtAddress(width: width, into: &words)
+    words.append(encodeLoad64(register: 16, word: .rip))
+    emitApplyLoadedScalar(width: width, destination: destination, value: 16, into: &words)
+
+    let done = words.count
+    words[hitDoneBranch] = encodeUnconditionalBranch(wordOffset: done - hitDoneBranch)
+  }
+
+  private static func emitApplyLoadedScalar(
+    width: DoryIRIntegerWidth,
+    destination: UInt32,
+    value: UInt32,
+    into words: inout [UInt32]
+  ) {
+    switch width {
+    case .i32, .i64:
+      words.append(
+        encodeMove(
+          destination: destination,
+          source: value,
+          is64Bit: width == .i64
+        ))
+    case .i8, .i16:
+      let mask = Self.mask(for: width)
+      emitImmediate(mask, register: 17, into: &words)
+      words.append(
+        encodeLogical(.and, is64Bit: true, left: value, right: 17, destination: 16))
+      emitImmediate(~mask, register: 17, into: &words)
+      words.append(
+        encodeLogical(
+          .and, is64Bit: true, left: destination, right: 17, destination: destination))
+      words.append(
+        encodeLogical(
+          .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    }
+  }
+
   /// Reads one scalar through the preserved callback and leaves its value in the context RIP
   /// staging word. All pinned guest GPRs are restored to their pre-callback values.
   private static func emitMemoryRead(
@@ -3279,6 +3433,37 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
   ) -> UInt32 {
     0xF940_0000 | UInt32(word.rawValue) << 10
       | DoryARM64Tier1ABI.contextRegister << 5 | register
+  }
+
+  private static func encodeIndexedLoad64(
+    register: UInt32,
+    base: UInt32,
+    byteOffset: Int
+  ) -> UInt32 {
+    0xF940_0000 | UInt32(byteOffset / 8) << 10 | base << 5 | register
+  }
+
+  private static func encodeIndexedStore64(
+    register: UInt32,
+    base: UInt32,
+    byteOffset: Int
+  ) -> UInt32 {
+    0xF900_0000 | UInt32(byteOffset / 8) << 10 | base << 5 | register
+  }
+
+  private static func encodeDirectLoad(
+    width: DoryIRIntegerWidth,
+    register: UInt32,
+    base: UInt32
+  ) -> UInt32 {
+    let opcode: UInt32 =
+      switch width {
+      case .i8: 0x3940_0000
+      case .i16: 0x7940_0000
+      case .i32: 0xB940_0000
+      case .i64: 0xF940_0000
+      }
+    return opcode | base << 5 | register
   }
 
   private static func encodeBranchWithLink(register: UInt32) -> UInt32 {

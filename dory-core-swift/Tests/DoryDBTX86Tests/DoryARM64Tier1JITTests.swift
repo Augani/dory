@@ -5191,6 +5191,189 @@ import Testing
       #endif
     }
   }
+
+  @Test func scalarMOVLoadsFillThenHitReadTLBOnMappedPhysicalMemory() throws {
+    #if arch(arm64)
+      let cases: [(bytes: [UInt8], value: UInt64, expectedRAX: UInt64, initialRAX: UInt64)] = [
+        ([0x48, 0x8B, 0x00], 0x1122_3344_5566_7788, 0x1122_3344_5566_7788, 0xDEAD_BEEF_CAFE_BABE),
+        ([0x8B, 0x00], 0xA5A5_5A5A, 0xA5A5_5A5A, 0xFFFF_FFFF_FFFF_FFFF),
+        ([0x8A, 0x00], 0x7C, 0xFFFF_FFFF_FFFF_007C, 0xFFFF_FFFF_FFFF_0000),
+        ([0x66, 0x8B, 0x00], 0xBEEF, 0xFFFF_FFFF_FFFF_BEEF, 0xFFFF_FFFF_FFFF_0000),
+      ]
+      for (bytes, value, expectedRAX, initialRAX) in cases {
+        let page = Int(getpagesize())
+        let physical = try DoryX86MmapMemory(validatingByteCount: page * 2)
+        let codeAddress: UInt64 = 0x1000
+        let dataAddress: UInt64 = 0x80
+        try physical.write(at: codeAddress, bytes: bytes)
+        let byteCount = bytes.contains(0x48) ? 8 : bytes.contains(0x66) ? 2 : bytes[0] == 0x8A ? 1 : 4
+        try physical.writeScalar(at: dataAddress, value: value, byteCount: byteCount)
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(rax: initialRAX),
+          rip: codeAddress,
+          rflags: [.reservedOne, .carry, .zero]
+        )
+        var interpreted = initial
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: physical,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire scalar MOV load")
+          return
+        }
+        #expect(interpreted.registers.rax == expectedRAX)
+
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: true
+        )
+        var first = initial
+        let firstExecution = try #require(
+          executor.execute(
+            bytes: bytes,
+            at: codeAddress,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &first,
+            memory: physical
+          ))
+        #expect(firstExecution.block.tier == .tier1)
+        #expect(first == interpreted)
+        let tlb = try #require(executor.translationTLBForTesting)
+        #expect(tlb.diagnostics.hits == 0)
+
+        let hostAddress =
+          physical.hostAddressSpaceBase
+          + (physical.hostAddressSpaceOffset(
+            at: dataAddress, byteCount: byteCount, access: .read) ?? 0)
+        try tlb.fill(
+          linearAddress: dataAddress,
+          addressSpaceGeneration: executor.translationTLBGenerationForTesting,
+          access: .read,
+          hostAddress: hostAddress
+        )
+
+        var second = initial
+        let secondExecution = try #require(
+          executor.execute(
+            bytes: bytes,
+            at: codeAddress,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &second,
+            memory: physical
+          ))
+        #expect(secondExecution.block.tier == .tier1)
+        #expect(second == interpreted)
+        #expect(tlb.diagnostics.hits == 1)
+      }
+    #endif
+  }
+
+  @Test func scalarMOVLoadFallsBackOnCrossPageUnmappedAndStaleTLB() throws {
+    #if arch(arm64)
+      let codeAddress: UInt64 = 0x1000
+      let bytes: [UInt8] = [0x48, 0x8B, 0x00]
+      let page = Int(getpagesize())
+      let physical = try DoryX86MmapMemory(validatingByteCount: page * 2)
+      try physical.write(at: codeAddress, bytes: bytes)
+      let nearEnd = UInt64(page) - 4
+      try physical.writeScalar(at: nearEnd, value: 0x0102_0304_0506_0708, byteCount: 8)
+
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        tier1Enabled: true
+      )
+      var crossPage = try DoryX86ArchitecturalState(
+        registers: .init(rax: nearEnd),
+        rip: codeAddress
+      )
+      var interpretedCross = crossPage
+      guard case .retired = DoryX86Interpreter().step(
+        state: &interpretedCross,
+        memory: physical,
+        mode: .long64
+      ) else {
+        Issue.record("interpreter did not retire cross-page load")
+        return
+      }
+      let crossExecution = try #require(
+        executor.execute(
+          bytes: bytes,
+          at: codeAddress,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &crossPage,
+          memory: physical
+        ))
+      #expect(crossExecution.block.tier == .tier1)
+      #expect(crossPage == interpretedCross)
+      let tlb = try #require(executor.translationTLBForTesting)
+      #expect(tlb.diagnostics.hits == 0)
+
+      var unmapped = try DoryX86ArchitecturalState(
+        registers: .init(rax: UInt64(page * 4)),
+        rip: codeAddress
+      )
+      let unmappedExecution = try #require(
+        executor.execute(
+          bytes: bytes,
+          at: codeAddress,
+          mode: .long64,
+          addressSpaceID: 1,
+          maximumInstructions: 1,
+          state: &unmapped,
+          memory: physical
+        ))
+      #expect(unmappedExecution.block.tier == .tier1)
+      #expect(unmappedExecution.exitCode == .interpreter)
+      #expect(unmapped.rip == codeAddress)
+
+      let linearAddress: UInt64 = 0x80
+      try physical.writeScalar(at: linearAddress, value: 0x1234, byteCount: 8)
+      var primed = try DoryX86ArchitecturalState(
+        registers: .init(rax: linearAddress),
+        rip: codeAddress
+      )
+      _ = try #require(
+        executor.execute(
+          bytes: bytes,
+          at: codeAddress,
+          mode: .long64,
+          addressSpaceID: 2,
+          maximumInstructions: 1,
+          state: &primed,
+          memory: physical
+        ))
+      try tlb.fill(
+        linearAddress: linearAddress,
+        addressSpaceGeneration: executor.translationTLBGenerationForTesting,
+        access: .read,
+        hostAddress: 0xffff_8880_0000_0000
+      )
+      var stale = try DoryX86ArchitecturalState(
+        registers: .init(rax: linearAddress),
+        rip: codeAddress
+      )
+      let staleExecution = try #require(
+        executor.execute(
+          bytes: bytes,
+          at: codeAddress,
+          mode: .long64,
+          addressSpaceID: 2,
+          maximumInstructions: 1,
+          state: &stale,
+          memory: physical
+        ))
+      #expect(staleExecution.block.tier == .tier1)
+      #expect(stale.registers.rax == 0x1234)
+      #expect(tlb.diagnostics.hits == 0)
+    #endif
+  }
 }
 
 private final class Tier1AtomicResults: @unchecked Sendable {
