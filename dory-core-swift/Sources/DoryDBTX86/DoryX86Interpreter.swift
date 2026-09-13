@@ -6296,7 +6296,7 @@ public struct DoryX86Interpreter: Sendable {
     _ index: UInt32,
     state: DoryX86ArchitecturalState
   ) -> UInt64? {
-    switch index {
+    return switch index {
     case 0x10: state.tsc
     case 0x17: 0  // IA32_PLATFORM_ID: Dory's single virtual platform is ID zero.
     case 0x1B: state.modelSpecific.apicBase
@@ -6306,7 +6306,10 @@ public struct DoryX86Interpreter: Sendable {
     case 0x174: state.modelSpecific.systemEnterCS
     case 0x175: state.modelSpecific.systemEnterStackPointer
     case 0x176: state.modelSpecific.systemEnterInstructionPointer
-    case 0x277: state.modelSpecific.pageAttributeTable
+    case 0x277:
+      // PLAN.md P2-07: a profile that does not advertise PAT (CPUID.01h:EDX[16])
+      // must reject IA32_PAT access with #GP(0) via the RDMSR dispatch fallback.
+      profile.supports(.pageAttributeTable) ? state.modelSpecific.pageAttributeTable : nil
     case 0xC000_0080: state.control.efer
     case 0xC000_0081: state.modelSpecific.star
     case 0xC000_0082: state.modelSpecific.longStar
@@ -6349,6 +6352,9 @@ public struct DoryX86Interpreter: Sendable {
       guard DoryX86ArchitecturalState.isCanonical(value) else { return false }
       state.modelSpecific.systemEnterInstructionPointer = value
     case 0x277:
+      // PLAN.md P2-07: a profile that does not advertise PAT (CPUID.01h:EDX[16])
+      // must reject IA32_PAT access with #GP(0) via the WRMSR dispatch fallback.
+      guard profile.supports(.pageAttributeTable) else { return false }
       guard validPageAttributeTable(value) else { return false }
       state.modelSpecific.pageAttributeTable = value
     case 0xC000_0080:
