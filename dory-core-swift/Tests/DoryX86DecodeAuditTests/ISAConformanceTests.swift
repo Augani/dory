@@ -86,7 +86,7 @@ import Testing
     #expect(state == .independentlyVerified)
   }
 
-  @Test func resolverReturnsWorkloadQualifiedWhenExecutedFormCountPositive() {
+  @Test func resolverReturnsWorkloadQualifiedWhenReferenceVerifiedAndWorkloadObserved() {
     let state = ISAConformanceStateResolver.resolve(
       decoderSupport: "recognized",
       interpreterSemantics: .init(status: "supported", evidence: ["test-1"]),
@@ -95,6 +95,55 @@ import Testing
       independentReference: .init(status: "verified", evidence: ["hw-1"]),
       executedFormCount: 42)
     #expect(state == .workloadQualified)
+  }
+
+  @Test func resolverReturnsIndependentlyVerifiedWithoutWorkloadObservation() {
+    let state = ISAConformanceStateResolver.resolve(
+      decoderSupport: "recognized",
+      interpreterSemantics: .init(status: "supported", evidence: ["test-1"]),
+      jitBaseline: .init(status: "supported", evidence: ["test-2"]),
+      jitOptimizing: .init(status: "supported", evidence: ["test-3"]),
+      independentReference: .init(status: "verified", evidence: ["hw-1"]),
+      executedFormCount: 0)
+    #expect(state == .independentlyVerified)
+  }
+
+  // P2-04: Dory-only execution (interpreter/Tier1/Tier2) shares the decoder
+  // and fault model with the independent oracle. A positive executedFormCount
+  // without a measured independent reference must not resolve as
+  // workloadQualified or independentlyVerified; it must fall through to the
+  // strongest actual engine tier.
+  @Test func resolverReturnsLoweredTier1ForDoryOnlyExecutionWithoutIndependentReference() {
+    let state = ISAConformanceStateResolver.resolve(
+      decoderSupport: "recognized",
+      interpreterSemantics: .init(status: "supported", evidence: ["test-1"]),
+      jitBaseline: .init(status: "supported", evidence: ["test-2"]),
+      jitOptimizing: .init(),
+      independentReference: .init(),
+      executedFormCount: 42)
+    #expect(state == .loweredTier1)
+  }
+
+  @Test func resolverReturnsLoweredTier2ForDoryOnlyExecutionWithoutIndependentReference() {
+    let state = ISAConformanceStateResolver.resolve(
+      decoderSupport: "recognized",
+      interpreterSemantics: .init(status: "supported", evidence: ["test-1"]),
+      jitBaseline: .init(status: "supported", evidence: ["test-2"]),
+      jitOptimizing: .init(status: "supported", evidence: ["test-3"]),
+      independentReference: .init(),
+      executedFormCount: 42)
+    #expect(state == .loweredTier2)
+  }
+
+  @Test func resolverReturnsInterpretedForInterpreterOnlyExecutionWithoutIndependentReference() {
+    let state = ISAConformanceStateResolver.resolve(
+      decoderSupport: "recognized",
+      interpreterSemantics: .init(status: "supported", evidence: ["test-1"]),
+      jitBaseline: .init(),
+      jitOptimizing: .init(),
+      independentReference: .init(),
+      executedFormCount: 42)
+    #expect(state == .interpreted)
   }
 
   @Test func inventoryReportIncludesConformanceStateDistribution() throws {

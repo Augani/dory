@@ -214,8 +214,15 @@ public enum ISAConformanceStateResolver {
     executedFormCount: Int
   ) -> ISAConformanceState {
     if decoderSupport == "rejected" { return .rejected }
-    // Workload qualification is the highest state — check it first.
-    if executedFormCount > 0 { return .workloadQualified }
+    // P2-04: workloadQualified requires BOTH an exact-form independently
+    // verified reference and a qualifying workload observation. A Dory-only
+    // execution (interpreter/Tier1/Tier2) shares the decoder/fault model with
+    // the independent oracle, so a positive executedFormCount alone must not
+    // resolve as workloadQualified or independentlyVerified. Without a measured
+    // independent reference, fall through to the strongest actual engine tier.
+    if independentReference.status == "verified" && executedFormCount > 0 {
+      return .workloadQualified
+    }
     if independentReference.status == "verified" { return .independentlyVerified }
     if jitOptimizing.status == "supported" { return .loweredTier2 }
     if jitBaseline.status == "supported" { return .loweredTier1 }
