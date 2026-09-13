@@ -129,6 +129,47 @@ import Testing
       #expect(minor == 0)
     }
 
+    // MARK: - PSCI CPU_SUSPEND policy (P2-02 item 3)
+
+    @Test func psciFeaturesRejectsCpuSuspend64Bit() {
+      // PSCI_FEATURES must NOT advertise CPU_SUSPEND (SMC64, 0xC400_0001).
+      // DoryHV does not implement the complete suspend/resume state transition,
+      // so it must report NOT_SUPPORTED rather than a successful no-op.
+      #expect(!PSCIPolicy.advertisedFunctions.contains(PSCI.cpuSuspend))
+      #expect(PSCIPolicy.featuresResult(for: PSCI.cpuSuspend) == PSCIPolicy.notSupported)
+      #expect(PSCIPolicy.isCpuSuspend(PSCI.cpuSuspend))
+    }
+
+    @Test func psciFeaturesRejectsCpuSuspend32Bit() {
+      // PSCI_FEATURES must NOT advertise CPU_SUSPEND32 (SMC32, 0x8400_0001).
+      #expect(!PSCIPolicy.advertisedFunctions.contains(PSCI.cpuSuspend32))
+      #expect(PSCIPolicy.featuresResult(for: PSCI.cpuSuspend32) == PSCIPolicy.notSupported)
+      #expect(PSCIPolicy.isCpuSuspend(PSCI.cpuSuspend32))
+    }
+
+    @Test func psciFeaturesStillAdvertisesSupportedFunctions() {
+      // A still-supported PSCI function must report success (0) from
+      // PSCI_FEATURES. CPU_ON (SMC64) is preserved alongside CPU_OFF.
+      #expect(PSCIPolicy.advertisedFunctions.contains(PSCI.cpuOn))
+      #expect(PSCIPolicy.advertisedFunctions.contains(PSCI.cpuOff))
+      #expect(PSCIPolicy.featuresResult(for: PSCI.cpuOn) == PSCIPolicy.success)
+      #expect(PSCIPolicy.featuresResult(for: PSCI.cpuOff) == PSCIPolicy.success)
+      // CPU_SUSPEND identifiers are the only deliberately-rejected PSCI calls.
+      #expect(PSCIPolicy.isCpuSuspend(PSCI.cpuOn) == false)
+      #expect(PSCIPolicy.isCpuSuspend(PSCI.cpuOff) == false)
+    }
+
+    @Test func cpuSuspendPolicyReturnsNotSupportedWithNoStateTransition() {
+      // A direct CPU_SUSPEND SMC must return NOT_SUPPORTED (-1 in X0) and
+      // perform no CPU state transition.  The policy helper exposes the result
+      // without touching vCPU state, so there is no suspension to undo.
+      #expect(PSCIPolicy.cpuSuspendResult == PSCIPolicy.notSupported)
+      #expect(PSCIPolicy.cpuSuspendResult == UInt64(bitPattern: -1))
+      // The result is the same for both calling conventions.
+      #expect(PSCIPolicy.isCpuSuspend(PSCI.cpuSuspend))
+      #expect(PSCIPolicy.isCpuSuspend(PSCI.cpuSuspend32))
+    }
+
     // MARK: - GuestStopReason exhaustiveness
 
     @Test func guestStopReasonIncludesCpuOffCase() {

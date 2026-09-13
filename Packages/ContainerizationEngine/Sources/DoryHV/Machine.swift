@@ -1031,12 +1031,7 @@ enum VirtioMMIODeviceTree {
         try vcpu.write(HV_REG_X0, 0x0001_0000)
       case PSCI.features:
         let queried = UInt32(truncatingIfNeeded: try vcpu.read(HV_REG_X1))
-        let supported: Set<UInt32> = [
-          PSCI.version, PSCI.features, PSCI.systemOff, PSCI.systemReset, PSCI.cpuOn,
-          PSCI.cpuOn32, PSCI.affinityInfo, PSCI.affinityInfo32, PSCI.migrateInfoType,
-          PSCI.cpuSuspend, PSCI.cpuSuspend32, PSCI.cpuOff,
-        ]
-        try vcpu.write(HV_REG_X0, supported.contains(queried) ? 0 : UInt64(bitPattern: -1))
+        try vcpu.write(HV_REG_X0, PSCIPolicy.featuresResult(for: queried))
       case PSCI.migrateInfoType:
         try vcpu.write(HV_REG_X0, 2)  // migration not required
       case PSCI.systemOff:
@@ -1045,11 +1040,14 @@ enum VirtioMMIODeviceTree {
         return .reset
       case PSCI.cpuSuspend, PSCI.cpuSuspend32:
         // PSCI 1.0 CPU_SUSPEND: the calling CPU enters a power state and is resumed by an
-        // interrupt.  We model this as a no-op that returns SUCCESS — the kernel's idle loop
-        // will issue WFI immediately after, and the Hypervisor.framework run loop blocks
-        // until an interrupt arrives.  The power-state argument is accepted but we do not
-        // distinguish retention vs power-down; both return PSCI_SUCCESS (0) on resume.
-        try vcpu.write(HV_REG_X0, 0)  // PSCI_SUCCESS
+        // interrupt.  DoryHV does not implement the complete suspend/resume state
+        // transition (power-state validation, resume entry, context save/restore), so
+        // advertising it as a successful no-op would be untruthful.  The SMC handler
+        // explicitly rejects CPU_SUSPEND with SMCCC/PSCI NOT_SUPPORTED (-1 in X0) and
+        // performs no CPU state transition.  WFI remains the only supported idle
+        // mechanism: the Hypervisor.framework run loop blocks the calling vCPU until an
+        // interrupt arrives.
+        try vcpu.write(HV_REG_X0, PSCIPolicy.cpuSuspendResult)
       case PSCI.cpuOff:
         // PSCI 1.0 CPU_OFF: the calling CPU is turned off.  Unlike CPU_SUSPEND, this is a
         // one-way operation — the CPU can only be brought back by CPU_ON.  Secondary vCPUs
@@ -1188,6 +1186,53 @@ enum VirtioMMIODeviceTree {
     static let systemOff: UInt32 = 0x8400_0008
     static let systemReset: UInt32 = 0x8400_0009
     static let features: UInt32 = 0x8400_000A
+  }
+
+  /// Advertised PSCI function set and CPU_SUSPEND return policy.
+  ///
+  /// DoryHV does not implement the complete PSCI CPU_SUSPEND suspend/resume state
+  /// transition (power-state validation, resume entry, context save/restore).
+  /// Rather than advertising CPU_SUSPEND as a successful no-op, the SMC handler
+  /// explicitly rejects it with SMCCC/PSCI NOT_SUPPORTED.  WFI remains the only
+  /// supported idle mechanism: the Hypervisor.framework run loop blocks the
+  /// calling vCPU until an interrupt arrives.
+  ///
+  /// This helper centralizes the advertised function set and the CPU_SUSPEND
+  /// result policy so they can be unit-tested without a live Hypervisor.framework
+  /// VM/vCPU, which is unavailable in unit tests.
+  enum PSCIPolicy {
+    /// SMCCC NOT_SUPPORTED, encoded as -1 in X0 (PSCI return code).
+    static let notSupported: UInt64 = UInt64(bitPattern: -1)
+
+    /// PSCI_SUCCESS, encoded as 0 in X0.
+    static let success: UInt64 = 0
+
+    /// PSCI function IDs advertised as supported through PSCI_FEATURES.
+    ///
+    /// CPU_SUSPEND/CPU_SUSPEND32 are deliberately excluded until a complete
+    /// suspend/resume state transition is implemented and validated.  Every
+    /// identifier here is answered with 0 (success) by PSCI_FEATURES.
+    static let advertisedFunctions: Set<UInt32> = [
+      PSCI.version, PSCI.features, PSCI.systemOff, PSCI.systemReset,
+      PSCI.cpuOn, PSCI.cpuOn32, PSCI.affinityInfo, PSCI.affinityInfo32,
+      PSCI.migrateInfoType, PSCI.cpuOff,
+    ]
+
+    /// Returns the PSCI_FEATURES result for `function`: 0 (success) when the
+    /// function is advertised, NOT_SUPPORTED otherwise.
+    static func featuresResult(for function: UInt32) -> UInt64 {
+      advertisedFunctions.contains(function) ? success : notSupported
+    }
+
+    /// Returns true when `function` is a CPU_SUSPEND identifier (32- or 64-bit
+    /// calling convention).  These are deliberately rejected.
+    static func isCpuSuspend(_ function: UInt32) -> Bool {
+      function == PSCI.cpuSuspend || function == PSCI.cpuSuspend32
+    }
+
+    /// CPU_SUSPEND return policy: NOT_SUPPORTED, with no CPU state transition.
+    /// The SMC handler writes this to X0 and performs no suspension.
+    static let cpuSuspendResult: UInt64 = notSupported
   }
 #else
   /// Device-wiring view of the x86 guest layout. Every value is sourced from `X86GuestLayout`, the
