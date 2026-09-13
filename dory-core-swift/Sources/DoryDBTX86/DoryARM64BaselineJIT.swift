@@ -182,9 +182,19 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
   }
 
   public var machineBytes: [UInt8] {
-    machineWords.flatMap { word in
-      (0..<4).map { UInt8(truncatingIfNeeded: word >> UInt32($0 * 8)) }
+    var bytes: [UInt8] = []
+    bytes.reserveCapacity(machineByteCount)
+    for word in machineWords {
+      bytes.append(UInt8(truncatingIfNeeded: word))
+      bytes.append(UInt8(truncatingIfNeeded: word >> 8))
+      bytes.append(UInt8(truncatingIfNeeded: word >> 16))
+      bytes.append(UInt8(truncatingIfNeeded: word >> 24))
     }
+    return bytes
+  }
+
+  public var machineByteCount: Int {
+    machineWords.count * MemoryLayout<UInt32>.size
   }
 
   /// Returns the last instruction boundary at or before a host byte offset. Duplicate offsets
@@ -336,6 +346,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let fsSelectorOffset = DoryARM64Tier1ABI.ContextWord.fsSelector.byteOffset
   private static let gsSelectorOffset = DoryARM64Tier1ABI.ContextWord.gsSelector.byteOffset
   private static let ssSelectorOffset = DoryARM64Tier1ABI.ContextWord.ssSelector.byteOffset
+  private static let hostAddressSpaceBaseOffset =
+    DoryARM64Tier1ABI.ContextWord.hostAddressSpaceBase.byteOffset
+  private static let hostAddressSpaceByteCountOffset =
+    DoryARM64Tier1ABI.ContextWord.hostAddressSpaceByteCount.byteOffset
   private static let readTLBBaseOffset = DoryARM64Tier1ABI.ContextWord.readTLBBase.byteOffset
   private static let writeTLBBaseOffset = DoryARM64Tier1ABI.ContextWord.writeTLBBase.byteOffset
   private static let tlbEntryMaskOffset = DoryARM64Tier1ABI.ContextWord.tlbEntryMask.byteOffset
@@ -388,10 +402,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let shadowReturnPushesOffset =
     DoryARM64Tier1ABI.ContextWord.shadowReturnPushes.byteOffset
   private static let pendingWorkOffset = DoryARM64Tier1ABI.ContextWord.pendingWork.byteOffset
-  private static let hostFramePointerOffset =
-    DoryARM64Tier1ABI.ContextWord.hostFramePointer.byteOffset
-  private static let hostReturnAddressOffset =
-    DoryARM64Tier1ABI.ContextWord.hostReturnAddress.byteOffset
   private static let inlineTLBFaultHostPCOffset =
     DoryARM64Tier1ABI.ContextWord.inlineTLBFaultHostPC.byteOffset
   private static let memoryFaultCheckpointActiveOffset =
@@ -845,7 +855,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeStore64(register: 13, base: 10, byteOffset: 0))
     emitImmediate(returnAddress, register: 15, into: &words)
     words.append(encodeStore64(register: 15, base: 10, byteOffset: 8))
-    words.append(encodeStore64(register: 31, base: 10, byteOffset: 16))
+    // Initialize the host-address slot to zero. The IBTC reuse logic below overwrites it with a
+    // validated host code address when a warm entry exists. Storing SP here (as the previous
+    // implementation did) left a non-zero stack pointer in the slot when the IBTC missed, which
+    // the lookup's non-zero check accepted, causing a branch to a stack address and a crash.
+    emitImmediate(0, register: 13, into: &words)
+    words.append(encodeStore64(register: 13, base: 10, byteOffset: 16))
     words.append(
       encodeLoad64(register: 13, base: 0, byteOffset: Self.shadowReturnGenerationOffset))
     words.append(encodeStore64(register: 13, base: 10, byteOffset: 24))
@@ -1144,6 +1159,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     switch statement {
     case .memoryFence:
       words.append(encodeLogical(.or, left: 31, right: 20, destination: 0))
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 24, 31, 31))
+      emitInterpreterUnless(condition: .notEqual, usesMemory: true, into: &words)
       words.append(0xD63F_0000 | 24 << 5)  // blr x24 (memory owner's synchronize callback)
       // Use a full completion barrier for all fence kinds. ISB also prevents following
       // native instructions from executing ahead of LFENCE's completion boundary.
@@ -2771,14 +2788,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private func emitMemoryPrologue(into words: inout [UInt32]) {
     words += [
       encodeSubtractImmediate64(left: 31, immediate: 112, destination: 31),
+      0xA900_7BFD,  // stp x29,x30,[sp]
       0xA901_53F3,  // stp x19,x20,[sp,#16]
       0xA902_5BF5,  // stp x21,x22,[sp,#32]
       0xA903_63F7,  // stp x23,x24,[sp,#48]
       0xAA00_03F3,  // mov x19,x0 (architectural context)
-      // Keep host control state in the context, not beside generated memory temporaries.
-      // This makes a corrupted generated frame incapable of supplying FP/LR at RET.
-      encodeStore64(register: 29, base: 19, byteOffset: Self.hostFramePointerOffset),
-      encodeStore64(register: 30, base: 19, byteOffset: Self.hostReturnAddressOffset),
       0x9100_03FD,  // mov x29,sp
       0xAA01_03F4,  // mov x20,x1 (memory context)
       0xAA02_03F5,  // mov x21,x2 (read callback)
@@ -2790,15 +2804,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func emitMemoryEpilogue(into words: inout [UInt32]) {
     words += [
-      // Load the trusted values before restoring x19, which owns the context pointer.
-      encodeLoad64(register: 16, base: 19, byteOffset: Self.hostFramePointerOffset),
-      encodeLoad64(register: 17, base: 19, byteOffset: Self.hostReturnAddressOffset),
       0xA943_63F7,  // ldp x23,x24,[sp,#48]
       0xA942_5BF5,  // ldp x21,x22,[sp,#32]
       0xA941_53F3,  // ldp x19,x20,[sp,#16]
+      0xA940_7BFD,  // ldp x29,x30,[sp]
       encodeAddImmediate64(left: 31, immediate: 112, destination: 31),
-      encodeLogical(.or, left: 31, right: 16, destination: 29),  // mov x29,x16
-      encodeLogical(.or, left: 31, right: 17, destination: 30),  // mov x30,x17
     ]
   }
 
@@ -2879,6 +2889,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeAddImmediate64(left: 14, immediate: 1, destination: 14))
     words.append(encodeStore64(register: 14, base: 16, byteOffset: 0))
     words.append(encodeAdd(is64Bit: true, left: addressRegister, right: 17, destination: 13))
+    // Validate the computed host address lies within the host address space (see emitMemoryWrite).
+    words.append(encodeLoad64(register: 9, base: 19, byteOffset: Self.hostAddressSpaceBaseOffset))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 13, 9, 9))
+    let readHostBoundsLowBranch = words.count
+    words.append(0)
+    words.append(
+      encodeLoad64(register: 16, base: 19, byteOffset: Self.hostAddressSpaceByteCountOffset))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 9, 16, 31))
+    let readHostBoundsHighBranch = words.count
+    words.append(0)
     words.append(encodeDirectLoad(width: width, register: resultRegister, base: 13))
     let hitDoneBranch = words.count
     words.append(0)
@@ -2888,6 +2908,14 @@ public struct DoryARM64BaselineEmitter: Sendable {
       condition: .notEqual,
       wordOffset: missStart - missBranch
     )
+    words[readHostBoundsLowBranch] = encodeConditionalBranch(
+      condition: .carryClear,
+      wordOffset: missStart - readHostBoundsLowBranch
+    )
+    words[readHostBoundsHighBranch] = encodeConditionalBranch(
+      condition: .carrySet,
+      wordOffset: missStart - readHostBoundsHighBranch
+    )
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
     words.append(encodeLogical(.or, left: 31, right: 20, destination: 1))
     words.append(encodeMoveWideZero32(register: 2, immediate: 0))
@@ -2895,6 +2923,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeMoveWideZero32(register: 4, immediate: UInt16(byteCount)))
     words.append(encodeAddImmediate64(left: 31, immediate: 64, destination: 5))
     words.append(encodeLoad64(register: 16, base: 19, byteOffset: Self.tlbResolverOffset))
+    let readResolverMissingBranch = words.count
+    words.append(0)
     words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C TLB miss resolver)
     words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
     let resolverErrorBranch = words.count
@@ -2948,9 +2978,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
       condition: .equal,
       wordOffset: callbackStart - resolverFallbackBranch
     )
+    words[readResolverMissingBranch] = encodeCompareBranchZero64(
+      register: 16,
+      wordOffset: callbackStart - readResolverMissingBranch
+    )
     words.append(encodeLogical(.or, left: 31, right: 20, destination: 0))
     words.append(encodeLoad64(register: 1, base: 31, byteOffset: 88))
     words.append(encodeMoveWideZero32(register: 2, immediate: UInt16(byteCount)))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 21, 31, 31))
+    emitInterpreterUnless(condition: .notEqual, usesMemory: true, into: &words)
     words.append(0xD63F_0000 | 21 << 5)  // blr x21
     words.append(encodeLogical(.or, left: 31, right: 0, destination: resultRegister))
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
@@ -3025,6 +3061,19 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeAddImmediate64(left: 14, immediate: 1, destination: 14))
     words.append(encodeStore64(register: 14, base: 16, byteOffset: 0))
     words.append(encodeAdd(is64Bit: true, left: addressRegister, right: 17, destination: 13))
+    // Validate the computed host address lies within the host address space. A stale TLB
+    // entry whose tag survived an invalidation, or a corrupted entry with a matching tag
+    // but wrong delta, must not reach a direct store. Fall through to the C resolver, which
+    // re-walks the page tables and re-validates the host offset before refilling.
+    words.append(encodeLoad64(register: 9, base: 19, byteOffset: Self.hostAddressSpaceBaseOffset))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 13, 9, 9))
+    let writeHostBoundsLowBranch = words.count
+    words.append(0)
+    words.append(
+      encodeLoad64(register: 16, base: 19, byteOffset: Self.hostAddressSpaceByteCountOffset))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 9, 16, 31))
+    let writeHostBoundsHighBranch = words.count
+    words.append(0)
     words.append(encodeLoad64(register: 14, base: 31, byteOffset: 96))
     words.append(encodeDirectStore(width: width, register: 14, base: 13))
     let hitDoneBranch = words.count
@@ -3035,6 +3084,14 @@ public struct DoryARM64BaselineEmitter: Sendable {
       condition: .notEqual,
       wordOffset: missStart - missBranch
     )
+    words[writeHostBoundsLowBranch] = encodeConditionalBranch(
+      condition: .carryClear,
+      wordOffset: missStart - writeHostBoundsLowBranch
+    )
+    words[writeHostBoundsHighBranch] = encodeConditionalBranch(
+      condition: .carrySet,
+      wordOffset: missStart - writeHostBoundsHighBranch
+    )
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
     words.append(encodeLogical(.or, left: 31, right: 20, destination: 1))
     words.append(encodeMoveWideZero32(register: 2, immediate: 1))
@@ -3042,6 +3099,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeMoveWideZero32(register: 4, immediate: UInt16(byteCount)))
     words.append(encodeAddImmediate64(left: 31, immediate: 64, destination: 5))
     words.append(encodeLoad64(register: 16, base: 19, byteOffset: Self.tlbResolverOffset))
+    let writeResolverMissingBranch = words.count
+    words.append(0)
     words.append(0xD63F_0000 | 16 << 5)  // blr x16 (C TLB miss resolver)
     words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
     let resolverErrorBranch = words.count
@@ -3094,10 +3153,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
       condition: .equal,
       wordOffset: callbackStart - resolverFallbackBranch
     )
+    words[writeResolverMissingBranch] = encodeCompareBranchZero64(
+      register: 16,
+      wordOffset: callbackStart - writeResolverMissingBranch
+    )
     words.append(encodeLogical(.or, left: 31, right: 20, destination: 0))
     words.append(encodeLoad64(register: 1, base: 31, byteOffset: 88))
     words.append(encodeLoad64(register: 2, base: 31, byteOffset: 96))
     words.append(encodeMoveWideZero32(register: 3, immediate: UInt16(byteCount)))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 22, 31, 31))
+    emitInterpreterUnless(condition: .notEqual, usesMemory: true, into: &words)
     words.append(0xD63F_0000 | 22 << 5)  // blr x22
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
 
@@ -3149,6 +3214,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeLoad64(register: 3, base: 31, byteOffset: 72))
     words.append(encodeMoveWideZero32(register: 4, immediate: UInt16(width.rawValue / 8)))
     words.append(encodeAddImmediate64(left: 31, immediate: 80, destination: 5))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 23, 31, 31))
+    emitInterpreterUnless(condition: .notEqual, usesMemory: true, into: &words)
     words.append(0xD63F_0000 | 23 << 5)  // blr x23
     words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
     emitInterpreterUnless(condition: .notEqual, usesMemory: true, into: &words)
@@ -4957,13 +5024,13 @@ public final class DoryJITCodeCache: @unchecked Sendable {
   public func insert(_ block: DoryARM64CompiledBlock, for key: DoryJITBlockKey) {
     lock.withLock {
       if let previous = entries.removeValue(forKey: key) {
-        byteCount -= previous.block.machineBytes.count
+        byteCount -= previous.block.machineByteCount
       }
-      let size = block.machineBytes.count
+      let size = block.machineByteCount
       guard size <= maximumBytes else { return }
       while byteCount + size > maximumBytes, let victim = leastRecentlyUsedKey() {
         if let removed = entries.removeValue(forKey: victim) {
-          byteCount -= removed.block.machineBytes.count
+          byteCount -= removed.block.machineByteCount
         }
       }
       clock &+= 1
@@ -4981,7 +5048,7 @@ public final class DoryJITCodeCache: @unchecked Sendable {
       }.map(\.key)
       for key in victims {
         if let removed = entries.removeValue(forKey: key) {
-          byteCount -= removed.block.machineBytes.count
+          byteCount -= removed.block.machineByteCount
         }
       }
     }
@@ -5275,19 +5342,19 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
   }
 
   public func publish(_ block: DoryARM64CompiledBlock, at offset: Int) throws {
-    let bytes = block.machineBytes
+    let byteCount = block.machineByteCount
     guard offset >= 0, offset.isMultiple(of: 4), offset <= capacity,
-      bytes.count <= capacity - offset
+      byteCount <= capacity - offset
     else {
       throw DoryJITRuntimeError.invalidOffset(offset)
     }
     let result = lock.withLock {
-      bytes.withUnsafeBytes { buffer in
+      block.machineWords.withUnsafeBytes { buffer in
         dory_jit_region_publish(
           region,
           offset,
           buffer.bindMemory(to: UInt8.self).baseAddress,
-          bytes.count
+          byteCount
         )
       }
     }
@@ -5696,6 +5763,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     var memoryCodeGeneration: UInt64?
     let endsTimeBoundary: Bool
     let cr3WriteSourceRegister: Int?
+    /// Set once lookup visibility is removed. Recorded traces keep strong resident references, so
+    /// retirement must remain observable even while the resident object outlives its slot.
+    var retired = false
     var incomingLinks: [ChainLink] = []
     var outgoingLinks: [Int: ChainLink] = [:]
 
@@ -5781,6 +5851,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let guestInstructionCounts: [UInt32]
     let totalGuestInstructionCount: Int
     let validations: [NativeTraceValidation]
+    let residents: [ResidentBlock]
   }
 
   private enum NativeTraceReplayResult {
@@ -6061,6 +6132,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }
   }
 
+  /// Test-only accessors for injecting stale TLB entries and reading the live generation.
+  internal var translationTLBForTesting: DoryX86JITTLB? {
+    lock.withLock { translationTLB }
+  }
+  internal var translationTLBGenerationForTesting: UInt64 {
+    lock.withLock { translationTLBGeneration }
+  }
+
   public func invalidateAll() {
     lock.withLock {
       blockCache.removeAll()
@@ -6290,7 +6369,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       return nil
     }
     let relativeHostPC = callbackHostPC - entryAddress
-    guard relativeHostPC < UInt64(faultResident.block.machineBytes.count),
+    guard relativeHostPC < UInt64(faultResident.block.machineByteCount),
       let hostOffset = UInt32(exactly: relativeHostPC),
       let metadataIndex = faultResident.block.instructionMetadata.lastIndex(where: {
         $0.hostOffsetStart <= hostOffset
@@ -6332,7 +6411,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     guard let entryAddress = region.entryAddress(at: resident.offset), hostPC >= entryAddress else {
       return false
     }
-    return hostPC - entryAddress < UInt64(resident.block.machineBytes.count)
+    return hostPC - entryAddress < UInt64(resident.block.machineByteCount)
   }
 
   /// Runs consecutive resident basic blocks while the machine's interrupt deadline permits it.
@@ -7316,7 +7395,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       compiled.guestInstructionCount <= maximumInstructions,
       !compiled.requiresMemoryCallbacks || memory != nil
     else { return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil) }
-    let byteCount = compiled.machineBytes.count
+    let byteCount = compiled.machineByteCount
     guard byteCount <= codeCacheGenerationRange(activeCodeCacheGeneration).count else {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
@@ -7612,6 +7691,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context: UnsafeMutableBufferPointer<UInt64>
   ) throws -> NativeTraceReplayResult {
     guard trace.codeCacheEpoch == codeCacheEpoch else { return .invalid }
+    // A resident retired without a code-cache rotation keeps intact machine code at its recorded
+    // offset, but the block no longer represents live guest code. The batch executor enters raw
+    // offsets directly, so replay must refuse traces that still reference them.
+    guard trace.residents.allSatisfy({ !$0.retired }) else { return .invalid }
     guard trace.totalGuestInstructionCount <= maximumInstructions else { return .unavailable }
     guard let codeGenerationProvider else { return .invalid }
     for validation in trace.validations {
@@ -7684,7 +7767,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       expectedGuestRIPs: entries.map(\.guestStart),
       guestInstructionCounts: entries.map(\.resident.block.guestInstructionCount),
       totalGuestInstructionCount: totalGuestInstructionCount,
-      validations: validations
+      validations: validations,
+      residents: entries.map(\.resident)
     )
   }
 
@@ -7979,6 +8063,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     for link in Array(resident.outgoingLinks.values) { unlinkDirectChain(link) }
     resident.incomingLinks.removeAll(keepingCapacity: false)
     resident.outgoingLinks.removeAll(keepingCapacity: false)
+    resident.retired = true
     // Indirect entries contain raw host addresses rather than resident ownership links. Clearing
     // the small per-vCPU table makes every possible reference to retired code miss immediately.
     indirectBranchTargetCache.removeAll()

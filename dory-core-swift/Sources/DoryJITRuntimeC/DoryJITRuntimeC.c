@@ -762,15 +762,23 @@ int dory_jit_tlb_resolve(
         &host_address
     );
     if (lookup == 0) {
-        tlb->inline_hit_counts[access]++;
-        resolution_out->host_address = host_address;
-        resolution_out->status = DORY_JIT_TLB_RESOLUTION_HIT;
-        return 0;
-    }
-    if (lookup != ENOENT) {
+        // A stale entry whose tag survived an invalidation, or a corrupted entry with a
+        // matching tag but wrong delta, must not reach a direct access. Validate the host
+        // address lies within the host address space before accepting the hit; otherwise
+        // fall through to the translation walk and refill with a validated address.
+        if (host_address >= host_address_space_base &&
+            host_address - host_address_space_base < host_address_space_byte_count) {
+            tlb->inline_hit_counts[access]++;
+            resolution_out->host_address = host_address;
+            resolution_out->status = DORY_JIT_TLB_RESOLUTION_HIT;
+            return 0;
+        }
+        tlb->miss_counts[access]++;
+    } else if (lookup != ENOENT) {
         return lookup;
+    } else {
+        tlb->miss_counts[access]++;
     }
-    tlb->miss_counts[access]++;
 
     uint64_t host_address_space_offset = 0;
     uint64_t fault_address = 0;

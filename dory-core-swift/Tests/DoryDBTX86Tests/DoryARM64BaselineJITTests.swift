@@ -20,10 +20,11 @@ import Testing
     #expect(first.tier == .baseline)
     #expect(first.exitCode == .dispatch)
     #expect(first.machineWords.last == 0xD65F_03C0)
-    #expect(first.machineBytes.count == first.machineWords.count * 4)
+    #expect(first.machineByteCount == first.machineWords.count * 4)
+    #expect(first.machineBytes.count == first.machineByteCount)
   }
 
-  @Test func memoryFramesRestoreHostControlStateFromTheContext() throws {
+  @Test func memoryFramesRestoreHostControlStateFromTheGeneratedStack() throws {
     let block = try DoryX86IRTranslator().translate(
       [0x48, 0x8B, 0x03],  // mov rax,[rbx]
       at: 0x1000,
@@ -32,15 +33,13 @@ import Testing
     let words = DoryARM64BaselineEmitter().compile(block).machineWords
 
     #expect(words.contains(0xD101_C3FF))  // sub sp,sp,#112
-    #expect(words.contains(0xF901_227D))  // str x29,[x19,#576]
-    #expect(words.contains(0xF901_267E))  // str x30,[x19,#584]
-    #expect(words.contains(0xF941_2270))  // ldr x16,[x19,#576]
-    #expect(words.contains(0xF941_2671))  // ldr x17,[x19,#584]
+    #expect(words.contains(0xA900_7BFD))  // stp x29,x30,[sp]
+    #expect(words.contains(0xA940_7BFD))  // ldp x29,x30,[sp]
     #expect(words.contains(0x9101_C3FF))  // add sp,sp,#112
-    #expect(words.contains(0xAA10_03FD))  // mov x29,x16
-    #expect(words.contains(0xAA11_03FE))  // mov x30,x17
-    #expect(!words.contains(0xA9B9_7BFD))  // no stack-saved FP/LR prologue
-    #expect(!words.contains(0xA8C7_7BFD))  // no stack-restored FP/LR epilogue
+    #expect(!words.contains(0xF901_227D))  // no context-hosted FP store
+    #expect(!words.contains(0xF901_267E))  // no context-hosted LR store
+    #expect(!words.contains(0xF941_2270))  // no context-hosted FP load
+    #expect(!words.contains(0xF941_2671))  // no context-hosted LR load
   }
 
   @Test func unsupportedIRProducesAClosedInterpreterFallbackStub() throws {
@@ -386,6 +385,74 @@ import Testing
 
       try run(oldestAddress)
       #expect(executor.diagnostics.compiledBlocks == compiledBeforeRetainedLookup + 1)
+    #endif
+  }
+
+  @Test func inlineTLBHitPathRejectsAStaleEntryWhoseHostAddressFallsOutsideTheHostAddressSpace()
+    throws {
+    #if arch(arm64)
+      // A stale TLB entry whose tag still matches but whose delta resolves to a host address
+      // outside the host address space must not reach a direct load/store. The inline hit path
+      // falls through to the C resolver, which re-walks the page tables and refills with a
+      // validated host address. This test injects such a stale entry directly through the TLB
+      // fill API and confirms the guest still observes the correct memory contents.
+      let page = Int(getpagesize())
+      let physical = try DoryX86MmapMemory(validatingByteCount: page)
+      let paging = DoryX86PagingUnit()
+      let guestRIP: UInt64 = 0x3200
+      let linearAddress: UInt64 = 0x80
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: linearAddress),
+        rip: guestRIP
+      )
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: state, mode: .long64)
+      )
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+      try physical.writeScalar(at: linearAddress, value: 0x1234, byteCount: 8)
+
+      // Prime the TLB with the correct translation so the executor has a valid address-space
+      // generation selected and a matching tag for this linear address.
+      _ = try #require(
+        executor.execute(
+          bytes: [0x48, 0x8B, 0x18],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(state.registers.rbx == 0x1234)
+
+      // Overwrite the TLB entry with a stale delta that resolves to a host address well outside
+      // the host address space. The tag still matches the live generation, so without the inline
+      // bounds check the generated load would dereference the stale host address directly.
+      let staleHostAddress = UInt64(0xffff_8880_0000_0000)
+      let tlb = try #require(executor.translationTLBForTesting)
+      try tlb.fill(
+        linearAddress: linearAddress,
+        addressSpaceGeneration: executor.translationTLBGenerationForTesting,
+        access: .read,
+        hostAddress: staleHostAddress
+      )
+
+      state.rip = guestRIP
+      state.registers.rax = linearAddress
+      translated.updateContext(.init(state: state, mode: .long64))
+      _ = try #require(
+        executor.execute(
+          bytes: [0x48, 0x8B, 0x18],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(state.registers.rbx == 0x1234)
     #endif
   }
 
@@ -879,6 +946,112 @@ import Testing
       try run()
       #expect(executor.diagnostics.nativeTraceAttempts == 0)
       #expect(executor.diagnostics.nativeTraceReplays == 0)
+    #endif
+  }
+
+  @Test func tier1DirectChainsRemainEntrySafeAcrossCodeCacheRotations() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x28_000
+      var bytes: [UInt8] = []
+      for _ in 0..<1_000 {
+        bytes += [0xFF, 0xC0, 0xEB, 0]  // inc eax; jmp next
+      }
+      bytes.append(0xF4)
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4_096,
+        tier1Enabled: true,
+        rawTargetPredictionOptions: [.tier1DirectChain]
+      )
+      func run() throws {
+        var state = try DoryX86ArchitecturalState(rip: base)
+        let summary = try #require(executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            guard address >= base else { return [] }
+            let offset = Int(address - base)
+            guard bytes.indices.contains(offset) else { return [] }
+            return Array(bytes[offset..<min(bytes.count, offset + maximumCount)])
+          },
+          codeGenerationProvider: { _, _ in 1 },
+          physicalRIPProvider: { $0 },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 4_096,
+          state: &state
+        ))
+        #expect(summary.exitCode == .halt)
+        #expect(state.registers.rax == 1_000)
+      }
+
+      try run()
+      #expect(executor.diagnostics.codeCacheWraps > 0)
+      try run()
+      #expect(executor.diagnostics.directChainPatches > 0)
+    #endif
+  }
+
+  @Test func nativeTraceRefusesOffsetsWhoseResidentsWereRetired() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x30_000
+      // mov eax,1; jmp 0x10; pad; mov ebx,7; jmp 0x20; pad; hlt
+      var bytes: [UInt8] = [
+        0xB8, 1, 0, 0, 0,
+        0xEB, 9,
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+        0xBB, 7, 0, 0, 0,
+        0xEB, 9,
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+        0xF4,
+      ]
+      var generation: UInt64 = 1
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16_384)
+      func run(at entry: UInt64) throws -> (DoryARM64ExecutionSummary, DoryX86ArchitecturalState) {
+        var state = try DoryX86ArchitecturalState(rip: entry)
+        let summary = try #require(executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            guard address >= base else { return [] }
+            let offset = Int(address - base)
+            guard bytes.indices.contains(offset) else { return [] }
+            return Array(bytes[offset..<min(bytes.count, offset + maximumCount)])
+          },
+          codeGenerationProvider: { _, _ in generation },
+          physicalRIPProvider: { $0 },
+          at: entry,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 16,
+          state: &state
+        ))
+        return (summary, state)
+      }
+
+      var (summary, state) = try run(at: base)
+      #expect(summary.exitCode == .halt)
+      #expect(state.registers.rbx == 7)
+
+      (summary, state) = try run(at: base)
+      #expect(summary.exitCode == .halt)
+      #expect(state.registers.rbx == 7)
+      #expect(executor.diagnostics.nativeTraceAttempts == 1)
+      #expect(executor.diagnostics.nativeTraceReplays == 1)
+
+      // Mutate the middle block and retire its resident through an ordinary generation/byte
+      // mismatch at the block's own entry. The recorded trace keeps the old resident's offset.
+      bytes[0x11] = 9
+      generation = 2
+      (summary, state) = try run(at: base + 0x10)
+      #expect(summary.exitCode == .halt)
+      #expect(state.registers.rbx == 9)
+
+      // A weak generation proof (for example a version token that never observed the write)
+      // still passes every recorded validation. Replay must nevertheless refuse offsets whose
+      // residents were retired, since their storage is dead and can be recycled in place.
+      generation = 1
+      (summary, state) = try run(at: base)
+      #expect(summary.exitCode == .halt)
+      #expect(state.registers.rbx == 9)
+      #expect(executor.diagnostics.nativeTraceAttempts == 2)
+      #expect(executor.diagnostics.nativeTraceReplays == 1)
     #endif
   }
 
