@@ -232,6 +232,15 @@ struct ISASupportCatalog: Codable {
       updated[index].faults = form.faults
       updated[index].executedFormCount = form.executions.contains { $0.outcome == "retired" } ? 1 : 0
       updated[index].faultAttemptFormCount = form.executions.contains { $0.outcome == "faulted" } ? 1 : 0
+      // P2-04 item 2: Recompute the conformance state from the applied evidence.
+      // The state is the highest reached state for which explicit evidence exists.
+      updated[index].conformanceState = ISAConformanceStateResolver.resolve(
+        decoderSupport: updated[index].decoderSupport,
+        interpreterSemantics: updated[index].interpreterSemantics,
+        jitBaseline: updated[index].jitSupport.baseline,
+        jitOptimizing: updated[index].jitSupport.optimizing,
+        independentReference: updated[index].independentReference,
+        executedFormCount: updated[index].executedFormCount)
     }
     records = updated
     return .init(

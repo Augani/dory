@@ -28,10 +28,16 @@ struct ISACorpus: Codable {
   let vectors: [ISAVector]
 }
 
-struct ISAQualification: Codable, Equatable {
-  var status = "unmeasured"
-  var evidence: [String] = []
-  var scope = "No verified execution evidence for this exact form."
+public struct ISAQualification: Codable, Equatable {
+  public var status = "unmeasured"
+  public var evidence: [String] = []
+  public var scope = "No verified execution evidence for this exact form."
+
+  public init(status: String = "unmeasured", evidence: [String] = [], scope: String = "No verified execution evidence for this exact form.") {
+    self.status = status
+    self.evidence = evidence
+    self.scope = scope
+  }
 }
 
 struct ISAJITQualification: Encodable {
@@ -66,6 +72,9 @@ struct ISAInventoryRecord: Encodable {
   let independentReference = ISAQualification(
     scope: "Open A08 gap: no exact-form independent-reference execution receipt.")
   let qualificationStatus = "unqualified"
+  // P2-04 item 2: The conformance state tracks the highest independently
+  // reached state for this exact vector form. See ISAConformanceState.
+  var conformanceState: ISAConformanceState
   var executedFormCount = 0
   var faultAttemptFormCount = 0
 }
@@ -88,6 +97,10 @@ struct ISAInventoryReport: Encodable {
   let physicalReferenceExecutedFormCount = 0
   let physicalReference = ISAQualification()
   let supportCatalog: ISASupportSummary?
+  // P2-04 item 2: Conformance state distribution across all corpus vectors.
+  // This summary makes it explicit how many forms are at each conformance
+  // stage, preventing a generic family checkbox from covering untested forms.
+  let conformanceStateDistribution: [String: Int]
   let executionMeasurement = "Historical, exact-form test evidence only; this invocation executes no guest instructions. Fault attempts are counted separately from retired forms."
   let qualification = "Each annotation is limited to its recorded case and source revision. Uncovered dimensions remain unmeasured; no full ISA, current-source, physical-reference or release qualification is implied."
   let records: [ISAInventoryRecord]
@@ -163,6 +176,12 @@ enum ISAInventory {
         data: supportCatalogData, corpusSHA256: corpusDigest,
         records: &records, load: evidenceLoader)
     }
+    // P2-04 item 2: Compute the conformance state distribution after applying
+    // any historical evidence. This distribution is the authoritative count of
+    // how many forms are at each conformance stage.
+    let conformanceDistribution = records.reduce(into: [String: Int]()) { result, record in
+      result[record.conformanceState.rawValue, default: 0] += 1
+    }
     return .init(
       corpusID: corpus.id,
       corpusSHA256: corpusDigest,
@@ -175,6 +194,7 @@ enum ISAInventory {
       executedFormCount: records.reduce(0) { $0 + $1.executedFormCount },
       faultAttemptFormCount: records.reduce(0) { $0 + $1.faultAttemptFormCount },
       supportCatalog: support,
+      conformanceStateDistribution: conformanceDistribution,
       records: records)
   }
 
@@ -234,13 +254,14 @@ enum ISAInventory {
     case (.long64, false): addressSize = 64
     default: addressSize = 32
     }
+    let conformanceState: ISAConformanceState = support == "rejected" ? .rejected : .recognized
     return .init(
       vector: vector, operandSizeAttributeBits: operandSize, addressSizeAttributeBits: addressSize,
       sizeAttributeSource: instruction == nil ? "reference prefixes; decode rejected" : "decoded prefixes",
       decodedInstruction: instruction, decodedOperandWidthsBits: operandWidths.sorted(),
       decodedAddressWidthsBits: addressWidths.sorted(), decoderSupport: support,
       decodeErrorCategory: errorCategory, decodeError: errorDescription,
-      expectationMismatches: mismatches)
+      expectationMismatches: mismatches, conformanceState: conformanceState)
   }
 
   private static func collectWidths(

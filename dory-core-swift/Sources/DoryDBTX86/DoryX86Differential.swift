@@ -70,6 +70,87 @@ public struct DoryX86DifferentialResult: Sendable, Hashable {
       return false
     }
   }
+
+  // P2-04 item 6: When the engines disagree, identify the first divergent
+  // field rather than reporting only a final checksum. This pinpoints the
+  // exact instruction or state component that caused the mismatch.
+  public var firstDivergence: DoryX86DifferentialDivergence? {
+    if agrees { return nil }
+
+    // Check RIP first — a different instruction count or exit path
+    // manifests as a different RIP.
+    if interpreterState.rip != jitState.rip {
+      return .rip(interpreter: interpreterState.rip, jit: jitState.rip)
+    }
+
+    // Check RFLAGS.
+    if interpreterState.rflags != jitState.rflags {
+      return .rflags(interpreter: interpreterState.rflags, jit: jitState.rflags)
+    }
+
+    // Check general-purpose registers in architectural order.
+    for register in DoryX86GeneralRegister.allCases {
+      let interpreterValue = interpreterState.registers[register]
+      let jitValue = jitState.registers[register]
+      if interpreterValue != jitValue {
+        return .register(
+          register, interpreter: interpreterValue, jit: jitValue)
+      }
+    }
+
+    // Check segment registers.
+    if interpreterState.cs != jitState.cs
+      || interpreterState.ds != jitState.ds
+      || interpreterState.es != jitState.es
+      || interpreterState.fs != jitState.fs
+      || interpreterState.gs != jitState.gs
+      || interpreterState.ss != jitState.ss
+    {
+      return .segments
+    }
+
+    // Check memory state.
+    if interpreterMemory != jitMemory {
+      return .memory(
+        interpreter: interpreterMemory, jit: jitMemory)
+    }
+
+    // Check memory faults.
+    if interpreterMemoryFault != jitMemoryFault {
+      return .memoryFault(
+        interpreter: interpreterMemoryFault, jit: jitMemoryFault)
+    }
+
+    // Check interpreter result vs JIT exit.
+    if case .retired = interpreterResult {
+      // Interpreter retired all instructions — check if count matches.
+      if interpreterRetiredInstructionCount != Int(block.guestInstructionCount) {
+        return .instructionCount(
+          interpreter: interpreterRetiredInstructionCount,
+          expected: Int(block.guestInstructionCount))
+      }
+    } else {
+      // Interpreter did not retire all instructions — that's a divergence.
+      return .instructionCount(
+        interpreter: interpreterRetiredInstructionCount,
+        expected: Int(block.guestInstructionCount))
+    }
+
+    return .jitExit(jitExit)
+  }
+}
+
+/// P2-04 item 6: Identifies the first divergent state component between
+/// the interpreter and JIT after a differential comparison.
+public enum DoryX86DifferentialDivergence: Sendable, Hashable {
+  case rip(interpreter: UInt64, jit: UInt64)
+  case rflags(interpreter: DoryX86RFLAGS, jit: DoryX86RFLAGS)
+  case register(DoryX86GeneralRegister, interpreter: UInt64, jit: UInt64)
+  case segments
+  case memory(interpreter: DoryX86DifferentialMemoryState, jit: DoryX86DifferentialMemoryState)
+  case memoryFault(interpreter: DoryX86MemoryError?, jit: DoryX86MemoryError?)
+  case instructionCount(interpreter: Int, expected: Int)
+  case jitExit(DoryJITExitCode)
 }
 
 public struct DoryX86DifferentialHarness: Sendable {
