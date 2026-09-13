@@ -122,4 +122,28 @@ import DoryExecutionContracts
     ]
     try DoryARMVirtV1ABI.validateRegions(adjacent)
   }
+
+  @Test func unsortedNonAdjacentOverlapIsRejected() {
+    // A=0x1000..<0x3000, B=0x4000..<0x5000, C=0x2000..<0x2800.
+    // In caller order, B does not overlap either neighbor, but A and C overlap.
+    // The previous pairwise-only check missed this; sorting by base must catch it.
+    #expect(throws: DoryARMVirtV1ABIError.self) {
+      let unsorted = [
+        try DoryARMVirtV1Region(kind: .uart, base: 0x1000, byteCount: 0x2000),
+        try DoryARMVirtV1Region(kind: .rtc, base: 0x4000, byteCount: 0x1000),
+        try DoryARMVirtV1Region(kind: .powerController, base: 0x2000, byteCount: 0x0800),
+      ]
+      try DoryARMVirtV1ABI.validateRegions(unsorted)
+    }
+  }
+
+  @Test func unsortedNonOverlappingLayoutStillValidates() throws {
+    // Same three regions as above but with C moved out of A's range, in unsorted order.
+    let unsorted = [
+      try DoryARMVirtV1Region(kind: .uart, base: 0x1000, byteCount: 0x2000),
+      try DoryARMVirtV1Region(kind: .rtc, base: 0x4000, byteCount: 0x1000),
+      try DoryARMVirtV1Region(kind: .powerController, base: 0x3000, byteCount: 0x0800),
+    ]
+    try DoryARMVirtV1ABI.validateRegions(unsorted)
+  }
 }

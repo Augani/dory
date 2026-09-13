@@ -220,23 +220,25 @@ public enum DoryPCV1ABI {
 
   /// Validates an arbitrary region list for overlaps and zero-length regions.
   /// Each region's byteCount must be positive (DoryGuestAddressRange already checks
-  /// overflow at construction), and no two regions may overlap. Regions are expected
-  /// sorted by base address for deterministic validation.
+  /// overflow at construction), and no two regions may overlap. Overlap detection is
+  /// independent of caller order: a checked local view is sorted by base address
+  /// before neighboring ranges are compared, so an unsorted list cannot hide an
+  /// overlap between non-adjacent regions. The caller-owned layout is never reordered
+  /// or mutated; only the validation view is sorted.
   public static func validateRegions(_ regions: [DoryPCV1Region]) throws {
-    var previous: DoryGuestAddressRange? = nil
     for region in regions {
       guard region.range.byteCount > 0 else {
         throw DoryPCV1ABIError.zeroLengthRegion(kind: region.kind)
       }
-      if let prev = previous {
-        guard !prev.overlaps(region.range) else {
-          throw DoryPCV1ABIError.overlappingRegions(
-            previous: prev,
-            current: region.range
-          )
-        }
+    }
+    let sorted = regions.sorted { $0.range.base < $1.range.base }
+    for pair in zip(sorted, sorted.dropFirst()) {
+      guard !pair.0.range.overlaps(pair.1.range) else {
+        throw DoryPCV1ABIError.overlappingRegions(
+          previous: pair.0.range,
+          current: pair.1.range
+        )
       }
-      previous = region.range
     }
   }
 
