@@ -345,6 +345,7 @@ enum VirtioMMIODeviceTree {
     case powerOff
     case reset
     case crash(String)
+    case cpuOff
   }
 
   /// One-way, lock-free publication from stop ownership into each vCPU's exit loop.
@@ -856,6 +857,21 @@ enum VirtioMMIODeviceTree {
               physicalAddress: physicalAddress,
               mmioRouteCache: &mmioRouteCache
             ) {
+              if case .cpuOff = stop {
+                // Secondary vCPU requested PSCI CPU_OFF; exit this vCPU's run loop
+                // without stopping the machine.  The primary continues running.
+                teamCondition.withLock {
+                  teamHandles[index] = nil
+                  pauseExitRequests.remove(vcpu.handle)
+                }
+                if index != 0 {
+                  teamCondition.lock()
+                  finishedSecondaries += 1
+                  teamCondition.broadcast()
+                  teamCondition.unlock()
+                }
+                return
+              }
               stopAll(stop)
               return
             }
@@ -962,6 +978,7 @@ enum VirtioMMIODeviceTree {
         let supported: Set<UInt32> = [
           PSCI.version, PSCI.features, PSCI.systemOff, PSCI.systemReset, PSCI.cpuOn,
           PSCI.cpuOn32, PSCI.affinityInfo, PSCI.affinityInfo32, PSCI.migrateInfoType,
+          PSCI.cpuSuspend, PSCI.cpuSuspend32, PSCI.cpuOff,
         ]
         try vcpu.write(HV_REG_X0, supported.contains(queried) ? 0 : UInt64(bitPattern: -1))
       case PSCI.migrateInfoType:
@@ -970,6 +987,34 @@ enum VirtioMMIODeviceTree {
         return .powerOff
       case PSCI.systemReset:
         return .reset
+      case PSCI.cpuSuspend, PSCI.cpuSuspend32:
+        // PSCI 1.0 CPU_SUSPEND: the calling CPU enters a power state and is resumed by an
+        // interrupt.  We model this as a no-op that returns SUCCESS — the kernel's idle loop
+        // will issue WFI immediately after, and the Hypervisor.framework run loop blocks
+        // until an interrupt arrives.  The power-state argument is accepted but we do not
+        // distinguish retention vs power-down; both return PSCI_SUCCESS (0) on resume.
+        try vcpu.write(HV_REG_X0, 0)  // PSCI_SUCCESS
+      case PSCI.cpuOff:
+        // PSCI 1.0 CPU_OFF: the calling CPU is turned off.  Unlike CPU_SUSPEND, this is a
+        // one-way operation — the CPU can only be brought back by CPU_ON.  Secondary vCPUs
+        // exit their run loop; CPU 0 is rejected because the primary must use SYSTEM_OFF.
+        let isPrimary = teamCondition.withLock { teamHandles[0] == vcpu.handle }
+        if isPrimary {
+          try vcpu.write(HV_REG_X0, UInt64(bitPattern: -1))  // DENIED
+        } else {
+          let cpuIndex = teamCondition.withLock {
+            (teamHandles.firstIndex { $0 == vcpu.handle }) ?? -1
+          }
+          let result = teamCondition.withLock {
+            cpuIndex >= 0 ? psciCPUState.requestOff(index: cpuIndex) : -1
+          }
+          if result == 0 {
+            try vcpu.write(HV_REG_X0, 0)  // PSCI_SUCCESS
+            return .cpuOff
+          } else {
+            try vcpu.write(HV_REG_X0, UInt64(bitPattern: result))
+          }
+        }
       case PSCI.cpuOn, PSCI.cpuOn32:
         let mask: UInt64 = function == PSCI.cpuOn32 ? 0xFFFF_FFFF : .max
         let target = try vcpu.read(HV_REG_X1) & mask
@@ -1076,6 +1121,9 @@ enum VirtioMMIODeviceTree {
 
   enum PSCI {
     static let version: UInt32 = 0x8400_0000
+    static let cpuSuspend: UInt32 = 0xC400_0001
+    static let cpuSuspend32: UInt32 = 0x8400_0001
+    static let cpuOff: UInt32 = 0x8400_0002
     static let cpuOn: UInt32 = 0xC400_0003
     static let cpuOn32: UInt32 = 0x8400_0003
     static let affinityInfo: UInt32 = 0xC400_0004
@@ -1137,6 +1185,7 @@ enum VirtioMMIODeviceTree {
     case powerOff
     case reset
     case crash(String)
+    case cpuOff
   }
 
   public final class Machine: @unchecked Sendable {
@@ -1417,6 +1466,8 @@ extension GuestStopReason: CustomStringConvertible {
       "guest requested reset"
     case .crash(let detail):
       "guest crash: \(detail)"
+    case .cpuOff:
+      "secondary vCPU requested PSCI CPU_OFF"
     }
   }
 }

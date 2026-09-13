@@ -44,6 +44,20 @@ struct ARMPSCICPUState {
         states[index] = .on
     }
 
+    /// Mark a CPU as off via PSCI CPU_OFF.  Only an already-on CPU can be turned off;
+    /// on-pending and already-off CPUs return an error.  CPU 0 is rejected by the caller
+    /// (the primary must use SYSTEM_OFF).
+    mutating func requestOff(index: Int) -> Int64 {
+        guard index > 0, index < states.count else { return -1 }
+        switch states[index] {
+        case .on: break
+        case .off: return -1
+        case .onPending: return -1
+        }
+        states[index] = .off
+        return 0
+    }
+
     func affinityInfo(target: UInt64, lowestLevel: UInt64) -> Int64 {
         // PSCI 1.0 permits an implementation to support only affinity level zero.
         guard lowestLevel == 0, let index = index(for: target) else { return -2 }

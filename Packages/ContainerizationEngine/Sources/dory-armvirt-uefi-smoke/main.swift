@@ -1415,6 +1415,7 @@ import UniformTypeIdentifiers
     case .powerOff: return "power-off"
     case .reset: return "reset"
     case .crash(let message): return "crash: \(message)"
+    case .cpuOff: return "cpu-off"
     }
   }
 

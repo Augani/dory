@@ -44,4 +44,33 @@ struct ARMPSCICPUStateTests {
         #expect(state.requestOn(target: 1, entry: 0x1000, executableRanges: ram) == -9)
         #expect(state.requestOn(target: 1, entry: 0x1000, executableRanges: [0..<0x4000000] + ram) == 0)
     }
+
+    @Test func cpuOffTransitionsOnCPUToOff() {
+        var state = ARMPSCICPUState(cpuCount: 4)
+        // CPU 0 is on at startup; CPU_OFF on index 0 is rejected by the caller, but the
+        // state machine itself rejects index 0.
+        #expect(state.requestOff(index: 0) == -1)
+        #expect(state.affinityInfo(target: 0, lowestLevel: 0) == 0)
+        // CPU 1 is off at startup; CPU_OFF on an already-off CPU is an error.
+        #expect(state.requestOff(index: 1) == -1)
+        // Bring CPU 1 online, then turn it off.
+        #expect(state.requestOn(target: 1, entry: 0x4000_0000, executableRanges: ram) == 0)
+        state.completeOn(index: 1)
+        #expect(state.affinityInfo(target: 1, lowestLevel: 0) == 0)
+        #expect(state.requestOff(index: 1) == 0)
+        #expect(state.affinityInfo(target: 1, lowestLevel: 0) == 1)
+        // CPU_ON can bring it back.
+        #expect(state.requestOn(target: 1, entry: 0x4000_0000, executableRanges: ram) == 0)
+    }
+
+    @Test func cpuOffRejectsOnPendingAndOutOfRangeIndices() {
+        var state = ARMPSCICPUState(cpuCount: 2)
+        // CPU 1 is on-pending after requestOn but before completeOn.
+        #expect(state.requestOn(target: 1, entry: 0x4000_0000, executableRanges: ram) == 0)
+        #expect(state.requestOff(index: 1) == -1)
+        #expect(state.affinityInfo(target: 1, lowestLevel: 0) == 2)
+        // Out-of-range indices are rejected.
+        #expect(state.requestOff(index: -1) == -1)
+        #expect(state.requestOff(index: 2) == -1)
+    }
 }

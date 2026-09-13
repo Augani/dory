@@ -3258,6 +3258,7 @@ enum DesktopMode {
             case .powerOff: nil
             case .reset: VMError.unexpectedExit("desktop guest requested reset")
             case let .crash(detail): VMError.unexpectedExit(detail)
+            case .cpuOff: nil
             }
         }
 
