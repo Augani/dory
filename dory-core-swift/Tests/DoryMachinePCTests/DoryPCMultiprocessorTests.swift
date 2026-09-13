@@ -82,10 +82,69 @@ import Testing
     #expect(controller.snapshot().lifecycles[1] == .waitingForStartup)
   }
 
+  @Test func controlEventsNotifyOnlyAdmittedTargetsAfterQueueing() throws {
+    let apics = (0..<3).map { DoryPCLocalAPIC(apicID: UInt32($0)) }
+    let probe = PendingWorkProbe()
+    let controller = try DoryPCMultiprocessorController(
+      localAPICs: apics,
+      onPendingWork: { apicID in
+        guard let controller = probe.controller else { return }
+        probe.record(apicID: apicID, snapshot: controller.snapshot())
+      }
+    )
+    probe.controller = controller
+
+    try controller.handleInterruptCommand(sourceAPICID: 0, high: 0, low: 4 << 8)
+    try controller.handleInterruptCommand(sourceAPICID: 0, high: 2 << 24,
+      low: 5 << 8 | 1 << 14 | 1 << 15)
+    try controller.handleInterruptCommand(sourceAPICID: 0, high: 2 << 24, low: 6 << 8 | 9)
+
+    #expect(probe.notifiedAPICIDs == [0, 2, 2])
+    #expect(probe.snapshots == [
+      .init(lifecycles: [0: .running, 1: .waitingForStartup, 2: .waitingForStartup],
+        pendingEvents: [.nonMaskableInterrupt(apicID: 0)]),
+      .init(lifecycles: [0: .running, 1: .waitingForStartup, 2: .waitingForStartup],
+        pendingEvents: [.nonMaskableInterrupt(apicID: 0), .initialize(apicID: 2)]),
+      .init(lifecycles: [0: .running, 1: .waitingForStartup, 2: .running],
+        pendingEvents: [
+          .nonMaskableInterrupt(apicID: 0),
+          .initialize(apicID: 2),
+          .startup(apicID: 2, vector: 9),
+        ]),
+    ])
+  }
+
+  @Test func ignoredControlEventsDoNotNotifyPendingWork() throws {
+    let apics = (0..<2).map { DoryPCLocalAPIC(apicID: UInt32($0)) }
+    let probe = PendingWorkProbe()
+    let controller = try DoryPCMultiprocessorController(
+      localAPICs: apics,
+      onPendingWork: { probe.record(apicID: $0) }
+    )
+
+    try controller.handleInterruptCommand(sourceAPICID: 0, high: 1 << 24,
+      low: 5 << 8 | 1 << 14 | 1 << 15)
+    try controller.handleInterruptCommand(sourceAPICID: 0, high: 1 << 24, low: 6 << 8 | 8)
+    _ = probe.takeNotifiedAPICIDs()
+
+    try controller.handleInterruptCommand(sourceAPICID: 0, high: 1 << 24, low: 6 << 8 | 9)
+    try controller.handleInterruptCommand(sourceAPICID: 0, high: 1 << 24, low: 5 << 8 | 1 << 15)
+
+    #expect(probe.notifiedAPICIDs.isEmpty)
+    #expect(controller.drainEvents() == [
+      .initialize(apicID: 1),
+      .startup(apicID: 1, vector: 8),
+    ])
+  }
+
   @Test func fixedLowestAndShorthandIPIsReachTheExpectedAPICs() throws {
     let apics = (0..<3).map { DoryPCLocalAPIC(apicID: UInt32($0)) }
     for apic in apics { try apic.configureSpuriousVector(0xFF, softwareEnabled: true) }
-    let controller = try DoryPCMultiprocessorController(localAPICs: apics)
+    let probe = PendingWorkProbe()
+    let controller = try DoryPCMultiprocessorController(
+      localAPICs: apics,
+      onPendingWork: { probe.record(apicID: $0) }
+    )
 
     try controller.handleInterruptCommand(
       sourceAPICID: 0,
@@ -103,6 +162,7 @@ import Testing
     #expect(apics[0].acknowledge(interruptsEnabled: true) == nil)
     #expect(apics[1].acknowledge(interruptsEnabled: true) == 0x52)
     #expect(apics[2].acknowledge(interruptsEnabled: true) == 0x52)
+    #expect(probe.notifiedAPICIDs.isEmpty)
   }
 
   @Test func lowestPriorityICRUsesArbitrationPriorityBeforeAPICIDTieBreak() throws {
@@ -142,6 +202,35 @@ import Testing
     #expect(read32(try mmio.read(offset: 0x310, byteCount: 4)) == 1 << 24)
     #expect(read32(try mmio.read(offset: 0x300, byteCount: 4)) == 6 << 8 | 8)
     #expect(controller.drainEvents() == [.startup(apicID: 1, vector: 8)])
+  }
+}
+
+private final class PendingWorkProbe: @unchecked Sendable {
+  private let lock = NSLock()
+  private var recordedAPICIDs: [UInt32] = []
+  private var recordedSnapshots: [DoryPCProcessorTopologySnapshot] = []
+  var controller: DoryPCMultiprocessorController?
+
+  var notifiedAPICIDs: [UInt32] {
+    lock.withLock { recordedAPICIDs }
+  }
+
+  var snapshots: [DoryPCProcessorTopologySnapshot] {
+    lock.withLock { recordedSnapshots }
+  }
+
+  func record(apicID: UInt32, snapshot: DoryPCProcessorTopologySnapshot? = nil) {
+    lock.withLock {
+      recordedAPICIDs.append(apicID)
+      if let snapshot { recordedSnapshots.append(snapshot) }
+    }
+  }
+
+  func takeNotifiedAPICIDs() -> [UInt32] {
+    lock.withLock {
+      defer { recordedAPICIDs.removeAll(keepingCapacity: true) }
+      return recordedAPICIDs
+    }
   }
 }
 

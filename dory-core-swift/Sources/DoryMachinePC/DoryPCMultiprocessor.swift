@@ -29,10 +29,14 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
 
   private let lock = NSLock()
   private let apicsByID: [UInt32: DoryPCLocalAPIC]
+  private let onPendingWork: (@Sendable (UInt32) -> Void)?
   private var lifecycles: [UInt32: DoryPCProcessorLifecycle]
   private var pendingEvents: [DoryPCProcessorEvent] = []
 
-  public init(localAPICs: [DoryPCLocalAPIC]) throws {
+  public init(
+    localAPICs: [DoryPCLocalAPIC],
+    onPendingWork: (@Sendable (UInt32) -> Void)? = nil
+  ) throws {
     guard !localAPICs.isEmpty else { throw DoryPCMultiprocessorError.emptyTopology }
     var byID: [UInt32: DoryPCLocalAPIC] = [:]
     for apic in localAPICs {
@@ -42,6 +46,7 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
     }
     self.localAPICs = localAPICs
     apicsByID = byID
+    self.onPendingWork = onPendingWork
     lifecycles = Dictionary(
       uniqueKeysWithValues: localAPICs.map {
         ($0.apicID, $0.apicID == localAPICs[0].apicID ? .running : .waitingForStartup)
@@ -61,27 +66,39 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
         try target.inject(vector: vector)
       }
     case 4:
-      lock.withLock {
+      let notifiedTargets = lock.withLock {
+        var admittedTargets: [UInt32] = []
         for target in targets where lifecycles[target.apicID] == .running {
           pendingEvents.append(.nonMaskableInterrupt(apicID: target.apicID))
+          admittedTargets.append(target.apicID)
         }
+        return admittedTargets
       }
+      if let onPendingWork { notifiedTargets.forEach(onPendingWork) }
     case 5:
       // An INIT deassert command completes the electrical handshake but does not reset twice.
       guard low & (1 << 14) != 0 || low & (1 << 15) == 0 else { return }
-      lock.withLock {
+      let notifiedTargets = lock.withLock {
+        var admittedTargets: [UInt32] = []
         for target in targets {
           lifecycles[target.apicID] = .waitingForStartup
           pendingEvents.append(.initialize(apicID: target.apicID))
+          admittedTargets.append(target.apicID)
         }
+        return admittedTargets
       }
+      if let onPendingWork { notifiedTargets.forEach(onPendingWork) }
     case 6:
-      lock.withLock {
+      let notifiedTargets = lock.withLock {
+        var admittedTargets: [UInt32] = []
         for target in targets where lifecycles[target.apicID] == .waitingForStartup {
           lifecycles[target.apicID] = .running
           pendingEvents.append(.startup(apicID: target.apicID, vector: vector))
+          admittedTargets.append(target.apicID)
         }
+        return admittedTargets
       }
+      if let onPendingWork { notifiedTargets.forEach(onPendingWork) }
     default:
       throw DoryPCMultiprocessorError.invalidDeliveryMode(deliveryMode)
     }

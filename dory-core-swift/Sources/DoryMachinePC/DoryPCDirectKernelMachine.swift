@@ -791,7 +791,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       )
     }
     localAPIC = localAPICs[0]
-    multiprocessorController = try .init(localAPICs: localAPICs)
+    multiprocessorController = try .init(
+      localAPICs: localAPICs,
+      onPendingWork: { requestPendingWorkForProcessor(Int($0)) }
+    )
     ioAPIC = DoryPCIOAPIC()
     for apic in localAPICs { try ioAPIC.attach(apic) }
     ioAPIC.seal()
