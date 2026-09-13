@@ -57,6 +57,35 @@ import Testing
     #expect(sink.events == [.init(type: 0x11, code: 0, value: 1)])
   }
 
+  // P2-15: relative pointer motion and wheel events are delivered through the same
+  // transport-neutral event pipeline. REL_X (0), REL_Y (1), REL_HWHEEL (6), and
+  // REL_WHEEL (8) are advertised in the relative pointer descriptor.
+  @Test func deliversRelativePointerMotionAndWheelEvents() throws {
+    let device = try DoryVirtioInputDevice(descriptor: .relativePointer())
+    let memory = InputGuestMemory(byteCount: 0x1000)
+
+    // Verify the relative pointer advertises REL_X, REL_Y, REL_HWHEEL, REL_WHEEL.
+    let relBits = device.configuration(select: 0x11, subselect: 2)
+    // Payload starts at offset 8; bitmap covers bits 0-8 (2 bytes).
+    #expect(relBits[2] == 2)  // payload size
+    #expect(relBits[8] & 1 != 0)  // REL_X (bit 0)
+    #expect(relBits[8] & (1 << 1) != 0)  // REL_Y (bit 1)
+    #expect(relBits[8] & (1 << 6) != 0)  // REL_HWHEEL (bit 6)
+    #expect(relBits[9] & 1 != 0)  // REL_WHEEL (bit 8)
+
+    // Deliver motion + wheel events.
+    #expect(device.enqueueSynchronized([
+      .init(type: 2, code: 0, value: 10),   // REL_X = 10
+      .init(type: 2, code: 1, value: UInt32(bitPattern: -5)),   // REL_Y = -5
+      .init(type: 2, code: 8, value: 1),    // REL_WHEEL = 1
+    ]))
+    #expect(device.pendingEventCount == 4)  // 3 events + SYN
+
+    let first = try device.processEvent(writableChain(at: 0x100), memory: memory)
+    #expect(first == 8)
+    #expect(try memory.read(at: 0x100, byteCount: 8) == event(type: 2, code: 0, value: 10))
+  }
+
   private func writableChain(at address: UInt64) -> DoryVirtioDescriptorChain {
     .init(
       headIndex: 0,
