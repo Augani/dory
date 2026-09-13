@@ -651,6 +651,27 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
         signalConfigurationChange()
         return false
       }
+      // Preflight: validate every writable target that will receive response bytes
+      // before the first guest-memory write. A later invalid/revoked target must
+      // not leave an earlier target partially written; on failure publish no
+      // response bytes and no used-ring completion, leaving the queue usable for
+      // a later retry/control path.
+      var preflightOffset = 0
+      for descriptor in chain.descriptors where descriptor.deviceWillWrite
+        && preflightOffset < response.count
+      {
+        let count = min(Int(descriptor.length), response.count - preflightOffset)
+        do {
+          try memory.validate(
+            at: descriptor.address,
+            byteCount: count,
+            deviceWillWrite: true
+          )
+        } catch {
+          return false
+        }
+        preflightOffset += count
+      }
       var responseOffset = 0
       for descriptor in chain.descriptors where descriptor.deviceWillWrite
         && responseOffset < response.count

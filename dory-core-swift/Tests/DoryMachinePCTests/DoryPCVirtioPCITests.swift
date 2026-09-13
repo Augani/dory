@@ -386,6 +386,78 @@ import Testing
     #expect(!(try function.transport.queueSnapshot(at: 0).enabled))
   }
 
+  @Test func deferredCompletionPreflightLeavesEarlyTargetUntouchedWhenLaterTargetIsRevoked()
+    throws
+  {
+    let function = try makeFunction()
+    let memory = RevokingVirtioGuestMemory(byteCount: 0x20_000)
+    let completions = DeferredCompletionRecorder()
+    function.transport.connectDeferredQueueProcessor(memory: memory) { _, _, _, completion in
+      completions.append(completion)
+    }
+
+    try function.transport.writeBAR(offset: 0x08, bytes: littleEndian(UInt32(1)))
+    try function.transport.writeBAR(offset: 0x0C, bytes: littleEndian(UInt32(1)))
+    try function.transport.writeBAR(offset: 0x14, bytes: [0x0F])
+    try function.transport.writeBAR(offset: 0x16, bytes: littleEndian(UInt16(0)))
+    try function.transport.writeBAR(offset: 0x18, bytes: littleEndian(UInt16(8)))
+    try function.transport.writeBAR(offset: 0x20, bytes: littleEndian(UInt64(0x1000)))
+    try function.transport.writeBAR(offset: 0x28, bytes: littleEndian(UInt64(0x2000)))
+    try function.transport.writeBAR(offset: 0x30, bytes: littleEndian(UInt64(0x3000)))
+    try function.transport.writeBAR(offset: 0x1C, bytes: littleEndian(UInt16(1)))
+
+    // Chain head 0: a readable request at 0x4000 followed by two writable
+    // response targets, early at 0x5000 and later at 0x6000. Every target
+    // validates when the chain is popped.
+    try memory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(1)) + littleEndian(UInt16(1))
+        + littleEndian(UInt64(0x5000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(2)) + littleEndian(UInt16(2))
+        + littleEndian(UInt64(0x6000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
+    )
+    try memory.write(at: 0x4000, bytes: [1, 2, 3, 4])
+    try memory.write(at: 0x5000, bytes: [0, 0, 0, 0])
+    try memory.write(at: 0x6000, bytes: [0, 0, 0, 0])
+    try memory.write(at: 0x2004, bytes: littleEndian(UInt16(0)))
+    try memory.write(at: 0x2002, bytes: littleEndian(UInt16(1)))
+    try function.transport.writeBAR(offset: 0x100, bytes: littleEndian(UInt16(0)))
+    let failed = try #require(completions.removeFirst())
+
+    // Revoke the later writable target only after the chain was popped. The
+    // early target stays valid; only the later target is now unmapped for writes.
+    memory.revokeWrite(at: 0x6000, byteCount: 4)
+
+    // A response spanning both writable targets must publish nothing: the early
+    // target is untouched and the used ring stays uncompleted, with no reset.
+    #expect(!failed.publish([9, 8, 7, 6, 5, 4, 3, 2]))
+    #expect(try memory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try memory.read(at: 0x6000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try readUsedIndex(memory) == 0)
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+
+    // A valid retry/control path on the same queue still publishes exactly once.
+    try memory.write(
+      at: 0x1010,
+      bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(1)) + littleEndian(UInt16(3))
+    )
+    try memory.write(
+      at: 0x1030,
+      bytes: littleEndian(UInt64(0x5000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
+    )
+    try memory.write(at: 0x2006, bytes: littleEndian(UInt16(1)))
+    try memory.write(at: 0x2002, bytes: littleEndian(UInt16(2)))
+    try function.transport.writeBAR(offset: 0x100, bytes: littleEndian(UInt16(0)))
+    let retry = try #require(completions.removeFirst())
+    #expect(retry.publish([9, 8, 7, 6]))
+    #expect(try memory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 6])
+    #expect(try readUsedIndex(memory) == 1)
+  }
+
   private func configureSingleDescriptorQueue(
     _ machine: DoryPCDirectKernelMachine,
     bar: UInt64
@@ -445,6 +517,11 @@ import Testing
 
   private func read16(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) throws -> UInt16 {
     let bytes = try machine.physicalMemory.read(at: address, byteCount: 2)
+    return UInt16(bytes[0]) | UInt16(bytes[1]) << 8
+  }
+
+  private func readUsedIndex(_ memory: any DoryVirtioGuestMemory) throws -> UInt16 {
+    let bytes = try memory.read(at: 0x3002, byteCount: 2)
     return UInt16(bytes[0]) | UInt16(bytes[1]) << 8
   }
 
@@ -580,4 +657,55 @@ private final class BlockingVirtioGuestMemory: DoryVirtioGuestMemory, @unchecked
   }
 
   func releaseBlockedWrite() { blockedWriteRelease.signal() }
+}
+
+/// A guest-memory backing that can revoke a writable target after a chain has
+/// been popped, simulating a mapping revocation between pop and deferred
+/// completion. Reads always succeed; only device-writes into a revoked range
+/// fail validation.
+private final class RevokingVirtioGuestMemory: DoryVirtioGuestMemory, @unchecked Sendable {
+  private let lock = NSLock()
+  private var bytes: [UInt8]
+  private var revokedWriteRanges: [(address: UInt64, byteCount: Int)] = []
+
+  init(byteCount: Int) {
+    bytes = .init(repeating: 0, count: byteCount)
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    try validate(at: address, byteCount: byteCount, deviceWillWrite: false)
+    return lock.withLock {
+      let offset = Int(address)
+      return Array(bytes[offset..<(offset + byteCount)])
+    }
+  }
+
+  func validate(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
+    let (_, overflow) = address.addingReportingOverflow(UInt64(byteCount))
+    guard byteCount >= 0, !overflow, address + UInt64(byteCount) <= UInt64(bytes.count) else {
+      throw DoryVirtioQueueError.guestAddressOverflow(address: address, offset: UInt64(byteCount))
+    }
+    guard deviceWillWrite else { return }
+    for range in revokedWriteRanges {
+      if address < range.address + UInt64(range.byteCount),
+        address + UInt64(byteCount) > range.address
+      {
+        throw DoryVirtioQueueError.guestAddressOverflow(address: address, offset: UInt64(byteCount))
+      }
+    }
+  }
+
+  func write(at address: UInt64, bytes newBytes: [UInt8]) throws {
+    try validate(at: address, byteCount: newBytes.count, deviceWillWrite: true)
+    lock.withLock {
+      let offset = Int(address)
+      bytes.replaceSubrange(offset..<(offset + newBytes.count), with: newBytes)
+    }
+  }
+
+  func synchronize() {}
+
+  func revokeWrite(at address: UInt64, byteCount: Int) {
+    lock.withLock { revokedWriteRanges.append((address, byteCount)) }
+  }
 }
