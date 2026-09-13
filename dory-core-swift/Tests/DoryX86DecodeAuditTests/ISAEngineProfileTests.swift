@@ -643,7 +643,10 @@ import Testing
       negativeCacheHits: 80, negativeCacheMisses: 20, pendingWorkExits: 100)
   }
 
-  private func makeReceipt(outcome: ISAEngineReceiptOutcome) -> ISAEngineProfileReceipt {
+  private func makeReceipt(
+    outcome: ISAEngineReceiptOutcome,
+    tierEvidence: ISAEngineTierEvidence = .verified(observedTier: .baselineJIT)
+  ) -> ISAEngineProfileReceipt {
     let result: ISAEngineRunResult = switch outcome {
     case .completed: .poweredOff(instructionCount: 1_000_000)
     case .timeout: .wallTimeBudget
@@ -659,7 +662,8 @@ import Testing
       completionCondition: .poweredOff,
       startSample: sample(retired: 0, wallTime: 0), endSample: sample(),
       hostTiming: .init(startNanoseconds: 0, endNanoseconds: 1_000_000_000),
-      result: result)
+      result: result,
+      observedTierEvidence: tierEvidence)
   }
 
   @Test func completedReceiptProducesCostReport() {
@@ -683,6 +687,516 @@ import Testing
   @Test func failedReceiptProducesNoCostReport() {
     let receipt = makeReceipt(outcome: .failed)
     #expect(ISAEngineCostReportGenerator.generate(from: receipt) == nil)
+  }
+
+  @Test func mismatchedTierReceiptProducesNoCostReport() {
+    let receipt = makeReceipt(
+      outcome: .completed,
+      tierEvidence: .mismatch(declaredTier: "Tier1-direct-only", observedTier: .interpreter))
+    #expect(receipt.isCompleted)
+    #expect(!receipt.isProvenanceVerified)
+    #expect(ISAEngineCostReportGenerator.generate(from: receipt) == nil)
+  }
+
+  @Test func unverifiedTierReceiptProducesNoCostReport() {
+    let receipt = makeReceipt(outcome: .completed, tierEvidence: .unverified)
+    #expect(receipt.isCompleted)
+    #expect(!receipt.isProvenanceVerified)
+    #expect(ISAEngineCostReportGenerator.generate(from: receipt) == nil)
+  }
+}
+
+// MARK: - P2-05 per-run delta evidence
+
+@Suite struct ISAEngineRunDeltaTests {
+  private let configuration = ISAEngineProfileConfiguration(
+    tier: "Tier1-direct-only", cpuProfile: "compatibleV1",
+    schedulingMode: "serialized", firmwareVersion: "v1",
+    kernelInitrdDiskHash: String(repeating: "a", count: 64))
+
+  private func sample(
+    retired: UInt64 = 0, cacheHits: UInt64 = 0, cacheMisses: UInt64 = 0,
+    helperCalls: UInt64 = 0, lazyFlags: UInt64 = 0,
+    chainAttempts: UInt64 = 0, chainAccepts: UInt64 = 0,
+    pendingExits: UInt64 = 0, wallTime: UInt64 = 0
+  ) -> ISAEngineProfileSample {
+    ISAEngineProfileSample(
+      configuration: configuration,
+      workloadName: "w", workloadRevision: "r",
+      wallTimeNanoseconds: wallTime, retiredGuestInstructions: retired,
+      compilationTimeNanoseconds: 0, compilationAttempts: 0, compilationDeclines: 0,
+      translationCacheEntryCount: 0, translationCacheAllocatedBytes: 0,
+      translationCacheMaximumBytes: 128 * 1024 * 1024,
+      translationCacheHits: cacheHits, translationCacheMisses: cacheMisses,
+      translationCacheInvalidations: 0,
+      tier1DeclineInterpreterHelper: 0, tier1DeclineNativeEmitter: 0,
+      tier1CompiledBlocks: 0, tier1CompilationAttempts: 0, tier1CompilationDeclines: 0,
+      nativeDispatcherEntries: 0, directlyChainedBlocks: 0,
+      chainTargetAttempts: chainAttempts, chainTargetAccepts: chainAccepts,
+      indirectBranchTargetCacheHits: 0, indirectBranchTargetCacheMisses: 0,
+      shadowReturnStackHits: 0, shadowReturnStackMisses: 0,
+      helperCalls: helperCalls, memoryFaultSlowPaths: 0,
+      lazyFlagMaterializations: lazyFlags,
+      codeCacheWraps: 0, codeCacheEvictedBlocks: 0,
+      negativeCacheHits: 0, negativeCacheMisses: 0, pendingWorkExits: pendingExits)
+  }
+
+  @Test func runSampleSubtractsStartFromEnd() {
+    let receipt = ISAEngineProfileReceipt(
+      configuration: configuration,
+      workloadName: "w", workloadRevision: "r",
+      completionCondition: .instructionBudget(instructionCount: 100),
+      outcome: .completed,
+      startSample: sample(retired: 1000, cacheHits: 500, cacheMisses: 200,
+                          helperCalls: 50, chainAttempts: 100, chainAccepts: 80,
+                          pendingExits: 30),
+      endSample: sample(retired: 1500, cacheHits: 700, cacheMisses: 350,
+                        helperCalls: 70, chainAttempts: 180, chainAccepts: 150,
+                        pendingExits: 55),
+      hostTiming: .init(startNanoseconds: 1_000_000, endNanoseconds: 5_000_000),
+      stopReason: "instructionBudget(100)",
+      observedTierEvidence: .verified(observedTier: .baselineJIT))
+
+    let delta = receipt.runSample
+    #expect(delta.retiredGuestInstructions == 500)       // 1500 - 1000
+    #expect(delta.translationCacheHits == 200)            // 700 - 500
+    #expect(delta.translationCacheMisses == 150)          // 350 - 200
+    #expect(delta.helperCalls == 20)                      // 70 - 50
+    #expect(delta.chainTargetAttempts == 80)              // 180 - 100
+    #expect(delta.chainTargetAccepts == 70)               // 150 - 80
+    #expect(delta.pendingWorkExits == 25)                 // 55 - 30
+    #expect(delta.wallTimeNanoseconds == 4_000_000)       // host timing, not counter
+  }
+
+  @Test func secondRunDeltaContainsOnlySecondRunCounters() {
+    // Simulate two consecutive runs on the same machine.  The first run
+    // retires 1000 instructions; the second run retires 500 more.  The
+    // second receipt's runSample must contain only the second run's
+    // delta (500), not the cumulative total (1500).
+    let run1End = sample(retired: 1000, cacheHits: 500, cacheMisses: 200,
+                          helperCalls: 50, pendingExits: 30)
+    let run2End = sample(retired: 1500, cacheHits: 700, cacheMisses: 350,
+                          helperCalls: 70, pendingExits: 55)
+
+    let receipt1 = ISAEngineProfileReceipt(
+      configuration: configuration, workloadName: "w", workloadRevision: "r",
+      completionCondition: .instructionBudget(instructionCount: 1000),
+      outcome: .completed,
+      startSample: sample(),  // all zeros
+      endSample: run1End,
+      hostTiming: .init(startNanoseconds: 0, endNanoseconds: 1_000_000),
+      stopReason: "instructionBudget(1000)",
+      observedTierEvidence: .verified(observedTier: .baselineJIT))
+
+    let receipt2 = ISAEngineProfileReceipt(
+      configuration: configuration, workloadName: "w", workloadRevision: "r",
+      completionCondition: .instructionBudget(instructionCount: 500),
+      outcome: .completed,
+      startSample: run1End,  // second run starts where first ended
+      endSample: run2End,
+      hostTiming: .init(startNanoseconds: 1_000_000, endNanoseconds: 2_000_000),
+      stopReason: "instructionBudget(500)",
+      observedTierEvidence: .verified(observedTier: .baselineJIT))
+
+    let delta1 = receipt1.runSample
+    let delta2 = receipt2.runSample
+
+    // First receipt: delta equals the end snapshot (start was zero).
+    #expect(delta1.retiredGuestInstructions == 1000)
+    #expect(delta1.translationCacheHits == 500)
+    #expect(delta1.translationCacheMisses == 200)
+
+    // Second receipt: delta contains only the second run's counters.
+    #expect(delta2.retiredGuestInstructions == 500)       // 1500 - 1000
+    #expect(delta2.translationCacheHits == 200)            // 700 - 500
+    #expect(delta2.translationCacheMisses == 150)          // 350 - 200
+    #expect(delta2.helperCalls == 20)                      // 70 - 50
+    #expect(delta2.pendingWorkExits == 25)                 // 55 - 30
+  }
+
+  @Test func counterRegressionIsRejectedNotUnderflowed() {
+    // If a counter somehow regresses (end < start), the delta must
+    // clamp to 0 rather than underflowing.
+    let receipt = ISAEngineProfileReceipt(
+      configuration: configuration, workloadName: "w", workloadRevision: "r",
+      completionCondition: .instructionBudget(instructionCount: 100),
+      outcome: .completed,
+      startSample: sample(retired: 2000, cacheHits: 1000),
+      endSample: sample(retired: 1500, cacheHits: 800),
+      hostTiming: .init(startNanoseconds: 0, endNanoseconds: 1_000_000),
+      stopReason: "instructionBudget(100)",
+      observedTierEvidence: .verified(observedTier: .baselineJIT))
+
+    #expect(receipt.counterRegressions.contains("retiredGuestInstructions"))
+    #expect(receipt.counterRegressions.contains("translationCacheHits"))
+    #expect(receipt.runSample.retiredGuestInstructions == 0)  // clamped, not underflowed
+    #expect(receipt.runSample.translationCacheHits == 0)
+    #expect(!receipt.isProvenanceVerified)
+    #expect(ISAEngineCostReportGenerator.generate(from: receipt) == nil)
+  }
+}
+
+// MARK: - P2-05 tier evidence
+
+@Suite struct ISAEngineTierEvidenceTests {
+  @Test func verifiedWhenDeclaredTierMatchesObserved() {
+    let evidence = ISAEngineReceiptBuilder.resolveTierEvidence(
+      declaredTier: "Tier1-direct-only", observedTier: .baselineJIT)
+    if case .verified(let tier) = evidence {
+      #expect(tier == .baselineJIT)
+    } else {
+      Issue.record("expected verified")
+    }
+  }
+
+  @Test func mismatchWhenDeclaredTierDoesNotMatchObserved() {
+    let evidence = ISAEngineReceiptBuilder.resolveTierEvidence(
+      declaredTier: "Tier1-direct-only", observedTier: .interpreter)
+    if case .mismatch(let declared, let observed) = evidence {
+      #expect(declared == "Tier1-direct-only")
+      #expect(observed == .interpreter)
+    } else {
+      Issue.record("expected mismatch")
+    }
+  }
+
+  @Test func mismatchForUnknownDeclaredTier() {
+    let evidence = ISAEngineReceiptBuilder.resolveTierEvidence(
+      declaredTier: "unknown-tier", observedTier: .baselineJIT)
+    if case .mismatch = evidence {
+      // ok
+    } else {
+      Issue.record("expected mismatch for unknown tier")
+    }
+  }
+
+  @Test func interpreterTierMapsCorrectly() {
+    let evidence = ISAEngineReceiptBuilder.resolveTierEvidence(
+      declaredTier: "interpreter", observedTier: .interpreter)
+    if case .verified = evidence {
+      // ok
+    } else {
+      Issue.record("expected verified for interpreter")
+    }
+  }
+
+  @Test func tier2MapsToOptimizingJIT() {
+    let evidence = ISAEngineReceiptBuilder.resolveTierEvidence(
+      declaredTier: "Tier2", observedTier: .optimizingJIT)
+    if case .verified = evidence {
+      // ok
+    } else {
+      Issue.record("expected verified for Tier2/optimizingJIT")
+    }
+  }
+}
+
+// MARK: - P2-05 cost report honesty
+
+@Suite struct ISAEngineCostReportHonestyTests {
+  private func sample(
+    wallTime: UInt64 = 1_000_000_000,
+    compilationTime: UInt64 = 100_000_000,
+    cacheMisses: UInt64 = 1000,
+    helperCalls: UInt64 = 5000,
+    lazyFlags: UInt64 = 100
+  ) -> ISAEngineProfileSample {
+    ISAEngineProfileSample(
+      configuration: .init(
+        tier: "Tier1-direct-only", cpuProfile: "compatibleV1",
+        schedulingMode: "serialized", firmwareVersion: "v1",
+        kernelInitrdDiskHash: String(repeating: "a", count: 64)),
+      workloadName: "test", workloadRevision: "rev1",
+      wallTimeNanoseconds: wallTime, retiredGuestInstructions: 1_000_000,
+      compilationTimeNanoseconds: compilationTime,
+      compilationAttempts: 100, compilationDeclines: 10,
+      translationCacheEntryCount: 500,
+      translationCacheAllocatedBytes: 64 * 1024 * 1024,
+      translationCacheMaximumBytes: 128 * 1024 * 1024,
+      translationCacheHits: 9000, translationCacheMisses: cacheMisses,
+      translationCacheInvalidations: 5,
+      tier1DeclineInterpreterHelper: 5, tier1DeclineNativeEmitter: 5,
+      tier1CompiledBlocks: 90, tier1CompilationAttempts: 100,
+      tier1CompilationDeclines: 10,
+      nativeDispatcherEntries: 800, directlyChainedBlocks: 400,
+      chainTargetAttempts: 500, chainTargetAccepts: 400,
+      indirectBranchTargetCacheHits: 300, indirectBranchTargetCacheMisses: 50,
+      shadowReturnStackHits: 200, shadowReturnStackMisses: 10,
+      helperCalls: helperCalls, memoryFaultSlowPaths: 20,
+      lazyFlagMaterializations: lazyFlags,
+      codeCacheWraps: 0, codeCacheEvictedBlocks: 0,
+      negativeCacheHits: 80, negativeCacheMisses: 20, pendingWorkExits: 100)
+  }
+
+  @Test func counterCategoriesHaveZeroNanoseconds() {
+    let report = ISAEngineCostReportGenerator.generate(from: sample())
+
+    // Only measured categories (guestExecution, compilation) should have
+    // non-zero estimatedNanoseconds.  All counter-pressure categories
+    // must have 0 — no fabricated nanosecond attribution.
+    let measuredCategories = report.costCategories.filter { $0.measured }
+    let counterCategories = report.costCategories.filter { !$0.measured }
+
+    #expect(!measuredCategories.isEmpty)
+    #expect(!counterCategories.isEmpty)
+
+    for cat in counterCategories {
+      #expect(cat.estimatedNanoseconds == 0)
+      #expect(cat.fractionOfWallTime == 0)
+    }
+
+    // Measured categories should have non-zero ns (when wall time > 0).
+    for cat in measuredCategories {
+      #expect(cat.measured == true)
+    }
+  }
+
+  @Test func helperCallsNotDoubleCountedWithLazyFlags() {
+    let report = ISAEngineCostReportGenerator.generate(
+      from: sample(helperCalls: 5000, lazyFlags: 100))
+
+    let helperCategory = report.costCategories.first { $0.name == "helperCalls" }
+    #expect(helperCategory != nil)
+    // The evidence should mention lazy flags are tracked separately.
+    #expect(helperCategory!.evidence.contains("not double-counted"))
+    // Counter pressure should be the helper call count, not helper + lazy.
+    #expect(helperCategory!.counterPressure == 5000)
+  }
+
+  @Test func measuredCategoriesRankedBeforeCounterCategories() {
+    let report = ISAEngineCostReportGenerator.generate(from: sample())
+
+    // Measured categories should appear before counter-pressure categories.
+    let firstNonMeasuredIndex = report.costCategories.firstIndex { !$0.measured }
+    let lastMeasuredIndex = report.costCategories.lastIndex { $0.measured }
+    if let firstNonMeasured = firstNonMeasuredIndex, let lastMeasured = lastMeasuredIndex {
+      #expect(lastMeasured < firstNonMeasured)
+    }
+  }
+
+  @Test func insufficiencyStatementWhenFewerThanThreeOpportunities() {
+    // A sample with no cache misses, no code cache churn, no tier1
+    // declines, and no chain issues should produce fewer than 3
+    // opportunities, and the summary should note the insufficiency.
+    let s = ISAEngineProfileSample(
+      configuration: .init(
+        tier: "Tier1-direct-only", cpuProfile: "compatibleV1",
+        schedulingMode: "serialized", firmwareVersion: "v1",
+        kernelInitrdDiskHash: String(repeating: "a", count: 64)),
+      workloadName: "clean", workloadRevision: "rev1",
+      wallTimeNanoseconds: 1_000_000_000, retiredGuestInstructions: 1_000_000,
+      compilationTimeNanoseconds: 100_000_000,
+      compilationAttempts: 100, compilationDeclines: 0,
+      translationCacheEntryCount: 500,
+      translationCacheAllocatedBytes: 64 * 1024 * 1024,
+      translationCacheMaximumBytes: 128 * 1024 * 1024,
+      translationCacheHits: 10000, translationCacheMisses: 0,
+      translationCacheInvalidations: 0,
+      tier1DeclineInterpreterHelper: 0, tier1DeclineNativeEmitter: 0,
+      tier1CompiledBlocks: 100, tier1CompilationAttempts: 100,
+      tier1CompilationDeclines: 0,
+      nativeDispatcherEntries: 800, directlyChainedBlocks: 400,
+      chainTargetAttempts: 500, chainTargetAccepts: 500,
+      indirectBranchTargetCacheHits: 300, indirectBranchTargetCacheMisses: 0,
+      shadowReturnStackHits: 200, shadowReturnStackMisses: 0,
+      helperCalls: 0, memoryFaultSlowPaths: 0,
+      lazyFlagMaterializations: 0,
+      codeCacheWraps: 0, codeCacheEvictedBlocks: 0,
+      negativeCacheHits: 0, negativeCacheMisses: 0, pendingWorkExits: 0)
+
+    let report = ISAEngineCostReportGenerator.generate(from: s)
+    #expect(report.optimizationOpportunities.count < 3)
+    #expect(report.summary.contains("insufficient evidence"))
+  }
+}
+
+// MARK: - P2-05 wall-time timeout semantics
+
+@Suite struct ISAEngineWallTimeTimeoutTests {
+  private let configuration = ISAEngineProfileConfiguration(
+    tier: "Tier1-direct-only", cpuProfile: "compatibleV1",
+    schedulingMode: "serialized", firmwareVersion: "v1",
+    kernelInitrdDiskHash: String(repeating: "a", count: 64))
+
+  @Test func wallTimeBudgetReceiptRecordsQuantumAndBetweenQuanta() {
+    // A wall-time-budget receipt should record the instruction quantum
+    // and that the deadline was observed only between quanta.
+    let receipt = ISAEngineProfileReceipt(
+      configuration: configuration,
+      workloadName: "w", workloadRevision: "r",
+      completionCondition: .wallTimeBudget(seconds: 1),
+      outcome: .timeout,
+      startSample: ISAEngineProfileSample(
+        configuration: configuration, workloadName: "w", workloadRevision: "r",
+        wallTimeNanoseconds: 0, retiredGuestInstructions: 0,
+        compilationTimeNanoseconds: 0, compilationAttempts: 0, compilationDeclines: 0,
+        translationCacheEntryCount: 0, translationCacheAllocatedBytes: 0,
+        translationCacheMaximumBytes: 128 * 1024 * 1024,
+        translationCacheHits: 0, translationCacheMisses: 0, translationCacheInvalidations: 0,
+        tier1DeclineInterpreterHelper: 0, tier1DeclineNativeEmitter: 0,
+        tier1CompiledBlocks: 0, tier1CompilationAttempts: 0, tier1CompilationDeclines: 0,
+        nativeDispatcherEntries: 0, directlyChainedBlocks: 0,
+        chainTargetAttempts: 0, chainTargetAccepts: 0,
+        indirectBranchTargetCacheHits: 0, indirectBranchTargetCacheMisses: 0,
+        shadowReturnStackHits: 0, shadowReturnStackMisses: 0,
+        helperCalls: 0, memoryFaultSlowPaths: 0, lazyFlagMaterializations: 0,
+        codeCacheWraps: 0, codeCacheEvictedBlocks: 0,
+        negativeCacheHits: 0, negativeCacheMisses: 0, pendingWorkExits: 0),
+      endSample: ISAEngineProfileSample(
+        configuration: configuration, workloadName: "w", workloadRevision: "r",
+        wallTimeNanoseconds: 1_000_000_000, retiredGuestInstructions: 5_000_000,
+        compilationTimeNanoseconds: 0, compilationAttempts: 100, compilationDeclines: 5,
+        translationCacheEntryCount: 50, translationCacheAllocatedBytes: 1024,
+        translationCacheMaximumBytes: 128 * 1024 * 1024,
+        translationCacheHits: 400, translationCacheMisses: 100, translationCacheInvalidations: 2,
+        tier1DeclineInterpreterHelper: 5, tier1DeclineNativeEmitter: 5,
+        tier1CompiledBlocks: 90, tier1CompilationAttempts: 100, tier1CompilationDeclines: 10,
+        nativeDispatcherEntries: 800, directlyChainedBlocks: 400,
+        chainTargetAttempts: 500, chainTargetAccepts: 400,
+        indirectBranchTargetCacheHits: 300, indirectBranchTargetCacheMisses: 50,
+        shadowReturnStackHits: 200, shadowReturnStackMisses: 10,
+        helperCalls: 0, memoryFaultSlowPaths: 20, lazyFlagMaterializations: 100,
+        codeCacheWraps: 0, codeCacheEvictedBlocks: 0,
+        negativeCacheHits: 80, negativeCacheMisses: 20, pendingWorkExits: 100),
+      hostTiming: .init(startNanoseconds: 0, endNanoseconds: 1_000_000_000),
+      stopReason: "wallTimeBudget",
+      observedTierEvidence: .verified(observedTier: .baselineJIT),
+      wallTimeInstructionQuantum: 10_000_000,
+      deadlineObservedBetweenQuanta: true)
+
+    #expect(receipt.outcome == .timeout)
+    #expect(!receipt.isCompleted)
+    #expect(receipt.wallTimeInstructionQuantum == 10_000_000)
+    #expect(receipt.deadlineObservedBetweenQuanta == true)
+    // A timeout receipt must not produce a cost report.
+    #expect(ISAEngineCostReportGenerator.generate(from: receipt) == nil)
+  }
+
+  @Test func nonWallTimeReceiptHasNoQuantum() {
+    let receipt = ISAEngineProfileReceipt(
+      configuration: configuration,
+      workloadName: "w", workloadRevision: "r",
+      completionCondition: .instructionBudget(instructionCount: 100),
+      outcome: .completed,
+      startSample: ISAEngineProfileSample(
+        configuration: configuration, workloadName: "w", workloadRevision: "r",
+        wallTimeNanoseconds: 0, retiredGuestInstructions: 0,
+        compilationTimeNanoseconds: 0, compilationAttempts: 0, compilationDeclines: 0,
+        translationCacheEntryCount: 0, translationCacheAllocatedBytes: 0,
+        translationCacheMaximumBytes: 128 * 1024 * 1024,
+        translationCacheHits: 0, translationCacheMisses: 0, translationCacheInvalidations: 0,
+        tier1DeclineInterpreterHelper: 0, tier1DeclineNativeEmitter: 0,
+        tier1CompiledBlocks: 0, tier1CompilationAttempts: 0, tier1CompilationDeclines: 0,
+        nativeDispatcherEntries: 0, directlyChainedBlocks: 0,
+        chainTargetAttempts: 0, chainTargetAccepts: 0,
+        indirectBranchTargetCacheHits: 0, indirectBranchTargetCacheMisses: 0,
+        shadowReturnStackHits: 0, shadowReturnStackMisses: 0,
+        helperCalls: 0, memoryFaultSlowPaths: 0, lazyFlagMaterializations: 0,
+        codeCacheWraps: 0, codeCacheEvictedBlocks: 0,
+        negativeCacheHits: 0, negativeCacheMisses: 0, pendingWorkExits: 0),
+      endSample: ISAEngineProfileSample(
+        configuration: configuration, workloadName: "w", workloadRevision: "r",
+        wallTimeNanoseconds: 1_000_000, retiredGuestInstructions: 100,
+        compilationTimeNanoseconds: 0, compilationAttempts: 10, compilationDeclines: 1,
+        translationCacheEntryCount: 5, translationCacheAllocatedBytes: 512,
+        translationCacheMaximumBytes: 128 * 1024 * 1024,
+        translationCacheHits: 40, translationCacheMisses: 10, translationCacheInvalidations: 0,
+        tier1DeclineInterpreterHelper: 0, tier1DeclineNativeEmitter: 0,
+        tier1CompiledBlocks: 9, tier1CompilationAttempts: 10, tier1CompilationDeclines: 1,
+        nativeDispatcherEntries: 80, directlyChainedBlocks: 40,
+        chainTargetAttempts: 50, chainTargetAccepts: 40,
+        indirectBranchTargetCacheHits: 30, indirectBranchTargetCacheMisses: 5,
+        shadowReturnStackHits: 20, shadowReturnStackMisses: 1,
+        helperCalls: 0, memoryFaultSlowPaths: 2, lazyFlagMaterializations: 10,
+        codeCacheWraps: 0, codeCacheEvictedBlocks: 0,
+        negativeCacheHits: 8, negativeCacheMisses: 2, pendingWorkExits: 10),
+      hostTiming: .init(startNanoseconds: 0, endNanoseconds: 1_000_000),
+      stopReason: "instructionBudget(100)",
+      observedTierEvidence: .verified(observedTier: .baselineJIT))
+
+    #expect(receipt.wallTimeInstructionQuantum == nil)
+    #expect(receipt.deadlineObservedBetweenQuanta == nil)
+  }
+}
+
+// MARK: - P2-05 device/RPC and host diagnostics availability
+
+@Suite struct ISAEngineDiagnosticsAvailabilityTests {
+  @Test func directMachineReceiptMarksDeviceRPCStagesUnavailable() {
+    let receipt = ISAEngineProfileReceipt(
+      configuration: ISAEngineProfileConfiguration(
+        tier: "Tier1-direct-only", cpuProfile: "compatibleV1",
+        schedulingMode: "serialized", firmwareVersion: "v1",
+        kernelInitrdDiskHash: String(repeating: "a", count: 64)),
+      workloadName: "w", workloadRevision: "r",
+      completionCondition: .instructionBudget(instructionCount: 100),
+      outcome: .completed,
+      startSample: ISAEngineProfileSample(
+        configuration: .init(
+          tier: "Tier1-direct-only", cpuProfile: "compatibleV1",
+          schedulingMode: "serialized", firmwareVersion: "v1",
+          kernelInitrdDiskHash: String(repeating: "a", count: 64)),
+        workloadName: "w", workloadRevision: "r",
+        wallTimeNanoseconds: 0, retiredGuestInstructions: 0,
+        compilationTimeNanoseconds: 0, compilationAttempts: 0, compilationDeclines: 0,
+        translationCacheEntryCount: 0, translationCacheAllocatedBytes: 0,
+        translationCacheMaximumBytes: 128 * 1024 * 1024,
+        translationCacheHits: 0, translationCacheMisses: 0, translationCacheInvalidations: 0,
+        tier1DeclineInterpreterHelper: 0, tier1DeclineNativeEmitter: 0,
+        tier1CompiledBlocks: 0, tier1CompilationAttempts: 0, tier1CompilationDeclines: 0,
+        nativeDispatcherEntries: 0, directlyChainedBlocks: 0,
+        chainTargetAttempts: 0, chainTargetAccepts: 0,
+        indirectBranchTargetCacheHits: 0, indirectBranchTargetCacheMisses: 0,
+        shadowReturnStackHits: 0, shadowReturnStackMisses: 0,
+        helperCalls: 0, memoryFaultSlowPaths: 0, lazyFlagMaterializations: 0,
+        codeCacheWraps: 0, codeCacheEvictedBlocks: 0,
+        negativeCacheHits: 0, negativeCacheMisses: 0, pendingWorkExits: 0),
+      endSample: ISAEngineProfileSample(
+        configuration: .init(
+          tier: "Tier1-direct-only", cpuProfile: "compatibleV1",
+          schedulingMode: "serialized", firmwareVersion: "v1",
+          kernelInitrdDiskHash: String(repeating: "a", count: 64)),
+        workloadName: "w", workloadRevision: "r",
+        wallTimeNanoseconds: 1_000_000, retiredGuestInstructions: 100,
+        compilationTimeNanoseconds: 0, compilationAttempts: 10, compilationDeclines: 1,
+        translationCacheEntryCount: 5, translationCacheAllocatedBytes: 512,
+        translationCacheMaximumBytes: 128 * 1024 * 1024,
+        translationCacheHits: 40, translationCacheMisses: 10, translationCacheInvalidations: 0,
+        tier1DeclineInterpreterHelper: 0, tier1DeclineNativeEmitter: 0,
+        tier1CompiledBlocks: 9, tier1CompilationAttempts: 10, tier1CompilationDeclines: 1,
+        nativeDispatcherEntries: 80, directlyChainedBlocks: 40,
+        chainTargetAttempts: 50, chainTargetAccepts: 40,
+        indirectBranchTargetCacheHits: 30, indirectBranchTargetCacheMisses: 5,
+        shadowReturnStackHits: 20, shadowReturnStackMisses: 1,
+        helperCalls: 0, memoryFaultSlowPaths: 2, lazyFlagMaterializations: 10,
+        codeCacheWraps: 0, codeCacheEvictedBlocks: 0,
+        negativeCacheHits: 8, negativeCacheMisses: 2, pendingWorkExits: 10),
+      hostTiming: .init(startNanoseconds: 0, endNanoseconds: 1_000_000),
+      stopReason: "instructionBudget(100)",
+      observedTierEvidence: .verified(observedTier: .baselineJIT),
+      deviceRPCStagesAvailable: false)
+
+    #expect(receipt.deviceRPCStagesAvailable == false)
+  }
+
+  @Test func hostExecutionDiagnosticsSnapshotIsCodable() {
+    let snapshot = ISAEngineHostExecutionDiagnosticsSnapshot(
+      enabled: true, runCalls: 5,
+      wall: .init(
+        totalNanoseconds: 1_000_000, processorEventNanoseconds: 100_000,
+        clockAdvancementNanoseconds: 200_000, interruptDeliveryNanoseconds: 50_000,
+        processorExecutionNanoseconds: 600_000, idleWaitNanoseconds: 50_000),
+      threadCPU: .init(
+        totalNanoseconds: 800_000, processorEventNanoseconds: 80_000,
+        clockAdvancementNanoseconds: 160_000, interruptDeliveryNanoseconds: 40_000,
+        processorExecutionNanoseconds: 480_000, idleWaitNanoseconds: 40_000))
+
+    let data = try! JSONEncoder().encode(snapshot)
+    let decoded = try! JSONDecoder().decode(ISAEngineHostExecutionDiagnosticsSnapshot.self, from: data)
+    #expect(decoded.enabled == true)
+    #expect(decoded.runCalls == 5)
+    #expect(decoded.wall.totalNanoseconds == 1_000_000)
+    #expect(decoded.threadCPU.processorExecutionNanoseconds == 480_000)
   }
 }
 

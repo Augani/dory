@@ -4,29 +4,48 @@ import Foundation
 // P2-05 acceptance: A ranked cost report that explains where time goes
 // and identifies the next three optimizations.
 //
-// The report ranks cost categories by their contribution to total wall time
-// and identifies the top three optimization opportunities based on the
-// measured data. No architecture change is justified solely by a
+// The report distinguishes measured timing components (wall time,
+// compilation time) from counter pressure signals (cache misses, helper
+// calls, chain rejections, etc.).  Only measured timing components carry
+// nanosecond estimates; counter categories expose their raw counts and
+// rates as evidence/ranking signals without fabricated nanosecond
+// attribution.  No architecture change is justified solely by a
 // microbenchmark or an old plan sentence.
 
 /// P2-05 acceptance: A single cost category in the ranked cost report.
 public struct ISAEngineCostCategory: Codable, Sendable, Hashable {
   public let name: String
   public let description: String
+  /// Measured nanosecond estimate.  Only non-zero for categories with
+  /// directly measured timing (wall time, compilation time).  Counter
+  /// pressure categories have this set to 0; their ranking comes from
+  /// ``counterPressure``.
   public let estimatedNanoseconds: UInt64
   public let fractionOfWallTime: Double
   public let evidence: String
+  /// `true` when ``estimatedNanoseconds`` is from a measured timing
+  /// component.  `false` for counter-pressure categories that do not
+  /// have a measured nanosecond cost.
+  public let measured: Bool
+  /// Ranking signal for counter-pressure categories: the raw counter
+  /// magnitude or rate that indicates pressure.  Measured categories
+  /// use 0; the value is never displayed as nanoseconds.
+  public let counterPressure: Double
 
   public init(
     name: String, description: String,
     estimatedNanoseconds: UInt64, fractionOfWallTime: Double,
-    evidence: String
+    evidence: String,
+    measured: Bool = false,
+    counterPressure: Double = 0
   ) {
     self.name = name
     self.description = description
     self.estimatedNanoseconds = estimatedNanoseconds
     self.fractionOfWallTime = fractionOfWallTime
     self.evidence = evidence
+    self.measured = measured
+    self.counterPressure = counterPressure
   }
 }
 
@@ -92,15 +111,20 @@ public struct ISAEngineCostReport: Codable, Sendable, Hashable {
 public enum ISAEngineCostReportGenerator {
   /// Generate a comparable ranked cost report from a live receipt.
   ///
-  /// Returns `nil` unless the receipt's outcome is `.completed`.  A
-  /// partial, timeout, stopped, or failed receipt must not masquerade as
-  /// completed evidence, so it produces no comparable cost report.  When
-  /// the receipt is completed, the report is built from the receipt's live
-  /// end sample (collected at the terminal machine boundary), not from
-  /// hand-assembled test data.
+  /// Returns `nil` unless the receipt is completed **and** its observed
+  /// execution tier matches the declared profile tier
+  /// (``ISAEngineProfileReceipt/isProvenanceVerified``).  A partial,
+  /// timeout, stopped, or failed receipt must not masquerade as
+  /// completed evidence.  A mismatched-tier receipt is unverified and
+  /// also produces no comparable cost report.
+  ///
+  /// When the receipt is completed and provenance-verified, the report
+  /// is built from the receipt's per-run delta sample
+  /// (``ISAEngineProfileReceipt/runSample``), not from the raw
+  /// end-of-run cumulative snapshot.
   public static func generate(from receipt: ISAEngineProfileReceipt) -> ISAEngineCostReport? {
-    guard receipt.isCompleted else { return nil }
-    return generate(from: receipt.endSample)
+    guard receipt.isCompleted, receipt.isProvenanceVerified else { return nil }
+    return generate(from: receipt.runSample)
   }
 
   public static func generate(from sample: ISAEngineProfileSample) -> ISAEngineCostReport {
@@ -126,7 +150,7 @@ public enum ISAEngineCostReportGenerator {
   ) -> [ISAEngineCostCategory] {
     var categories: [ISAEngineCostCategory] = []
 
-    // 1. Guest execution (estimated as wall time minus compilation time)
+    // 1. Guest execution (measured: wall time minus compilation time)
     let guestExecution = wallTime > sample.compilationTimeNanoseconds
       ? wallTime - sample.compilationTimeNanoseconds : 0
     categories.append(.init(
@@ -134,83 +158,98 @@ public enum ISAEngineCostReportGenerator {
       description: "Native guest instruction execution (wall time minus compilation time)",
       estimatedNanoseconds: guestExecution,
       fractionOfWallTime: fraction(guestExecution, wallTime),
-      evidence: "wall=\(wallTime)ns - compilation=\(sample.compilationTimeNanoseconds)ns"))
+      evidence: "wall=\(wallTime)ns - compilation=\(sample.compilationTimeNanoseconds)ns",
+      measured: true))
 
-    // 2. Compilation time
+    // 2. Compilation time (measured)
     categories.append(.init(
       name: "compilation",
       description: "Time spent translating and compiling guest blocks",
       estimatedNanoseconds: sample.compilationTimeNanoseconds,
       fractionOfWallTime: fraction(sample.compilationTimeNanoseconds, wallTime),
-      evidence: "compilationTime=\(sample.compilationTimeNanoseconds)ns, attempts=\(sample.compilationAttempts), declines=\(sample.compilationDeclines)"))
+      evidence: "compilationTime=\(sample.compilationTimeNanoseconds)ns, attempts=\(sample.compilationAttempts), declines=\(sample.compilationDeclines)",
+      measured: true))
 
-    // 3. Translation cache misses (each miss triggers compilation)
-    let cacheMissCost = sample.translationCacheMisses * 1000  // ~1μs per miss estimate
+    // 3. Translation cache misses (counter pressure — no fabricated ns)
     categories.append(.init(
       name: "translationCacheMisses",
-      description: "Translation cache misses triggering recompilation",
-      estimatedNanoseconds: cacheMissCost,
-      fractionOfWallTime: fraction(cacheMissCost, wallTime),
-      evidence: "misses=\(sample.translationCacheMisses), hits=\(sample.translationCacheHits), hitRate=\(String(format: "%.1f%%", sample.translationCacheHitRate * 100))"))
+      description: "Translation cache misses triggering recompilation (counter pressure, not measured time)",
+      estimatedNanoseconds: 0,
+      fractionOfWallTime: 0,
+      evidence: "misses=\(sample.translationCacheMisses), hits=\(sample.translationCacheHits), hitRate=\(String(format: "%.1f%%", sample.translationCacheHitRate * 100))",
+      measured: false,
+      counterPressure: Double(sample.translationCacheMisses)))
 
-    // 4. Code cache churn (evictions and wraps force recompilation)
-    let churnCost = (sample.codeCacheWraps + sample.codeCacheEvictedBlocks) * 2000
+    // 4. Code cache churn (counter pressure — no fabricated ns)
     categories.append(.init(
       name: "codeCacheChurn",
-      description: "Code cache eviction and wrap-around forcing recompilation",
-      estimatedNanoseconds: churnCost,
-      fractionOfWallTime: fraction(churnCost, wallTime),
-      evidence: "wraps=\(sample.codeCacheWraps), evictedBlocks=\(sample.codeCacheEvictedBlocks), occupancy=\(String(format: "%.1f%%", sample.translationCacheOccupancy * 100))"))
+      description: "Code cache eviction and wrap-around forcing recompilation (counter pressure, not measured time)",
+      estimatedNanoseconds: 0,
+      fractionOfWallTime: 0,
+      evidence: "wraps=\(sample.codeCacheWraps), evictedBlocks=\(sample.codeCacheEvictedBlocks), occupancy=\(String(format: "%.1f%%", sample.translationCacheOccupancy * 100))",
+      measured: false,
+      counterPressure: Double(sample.codeCacheWraps + sample.codeCacheEvictedBlocks)))
 
-    // 5. Helper calls and lazy flag materialization
-    let helperCost = (sample.helperCalls + sample.lazyFlagMaterializations) * 500
+    // 5. Helper calls (counter pressure — lazy flags are NOT counted
+    //    as helper calls to avoid double counting)
     categories.append(.init(
       name: "helperCalls",
-      description: "Helper calls and lazy flag materializations",
-      estimatedNanoseconds: helperCost,
-      fractionOfWallTime: fraction(helperCost, wallTime),
-      evidence: "helperCalls=\(sample.helperCalls), lazyFlags=\(sample.lazyFlagMaterializations)"))
+      description: "Helper calls exiting native execution (counter pressure, not measured time). Lazy flag materializations are tracked separately.",
+      estimatedNanoseconds: 0,
+      fractionOfWallTime: 0,
+      evidence: "helperCalls=\(sample.helperCalls), lazyFlagMaterializations=\(sample.lazyFlagMaterializations) (tracked separately, not double-counted)",
+      measured: false,
+      counterPressure: Double(sample.helperCalls)))
 
-    // 6. Memory fault slow paths
-    let faultCost = sample.memoryFaultSlowPaths * 5000
+    // 6. Memory fault slow paths (counter pressure — no fabricated ns)
     categories.append(.init(
       name: "memoryFaultSlowPaths",
-      description: "Memory fault slow-path handling",
-      estimatedNanoseconds: faultCost,
-      fractionOfWallTime: fraction(faultCost, wallTime),
-      evidence: "faults=\(sample.memoryFaultSlowPaths)"))
+      description: "Memory fault slow-path handling (counter pressure, not measured time)",
+      estimatedNanoseconds: 0,
+      fractionOfWallTime: 0,
+      evidence: "faults=\(sample.memoryFaultSlowPaths)",
+      measured: false,
+      counterPressure: Double(sample.memoryFaultSlowPaths)))
 
-    // 7. Chain target rejections (missed chaining opportunities)
+    // 7. Chain target rejections (counter pressure — no fabricated ns)
     let chainRejections = sample.chainTargetAttempts > sample.chainTargetAccepts
       ? sample.chainTargetAttempts - sample.chainTargetAccepts : 0
-    let chainCost = chainRejections * 200
     categories.append(.init(
       name: "chainTargetRejections",
-      description: "Chain target rejections preventing direct block linking",
-      estimatedNanoseconds: chainCost,
-      fractionOfWallTime: fraction(chainCost, wallTime),
-      evidence: "attempts=\(sample.chainTargetAttempts), accepts=\(sample.chainTargetAccepts), rejections=\(chainRejections), acceptRate=\(String(format: "%.1f%%", sample.chainTargetAcceptRate * 100))"))
+      description: "Chain target rejections preventing direct block linking (counter pressure, not measured time)",
+      estimatedNanoseconds: 0,
+      fractionOfWallTime: 0,
+      evidence: "attempts=\(sample.chainTargetAttempts), accepts=\(sample.chainTargetAccepts), rejections=\(chainRejections), acceptRate=\(String(format: "%.1f%%", sample.chainTargetAcceptRate * 100))",
+      measured: false,
+      counterPressure: Double(chainRejections)))
 
-    // 8. Pending work exits
-    let pendingWorkCost = sample.pendingWorkExits * 1000
+    // 8. Pending work exits (counter pressure — no fabricated ns)
     categories.append(.init(
       name: "pendingWorkExits",
-      description: "Exits from native execution to check pending work",
-      estimatedNanoseconds: pendingWorkCost,
-      fractionOfWallTime: fraction(pendingWorkCost, wallTime),
-      evidence: "exits=\(sample.pendingWorkExits)"))
+      description: "Exits from native execution to check pending work (counter pressure, not measured time)",
+      estimatedNanoseconds: 0,
+      fractionOfWallTime: 0,
+      evidence: "exits=\(sample.pendingWorkExits)",
+      measured: false,
+      counterPressure: Double(sample.pendingWorkExits)))
 
-    // 9. Tier1 declines (forms that fell back to interpreter)
-    let tier1DeclineCost = sample.tier1CompilationDeclines * 1500
+    // 9. Tier1 declines (counter pressure — no fabricated ns)
     categories.append(.init(
       name: "tier1Declines",
-      description: "Tier1 compilation declines falling back to interpreter",
-      estimatedNanoseconds: tier1DeclineCost,
-      fractionOfWallTime: fraction(tier1DeclineCost, wallTime),
-      evidence: "attempts=\(sample.tier1CompilationAttempts), declines=\(sample.tier1CompilationDeclines), declineRate=\(String(format: "%.1f%%", sample.tier1DeclineRate * 100))"))
+      description: "Tier1 compilation declines falling back to interpreter (counter pressure, not measured time)",
+      estimatedNanoseconds: 0,
+      fractionOfWallTime: 0,
+      evidence: "attempts=\(sample.tier1CompilationAttempts), declines=\(sample.tier1CompilationDeclines), declineRate=\(String(format: "%.1f%%", sample.tier1DeclineRate * 100))",
+      measured: false,
+      counterPressure: Double(sample.tier1CompilationDeclines)))
 
-    // Sort by estimated nanoseconds descending
-    return categories.sorted { $0.estimatedNanoseconds > $1.estimatedNanoseconds }
+    // Sort: measured categories first (by ns desc), then counter-pressure
+    // categories (by pressure desc).
+    return categories.sorted { a, b in
+      if a.measured != b.measured { return a.measured && !b.measured }
+      if a.measured { return a.estimatedNanoseconds > b.estimatedNanoseconds }
+      return a.counterPressure > b.counterPressure
+    }
   }
 
   private static func identifyOptimizationOpportunities(
@@ -263,7 +302,7 @@ public enum ISAEngineCostReportGenerator {
         measurementPlan: "Identify dominant rejection reasons, relax constraints where safe, measure accept rate"))
     }
 
-    // Opportunity 5: Reduce helper calls
+    // Opportunity 5: Reduce helper calls (helper calls only, not lazy flags)
     if sample.helperCalls > 0 && sample.retiredGuestInstructions > 0 {
       let helperRate = Double(sample.helperCalls) / Double(sample.retiredGuestInstructions)
       if helperRate > 0.01 {
@@ -277,7 +316,9 @@ public enum ISAEngineCostReportGenerator {
       }
     }
 
-    // Return top 3 (P2-05 acceptance: identify the next three optimizations)
+    // Return top 3 (P2-05 acceptance: identify the next three optimizations).
+    // When fewer than 3 are justified, preserve the useful ones and note
+    // the insufficiency in the summary.
     return Array(opportunities.prefix(3))
   }
 
@@ -288,12 +329,15 @@ public enum ISAEngineCostReportGenerator {
   ) -> String {
     let topCategory = categories.first?.name ?? "unknown"
     let topFraction = categories.first.map { String(format: "%.1f%%", $0.fractionOfWallTime * 100) } ?? "0%"
+    let insufficiency = opportunities.count < 3
+      ? " Only \(opportunities.count) optimization(s) identified; insufficient evidence for \(3 - opportunities.count) more."
+      : ""
     return """
     Workload '\(sample.workloadName)' (rev \(sample.workloadRevision)) under \(sample.configuration.tier) \
     retired \(sample.retiredGuestInstructions) instructions in \(sample.wallTimeNanoseconds / 1_000_000)ms \
     (\(String(format: "%.3f", sample.instructionsPerNanosecond * 1000)) ins/ns). \
     Top cost: \(topCategory) at \(topFraction) of wall time. \
-    Next \(opportunities.count) optimization(s) identified.
+    Next \(opportunities.count) optimization(s) identified.\(insufficiency)
     """
   }
 

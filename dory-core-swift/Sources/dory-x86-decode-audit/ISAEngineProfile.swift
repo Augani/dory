@@ -273,7 +273,10 @@ public enum ISAEngineProfiler {
       indirectBranchTargetCacheMisses: diag.indirectBranchTargetCacheMisses,
       shadowReturnStackHits: diag.shadowReturnStackHits,
       shadowReturnStackMisses: diag.shadowReturnStackMisses,
-      helperCalls: diag.lazyFlagMaterializations,  // helper calls include flag materialization
+      // The direct-machine diagnostics API does not expose a separate helper-call
+      // counter; lazy flag materializations are tracked as their own distinct
+      // counter below so they are not double-counted as helper calls.
+      helperCalls: 0,
       memoryFaultSlowPaths: diag.translationCachePageFaults,
       lazyFlagMaterializations: diag.lazyFlagMaterializations,
       codeCacheWraps: diag.codeCacheWraps,
