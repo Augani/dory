@@ -785,15 +785,18 @@ enum VirtioMMIODeviceTree {
           try vcpu.write(HV_REG_X1, 0)
           try vcpu.write(HV_REG_X2, 0)
           try vcpu.write(HV_REG_X3, 0)
+          _ = runLoop(vcpu: vcpu, index: index)
         } else {
-          guard let start = parkUntilStarted(index: index) else { return }
-          try vcpu.write(HV_REG_CPSR, 0x3C5)
-          try vcpu.write(HV_REG_PC, start.entry)
-          try vcpu.write(HV_REG_X0, start.context)
-          teamCondition.withLock { psciCPUState.completeOn(index: index) }
+          while let start = parkUntilStarted(index: index) {
+            try vcpu.write(HV_REG_CPSR, 0x3C5)
+            try vcpu.write(HV_REG_PC, start.entry)
+            try vcpu.write(HV_REG_X0, start.context)
+            teamCondition.withLock { psciCPUState.completeOn(index: index) }
+            // CPU_OFF parks this already-created vCPU so a later CPU_ON can
+            // resume it. Any terminal run-loop outcome exits the host thread.
+            guard runLoop(vcpu: vcpu, index: index) else { return }
+          }
         }
-
-        runLoop(vcpu: vcpu, index: index)
       } catch {
         stopAll(.crash("cpu\(index) failed: \(error)"))
       }
@@ -824,7 +827,9 @@ enum VirtioMMIODeviceTree {
       while secondaryStarts[index] == nil, stopReason == nil {
         teamCondition.wait()
       }
-      return secondaryStarts[index]
+      let start = secondaryStarts[index]
+      secondaryStarts[index] = nil
+      return start
     }
 
     private func stopAll(_ reason: GuestStopReason) {
@@ -871,7 +876,9 @@ enum VirtioMMIODeviceTree {
       return 0
     }
 
-    private func runLoop(vcpu: VCPU, index: Int) {
+    /// Returns true only when a secondary CPU has completed PSCI CPU_OFF and
+    /// must park for a later CPU_ON. All other exits are terminal for this vCPU.
+    private func runLoop(vcpu: VCPU, index: Int) -> Bool {
       // WFI / idle waiting (P2-02 item 5):
       // `hv_vcpu_run` blocks inside Hypervisor.framework when the guest executes WFI; it
       // returns only when an interrupt (SPI, PPI, SGI, or virtual timer) is pending or when
@@ -884,12 +891,12 @@ enum VirtioMMIODeviceTree {
       //     `.canceled` handler below checks `pauseExitRequests` to distinguish pause from stop.
       var mmioRouteCache = MMIORouteCache()
       while true {
-        if stopSignal.isRequested { return }
+        if stopSignal.isRequested { return false }
 
         do {
-          guard try executionPause.enter(participant: index) else { return }
+          guard try executionPause.enter(participant: index) else { return false }
           defer { executionPause.leave(participant: index) }
-          if stopSignal.isRequested { return }
+          if stopSignal.isRequested { return false }
           let event = try vcpu.run()
           switch event {
           case .canceled:
@@ -903,7 +910,7 @@ enum VirtioMMIODeviceTree {
                   "cpu\(index) Hypervisor run was canceled without a stop request"
                 ))
             }
-            return
+            return false
           case .vtimerActivated:
             // With the in-kernel GIC the timer PPI is delivered by the GIC itself; unmask
             // and continue so the vtimer can fire again.
@@ -916,26 +923,21 @@ enum VirtioMMIODeviceTree {
               mmioRouteCache: &mmioRouteCache
             ) {
               if case .cpuOff = stop {
-                // Secondary vCPU requested PSCI CPU_OFF; exit this vCPU's run loop
-                // without stopping the machine.  The primary continues running.
-                // Clear the handle now so stopAll cannot cancel an already-exiting vCPU;
-                // cpuMain's defer owns finishedSecondaries accounting and the join.
-                teamCondition.withLock {
-                  teamHandles[index] = nil
-                  pauseExitRequests.remove(vcpu.handle)
-                }
-                return
+                // The secondary keeps its host thread and VCPU while parked so
+                // a later CPU_ON can consume a new start tuple. Its handle stays
+                // registered for stop/cancel ownership throughout the parked wait.
+                return true
               }
               stopAll(stop)
-              return
+              return false
             }
           case .unknown(let raw):
             stopAll(.crash("unknown exit reason \(raw)"))
-            return
+            return false
           }
         } catch {
           stopAll(.crash("\(error)"))
-          return
+          return false
         }
       }
     }
