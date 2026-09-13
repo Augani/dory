@@ -88,6 +88,115 @@ import Testing
     #expect(read32(try control(device, request: unsupported, memory: memory), 0) == 0x8002)
   }
 
+  @Test func controlPreflightsInvalidLaterOutputBeforeLifecycle() throws {
+    let backend = RecordingSoundBackend()
+    let device = DoryVirtioSoundDevice(backend: backend)
+    let memory = SoundGuestMemory(byteCount: 0x8000)
+    // Configure stream 0 so pcmPrepare would otherwise call backend.prepare.
+    _ = try control(device, request: parameters(streamID: 0), memory: memory)
+    // pcmPrepare request with a split writable response buffer whose second
+    // segment is out of range; preflight must fail before backend.prepare and
+    // before any partial scatter into the earlier valid segment.
+    memory.put(littleEndian(UInt32(0x0102)) + littleEndian(UInt32(0)), at: 0x5000)
+    let chain = DoryVirtioDescriptorChain(
+      headIndex: 0,
+      descriptors: [
+        .init(address: 0x5000, length: 8, flags: 0, next: 1),
+        .init(address: 0x6100, length: 2, flags: 2, next: 2),
+        .init(address: 0x9000, length: 2, flags: 2, next: 0),
+      ],
+      readableByteCount: 8,
+      writableByteCount: 4
+    )
+    #expect(throws: DoryVirtioSoundError.malformedRequest) {
+      _ = try device.processControl(chain, memory: memory)
+    }
+    #expect(backend.prepareCount == 0)
+    #expect(try memory.read(at: 0x6100, byteCount: 2) == [0, 0])
+  }
+
+  @Test func transmitPreflightsInvalidLaterStatusBeforePlay() throws {
+    let backend = RecordingSoundBackend()
+    let device = DoryVirtioSoundDevice(backend: backend)
+    let memory = SoundGuestMemory(byteCount: 0x8000)
+    _ = try control(device, request: parameters(streamID: 0), memory: memory)
+    _ = try control(device, request: pcmCommand(0x0102, streamID: 0), memory: memory)
+    let pcm = [UInt8](repeating: 0x5A, count: 16)
+    memory.put(littleEndian(UInt32(0)) + pcm, at: 0x1000)
+    // Status output split across two writable segments; the second is out of
+    // range. Preflight must fail before backend.play and before any status DMA.
+    let chain = DoryVirtioDescriptorChain(
+      headIndex: 0,
+      descriptors: [
+        .init(address: 0x1000, length: 20, flags: 0, next: 1),
+        .init(address: 0x2000, length: 4, flags: 2, next: 2),
+        .init(address: 0x9000, length: 4, flags: 2, next: 0),
+      ],
+      readableByteCount: 20,
+      writableByteCount: 8
+    )
+    #expect(throws: DoryVirtioSoundError.malformedRequest) {
+      _ = try device.processTransmit(chain, memory: memory)
+    }
+    #expect(backend.playCount == 0)
+    #expect(try memory.read(at: 0x2000, byteCount: 4) == [0, 0, 0, 0])
+  }
+
+  @Test func receivePreflightsInvalidLaterAudioBeforeCapture() throws {
+    let backend = RecordingSoundBackend()
+    backend.enqueueCapture(Array(0..<16))
+    let device = DoryVirtioSoundDevice(backend: backend)
+    let memory = SoundGuestMemory(byteCount: 0x8000)
+    _ = try control(device, request: parameters(streamID: 1), memory: memory)
+    _ = try control(device, request: pcmCommand(0x0102, streamID: 1), memory: memory)
+    _ = try control(device, request: pcmCommand(0x0104, streamID: 1), memory: memory)
+    memory.put(littleEndian(UInt32(1)), at: 0x1000)
+    // Audio output split across two writable segments; the second audio segment
+    // is out of range. Preflight must fail before backend.capture consumes any
+    // bytes and before any audio/status DMA.
+    let chain = DoryVirtioDescriptorChain(
+      headIndex: 0,
+      descriptors: [
+        .init(address: 0x1000, length: 4, flags: 0, next: 1),
+        .init(address: 0x3000, length: 8, flags: 2, next: 2),
+        .init(address: 0x9000, length: 8, flags: 2, next: 3),
+        .init(address: 0x4000, length: 8, flags: 2, next: 0),
+      ],
+      readableByteCount: 4,
+      writableByteCount: 24
+    )
+    #expect(throws: DoryVirtioSoundError.malformedRequest) {
+      _ = try device.processReceive(chain, memory: memory)
+    }
+    #expect(backend.captureCount == 0)
+    #expect(try memory.read(at: 0x3000, byteCount: 8) == [UInt8](repeating: 0, count: 8))
+    #expect(try memory.read(at: 0x4000, byteCount: 8) == [UInt8](repeating: 0, count: 8))
+  }
+
+  @Test func eventPreflightsInvalidLaterOutputAndRetainsEvent() throws {
+    let backend = DoryVirtioInMemorySoundBackend()
+    let device = DoryVirtioSoundDevice(backend: backend)
+    let memory = SoundGuestMemory(byteCount: 0x8000)
+    _ = device.enqueueEvent(DoryVirtioSoundEvent(code: 0x10, data: 0x20))
+    // Event output split across two writable segments; the second is out of
+    // range. Preflight must fail before any partial scatter and the event must
+    // remain pending for a later (valid) dequeue.
+    let chain = DoryVirtioDescriptorChain(
+      headIndex: 0,
+      descriptors: [
+        .init(address: 0x6000, length: 4, flags: 2, next: 1),
+        .init(address: 0x9000, length: 4, flags: 2, next: 0),
+      ],
+      readableByteCount: 0,
+      writableByteCount: 8
+    )
+    #expect(throws: DoryVirtioSoundError.malformedRequest) {
+      _ = try device.processEvent(chain, memory: memory)
+    }
+    #expect(device.pendingEventCount == 1)
+    #expect(try memory.read(at: 0x6000, byteCount: 4) == [0, 0, 0, 0])
+  }
+
   private func control(
     _ device: DoryVirtioSoundDevice,
     request: [UInt8],
@@ -135,6 +244,37 @@ private final class Signed16SoundBackend: DoryVirtioSoundBackend,
   func play(streamID: UInt32, pcmBytes: [UInt8]) throws {}
   func capture(streamID: UInt32, byteCount: Int) throws -> [UInt8] {
     [UInt8](repeating: 0, count: byteCount)
+  }
+}
+
+private final class RecordingSoundBackend: DoryVirtioSoundBackend, @unchecked Sendable {
+  var configureCount = 0
+  var prepareCount = 0
+  var startCount = 0
+  var stopCount = 0
+  var releaseCount = 0
+  var playCount = 0
+  var captureCount = 0
+  private var captureBytes: [UInt8] = []
+
+  func enqueueCapture(_ bytes: [UInt8]) { captureBytes += bytes }
+
+  func configure(
+    streamID: UInt32,
+    direction: DoryVirtioSoundDirection,
+    parameters: DoryVirtioSoundPCMParameters
+  ) throws { configureCount += 1 }
+  func prepare(streamID: UInt32) throws { prepareCount += 1 }
+  func start(streamID: UInt32) throws { startCount += 1 }
+  func stop(streamID: UInt32) throws { stopCount += 1 }
+  func release(streamID: UInt32) throws { releaseCount += 1 }
+  func play(streamID: UInt32, pcmBytes: [UInt8]) throws { playCount += 1 }
+  func capture(streamID: UInt32, byteCount: Int) throws -> [UInt8] {
+    captureCount += 1
+    let count = min(byteCount, captureBytes.count)
+    let result = Array(captureBytes.prefix(count))
+    captureBytes.removeFirst(count)
+    return result + [UInt8](repeating: 0, count: byteCount - count)
   }
 }
 

@@ -197,6 +197,10 @@ public final class DoryVirtioSoundDevice: @unchecked Sendable {
     memory: any DoryVirtioGuestMemory
   ) throws -> UInt32 {
     let (readable, writable) = try split(chain)
+    // Preflight every guest-writable response segment before any lifecycle or
+    // configuration backend call so a malformed later output range cannot leave
+    // backend state changed with an unacknowledged request or partial DMA.
+    try preflightWritable(writable, memory: memory)
     let request = try gather(readable, memory: memory)
     guard request.count >= 4 else { throw DoryVirtioSoundError.malformedRequest }
     let response: [UInt8]
@@ -232,6 +236,9 @@ public final class DoryVirtioSoundDevice: @unchecked Sendable {
     guard let event = lock.withLock({ pendingEvents.first }) else {
       throw DoryVirtioSoundError.noPendingEvent
     }
+    // Preflight every event output segment before scattering so a malformed
+    // later range cannot partially deliver an event and the dequeue is retained.
+    try preflightWritable(chain.descriptors, memory: memory)
     try scatter(
       littleEndian(event.code) + littleEndian(event.data),
       into: chain.descriptors,
@@ -248,6 +255,10 @@ public final class DoryVirtioSoundDevice: @unchecked Sendable {
     memory: any DoryVirtioGuestMemory
   ) throws -> UInt32 {
     let (readable, writable) = try split(chain)
+    // Preflight the status output segment before playback so a malformed
+    // writable range cannot trigger backend.play with no place to ack the
+    // request, and cannot partially scatter a status after a play side effect.
+    try preflightWritable(writable, memory: memory)
     let request = try gather(readable, memory: memory)
     guard request.count >= 4 else { throw DoryVirtioSoundError.malformedRequest }
     let streamID = read32(request, 0)
@@ -279,6 +290,10 @@ public final class DoryVirtioSoundDevice: @unchecked Sendable {
     let state = lifecycle(streamID)
     let audioDescriptors = Array(chain.descriptors.dropFirst().dropLast())
     let audioBytes = audioDescriptors.reduce(0) { $0 + Int($1.length) }
+    // Preflight every audio output segment and the trailing status segment
+    // before backend.capture so a malformed later range cannot consume capture
+    // bytes or partially DMA audio with no complete status acknowledgement.
+    try preflightWritable(audioDescriptors + [statusDescriptor], memory: memory)
     guard streamID == 1, let parameters = state.parameters, isTransferReady(state),
       audioBytes > 0, audioBytes % parameters.frameBytes == 0
     else {
@@ -473,6 +488,23 @@ public final class DoryVirtioSoundDevice: @unchecked Sendable {
       throw DoryVirtioSoundError.invalidDescriptorDirection
     }
     return (Array(readable), Array(writable))
+  }
+
+  /// Validates every guest-writable descriptor segment up front, before any
+  /// backend side effect or scatter, so a malformed later output range fails
+  /// the whole request atomically instead of after a partial write or a
+  /// consumed lifecycle/play/capture action.
+  private func preflightWritable(
+    _ descriptors: [DoryVirtioDescriptor],
+    memory: any DoryVirtioGuestMemory
+  ) throws {
+    for descriptor in descriptors where descriptor.deviceWillWrite {
+      try memory.validate(
+        at: descriptor.address,
+        byteCount: Int(descriptor.length),
+        deviceWillWrite: true
+      )
+    }
   }
 
   private func gather(
