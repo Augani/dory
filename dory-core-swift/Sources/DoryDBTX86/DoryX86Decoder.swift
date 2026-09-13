@@ -2151,16 +2151,30 @@ public struct DoryX86Decoder: Sendable {
         .register(target, width: prefixes.rex?.w == true ? .quadword : .doubleword)
       )
     case 0x38:
-      // Three-byte opcode map 0F 38 (SSSE3/SSE4.1). Only the 66-prefixed 128-bit
-      // XMM forms are decoded here; other mandatory prefixes are reserved.
-      guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
-        throw DoryX86DecodeError.unsupportedOpcode(
-          address: address, bytes: cursor.consumedBytes)
-      }
+      // Three-byte opcode map 0F 38. MOVBE (F0/F1) is decoded here regardless of
+      // the 66 prefix; the SSSE3/SSE4.1 forms below require the 66 prefix.
       let third = try cursor.readByte()
-      let operands = try decodeModRM(
-        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-      switch third {
+      if third == 0xF0 || third == 0xF1 {
+        // MOVBE: load (F0) or store (F1) with byte-swap. The 66 prefix selects
+        // 16-bit operands; REX.W selects 64-bit. Register-to-register is #UD.
+        let operands = try decodeModRM(
+          cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+        guard case .memory(let memory) = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "MOVBE requires a memory operand")
+        }
+        operation = .moveByteSwapped(
+          register: operands.reg, memory: memory, load: third == 0xF0)
+      } else {
+        // SSSE3/SSE4.1: only the 66-prefixed 128-bit XMM forms are decoded here;
+        // other mandatory prefixes are reserved.
+        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.unsupportedOpcode(
+            address: address, bytes: cursor.consumedBytes)
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        switch third {
       case 0x00:
         operation = .shufflePackedBytes(
           destination: vectorRegister(operands.reg), source: vectorOperand(operands.rm))
@@ -2195,6 +2209,7 @@ public struct DoryX86Decoder: Sendable {
       default:
         throw DoryX86DecodeError.unsupportedOpcode(
           address: address, bytes: cursor.consumedBytes)
+      }
       }
     case 0x3A:
       // Three-byte opcode map 0F 3A (SSSE3/SSE4 immediate forms). 66-prefixed

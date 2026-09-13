@@ -136,7 +136,7 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
   /// them through the public construction boundary.
   private static let unqualifiedSIMDAndExtendedStateFeatures: Set<DoryX86Feature> = [
     .sse3, .ssse3, .sse41, .sse42, .xsave, .osxsave, .avx, .avx2,
-    .f16c, .fma, .bmi1, .bmi2, .lzcnt, .movbe,
+    .f16c, .fma, .bmi1, .bmi2, .lzcnt,
   ]
 
   /// No entropy instruction may be selected through a public or persisted

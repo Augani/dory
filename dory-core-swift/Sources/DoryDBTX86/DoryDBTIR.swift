@@ -574,6 +574,10 @@ public struct DoryX86IRTranslator: Sendable {
       )
     case .byteSwap(let target):
       return ([.byteSwap(operand(target))], nil)
+    case .moveByteSwapped:
+      // MOVBE combines a memory access with a byte-swap. The interpreter handles
+      // the precise load/store and swap semantics; native tiers decline for now.
+      return fallback(instruction, reason: .interpreter)
     case .push(let source) where mode == .long64:
       return (
         [

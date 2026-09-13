@@ -53,9 +53,11 @@ import Testing
   }
 
   @Test func v3IdentitiesRemainMaskedAcrossPublicAndPersistedBoundaries() throws {
-    let additions: Set<DoryX86Feature> = [.f16c, .fma, .bmi1, .bmi2, .lzcnt, .movbe]
-    let requested = DoryX86CPUProfile.compatibleV1.features.union(additions)
-      .union([.xsave, .avx])
+    // MOVBE is now a qualified feature (P2-07); it is admitted through the
+    // public/persisted boundary. The remaining v3 additions are still masked.
+    let masked: Set<DoryX86Feature> = [.f16c, .fma, .bmi1, .bmi2, .lzcnt]
+    let requested = DoryX86CPUProfile.compatibleV1.features.union(masked)
+      .union([.xsave, .avx, .movbe])
     let internalProfile = profile(requested, allowingUnqualifiedSIMDAndExtendedState: true)
     #expect(internalProfile.cpuid(leaf: 1).ecx & ((1 << 12) | (1 << 22) | (1 << 29))
       == (1 << 12) | (1 << 22) | (1 << 29))
@@ -64,8 +66,12 @@ import Testing
     let restored = try JSONDecoder().decode(
       DoryX86CPUProfile.self, from: JSONEncoder().encode(internalProfile))
     for candidate in [profile(requested), restored] {
-      #expect(candidate.features.isDisjoint(with: additions))
-      #expect(candidate.cpuid(leaf: 1).ecx & ((1 << 12) | (1 << 22) | (1 << 29)) == 0)
+      #expect(candidate.features.isDisjoint(with: masked))
+      // MOVBE is now admitted through the public boundary.
+      #expect(candidate.supports(.movbe))
+      #expect(candidate.cpuid(leaf: 1).ecx & (1 << 22) != 0)
+      // The remaining v3 vector/integer extensions stay masked.
+      #expect(candidate.cpuid(leaf: 1).ecx & ((1 << 12) | (1 << 29)) == 0)
       #expect(candidate.cpuid(leaf: 7).ebx == 0)
       #expect(candidate.cpuid(leaf: 0x8000_0001).ecx & (1 << 5) == 0)
     }

@@ -6,7 +6,8 @@ import Testing
 // A03.3: Unadvertised SIMD/extended-state forms must fault with #UD before any
 // data access when the public profile filters them out. The public profile
 // subtracts `unqualifiedSIMDAndExtendedStateFeatures` (SSE3, SSSE3, SSE4.1,
-// SSE4.2, XSAVE, OSXSAVE, AVX, AVX2, F16C, FMA, BMI1, BMI2, LZCNT, MOVBE).
+// SSE4.2, XSAVE, OSXSAVE, AVX, AVX2, F16C, FMA, BMI1, BMI2, LZCNT).
+// MOVBE was promoted to a qualified feature in P2-07 and is no longer masked.
 // These tests verify that representative forms from each family fault with #UD
 // and leave architectural state unchanged when using the public `.compatibleV1`
 // profile, which does not advertise any of these features.
@@ -95,6 +96,8 @@ import Testing
   }
 
   @Test func roundTripPersistedProfileFiltersUnqualifiedFeatures() throws {
+    // MOVBE is now a qualified feature (P2-07) and passes through the public
+    // boundary. The remaining v3 additions are still filtered.
     let requested = DoryX86CPUProfile.compatibleV1.features.union([
       .sse3, .ssse3, .sse41, .sse42, .xsave, .osxsave, .avx, .avx2,
       .f16c, .fma, .bmi1, .bmi2, .lzcnt, .movbe,
@@ -108,9 +111,12 @@ import Testing
     let decoded = try JSONDecoder().decode(DoryX86CPUProfile.self, from: encoded)
     let unqualified: Set<DoryX86Feature> = [
       .sse3, .ssse3, .sse41, .sse42, .xsave, .osxsave, .avx, .avx2,
-      .f16c, .fma, .bmi1, .bmi2, .lzcnt, .movbe,
+      .f16c, .fma, .bmi1, .bmi2, .lzcnt,
     ]
     #expect(decoded.features.isDisjoint(with: unqualified))
+    // MOVBE is now admitted.
+    #expect(decoded.supports(.movbe))
+    #expect(decoded.cpuid(leaf: 1).ecx & (1 << 22) != 0)
     // CPUID leaf 1 ECX must not advertise SSE3/SSSE3/SSE4.1/SSE4.2/XSAVE/OSXSAVE/AVX/F16C/FMA.
     let ecx = decoded.cpuid(leaf: 1, cr4: 1 << 18).ecx
     let ecxMask: UInt32 = (1 << 0) | (1 << 9) | (3 << 19) | (7 << 26) | (1 << 12) | (1 << 28) | (1 << 29)

@@ -382,6 +382,11 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case bitTest(DoryX86BitOperation, base: DoryX86Operand, index: DoryX86Operand)
   case bitScan(reverse: Bool, destination: DoryX86Operand, source: DoryX86Operand)
   case byteSwap(DoryX86Operand)
+  /// MOVBE: load from or store to memory with byte-swap. The register operand is
+  /// always `register`; the memory operand is always `memory`. When `load` is
+  /// true, bytes are read from memory, swapped, and written to the register.
+  /// When false, the register value is swapped and written to memory.
+  case moveByteSwapped(register: DoryX86Operand, memory: DoryX86MemoryOperand, load: Bool)
   case compareExchangePair(destination: DoryX86MemoryOperand, doubleQuadword: Bool)
   case memoryFence(DoryX86MemoryFence)
   case cacheLineFlush(DoryX86MemoryOperand)

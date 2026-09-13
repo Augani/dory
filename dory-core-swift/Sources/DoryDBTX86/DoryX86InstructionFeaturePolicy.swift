@@ -44,6 +44,9 @@ enum DoryX86InstructionFeaturePolicy {
     case .randomRead(_, let source):
       // RDRAND/RDSEED must have real entropy or be unadvertised (A03.4).
       return profile.supports(source == .rdrand ? .rdrand : .rdseed)
+    case .moveByteSwapped:
+      // MOVBE requires CPUID.01H:ECX.MOVBE. Without the feature, #UD.
+      return profile.supports(.movbe)
     case .compareExchangePair(_, let doubleQuadword):
       return profile.supports(doubleQuadword ? .cmpxchg16b : .cmpxchg8b)
     case .duplicateVectorScalar:

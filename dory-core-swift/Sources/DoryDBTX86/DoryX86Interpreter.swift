@@ -651,6 +651,50 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+      case .moveByteSwapped(let register, let memory, let load):
+        let width = operandWidth(register)
+        if load {
+          // MOVBE r, m: read from memory, byte-swap, write to register.
+          let memoryOperand = DoryX86Operand.memory(memory)
+          let value = try read(
+            memoryOperand, instruction: instruction, state: state, memory: executionMemory)
+          let swapped: UInt64
+          switch width {
+          case .word:
+            swapped = UInt64(UInt16(truncatingIfNeeded: value).byteSwapped)
+          case .doubleword:
+            swapped = UInt64(UInt32(truncatingIfNeeded: value).byteSwapped)
+          case .quadword:
+            swapped = value.byteSwapped
+          case .byte:
+            swapped = value & 0xFF
+          }
+          try write(
+            swapped, to: register, instruction: instruction, state: &state,
+            memory: executionMemory)
+        } else {
+          // MOVBE m, r: read from register, byte-swap, write to memory.
+          let value = try read(
+            register, instruction: instruction, state: state, memory: executionMemory)
+          let memoryOperand = DoryX86Operand.memory(memory)
+          try preflightWrite(
+            to: memoryOperand, instruction: instruction, state: state,
+            memory: executionMemory)
+          let swapped: UInt64
+          switch width {
+          case .word:
+            swapped = UInt64(UInt16(truncatingIfNeeded: value).byteSwapped)
+          case .doubleword:
+            swapped = UInt64(UInt32(truncatingIfNeeded: value).byteSwapped)
+          case .quadword:
+            swapped = value.byteSwapped
+          case .byte:
+            swapped = value & 0xFF
+          }
+          try write(
+            swapped, to: memoryOperand, instruction: instruction, state: &state,
+            memory: executionMemory)
+        }
       case .compareExchangePair(let destination, let doubleQuadword):
         let execute = { (operationState: inout DoryX86ArchitecturalState) in
           try executeCompareExchangePair(
