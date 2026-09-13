@@ -262,6 +262,15 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
         discardRequestCount = Self.saturatingAdd(discardRequestCount, 1)
       }
     }
+    // Preflight: decode and validate every range descriptor before any backing-storage
+    // mutation, so a malformed later range cannot leave an earlier valid range applied.
+    struct PreflightRange {
+      let offset: UInt64
+      let byteCount: UInt64
+      let mayUnmap: Bool
+    }
+    var validated: [PreflightRange] = []
+    validated.reserveCapacity(count)
     for index in 0..<count {
       let base = index * 16
       let sector = uint64(bytes, at: base)
@@ -272,15 +281,19 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
       }
       let byteCount = UInt64(sectors) * Self.sectorSize
       let offset = try checkedOffset(sector: sector, byteCount: byteCount)
+      validated.append(.init(offset: offset, byteCount: byteCount, mayUnmap: flags & 1 != 0))
+    }
+    // Apply: only after the full batch has passed existing validity and capacity checks.
+    for entry in validated {
       if zeroes {
-        try storage.writeZeroes(offset: offset, byteCount: byteCount, mayUnmap: flags & 1 != 0)
+        try storage.writeZeroes(offset: entry.offset, byteCount: entry.byteCount, mayUnmap: entry.mayUnmap)
         diagnosticsLock.withLock {
-          writeZeroesByteCount = Self.saturatingAdd(writeZeroesByteCount, byteCount)
+          writeZeroesByteCount = Self.saturatingAdd(writeZeroesByteCount, entry.byteCount)
         }
       } else {
-        try storage.discard(offset: offset, byteCount: byteCount)
+        try storage.discard(offset: entry.offset, byteCount: entry.byteCount)
         diagnosticsLock.withLock {
-          discardedByteCount = Self.saturatingAdd(discardedByteCount, byteCount)
+          discardedByteCount = Self.saturatingAdd(discardedByteCount, entry.byteCount)
         }
       }
     }

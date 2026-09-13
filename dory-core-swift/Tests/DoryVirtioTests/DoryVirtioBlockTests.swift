@@ -95,6 +95,48 @@ import Testing
     #expect(diagnostics.writeZeroesByteCount == 512)
   }
 
+  @Test func preflightDiscardRejectsBatchBeforeMutatingValidRange() throws {
+    let storage = DoryVirtioInMemoryBlockStorage(
+      byteCount: 4096,
+      initialBytes: [UInt8](repeating: 0xAA, count: 4096)
+    )
+    let device = try DoryVirtioBlockDevice(storage: storage, identifier: "preflight")
+    let memory = BlockGuestMemory(byteCount: 0x2000)
+
+    memory.put(header(type: 11, sector: 0), at: 0x100)
+    // First range is valid (sector 2, 1 sector); second range is out of bounds (sector 8, 1 sector).
+    memory.put(
+      range(sector: 2, sectors: 1, flags: 0) + range(sector: 8, sectors: 1, flags: 0),
+      at: 0x200)
+    let discard = chain([
+      descriptor(0x100, 16, false), descriptor(0x200, 32, false), descriptor(0x300, 1, true),
+    ])
+    #expect(try device.process(discard, memory: memory).status == 1)
+    // The valid first range must remain unchanged because the second range failed preflight.
+    #expect(try storage.read(offset: 1024, byteCount: 512) == [UInt8](repeating: 0xAA, count: 512))
+  }
+
+  @Test func preflightWriteZeroesRejectsBatchBeforeMutatingValidRange() throws {
+    let storage = DoryVirtioInMemoryBlockStorage(
+      byteCount: 4096,
+      initialBytes: [UInt8](repeating: 0xAA, count: 4096)
+    )
+    let device = try DoryVirtioBlockDevice(storage: storage, identifier: "preflight")
+    let memory = BlockGuestMemory(byteCount: 0x2000)
+
+    memory.put(header(type: 13, sector: 0), at: 0x100)
+    // First range is valid (sector 2, 1 sector, mayUnmap); second range is malformed (zero sectors).
+    memory.put(
+      range(sector: 2, sectors: 1, flags: 1) + range(sector: 4, sectors: 0, flags: 0),
+      at: 0x200)
+    let zeroes = chain([
+      descriptor(0x100, 16, false), descriptor(0x200, 32, false), descriptor(0x300, 1, true),
+    ])
+    #expect(try device.process(zeroes, memory: memory).status == 1)
+    // The valid first range must remain unchanged because the second range failed preflight.
+    #expect(try storage.read(offset: 1024, byteCount: 512) == [UInt8](repeating: 0xAA, count: 512))
+  }
+
   @Test func rejectsOutOfBoundsAndDirectionConfusionWithoutTouchingStorage() throws {
     let storage = DoryVirtioInMemoryBlockStorage(byteCount: 4096)
     let device = try DoryVirtioBlockDevice(storage: storage, identifier: "bounded")
