@@ -55,6 +55,86 @@ import Testing
     #expect(compiled.machineWords.last == 0xD65F_03C0)
   }
 
+  @Test func directStoreEmissionIsFollowedByTSOBarrier() throws {
+    // mov [rax], rbx — a 64-bit ordinary direct RAM store. emitMemoryWrite
+    // emits two direct STR sites (the inline-TLB-hit path and the
+    // resolver-filled path); each must be immediately followed by the
+    // DMB ISH ordering bridge (0xD503_3BBF) that preserves x86 TSO
+    // Store→Load ordering on Arm.
+    let block = try DoryX86IRTranslator().translate(
+      [0x48, 0x89, 0x18],
+      at: 0x1000,
+      mode: .long64
+    )
+    let words = DoryARM64BaselineEmitter().compile(block).machineWords
+
+    // The direct 64-bit STR uses base x13 and source x14 (offset 0).
+    let directStore: UInt32 = 0xF900_0000 | 13 << 5 | 14  // 0xF900_01AE
+    let barrier: UInt32 = 0xD503_3BBF  // dmb ish
+
+    let storeIndices =
+      words.indices.filter { words[$0] == directStore }
+    // Both the inline-TLB-hit and resolver-filled direct-store sites are
+    // present in the emitted code.
+    #expect(storeIndices.count == 2)
+    for index in storeIndices {
+      // The bridge must immediately follow each direct STR.
+      #expect(words[index + 1] == barrier)
+    }
+    // No extra barriers: the callback/fallback section of emitMemoryWrite and
+    // every other path must not claim the direct-store bridge.
+    #expect(words.filter { $0 == barrier }.count == 2)
+  }
+
+  @Test func byteDirectStoreEmissionIsFollowedByTSOBarrier() throws {
+    // mov [rax], bl — an 8-bit ordinary direct RAM store, exercising the i8
+    // width of encodeDirectStore. Both direct STR sites must carry the bridge.
+    let block = try DoryX86IRTranslator().translate(
+      [0x88, 0x18],
+      at: 0x1000,
+      mode: .long64
+    )
+    let words = DoryARM64BaselineEmitter().compile(block).machineWords
+
+    let directStore: UInt32 = 0x3900_0000 | 13 << 5 | 14  // 0x3900_01AE
+    let barrier: UInt32 = 0xD503_3BBF  // dmb ish
+
+    let storeIndices =
+      words.indices.filter { words[$0] == directStore }
+    #expect(storeIndices.count == 2)
+    for index in storeIndices {
+      #expect(words[index + 1] == barrier)
+    }
+    #expect(words.filter { $0 == barrier }.count == 2)
+  }
+
+  @Test func interpreterFallbackDoesNotEmitDirectStoreBarrier() throws {
+    // cpuid lowers to a precise interpreter helper (interpreterFallback) with
+    // no ordinary direct RAM store. The direct-store TSO bridge must not be
+    // claimed by callback-only/fallback code.
+    let block = try DoryX86IRTranslator().translate(
+      [0x0F, 0xA2],
+      at: 0x2000,
+      mode: .long64
+    )
+    let words = DoryARM64BaselineEmitter().compile(block).machineWords
+
+    #expect(!words.contains(0xD503_3BBF))  // no dmb ish
+  }
+
+  @Test func directLoadEmissionDoesNotEmitStoreBarrier() throws {
+    // mov rax, [rbx] — an ordinary direct load, not a store. The store-only
+    // TSO bridge must not appear on the load path.
+    let block = try DoryX86IRTranslator().translate(
+      [0x48, 0x8B, 0x03],
+      at: 0x1000,
+      mode: .long64
+    )
+    let words = DoryARM64BaselineEmitter().compile(block).machineWords
+
+    #expect(!words.contains(0xD503_3BBF))  // no dmb ish
+  }
+
   @Test func generationValidatedNegativeCacheSkipsRepeatedEmitterDeclines() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x0F, 0xA2]  // cpuid lowers to a precise interpreter helper.

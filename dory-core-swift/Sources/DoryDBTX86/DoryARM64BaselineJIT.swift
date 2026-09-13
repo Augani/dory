@@ -3083,7 +3083,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     let writeHostBoundsHighBranch = words.count
     words.append(0)
     words.append(encodeLoad64(register: 14, base: 31, byteOffset: 96))
-    words.append(encodeDirectStore(width: width, register: 14, base: 13))
+    emitDirectStoreWithTSOBarrier(width: width, register: 14, base: 13, words: &words)
     let hitDoneBranch = words.count
     words.append(0)
 
@@ -3124,7 +3124,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(0)
     words.append(encodeLoad64(register: 13, base: 31, byteOffset: 64))
     words.append(encodeLoad64(register: 14, base: 31, byteOffset: 96))
-    words.append(encodeDirectStore(width: width, register: 14, base: 13))
+    emitDirectStoreWithTSOBarrier(width: width, register: 14, base: 13, words: &words)
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
     let filledDoneBranch = words.count
     words.append(0)
@@ -4691,6 +4691,33 @@ public struct DoryARM64BaselineEmitter: Sendable {
       case .i64: 0xF900_0000
       }
     return opcode | base << 5 | register
+  }
+
+  /// Emits an ordinary direct RAM store followed by the Arm ordering bridge
+  /// that preserves x86 TSO Store→Load ordering.
+  ///
+  /// x86 TSO forbids Store Buffering: a later load on another vCPU may not
+  /// observe an older store from this vCPU reordered after a younger store.
+  /// A bare Arm `STR` permits exactly that reordering on Arm. Every successful
+  /// ordinary direct RAM store therefore gets a full `DMB ISH` barrier
+  /// (`0xD503_3BBF`) immediately after its `STR`, so the store is visible to
+  /// all inner-shareable observers (other vCPUs, devices, renderer mappings)
+  /// before any subsequent translated access. This is the only place ordinary
+  /// direct RAM stores are emitted, so routing both the inline-TLB-hit and
+  /// resolver-filled paths through this helper guarantees no site is missed.
+  ///
+  /// MMIO, callback/fallback, faulting and explicit atomic-helper (locked/RMW)
+  /// paths deliberately do not use this helper; their ordering is handled by
+  /// their own established barriers.
+  private func emitDirectStoreWithTSOBarrier(
+    width: DoryIRIntegerWidth,
+    register: UInt32,
+    base: UInt32,
+    words: inout [UInt32]
+  ) {
+    words.append(encodeDirectStore(width: width, register: register, base: base))
+    // DMB ISH: full data memory barrier, inner shareable.
+    words.append(0xD503_3BBF)
   }
 
   private func encodeVariableShift(
