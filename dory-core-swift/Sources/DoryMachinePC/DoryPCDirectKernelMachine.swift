@@ -973,6 +973,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     acpi: DoryPCACPITables,
     memoryMap: [DoryPCMemoryMapEntry]
   ) throws {
+    // The deterministic kernel-in-RAM and kernel/boot/reserved-overlap checks run first, before
+    // any machine-specific DMA validation or RAM write. Preflight reuses the parsed artifacts so
+    // the admission boundary is shared with callers that plan before constructing a machine.
+    let preflight = try DoryPCBootPreflight.validate(
+      kernel: kernel, boot: boot, memoryMap: memoryMap
+    )
     func range(_ address: UInt64, _ count: UInt64) throws -> Range<UInt64> {
       let (end, overflow) = address.addingReportingOverflow(count)
       guard count > 0, count <= UInt64(Int.max), !overflow else {
@@ -980,22 +986,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       }
       return address..<end
     }
-    let ram = try memoryMap.filter { $0.kind == .ram }.map { try range($0.address, $0.size) }
-    let kernelRanges = try kernel.segments.filter { $0.memorySize > 0 }.map {
-      try range($0.physicalAddress, $0.memorySize)
-    }
-    // Segment writes include BSS. No part may cross a reserved hole or depend on
-    // the packed backing offsets used internally for RAM above four GiB.
-    guard
-      kernelRanges.allSatisfy({ segment in
-        ram.contains { $0.lowerBound <= segment.lowerBound && segment.upperBound <= $0.upperBound }
-      })
-    else { throw DoryPCMachineError.bootArtifactOutsideRAM }
-
-    let artifacts: [(UInt64, [UInt8])] = [
-      (boot.layout.startInfo, boot.startInfo), (boot.layout.commandLine, boot.commandLine),
-      (boot.layout.modules, boot.modules), (boot.layout.memoryMap, boot.memoryMap),
-      (boot.layout.initrd, boot.initrd),
+    // ACPI and SMBIOS tables are planned by the machine after preflight because SMBIOS content
+    // depends on the CPU profile. Their ranges join the kernel/boot ranges for the full overlap
+    // and DMA checks that the RAM-backed physical memory bus must accept.
+    let tables: [(UInt64, [UInt8])] = [
       (acpi.layout.rsdp, acpi.rsdp), (acpi.layout.xsdt, acpi.xsdt),
       (acpi.layout.madt, acpi.madt), (acpi.layout.hpet, acpi.hpet),
       (acpi.layout.mcfg, acpi.mcfg), (acpi.layout.fadt, acpi.fadt),
@@ -1003,16 +997,17 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       (smbios.layout.entryPoint, smbios.entryPoint),
       (smbios.layout.structureTable, smbios.structureTable),
     ]
-    let artifactRanges = try artifacts.filter { !$0.1.isEmpty }.map {
+    let tableRanges = try tables.filter { !$0.1.isEmpty }.map {
       try range($0.0, UInt64($0.1.count))
     }
+    let artifactRanges = preflight.bootArtifactRanges + tableRanges
     // Preserve the legacy first page and the explicitly supplied initial stack.
-    let ranges = (kernelRanges + artifactRanges + [0..<0x1000, 0x7000..<0x8000])
+    let ranges = (preflight.kernelRanges + artifactRanges + [0..<0x1000, 0x7000..<0x8000])
       .sorted { $0.lowerBound < $1.lowerBound }
     guard !zip(ranges, ranges.dropFirst()).contains(where: { $0.0.overlaps($0.1) }) else {
       throw DoryPCMachineError.overlappingBootArtifacts
     }
-    for item in kernelRanges + artifactRanges {
+    for item in preflight.kernelRanges + artifactRanges {
       // RAM-only validation rejects writable MMIO overlays as well as ROM, holes
       // and unmapped addresses; preflight cannot trigger a device write.
       try physicalMemory.validateDMA(
