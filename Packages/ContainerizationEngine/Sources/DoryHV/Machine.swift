@@ -432,6 +432,18 @@ enum VirtioMMIODeviceTree {
       hv_vm_destroy()
     }
 
+    // Dirty tracking (P2-02 item 8):
+    //
+    // GuestMemory tracks per-page mapping state for free-page-reporting reclamation, but
+    // there is no general dirty-bitmap for live snapshots. Guest CPU stores, virtio DMA,
+    // filesystem writes and GPU/shared mappings all modify guest RAM through the same
+    // shared-memory backing, and none are currently tracked for snapshot purposes.
+    // Live snapshots are NOT supported until a dirty-tracking layer covers all writers:
+    // CPU stores (via stage-2 write-protect or a soft-dirty bitmap), DMA (via the virtio
+    // queue completion path), filesystem (via the virtiofs write path), and GPU shared
+    // mappings (via the renderer worker resource lifecycle). The current page-state
+    // tracking in GuestMemory is sufficient only for free-page-reporting reclamation.
+
     private static func createGIC() throws {
       let config = hv_gic_config_create()
       try hvCheck(
@@ -630,6 +642,22 @@ enum VirtioMMIODeviceTree {
 
     // MARK: SMP team
 
+    /// Lifecycle rendezvous protocol (P2-02 item 6):
+    ///
+    /// 1. `requestStop` or an internal crash calls `stopAll`, which publishes the stop reason,
+    ///    requests the stop signal, cancels running vCPUs via `hv_vcpus_exit` (exactly once,
+    ///    guarded by `vcpusExited`), and calls `executionPause.stop()` to wake parked vCPUs.
+    /// 2. Each vCPU's `runLoop` checks `stopSignal.isRequested` at the top of every iteration and
+    ///    after `executionPause.enter` returns. A vCPU in `hv_vcpu_run` (including WFI) is woken
+    ///    by `hv_vcpus_exit` and returns `.canceled`, which exits the loop.
+    /// 3. `cpuMain`'s defer increments `finishedSecondaries` for each secondary and broadcasts
+    ///    `teamCondition`. The primary's `run()` method joins all secondaries via
+    ///    `while finishedSecondaries < count - 1 { teamCondition.wait() }` before returning.
+    /// 4. `Machine.deinit` calls `hv_vm_destroy` only after `run()` has returned, so no live
+    ///    vCPU thread races VM teardown.
+    ///
+    /// Stop works while CPU_ON, WFI, MMIO, renderer or disk I/O is active: `hv_vcpus_exit`
+    /// interrupts a vCPU trapped in any of these states, and the stop signal prevents re-entry.
     private let teamCondition = NSCondition()
     private var teamHandles: [hv_vcpu_t?] = []
     private var secondaryStarts: [(entry: UInt64, context: UInt64)?] = []
@@ -641,6 +669,23 @@ enum VirtioMMIODeviceTree {
     private var vcpusExited = false
     private let executionPause = GuestExecutionPauseCoordinator()
     private var pauseExitRequests: Set<hv_vcpu_t> = []
+
+    /// Clock semantics (P2-02 item 7):
+    ///
+    /// The ARM architectural timer is backed by Hypervisor.framework's virtual timer. The guest
+    /// programs CNTV_TVAL_EL0 / CNTV_CTL_EL0 and the framework delivers the virtual timer PPI
+    /// (INTID 27) through the in-kernel GIC. `hv_vcpu_run` blocks on WFI until an interrupt
+    /// arrives, so the guest idle loop does not busy-poll.
+    ///
+    /// Guest time advances during host sleep and pause: Hypervisor.framework's virtual timer
+    /// is driven by the host monotonic clock, and `hv_vcpu_run` resumes when the timer fires.
+    /// During a `pauseGuestExecution` the vCPU is blocked in `executionPause.enter`, so the
+    /// virtual timer may fire and pend; on resume the pending interrupt is delivered. This
+    /// means guest wall-clock time advances during pause, which matches the Linux guest's
+    /// expectation that `CNTVCT_EL0` tracks real time. A future live-snapshot feature must
+    /// decide whether to freeze the virtual timer during snapshot capture.
+    /// The device tree advertises a 24 MHz fixed clock for the APB peripheral bus; the
+    /// architectural counter frequency is set by Hypervisor.framework from the host.
 
     public var executionState: DoryVirtualMachineState { executionPause.state }
 
@@ -860,15 +905,11 @@ enum VirtioMMIODeviceTree {
               if case .cpuOff = stop {
                 // Secondary vCPU requested PSCI CPU_OFF; exit this vCPU's run loop
                 // without stopping the machine.  The primary continues running.
+                // Clear the handle now so stopAll cannot cancel an already-exiting vCPU;
+                // cpuMain's defer owns finishedSecondaries accounting and the join.
                 teamCondition.withLock {
                   teamHandles[index] = nil
                   pauseExitRequests.remove(vcpu.handle)
-                }
-                if index != 0 {
-                  teamCondition.lock()
-                  finishedSecondaries += 1
-                  teamCondition.broadcast()
-                  teamCondition.unlock()
                 }
                 return
               }
