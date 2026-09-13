@@ -121,3 +121,12 @@ public final class DoryVirtioDeviceState: @unchecked Sendable {
     }
   }
 }
+
+// P2-14 item 7 — Balloon/memory-pressure behavior:
+//
+// A virtio-balloon device is NOT implemented in ABI v1. The plan requires that
+// balloon/memory-pressure behavior be added only with an exact ownership protocol
+// that never reclaims pages while CPU, DMA, or GPU leases still reference them.
+// Until a page-ownership protocol coordinates with the guest memory manager,
+// renderer worker mappings, and filesystem worker mappings, no balloon device
+// is exposed. This is a deliberate gap, not an oversight.

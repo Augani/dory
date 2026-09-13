@@ -264,3 +264,75 @@ private final class LockedCounter: @unchecked Sendable {
   var value: Int { lock.withLock { storage } }
   func increment() { lock.withLock { storage += 1 } }
 }
+
+// MARK: - P2-14 device state machine coverage
+
+extension DoryVirtioDeviceTests {
+  @Test func deviceNeedsResetIsDeviceOwnedAndClearedOnlyByReset() {
+    let resets = LockedCounter()
+    let device = DoryVirtioDeviceState(
+      offeredFeatures: [.indirectDescriptors],
+      onReset: { resets.increment() }
+    )
+
+    // Establish a valid negotiated state first.
+    device.writeDriverFeatures(page: 0, value: 0)
+    device.writeDriverFeatures(page: 1, value: 1)  // VERSION_1 bit
+    device.writeStatus([.acknowledge, .driver, .featuresOK, .driverOK])
+    #expect(device.snapshot().status.contains(.driverOK))
+
+    // Driver cannot set DEVICE_NEEDS_RESET by writing it.
+    device.writeStatus([.acknowledge, .driver, .featuresOK, .driverOK, .deviceNeedsReset])
+    let snapshotAfterDriverWrite = device.snapshot()
+    #expect(!snapshotAfterDriverWrite.status.contains(.deviceNeedsReset))
+    #expect(snapshotAfterDriverWrite.status.contains(.driverOK))
+
+    // Device sets DEVICE_NEEDS_RESET internally.
+    device.markDeviceNeedsReset()
+    let snapshotAfterDeviceMark = device.snapshot()
+    #expect(snapshotAfterDeviceMark.status.contains(.deviceNeedsReset))
+    #expect(snapshotAfterDeviceMark.status.contains(.driverOK))
+
+    // Only a full reset (writing 0) clears DEVICE_NEEDS_RESET.
+    device.writeStatus([])
+    let snapshotAfterReset = device.snapshot()
+    #expect(snapshotAfterReset.status.isEmpty)
+    #expect(resets.value == 1)
+  }
+
+  @Test func failedStatusIsDriverWritableAndPersistsUntilReset() {
+    let resets = LockedCounter()
+    let device = DoryVirtioDeviceState(
+      offeredFeatures: [.indirectDescriptors],
+      onReset: { resets.increment() }
+    )
+
+    device.writeDriverFeatures(page: 0, value: 0)
+    device.writeDriverFeatures(page: 1, value: 1)  // VERSION_1 bit
+    device.writeStatus([.acknowledge, .driver, .featuresOK, .driverOK, .failed])
+    #expect(device.snapshot().status.contains(.failed))
+    #expect(device.snapshot().status.contains(.driverOK))
+
+    // FAILED cannot be cleared individually; only reset clears it.
+    device.writeStatus([.acknowledge, .driver, .featuresOK, .driverOK])
+    #expect(device.snapshot().status.contains(.failed))
+
+    device.writeStatus([])
+    #expect(device.snapshot().status.isEmpty)
+    #expect(resets.value == 1)
+  }
+
+  @Test func configurationGenerationAdvancesOnResetAndDeviceNeedsReset() {
+    let device = DoryVirtioDeviceState(offeredFeatures: [.indirectDescriptors])
+    let initial = device.snapshot().configurationGeneration
+
+    device.markDeviceNeedsReset()
+    #expect(device.snapshot().configurationGeneration == initial &+ 1)
+
+    device.configurationDidChange()
+    #expect(device.snapshot().configurationGeneration == initial &+ 2)
+
+    device.writeStatus([])
+    #expect(device.snapshot().configurationGeneration == initial &+ 3)
+  }
+}
