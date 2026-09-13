@@ -47,6 +47,11 @@ enum DoryX86InstructionFeaturePolicy {
     case .moveByteSwapped:
       // MOVBE requires CPUID.01H:ECX.MOVBE. Without the feature, #UD.
       return profile.supports(.movbe)
+    case .countLeadingZeros:
+      // F3 0F BD is LZCNT when CPUID.0x8000_0001:ECX.LZCNT is advertised, or BSR
+      // with the F3 prefix ignored when it is not. The operation is always
+      // architecturally valid; the interpreter selects the correct semantics.
+      return true
     case .compareExchangePair(_, let doubleQuadword):
       return profile.supports(doubleQuadword ? .cmpxchg16b : .cmpxchg8b)
     case .duplicateVectorScalar:

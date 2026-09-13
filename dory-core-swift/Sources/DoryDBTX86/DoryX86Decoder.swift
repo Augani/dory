@@ -2052,11 +2052,22 @@ public struct DoryX86Decoder: Sendable {
     case 0xBC, 0xBD:
       let operands = try decodeModRM(
         cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
-      operation = .bitScan(
-        reverse: second == 0xBD,
-        destination: operands.reg,
-        source: operands.rm
-      )
+      // F3 0F BD is LZCNT when CPUID.0x8000_0001:ECX.LZCNT is advertised, or BSR
+      // with the F3 prefix ignored when it is not. Decode as a distinct operation
+      // so the interpreter can apply the correct semantics; the IR lowering falls
+      // back to the interpreter (default case), preserving Tier1 correctness.
+      if second == 0xBD, prefixes.repeatPrefix == 0xF3 {
+        operation = .countLeadingZeros(
+          destination: operands.reg,
+          source: operands.rm
+        )
+      } else {
+        operation = .bitScan(
+          reverse: second == 0xBD,
+          destination: operands.reg,
+          source: operands.rm
+        )
+      }
     case 0xB0, 0xB1:
       let operandWidth: DoryX86OperandWidth = second == 0xB0 ? .byte : width
       let operands = try decodeModRM(

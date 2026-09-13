@@ -381,6 +381,10 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case exchangeAdd(destination: DoryX86Operand, source: DoryX86Operand)
   case bitTest(DoryX86BitOperation, base: DoryX86Operand, index: DoryX86Operand)
   case bitScan(reverse: Bool, destination: DoryX86Operand, source: DoryX86Operand)
+  /// LZCNT (`F3 0F BD`): counts leading zero bits in `source` into `destination`.
+  /// When CPUID.0x8000_0001:ECX.LZCNT is clear, `F3 0F BD` is BSR with the F3
+  /// prefix ignored; the interpreter falls back to BSR semantics in that case.
+  case countLeadingZeros(destination: DoryX86Operand, source: DoryX86Operand)
   case byteSwap(DoryX86Operand)
   /// MOVBE: load from or store to memory with byte-swap. The register operand is
   /// always `register`; the memory operand is always `memory`. When `load` is

@@ -608,6 +608,54 @@ public struct DoryX86Interpreter: Sendable {
             memory: executionMemory
           )
         }
+      case .countLeadingZeros(let destination, let source):
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        let width = operandWidth(destination)
+        let masked = value & mask(width)
+        if profile.supports(.lzcnt) {
+          // AMD APM Vol. 3 LZCNT: count leading zeros within the operand width.
+          // If the source is zero, the destination is set to the operand size in
+          // bits and CF=1. Otherwise the destination is the leading-zero count
+          // and CF=0. ZF is set to 1 when the result is zero (MSB of source is 1).
+          // SF, OF, AF, and PF are undefined.
+          let bitWidth = UInt64(width.rawValue)
+          if masked == 0 {
+            setFlag(.carry, true, in: &state.rflags)
+            setFlag(.zero, false, in: &state.rflags)
+            try write(
+              bitWidth,
+              to: destination,
+              instruction: instruction,
+              state: &state,
+              memory: executionMemory
+            )
+          } else {
+            setFlag(.carry, false, in: &state.rflags)
+            let leadingZeros = UInt64(masked.leadingZeroBitCount) - (64 - bitWidth)
+            setFlag(.zero, leadingZeros == 0, in: &state.rflags)
+            try write(
+              leadingZeros,
+              to: destination,
+              instruction: instruction,
+              state: &state,
+              memory: executionMemory
+            )
+          }
+        } else {
+          // F3 0F BD without LZCNT is BSR with the F3 prefix ignored.
+          setFlag(.zero, masked == 0, in: &state.rflags)
+          if masked != 0 {
+            let index = 63 - masked.leadingZeroBitCount
+            try write(
+              UInt64(index),
+              to: destination,
+              instruction: instruction,
+              state: &state,
+              memory: executionMemory
+            )
+          }
+        }
       case .populationCount(let destination, let source):
         // Intel SDM 092 Vol. 2B POPCNT pp. 4-688–4-690: all six arithmetic
         // status flags are defined. ZF describes whether the source was zero;
