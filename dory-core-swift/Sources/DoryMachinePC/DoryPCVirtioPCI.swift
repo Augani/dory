@@ -875,18 +875,13 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           }
           return queues[Int(index)]
         }
-        do {
-          try deviceState.withLockedSnapshot { snapshot in
-            guard current.enabled, current.generation == generation,
-              Self.isOperational(snapshot),
-              current.queue === splitQueue,
-              snapshot.lifecycleEpoch == popEpoch else { return }
-            eligibleToFail = true
-            terminalEpoch = popEpoch
-          }
-        } catch {
+        deviceState.withLockedSnapshot { snapshot in
+          guard current.enabled, current.generation == generation,
+            Self.isOperational(snapshot),
+            current.queue === splitQueue,
+            snapshot.lifecycleEpoch == popEpoch else { return }
+          eligibleToFail = true
           terminalEpoch = popEpoch
-          throw error
         }
         return false
       } catch {
