@@ -30,6 +30,7 @@ public struct DoryVirtioDeviceSnapshot: Sendable, Hashable {
   public let negotiatedFeatures: DoryVirtioFeatures
   public let status: DoryVirtioDeviceStatus
   public let configurationGeneration: UInt8
+  public let lifecycleEpoch: UInt64
 }
 
 /// Transport-neutral VirtIO feature and lifecycle state machine.
@@ -40,6 +41,7 @@ public final class DoryVirtioDeviceState: @unchecked Sendable {
   private var driverFeatures: DoryVirtioFeatures = []
   private var status: DoryVirtioDeviceStatus = []
   private var configurationGeneration: UInt8 = 0
+  private var lifecycleEpoch: UInt64 = 0
   private let onReset: @Sendable () -> Void
 
   public init(
@@ -72,6 +74,9 @@ public final class DoryVirtioDeviceState: @unchecked Sendable {
         driverFeatures = []
         status = []
         configurationGeneration &+= 1
+        // New lifecycle identity. Checked add traps on exhaustion instead of
+        // reusing an old epoch (fail closed, never wraps).
+        lifecycleEpoch += 1
         return true
       }
       let driverWritable: DoryVirtioDeviceStatus = [
@@ -99,10 +104,37 @@ public final class DoryVirtioDeviceState: @unchecked Sendable {
     if reset { onReset() }
   }
 
-  public func markDeviceNeedsReset() {
+  /// Marks the device as requiring reset and reports whether this call performed
+  /// the transition. Repeated marks are intentionally inert so callers do not
+  /// manufacture extra configuration-change side effects after the terminal
+  /// state is already visible to the driver.
+  @discardableResult
+  public func markDeviceNeedsReset() -> Bool {
     lock.withLock {
+      guard !status.contains(.deviceNeedsReset) else { return false }
       status.insert(.deviceNeedsReset)
       configurationGeneration &+= 1
+      return true
+    }
+  }
+
+  /// Conditionally marks the device as requiring reset only when
+  /// `expectedLifecycleEpoch` still identifies the current lifecycle. The epoch
+  /// advances only on a zero-status reset, so ordinary `configurationDidChange()`
+  /// calls and NEEDS_RESET marking never invalidate a current-lifecycle capture.
+  /// The comparison and the NEEDS_RESET transition occur atomically under the
+  /// state lock. A zero-status reset that linearizes after the caller captured
+  /// the epoch causes this to return false without touching the fresh
+  /// lifecycle, so stale direct/deferred terminal failures cannot poison a
+  /// newly reset device. Returns true only when this call performed the transition.
+  @discardableResult
+  public func markDeviceNeedsReset(expectedLifecycleEpoch: UInt64) -> Bool {
+    lock.withLock {
+      guard lifecycleEpoch == expectedLifecycleEpoch else { return false }
+      guard !status.contains(.deviceNeedsReset) else { return false }
+      status.insert(.deviceNeedsReset)
+      configurationGeneration &+= 1
+      return true
     }
   }
 
@@ -112,13 +144,33 @@ public final class DoryVirtioDeviceState: @unchecked Sendable {
 
   public func snapshot() -> DoryVirtioDeviceSnapshot {
     lock.withLock {
-      .init(
-        offeredFeatures: offeredFeatures,
-        negotiatedFeatures: status.contains(.featuresOK) ? driverFeatures : [],
-        status: status,
-        configurationGeneration: configurationGeneration
-      )
+      snapshotLocked()
     }
+  }
+
+  /// Executes `body` while the lifecycle lock is held, supplying a coherent
+  /// snapshot. A concurrent `markDeviceNeedsReset()` linearizes either before
+  /// the lease (work observes NEEDS_RESET) or after it completes, never
+  /// between the operational check and guest-memory DMA. The body must not
+  /// call `snapshot()`, `markDeviceNeedsReset()`, or any other lifecycle
+  /// method: the lock is non-reentrant. Propagate failures as throws and mark
+  /// the device only after the lease is released.
+  public func withLockedSnapshot<T>(_ body: (DoryVirtioDeviceSnapshot) throws -> T) rethrows
+    -> T
+  {
+    lock.lock()
+    defer { lock.unlock() }
+    return try body(snapshotLocked())
+  }
+
+  private func snapshotLocked() -> DoryVirtioDeviceSnapshot {
+    .init(
+      offeredFeatures: offeredFeatures,
+      negotiatedFeatures: status.contains(.featuresOK) ? driverFeatures : [],
+      status: status,
+      configurationGeneration: configurationGeneration,
+      lifecycleEpoch: lifecycleEpoch
+    )
   }
 }
 

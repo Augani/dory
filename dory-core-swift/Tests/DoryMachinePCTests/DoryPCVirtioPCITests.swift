@@ -218,6 +218,120 @@ import Testing
     #expect(queueState.size == 0)
   }
 
+  @Test func deviceNeedsResetPreventsNotifyFromConsumingNewQueueWork() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    let processorCalls = LockedValue(0)
+    function.transport.connectQueueProcessor(memory: machine.physicalMemory) { _, chain, memory in
+      processorCalls.value += 1
+      try memory.write(at: chain.descriptors[1].address, bytes: [9, 8, 7, 6])
+      return 4
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+
+    function.transport.deviceState.markDeviceNeedsReset()
+    #expect(function.transport.deviceState.snapshot().status.contains(.driverOK))
+    #expect(function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1, notify: false)
+    try write16(machine, bar + 0x100, 0)
+
+    #expect(processorCalls.value == 0)
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try read16(machine, 0x3002) == 0)
+  }
+
+  @Test func deviceNeedsResetRejectsCapturedDeferredCompletionBeforeGuestWrites() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    let completions = DeferredCompletionRecorder()
+    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+      _, _, _, completion in
+      completions.append(completion)
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    let completion = try #require(completions.removeFirst())
+
+    function.transport.deviceState.markDeviceNeedsReset()
+    #expect(!completion.publish([9, 8, 7, 6]))
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try read16(machine, 0x3002) == 0)
+  }
+
+  @Test func resetAndReconfigurationAllowOneDeferredCompletionInFreshGeneration() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    let completions = DeferredCompletionRecorder()
+    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+      _, _, _, completion in
+      completions.append(completion)
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    function.transport.deviceState.markDeviceNeedsReset()
+
+    try write8(machine, bar + 0x14, 0)
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    let completion = try #require(completions.removeFirst())
+
+    #expect(completion.publish([9, 8, 7, 6]))
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 6])
+    #expect(try read16(machine, 0x3002) == 1)
+  }
+
+  @Test func deferredProcessorPublishingSynchronouslyCompletesWithoutDeadlock() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+      _, chain, memory, completion in
+      let request = try memory.read(at: chain.descriptors[0].address, byteCount: 4)
+      #expect(request == [1, 2, 3, 4])
+      #expect(completion.publish([9, 8, 7, 6]))
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1, notify: false)
+
+    // Run the kick on a bounded worker so a reintroduced lifecycle
+    // re-entrancy deadlock fails the test instead of hanging the suite.
+    let kickResult = LockedValue<Result<Void, Error>?>(nil)
+    let kickDone = DispatchSemaphore(value: 0)
+    let kickThread = Thread {
+      do {
+        try function.transport.writeBAR(offset: 0x100, bytes: littleEndian(UInt16(0)))
+        kickResult.value = .success(())
+      } catch {
+        kickResult.value = .failure(error)
+      }
+      kickDone.signal()
+    }
+    kickThread.start()
+    #expect(kickDone.wait(timeout: .now() + 2) == .success)
+    if case .failure(let error) = kickResult.value { throw error }
+    #expect(kickResult.value != nil)
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 6])
+    #expect(try read16(machine, 0x3002) == 1)
+  }
+
   @Test func deferredCompletionPublishesOnlyIntoItsOriginalQueueGeneration() throws {
     let function = try makeFunction()
     let machine = try DoryPCDirectKernelMachine(
@@ -318,6 +432,234 @@ import Testing
     #expect(function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
   }
 
+  @Test func staleEpochCannotMarkFreshLifecycleAfterZeroStatusReset() throws {
+    let function = try makeFunction()
+    let state = function.transport.deviceState
+    let staleEpoch = state.snapshot().lifecycleEpoch
+
+    // A zero-status reset linearizes a fresh lifecycle with no NEEDS_RESET.
+    state.writeStatus([])
+    let freshEpoch = state.snapshot().lifecycleEpoch
+    #expect(freshEpoch != staleEpoch)
+    #expect(!state.snapshot().status.contains(.deviceNeedsReset))
+
+    // The stale epoch must not poison the fresh lifecycle.
+    #expect(state.markDeviceNeedsReset(expectedLifecycleEpoch: staleEpoch) == false)
+    #expect(!state.snapshot().status.contains(.deviceNeedsReset))
+    #expect(state.snapshot().lifecycleEpoch == freshEpoch)
+
+    // The current lifecycle still transitions exactly once.
+    #expect(state.markDeviceNeedsReset(expectedLifecycleEpoch: freshEpoch) == true)
+    #expect(state.snapshot().status.contains(.deviceNeedsReset))
+    #expect(state.markDeviceNeedsReset(expectedLifecycleEpoch: freshEpoch) == false)
+    #expect(state.markDeviceNeedsReset() == false)
+  }
+
+  @Test func sameLifecycleConditionalMarkSurvivesConfigurationDidChange() throws {
+    let function = try makeFunction()
+    let state = function.transport.deviceState
+    let epoch = state.snapshot().lifecycleEpoch
+    let generationBefore = state.snapshot().configurationGeneration
+
+    // Ordinary configuration changes never advance the lifecycle epoch.
+    state.configurationDidChange()
+    state.configurationDidChange()
+    state.configurationDidChange()
+    #expect(state.snapshot().lifecycleEpoch == epoch)
+    #expect(state.snapshot().configurationGeneration != generationBefore)
+    #expect(!state.snapshot().status.contains(.deviceNeedsReset))
+
+    // A same-lifecycle conditional mark still succeeds exactly once.
+    #expect(state.markDeviceNeedsReset(expectedLifecycleEpoch: epoch) == true)
+    #expect(state.snapshot().status.contains(.deviceNeedsReset))
+    #expect(state.markDeviceNeedsReset(expectedLifecycleEpoch: epoch) == false)
+    #expect(state.markDeviceNeedsReset() == false)
+  }
+
+  @Test func staleEpochCannotMarkAfterGenerationWrapAndReset() throws {
+    let function = try makeFunction()
+    let state = function.transport.deviceState
+    let staleEpoch = state.snapshot().lifecycleEpoch
+
+    // Many visible generation changes wrap the UInt8 guest counter without
+    // changing the lifecycle identity.
+    for _ in 0..<300 { state.configurationDidChange() }
+    #expect(state.snapshot().lifecycleEpoch == staleEpoch)
+    #expect(!state.snapshot().status.contains(.deviceNeedsReset))
+
+    // A zero-status reset opens a fresh lifecycle.
+    state.writeStatus([])
+    let freshEpoch = state.snapshot().lifecycleEpoch
+    #expect(freshEpoch != staleEpoch)
+    #expect(!state.snapshot().status.contains(.deviceNeedsReset))
+
+    // The stale epoch cannot poison the fresh lifecycle even though the
+    // visible counter has wrapped.
+    #expect(state.markDeviceNeedsReset(expectedLifecycleEpoch: staleEpoch) == false)
+    #expect(!state.snapshot().status.contains(.deviceNeedsReset))
+    #expect(state.snapshot().lifecycleEpoch == freshEpoch)
+
+    // The fresh lifecycle still transitions exactly once.
+    #expect(state.markDeviceNeedsReset(expectedLifecycleEpoch: freshEpoch) == true)
+    #expect(state.snapshot().status.contains(.deviceNeedsReset))
+  }
+
+  @Test func staleDeferredTerminalAfterResetLeavesFreshLifecycleUnpoisoned() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    let completions = DeferredCompletionRecorder()
+    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+      _, _, _, completion in
+      completions.append(completion)
+    }
+    let configurationSignals = LockedValue(0)
+    function.transport.connectInterruptSink { interrupt in
+      if interrupt == .configuration { configurationSignals.value += 1 }
+      return true
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    let staleCompletion = try #require(completions.removeFirst())
+
+    // Zero-status reset linearizes a fresh lifecycle before the old deferred
+    // terminal outcome is delivered. No threads or sleeps are involved: the
+    // stale completion object itself carries the old lifecycle epoch.
+    try function.transport.writeBAR(offset: 0x14, bytes: [0])
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    let freshEpoch = function.transport.deviceState.snapshot().lifecycleEpoch
+
+    // A stale deferred terminal failure must not poison the fresh lifecycle
+    // nor manufacture a configuration-change signal.
+    #expect(!staleCompletion.failDevice())
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    #expect(function.transport.deviceState.snapshot().lifecycleEpoch == freshEpoch)
+    #expect(configurationSignals.value == 0)
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try read16(machine, 0x3002) == 0)
+
+    // The fresh lifecycle still signals a current terminal failure exactly once.
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    let freshCompletion = try #require(completions.removeFirst())
+    #expect(freshCompletion.failDevice())
+    #expect(function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    #expect(configurationSignals.value == 1)
+    #expect(!freshCompletion.publish([9, 8, 7]))
+    #expect(configurationSignals.value == 1)
+  }
+
+  @Test func staleDeferredAfterConfigChangesAndResetLeavesFreshLifecycleUnpoisoned() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    let completions = DeferredCompletionRecorder()
+    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+      _, _, _, completion in
+      completions.append(completion)
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    let staleCompletion = try #require(completions.removeFirst())
+
+    // Ordinary configuration changes do not open a new lifecycle, then a
+    // zero-status reset does. No threads or sleeps are involved.
+    for _ in 0..<10 { function.transport.deviceState.configurationDidChange() }
+    try function.transport.writeBAR(offset: 0x14, bytes: [0])
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    let freshEpoch = function.transport.deviceState.snapshot().lifecycleEpoch
+
+    #expect(!staleCompletion.failDevice())
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    #expect(function.transport.deviceState.snapshot().lifecycleEpoch == freshEpoch)
+
+    // The fresh lifecycle still fails exactly once.
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    let freshCompletion = try #require(completions.removeFirst())
+    #expect(freshCompletion.failDevice())
+    #expect(function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+  }
+
+  @Test func staleDeferredPopEpochRejectedAfterResetWithoutGenerationChange() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    let completions = DeferredCompletionRecorder()
+    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+      _, _, _, completion in
+      completions.append(completion)
+    }
+    let configurationSignals = LockedValue(0)
+    function.transport.connectInterruptSink { interrupt in
+      if interrupt == .configuration { configurationSignals.value += 1 }
+      return true
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    let stalePublish = try #require(completions.removeFirst())
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 2)
+    let staleFail = try #require(completions.removeFirst())
+    #expect(try function.transport.queueSnapshot(at: 0).enabled)
+    let staleEpoch = function.transport.deviceState.snapshot().lifecycleEpoch
+    #expect(function.transport.deviceState.snapshot().status.contains(.driverOK))
+
+    // Device-state status-zero reset opens a fresh lifecycle epoch without
+    // touching queue registers, so the queue generation stays active. No
+    // threads or sleeps are involved.
+    function.transport.deviceState.writeStatus([])
+    let freshEpoch = function.transport.deviceState.snapshot().lifecycleEpoch
+    #expect(freshEpoch != staleEpoch)
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    #expect(try function.transport.queueSnapshot(at: 0).enabled)
+
+    // Re-negotiate status without touching queue registers.
+    try write32(machine, bar + 0x08, 1)
+    try write32(machine, bar + 0x0C, 1)
+    try write8(machine, bar + 0x14, 0x0F)
+    #expect(function.transport.deviceState.snapshot().lifecycleEpoch == freshEpoch)
+    #expect(function.transport.deviceState.snapshot().status.contains(.driverOK))
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    #expect(try function.transport.queueSnapshot(at: 0).enabled)
+
+    // A stale pop-epoch publish performs no DMA, no used completion, and no
+    // NEEDS_RESET signal even though the queue generation never changed.
+    #expect(!stalePublish.publish([9, 8, 7, 6]))
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try read16(machine, 0x3002) == 0)
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    #expect(function.transport.deviceState.snapshot().lifecycleEpoch == freshEpoch)
+    #expect(configurationSignals.value == 0)
+
+    // A stale pop-epoch terminal failure is rejected just as silently.
+    #expect(!staleFail.failDevice())
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    #expect(function.transport.deviceState.snapshot().lifecycleEpoch == freshEpoch)
+    #expect(configurationSignals.value == 0)
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try read16(machine, 0x3002) == 0)
+
+    // The fresh lifecycle still publishes exactly once.
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 3)
+    let freshCompletion = try #require(completions.removeFirst())
+    #expect(freshCompletion.publish([9, 8, 7, 6]))
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 6])
+    #expect(try read16(machine, 0x3002) == 1)
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+  }
+
   @Test func resetWaitsForInFlightDeferredPublication() throws {
     let function = try makeFunction()
     let memory = BlockingVirtioGuestMemory(byteCount: 0x20_000, blockedWriteAddress: 0x5000)
@@ -384,6 +726,80 @@ import Testing
     if case .failure(let error) = resetResult.value { throw error }
     #expect(try memory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 0])
     #expect(!(try function.transport.queueSnapshot(at: 0).enabled))
+  }
+
+  @Test func needsResetSerializesWithDrainAndRejectsLaterQueueWork() throws {
+    let function = try makeFunction()
+    let memory = BlockingVirtioGuestMemory(byteCount: 0x20_000, blockedWriteAddress: 0x5000)
+    let processorCalls = LockedValue(0)
+    function.transport.connectQueueProcessor(memory: memory) { _, chain, memory in
+      processorCalls.value += 1
+      try memory.write(at: chain.descriptors[1].address, bytes: [9, 8, 7, 6])
+      return 4
+    }
+
+    try function.transport.writeBAR(offset: 0x08, bytes: littleEndian(UInt32(1)))
+    try function.transport.writeBAR(offset: 0x0C, bytes: littleEndian(UInt32(1)))
+    try function.transport.writeBAR(offset: 0x14, bytes: [0x0F])
+    try function.transport.writeBAR(offset: 0x16, bytes: littleEndian(UInt16(0)))
+    try function.transport.writeBAR(offset: 0x18, bytes: littleEndian(UInt16(8)))
+    try function.transport.writeBAR(offset: 0x20, bytes: littleEndian(UInt64(0x1000)))
+    try function.transport.writeBAR(offset: 0x28, bytes: littleEndian(UInt64(0x2000)))
+    try function.transport.writeBAR(offset: 0x30, bytes: littleEndian(UInt64(0x3000)))
+    try function.transport.writeBAR(offset: 0x1C, bytes: littleEndian(UInt16(1)))
+    try memory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(1)) + littleEndian(UInt16(1))
+        + littleEndian(UInt64(0x5000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
+    )
+    try memory.write(at: 0x4000, bytes: [1, 2, 3, 4])
+    try memory.write(at: 0x5000, bytes: [0, 0, 0, 0])
+    try memory.write(at: 0x2000, bytes: [0, 0, 1, 0, 0, 0])
+    memory.armBlockedWrite()
+
+    let drainResult = LockedValue<Result<Void, Error>?>(nil)
+    let drainDone = DispatchSemaphore(value: 0)
+    let drainThread = Thread {
+      do {
+        try function.transport.writeBAR(offset: 0x100, bytes: littleEndian(UInt16(0)))
+        drainResult.value = .success(())
+      } catch {
+        drainResult.value = .failure(error)
+      }
+      drainDone.signal()
+    }
+    drainThread.start()
+    #expect(memory.waitForBlockedWrite(timeout: 1))
+
+    let resetStarted = DispatchSemaphore(value: 0)
+    let resetDone = DispatchSemaphore(value: 0)
+    let resetThread = Thread {
+      resetStarted.signal()
+      function.transport.deviceState.markDeviceNeedsReset()
+      resetDone.signal()
+    }
+    resetThread.start()
+    #expect(resetStarted.wait(timeout: .now() + 1) == .success)
+    #expect(resetDone.wait(timeout: .now() + 0.2) == .timedOut)
+
+    memory.releaseBlockedWrite()
+    #expect(drainDone.wait(timeout: .now() + 1) == .success)
+    #expect(resetDone.wait(timeout: .now() + 1) == .success)
+    if case .failure(let error) = drainResult.value { throw error }
+    #expect(try memory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 6])
+    #expect(try readUsedIndex(memory) == 1)
+
+    // A later kick observes NEEDS_RESET before it can touch either the response
+    // buffer or the used ring.
+    try memory.write(at: 0x5000, bytes: [0, 0, 0, 0])
+    try memory.write(at: 0x2006, bytes: littleEndian(UInt16(0)))
+    try memory.write(at: 0x2002, bytes: littleEndian(UInt16(2)))
+    try function.transport.writeBAR(offset: 0x100, bytes: littleEndian(UInt16(0)))
+    #expect(processorCalls.value == 1)
+    #expect(try memory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try readUsedIndex(memory) == 1)
   }
 
   @Test func deferredCompletionPreflightLeavesEarlyTargetUntouchedWhenLaterTargetIsRevoked()
@@ -476,7 +892,8 @@ import Testing
   private func publishDeferredDescriptor(
     _ machine: DoryPCDirectKernelMachine,
     bar: UInt64,
-    availableIndex: UInt16
+    availableIndex: UInt16,
+    notify: Bool = true
   ) throws {
     try machine.physicalMemory.write(
       at: 0x1000,
@@ -492,7 +909,7 @@ import Testing
       bytes: littleEndian(UInt16(0))
     )
     try machine.physicalMemory.write(at: 0x2002, bytes: littleEndian(availableIndex))
-    try write16(machine, bar + 0x100, 0)
+    if notify { try write16(machine, bar + 0x100, 0) }
   }
 
   private func makeFunction() throws -> DoryPCVirtioPCIFunction {

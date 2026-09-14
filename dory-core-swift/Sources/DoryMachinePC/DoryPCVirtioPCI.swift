@@ -387,56 +387,155 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   }
 
   private func drain(queue index: UInt16, armNotifications: Bool = false) {
-    let snapshot = deviceState.snapshot()
-    guard snapshot.status.contains(.driverOK) else { return }
-    // Readiness-triggered draining exists to initialize the negotiated event
-    // field. Preserve the existing notification path for ordinary queues.
-    if armNotifications, !snapshot.negotiatedFeatures.contains(.eventIndex) { return }
     let processing = lock.withLock {
       (guestMemory, queueCanProcess, queueProcessor, deferredQueueProcessor)
     }
     guard let memory = processing.0,
       processing.2 != nil || processing.3 != nil else { return }
     let processingLock = processingLocks[Int(index)]
-    processingLock.lock()
-    defer { processingLock.unlock() }
-    do {
-      let queue = try queue(at: index)
-      if armNotifications, snapshot.negotiatedFeatures.contains(.eventIndex) {
-        // Initialize the device-owned event field before the driver's first
-        // kick, even when an RX backend has no frame available to consume.
-        try queue.requestAvailableNotification(memory: memory)
+    if let processor = processing.2 {
+      // Direct path: the backend performs guest-memory DMA inline, so the
+      // lifecycle lease stays held across pop, backend execution, and
+      // used-ring completion. A concurrent markDeviceNeedsReset linearizes
+      // either before the lease or after it completes, never mid-DMA.
+      var shouldNotify = false
+      var terminalEpoch: UInt64?
+      let failed = processingLock.withLock { () -> Bool in
+        do {
+          let queue = try queue(at: index)
+          do {
+            try deviceState.withLockedSnapshot { snapshot in
+              // Capture the lifecycle epoch for a terminal failure detected
+              // inside this lease. A zero-status reset that linearizes after
+              // the lease releases advances the epoch, so the post-lease
+              // conditional mark below suppresses stale poisoning.
+              terminalEpoch = snapshot.lifecycleEpoch
+              guard Self.isOperational(snapshot) else { return }
+            // Readiness-triggered draining exists to initialize the negotiated event
+            // field. Preserve the existing notification path for ordinary queues.
+            if armNotifications, !snapshot.negotiatedFeatures.contains(.eventIndex) { return }
+            if armNotifications, snapshot.negotiatedFeatures.contains(.eventIndex) {
+              // Initialize the device-owned event field before the driver's first
+              // kick, even when an RX backend has no frame available to consume.
+              try queue.requestAvailableNotification(memory: memory)
+            }
+            while processing.1(index),
+              let chain = try queue.popAvailable(
+                memory: memory,
+                allowIndirectDescriptors: snapshot.negotiatedFeatures.contains(
+                  .indirectDescriptors),
+                eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
+              )
+            {
+              let bytesWritten = try processor(index, chain, memory)
+              memory.synchronize()
+              shouldNotify = try queue.complete(
+                chain,
+                bytesWritten: bytesWritten,
+                memory: memory,
+                eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
+              ) || shouldNotify
+            }
+          }
+          } catch {
+            // terminalEpoch already holds this lease's epoch when the
+            // throw originated inside the lease.
+            throw error
+          }
+          return false
+        } catch {
+          return true
+        }
       }
-      while processing.1(index),
-        let chain = try queue.popAvailable(
-          memory: memory,
-          allowIndirectDescriptors: snapshot.negotiatedFeatures.contains(.indirectDescriptors),
-          eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
-        )
-      {
-        if let processor = processing.2 {
-          let bytesWritten = try processor(index, chain, memory)
-          memory.synchronize()
-          let notify = try queue.complete(
-            chain,
-            bytesWritten: bytesWritten,
-            memory: memory,
-            eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
-          )
-          if notify { _ = signalQueueInterrupt(queue: index) }
-        } else if let processor = processing.3 {
-          let generation = try queueGeneration(at: index)
+      if shouldNotify { _ = signalQueueInterrupt(queue: index) }
+      if failed {
+        if let expected = terminalEpoch {
+          if deviceState.markDeviceNeedsReset(expectedLifecycleEpoch: expected) {
+            signalConfigurationChange()
+          }
+        } else if deviceState.markDeviceNeedsReset() { signalConfigurationChange() }
+      }
+      return
+    }
+    guard let deferred = processing.3 else { return }
+    // Deferred path: the per-queue lock stays held for the whole drain,
+    // including backend execution and any synchronous completion callback, so
+    // queue pop/complete stays serialized. The non-reentrant lifecycle lease
+    // is held only to validate operability and to pop (remove) one available
+    // chain plus its completion context; it is released before invoking the
+    // backend so a synchronous publish/fail can re-enter the lifecycle gate
+    // in completeDeferred/failDeferred without deadlocking.
+    var deferredTerminalEpoch: UInt64?
+    let failed = processingLock.withLock { () -> Bool in
+      var lastPopEpoch: UInt64?
+      do {
+        let queue = try queue(at: index)
+        let generation = try queueGeneration(at: index)
+        let ready: Bool
+        do {
+          var readyLeaseEpoch: UInt64?
+          do {
+            ready = try deviceState.withLockedSnapshot { snapshot -> Bool in
+              readyLeaseEpoch = snapshot.lifecycleEpoch
+              guard Self.isOperational(snapshot) else { return false }
+              // Readiness-triggered draining exists to initialize the negotiated event
+              // field. Preserve the existing notification path for ordinary queues.
+              if armNotifications, !snapshot.negotiatedFeatures.contains(.eventIndex) {
+                return false
+              }
+              if armNotifications, snapshot.negotiatedFeatures.contains(.eventIndex) {
+                // Initialize the device-owned event field before the driver's first
+                // kick, even when an RX backend has no frame available to consume.
+                try queue.requestAvailableNotification(memory: memory)
+              }
+              return true
+            }
+          } catch {
+            deferredTerminalEpoch = readyLeaseEpoch
+            throw error
+          }
+        }
+        guard ready else { return false }
+        while processing.1(index) {
+          var popLeaseEpoch: UInt64?
+          let captured: (DoryVirtioDescriptorChain, Bool, UInt64)?
+          do {
+            captured = try deviceState.withLockedSnapshot { snapshot -> (
+              DoryVirtioDescriptorChain, Bool, UInt64
+            )? in
+              popLeaseEpoch = snapshot.lifecycleEpoch
+              guard Self.isOperational(snapshot) else { return nil }
+              guard
+                let chain = try queue.popAvailable(
+                  memory: memory,
+                  allowIndirectDescriptors: snapshot.negotiatedFeatures.contains(
+                    .indirectDescriptors),
+                  eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
+                )
+              else { return nil }
+              return (
+                chain, snapshot.negotiatedFeatures.contains(.eventIndex),
+                snapshot.lifecycleEpoch
+              )
+            }
+          } catch {
+            deferredTerminalEpoch = popLeaseEpoch
+            throw error
+          }
+          guard let (chain, eventIndexNegotiated, popEpoch) = captured else { break }
+          lastPopEpoch = popEpoch
           let completion = DoryPCVirtioPCIDeferredCompletion(
             publishResponse: { [weak self, weak queue] response in
               guard let self, let queue else { return false }
               return self.completeDeferred(
                 queue: index,
                 generation: generation,
+                popEpoch: popEpoch,
                 chain: chain,
                 response: response,
                 memory: memory,
                 splitQueue: queue,
-                eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
+                eventIndexNegotiated: eventIndexNegotiated
               )
             },
             failDeviceGeneration: { [weak self, weak queue] in
@@ -444,16 +543,40 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
               return self.failDeferred(
                 queue: index,
                 generation: generation,
+                popEpoch: popEpoch,
                 splitQueue: queue
               )
             }
           )
-          try processor(index, chain, memory, completion)
+          do {
+            try deferred(index, chain, memory, completion)
+          } catch {
+            // The backend owned host work for a chain popped in popEpoch's
+            // lifecycle epoch. Gate the terminal mark on that epoch so a reset
+            // racing the backend cannot poison the fresh lifecycle.
+            deferredTerminalEpoch = popEpoch
+            throw error
+          }
         }
+        return false
+      } catch {
+        if deferredTerminalEpoch == nil {
+          // No pop had succeeded (pre-lease transport failure or ready/pop
+          // lease throw already recorded its epoch above). A backend throw
+          // always records popEpoch above, so reaching here with nil and
+          // a non-nil lastPopEpoch means the backend threw without the
+          // inner wrapper recording it; attribute it to the last pop epoch.
+          deferredTerminalEpoch = lastPopEpoch
+        }
+        return true
       }
-    } catch {
-      deviceState.markDeviceNeedsReset()
-      signalConfigurationChange()
+    }
+    if failed {
+      if let expected = deferredTerminalEpoch {
+        if deviceState.markDeviceNeedsReset(expectedLifecycleEpoch: expected) {
+          signalConfigurationChange()
+        }
+      } else if deviceState.markDeviceNeedsReset() { signalConfigurationChange() }
     }
   }
 
@@ -627,6 +750,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   private func completeDeferred(
     queue index: UInt16,
     generation: UInt64,
+    popEpoch: UInt64,
     chain: DoryVirtioDescriptorChain,
     response: [UInt8],
     memory: any DoryVirtioGuestMemory,
@@ -634,98 +758,142 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     eventIndexNegotiated: Bool
   ) -> Bool {
     let processingLock = processingLocks[Int(index)]
-    processingLock.lock()
-    defer { processingLock.unlock() }
-    do {
-      let current = try lock.withLock { () -> QueueRegisters in
-        guard queues.indices.contains(Int(index)) else {
-          throw DoryPCVirtioPCIError.invalidQueue(index)
+    var published = false
+    var shouldNotify = false
+    var shouldMarkNeedsReset = false
+    var terminalEpoch: UInt64?
+    let failed = processingLock.withLock { () -> Bool in
+      do {
+        let current = try lock.withLock { () -> QueueRegisters in
+          guard queues.indices.contains(Int(index)) else {
+            throw DoryPCVirtioPCIError.invalidQueue(index)
+          }
+          return queues[Int(index)]
         }
-        return queues[Int(index)]
-      }
-      guard current.enabled, current.generation == generation,
-        deviceState.snapshot().status.contains(.driverOK),
-        current.queue === splitQueue else { return false }
-      guard UInt64(response.count) <= chain.writableByteCount else {
-        deviceState.markDeviceNeedsReset()
-        signalConfigurationChange()
-        return false
-      }
-      // Preflight: validate every writable target that will receive response bytes
-      // before the first guest-memory write. A later invalid/revoked target must
-      // not leave an earlier target partially written; on failure publish no
-      // response bytes and no used-ring completion, leaving the queue usable for
-      // a later retry/control path.
-      var preflightOffset = 0
-      for descriptor in chain.descriptors where descriptor.deviceWillWrite
-        && preflightOffset < response.count
-      {
-        let count = min(Int(descriptor.length), response.count - preflightOffset)
         do {
-          try memory.validate(
-            at: descriptor.address,
-            byteCount: count,
-            deviceWillWrite: true
+          try deviceState.withLockedSnapshot { snapshot in
+            guard current.enabled, current.generation == generation,
+              Self.isOperational(snapshot),
+              current.queue === splitQueue,
+              snapshot.lifecycleEpoch == popEpoch else { return }
+            guard UInt64(response.count) <= chain.writableByteCount else {
+              shouldMarkNeedsReset = true
+              terminalEpoch = popEpoch
+              return
+            }
+          // Preflight: validate every writable target that will receive response bytes
+          // before the first guest-memory write. A later invalid/revoked target must
+          // not leave an earlier target partially written; on failure publish no
+          // response bytes and no used-ring completion, leaving the queue usable for
+          // a later retry/control path.
+          var preflightOffset = 0
+          for descriptor in chain.descriptors where descriptor.deviceWillWrite
+            && preflightOffset < response.count
+          {
+            let count = min(Int(descriptor.length), response.count - preflightOffset)
+            do {
+              try memory.validate(
+                at: descriptor.address,
+                byteCount: count,
+                deviceWillWrite: true
+              )
+            } catch {
+              return
+            }
+            preflightOffset += count
+          }
+          var responseOffset = 0
+          for descriptor in chain.descriptors where descriptor.deviceWillWrite
+            && responseOffset < response.count
+          {
+            let count = min(Int(descriptor.length), response.count - responseOffset)
+            try memory.write(
+              at: descriptor.address,
+              bytes: Array(response[responseOffset..<(responseOffset + count)])
+            )
+            responseOffset += count
+          }
+          guard responseOffset == response.count else { return }
+          memory.synchronize()
+          shouldNotify = try splitQueue.complete(
+            chain,
+            bytesWritten: UInt32(response.count),
+            memory: memory,
+            eventIndexNegotiated: eventIndexNegotiated
           )
-        } catch {
-          return false
+          published = true
         }
-        preflightOffset += count
+        } catch {
+          // A throw inside the lease (guest-memory DMA or used-ring completion)
+          // belongs to the popped chain's epoch. A reset racing the post-lease
+          // mark must not let this stale failure poison the fresh lifecycle.
+          terminalEpoch = popEpoch
+          throw error
+        }
+        return false
+      } catch {
+        return true
       }
-      var responseOffset = 0
-      for descriptor in chain.descriptors where descriptor.deviceWillWrite
-        && responseOffset < response.count
-      {
-        let count = min(Int(descriptor.length), response.count - responseOffset)
-        try memory.write(
-          at: descriptor.address,
-          bytes: Array(response[responseOffset..<(responseOffset + count)])
-        )
-        responseOffset += count
-      }
-      guard responseOffset == response.count else { return false }
-      memory.synchronize()
-      let notify = try splitQueue.complete(
-        chain,
-        bytesWritten: UInt32(response.count),
-        memory: memory,
-        eventIndexNegotiated: eventIndexNegotiated
-      )
-      if notify { _ = signalQueueInterrupt(queue: index) }
-      return true
-    } catch {
-      deviceState.markDeviceNeedsReset()
-      signalConfigurationChange()
-      return false
     }
+    if shouldNotify { _ = signalQueueInterrupt(queue: index) }
+    if failed || shouldMarkNeedsReset {
+      if let expected = terminalEpoch {
+        if deviceState.markDeviceNeedsReset(expectedLifecycleEpoch: expected) {
+          signalConfigurationChange()
+        }
+      } else if deviceState.markDeviceNeedsReset() { signalConfigurationChange() }
+    }
+    return published
   }
 
   private func failDeferred(
     queue index: UInt16,
     generation: UInt64,
+    popEpoch: UInt64,
     splitQueue: DoryVirtioSplitQueue
   ) -> Bool {
     let processingLock = processingLocks[Int(index)]
-    processingLock.lock()
-    defer { processingLock.unlock() }
-    do {
-      let current = try lock.withLock { () -> QueueRegisters in
-        guard queues.indices.contains(Int(index)) else {
-          throw DoryPCVirtioPCIError.invalidQueue(index)
+    var eligibleToFail = false
+    var terminalEpoch: UInt64?
+    let failed = processingLock.withLock { () -> Bool in
+      do {
+        let current = try lock.withLock { () -> QueueRegisters in
+          guard queues.indices.contains(Int(index)) else {
+            throw DoryPCVirtioPCIError.invalidQueue(index)
+          }
+          return queues[Int(index)]
         }
-        return queues[Int(index)]
+        do {
+          try deviceState.withLockedSnapshot { snapshot in
+            guard current.enabled, current.generation == generation,
+              Self.isOperational(snapshot),
+              current.queue === splitQueue,
+              snapshot.lifecycleEpoch == popEpoch else { return }
+            eligibleToFail = true
+            terminalEpoch = popEpoch
+          }
+        } catch {
+          terminalEpoch = popEpoch
+          throw error
+        }
+        return false
+      } catch {
+        return true
       }
-      guard current.enabled, current.generation == generation,
-        deviceState.snapshot().status.contains(.driverOK),
-        current.queue === splitQueue else { return false }
-      deviceState.markDeviceNeedsReset()
-      signalConfigurationChange()
-      return true
-    } catch {
-      deviceState.markDeviceNeedsReset()
-      signalConfigurationChange()
-      return false
     }
+    let transitioned: Bool = {
+      guard eligibleToFail || failed else { return false }
+      if let expected = terminalEpoch {
+        return deviceState.markDeviceNeedsReset(expectedLifecycleEpoch: expected)
+      }
+      return deviceState.markDeviceNeedsReset()
+    }()
+    if transitioned { signalConfigurationChange() }
+    return eligibleToFail && transitioned
+  }
+
+  private static func isOperational(_ snapshot: DoryVirtioDeviceSnapshot) -> Bool {
+    snapshot.status.contains(.driverOK) && !snapshot.status.contains(.deviceNeedsReset)
   }
 
   private func validate(offset: UInt64, byteCount: Int, write: Bool) throws {
