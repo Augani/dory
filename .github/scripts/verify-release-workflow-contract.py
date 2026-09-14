@@ -77,6 +77,11 @@ for name, source in (("tests", tests_workflow), ("release", workflow)):
             guest_tools_test,
             f"{name} workflow does not exercise the macOS guest-tools package boundary",
         )
+    require(
+        source,
+        "-scheme DoryGuestTools",
+        f"{name} workflow does not compile the macOS Guest Tools distribution target",
+    )
 
 candidate = workflow.split("      - name: Stage immutable public candidate", 1)[1].split(
     "\n  homebrew_install_certification:", 1

@@ -192,6 +192,17 @@ jobs:
         run: brew install protobuf
       - name: Build shared Rust guest-control client
         run: scripts/build-dory-ffi-xcframework.sh --if-needed
+      - name: Compile macOS Guest Tools distribution target
+        run: |
+          xcodebuild build \
+            -project Dory.xcodeproj \
+            -scheme DoryGuestTools \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/dory-guest-tools-derived-data" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO
       - name: Dory CLI machine create
         run: .github/scripts/test-dory-machine-create.sh
       - name: Signed release metadata contract
