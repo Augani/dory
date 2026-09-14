@@ -2982,6 +2982,14 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     let crossPageBranch = words.count
     words.append(0)
 
+    // Compare with the sign extension of bit 47 before masking the VPN into a tag.
+    words.append(0x9340_0000 | (47 << 10) | (16 << 5) | 17)  // sbfx x17,x16,#0,#48
+    words.append(
+      encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 16, right: 17, destination: 31))
+    let noncanonicalBranch = words.count
+    words.append(0)
+
     words.append(
       encodeLogical(
         .or,
@@ -3074,6 +3082,10 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     words.append(encodeLoad64(register: 14, word: .r14))
     words.append(encodeLoad64(register: 15, word: .r15))
 
+    words[noncanonicalBranch] = encodeConditionalBranch(
+      condition: .notEqual,
+      wordOffset: restoreScratch - noncanonicalBranch
+    )
     words[crossPageBranch] = encodeConditionalBranch(
       condition: .carrySet,
       wordOffset: restoreScratch - crossPageBranch

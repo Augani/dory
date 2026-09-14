@@ -19,6 +19,7 @@ public enum DoryX86JITTLBError: Error, Sendable, Equatable {
   case unavailable(Int32)
   case invalidEntryCount(Int)
   case invalidAddressSpaceGeneration(UInt64)
+  case noncanonicalAddress(UInt64)
 }
 
 public enum DoryX86JITTLBResolution: Sendable, Hashable {
@@ -177,10 +178,10 @@ public final class DoryX86JITTLB: @unchecked Sendable {
     access: DoryX86JITTLBAccess,
     memory: any DoryX86Memory
   ) throws -> DoryX86JITTLBResolution {
-    _ = try Self.tag(
-      linearAddress: linearAddress,
-      addressSpaceGeneration: addressSpaceGeneration
-    )
+    // Noncanonical accesses must reach architectural translation, not tag validation.
+    guard (1...Self.maximumAddressSpaceGeneration).contains(addressSpaceGeneration) else {
+      throw DoryX86JITTLBError.invalidAddressSpaceGeneration(addressSpaceGeneration)
+    }
     guard let hostMemory = memory as? any DoryX86HostAddressSpaceMemory,
       hostMemory.hostAddressSpaceByteCount > 0,
       byteCount > 0, byteCount <= Int(UInt32.max)
@@ -226,6 +227,9 @@ public final class DoryX86JITTLB: @unchecked Sendable {
   ) throws -> UInt64 {
     guard (1...maximumAddressSpaceGeneration).contains(addressSpaceGeneration) else {
       throw DoryX86JITTLBError.invalidAddressSpaceGeneration(addressSpaceGeneration)
+    }
+    guard DoryX86ArchitecturalState.isCanonical(linearAddress) else {
+      throw DoryX86JITTLBError.noncanonicalAddress(linearAddress)
     }
     let virtualPageNumberMask: UInt64 = (1 << 36) - 1
     let virtualPageNumber = (linearAddress >> pageShift) & virtualPageNumberMask

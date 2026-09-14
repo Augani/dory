@@ -2889,6 +2889,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
     let crossPageBranch = words.count
     words.append(0)
 
+    // Reject addresses whose upper bits would be discarded by tag construction.
+    words.append(0x9340_0000 | (47 << 10) | (addressRegister << 5) | 14)  // sbfx x14,xN,#0,#48
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, addressRegister, 14, 31))
+    let noncanonicalBranch = words.count
+    words.append(0)
+
     // Build the exact {canonical VPN, address-space generation} tag and direct-map index.
     words.append(
       encodeLogical(
@@ -2956,6 +2962,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(0)
 
     let missStart = words.count
+    words[noncanonicalBranch] = encodeConditionalBranch(
+      condition: .notEqual,
+      wordOffset: missStart - noncanonicalBranch
+    )
     words[missBranch] = encodeConditionalBranch(
       condition: .notEqual,
       wordOffset: missStart - missBranch
@@ -3073,6 +3083,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
     let crossPageBranch = words.count
     words.append(0)
 
+    // Reject addresses whose upper bits would be discarded by tag construction.
+    words.append(0x9340_0000 | (47 << 10) | (addressRegister << 5) | 14)  // sbfx x14,xN,#0,#48
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, addressRegister, 14, 31))
+    let noncanonicalBranch = words.count
+    words.append(0)
+
     // Build the same exact {canonical VPN, address-space generation} tag as the C resolver.
     words.append(
       encodeLogical(
@@ -3144,6 +3160,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(0)
 
     let missStart = words.count
+    words[noncanonicalBranch] = encodeConditionalBranch(
+      condition: .notEqual,
+      wordOffset: missStart - noncanonicalBranch
+    )
     words[missBranch] = encodeConditionalBranch(
       condition: .notEqual,
       wordOffset: missStart - missBranch

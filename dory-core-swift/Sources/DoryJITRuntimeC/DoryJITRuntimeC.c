@@ -102,11 +102,18 @@ static size_t dory_jit_tlb_index(const dory_jit_tlb *tlb, uint64_t linear_addres
     return (size_t)((linear_address >> 12) & (tlb->entry_count - 1));
 }
 
+// Bits 63:48 must be the sign extension of bit 47, as in the architectural walker.
+static int dory_jit_tlb_address_is_canonical(uint64_t linear_address) {
+    const uint64_t upper = linear_address >> 47;
+    return upper == 0 || upper == UINT64_C(0x1ffff);
+}
+
 static uint64_t dory_jit_tlb_tag(
     uint64_t linear_address,
     uint64_t address_space_generation
 ) {
-    if (address_space_generation == 0 ||
+    if (!dory_jit_tlb_address_is_canonical(linear_address) ||
+        address_space_generation == 0 ||
         address_space_generation > dory_jit_tlb_maximum_generation) {
         return 0;
     }
@@ -689,6 +696,9 @@ int dory_jit_tlb_lookup(
         !dory_jit_tlb_access_is_valid(access) || tag == 0 || host_address_out == NULL) {
         return EINVAL;
     }
+    if (!dory_jit_tlb_address_is_canonical(linear_address)) {
+        return ENOENT;
+    }
     const dory_jit_tlb_entry *entries =
         tlb->entries + ((size_t)access * tlb->entry_count);
     const dory_jit_tlb_entry entry = entries[dory_jit_tlb_index(tlb, linear_address)];
@@ -707,7 +717,7 @@ int dory_jit_tlb_fill(
     uint64_t host_address
 ) {
     dory_jit_tlb_entry *entries = dory_jit_tlb_entries(tlb, access);
-    if (entries == NULL || tag == 0) {
+    if (entries == NULL || tag == 0 || !dory_jit_tlb_address_is_canonical(linear_address)) {
         return EINVAL;
     }
     dory_jit_tlb_entry *entry = &entries[dory_jit_tlb_index(tlb, linear_address)];
@@ -755,16 +765,20 @@ int dory_jit_tlb_resolve(
     }
     memset(resolution_out, 0, sizeof(*resolution_out));
     const uint64_t tag = dory_jit_tlb_tag(linear_address, address_space_generation);
-    if (tag == 0) {
+    if (address_space_generation == 0 ||
+        address_space_generation > dory_jit_tlb_maximum_generation) {
         return EINVAL;
     }
-    if ((uint64_t)byte_count > UINT64_C(4096) - (linear_address & UINT64_C(4095))) {
+    // A zero tag here means noncanonical input. Bypass cache admission and let the
+    // translation callback preserve the architectural fault/fallback behavior.
+    if (tag != 0 &&
+        (uint64_t)byte_count > UINT64_C(4096) - (linear_address & UINT64_C(4095))) {
         tlb->fallback_counts[access]++;
         resolution_out->status = DORY_JIT_TLB_RESOLUTION_FALLBACK;
         return 0;
     }
     uint64_t host_address = 0;
-    const int lookup = dory_jit_tlb_lookup(
+    const int lookup = tag == 0 ? ENOENT : dory_jit_tlb_lookup(
         tlb,
         access,
         linear_address,
@@ -811,7 +825,7 @@ int dory_jit_tlb_resolve(
         resolution_out->status = DORY_JIT_TLB_RESOLUTION_PAGE_FAULT;
         return 0;
     }
-    if (translation != DORY_JIT_TLB_RESOLUTION_FILLED ||
+    if (tag == 0 || translation != DORY_JIT_TLB_RESOLUTION_FILLED ||
         host_address_space_offset > host_address_space_byte_count ||
         (uint64_t)byte_count > host_address_space_byte_count - host_address_space_offset ||
         host_address_space_base > UINT64_MAX - host_address_space_offset) {

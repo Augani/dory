@@ -1714,6 +1714,67 @@ import Testing
     #endif
   }
 
+  @Test(arguments: [false, true])
+  func generatedTLBRejectsNoncanonicalAliasOfCachedUpperHalfMapping(isWrite: Bool) throws {
+    #if arch(arm64)
+      let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)
+      let paging = DoryX86PagingUnit()
+      let canonical: UInt64 = 0xffff_8000_0040_0000
+      let noncanonical: UInt64 = 0x0000_8000_0040_0000
+      try physical.writeScalar(at: 0x1000 + 256 * 8, value: 0x2007, byteCount: 8)
+      try physical.writeScalar(at: 0x2000, value: 0x3007, byteCount: 8)
+      try physical.writeScalar(at: 0x3000 + 2 * 8, value: 0x4007, byteCount: 8)
+      try physical.writeScalar(at: 0x4000, value: 0x8007, byteCount: 8)
+      try physical.writeScalar(at: 0x8000, value: 0x1122_3344_5566_7788, byteCount: 8)
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: canonical, rbx: 0xCAFE), rip: 0x6000,
+        rflags: [.reservedOne, .carry, .zero, .overflow],
+        cs: .init(selector: 3, attributes: 0xA0FB, limit: .max),
+        control: .init(
+          cr0: 0x8001_0011, cr3: 0x1000, cr4: 1 << 5,
+          efer: (1 << 10) | (1 << 11))
+      )
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical, pagingUnit: paging,
+        context: .init(state: initial, mode: .long64),
+        jitWriteCoherencePolicy: .protectedHostPages
+      )
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4_096, tier1Enabled: false)
+      let bytes: [UInt8] = [0x48, isWrite ? 0x89 : 0x8B, 0x18]  // mov [rax],rbx / rbx,[rax]
+      for _ in 0..<2 {
+        var state = initial
+        let execution = try #require(executor.execute(
+          bytes: bytes, at: initial.rip, mode: .long64, addressSpaceID: initial.control.cr3,
+          maximumInstructions: 1, state: &state, memory: translated))
+        #expect(execution.block.tier == .baseline)
+        #expect(execution.exitCode == .dispatch)
+        #expect(state.registers.rbx == (isWrite ? 0xCAFE : 0x1122_3344_5566_7788))
+      }
+      let tlb = try #require(executor.translationTLBForTesting)
+      #expect(tlb.diagnostics.fills == 1)
+      #expect(tlb.diagnostics.hits == 1)
+      let before = tlb.diagnostics
+      let memoryBefore = try physical.read(at: 0x8000, byteCount: 16)
+      var state = initial
+      state.registers.rax = noncanonical
+      state.registers.rbx = 0xDEAD_BEEF
+      let faultingState = state
+      translated.updateContext(.init(state: state, mode: .long64))
+      let execution = try #require(executor.execute(
+        bytes: bytes, at: initial.rip, mode: .long64, addressSpaceID: initial.control.cr3,
+        maximumInstructions: 1, state: &state, memory: translated))
+      #expect(execution.exitCode == .interpreter)
+      #expect(execution.guestInstructionCount == 0)
+      #expect(state == faultingState)
+      #expect(try physical.read(at: 0x8000, byteCount: 16) == memoryBefore)
+      #expect(tlb.diagnostics.hits == before.hits)
+      #expect(tlb.diagnostics.fills == before.fills)
+      #expect(tlb.diagnostics.misses == before.misses + 1)
+      #expect(tlb.diagnostics.fallbacks == before.fallbacks + 1)
+    #endif
+  }
+
   @Test func nativeReadTLBDoesNotReuseSupervisorFillAtCPL3() throws {
     #if arch(arm64)
       let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)

@@ -1,4 +1,5 @@
 import Darwin
+import DoryJITRuntimeC
 import Testing
 
 @testable import DoryDBTX86
@@ -127,6 +128,97 @@ import Testing
         linearAddress: 0,
         addressSpaceGeneration: DoryX86JITTLB.maximumAddressSpaceGeneration + 1
       )
+    }
+  }
+
+  @Test(arguments: [
+    UInt64(0x0000_8000_0000_0000), 0x0000_ffff_ffff_ffff,
+    0xffff_0000_0000_0000, 0xffff_7fff_ffff_ffff, 0x0001_0000_0000_0000,
+  ])
+  func helpersRejectNoncanonicalAddresses(linear: UInt64) throws {
+    let tlb = try DoryX86JITTLB(entryCount: 8)
+    let canonical = UInt64(bitPattern: Int64(bitPattern: linear << 16) >> 16)
+    let host: UInt64 = 0x10_000
+    let tag = try DoryX86JITTLB.tag(linearAddress: canonical, addressSpaceGeneration: 1)
+    let storage = try #require(OpaquePointer(bitPattern: UInt(tlb.storageAddress)))
+    for access in DoryX86JITTLBAccess.allCases {
+      let rawAccess: dory_jit_tlb_access
+      switch access {
+      case .read: rawAccess = DORY_JIT_TLB_ACCESS_READ
+      case .write: rawAccess = DORY_JIT_TLB_ACCESS_WRITE
+      case .execute: rawAccess = DORY_JIT_TLB_ACCESS_EXECUTE
+      }
+      try tlb.fill(
+        linearAddress: canonical, addressSpaceGeneration: 1, access: access, hostAddress: host)
+      #expect(throws: DoryX86JITTLBError.noncanonicalAddress(linear)) {
+        try DoryX86JITTLB.tag(linearAddress: linear, addressSpaceGeneration: 1)
+      }
+      #expect(throws: DoryX86JITTLBError.noncanonicalAddress(linear)) {
+        try tlb.lookup(linearAddress: linear, addressSpaceGeneration: 1, access: access)
+      }
+      #expect(throws: DoryX86JITTLBError.noncanonicalAddress(linear)) {
+        try tlb.fill(
+          linearAddress: linear, addressSpaceGeneration: 1, access: access, hostAddress: host + 8)
+      }
+      // C callers must not bypass admission by supplying the canonical alias's valid tag.
+      var resolvedHost: UInt64 = 0
+      #expect(dory_jit_tlb_lookup(storage, rawAccess, linear, tag, &resolvedHost) == ENOENT)
+      #expect(resolvedHost == 0)
+      #expect(dory_jit_tlb_fill(storage, rawAccess, linear, tag, host + 8) == EINVAL)
+      #expect(
+        try tlb.lookup(linearAddress: canonical, addressSpaceGeneration: 1, access: access) == host)
+    }
+  }
+
+  @Test func canonicalAddressBoundariesRemainCacheable() throws {
+    for linear: UInt64 in [0, 0x0000_7fff_ffff_ffff, 0xffff_8000_0000_0000, UInt64.max] {
+      let tlb = try DoryX86JITTLB(entryCount: 8)
+      try tlb.fill(
+        linearAddress: linear, addressSpaceGeneration: 1, access: .read, hostAddress: 0x10_000)
+      #expect(
+        try tlb.lookup(linearAddress: linear, addressSpaceGeneration: 1, access: .read) == 0x10_000)
+    }
+  }
+
+  @Test func cResolverRejectsNoncanonicalAliasOfCachedUpperHalfMapping() throws {
+    let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)
+    let paging = DoryX86PagingUnit()
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: physical, pagingUnit: paging, context: longModeContext(),
+      jitWriteCoherencePolicy: .protectedHostPages
+    )
+    let canonical: UInt64 = 0xffff_8000_0040_0123
+    let noncanonical: UInt64 = 0x0000_8000_0040_0123
+    try installFourLevelMapping(
+      linear: canonical, physicalPage: 0x8_000, flags: 0x7, memory: physical)
+    let tlb = try DoryX86JITTLB(entryCount: 16)
+    let host = physical.hostAddressSpaceBase + 0x8_123
+    for access in DoryX86JITTLBAccess.allCases {
+      #expect(
+        try tlb.resolve(
+          linearAddress: canonical, byteCount: 8, addressSpaceGeneration: 1,
+          access: access, memory: translated) == .filled(hostAddress: host))
+      let before = tlb.diagnostics
+      #expect(
+        try tlb.resolve(
+          linearAddress: noncanonical, byteCount: 8, addressSpaceGeneration: 1,
+          access: access, memory: translated) == .fallback)
+      #expect(tlb.diagnostics.hits == before.hits)
+      #expect(tlb.diagnostics.fills == before.fills)
+      #expect(tlb.diagnostics.misses == before.misses + 1)
+      #expect(tlb.diagnostics.fallbacks == before.fallbacks + 1)
+      #expect(
+        try tlb.resolve(
+          linearAddress: canonical, byteCount: 8, addressSpaceGeneration: 1,
+          access: access, memory: translated) == .hit(hostAddress: host))
+    }
+    // The established architectural rejection is addressOverflow; the resolver delegates
+    // its delivery to the callback/interpreter rather than inventing a cache validation error.
+    #expect(throws: DoryX86MemoryError.addressOverflow(address: noncanonical, byteCount: 1)) {
+      try translated.readScalar(at: noncanonical, byteCount: 8)
+    }
+    #expect(throws: DoryX86MemoryError.addressOverflow(address: noncanonical, byteCount: 1)) {
+      try translated.writeScalar(at: noncanonical, value: 0xCAFE, byteCount: 8)
     }
   }
 
