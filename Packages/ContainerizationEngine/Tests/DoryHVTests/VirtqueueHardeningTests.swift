@@ -163,6 +163,202 @@ import Testing
         #expect(try memory.read(UInt16.self, at: usedRing + 2) == 2)
     }
 
+    @Test func legacyQueuesPreserveFlagsAndLeaveEventTailsUntouched() throws {
+        let memory = try makeMemory()
+        let queue = try makeReadyQueue(memory: memory, size: 2)
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 0,
+            address: dataA,
+            length: 4,
+            flags: 2
+        )
+        let usedEventAddress = availRing + 4 + 2 * 2
+        let availEventAddress = usedRing + 4 + 2 * 8
+        try memory.write(UInt16(0xA55A), at: usedEventAddress)
+        try memory.write(UInt16(0x5AA5), at: availEventAddress)
+
+        // Legacy notification behavior remains entirely controlled by NO_INTERRUPT.
+        try memory.write(UInt16(1), at: availRing)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+        let suppressed = try #require(try queue.pop())
+        #expect(try queue.push(suppressed, written: 4) == false)
+
+        try memory.write(UInt16(0), at: availRing)
+        try memory.write(UInt16(0), at: availRing + 6)
+        try memory.write(UInt16(2), at: availRing + 2)
+        let notified = try #require(try queue.pop())
+        #expect(try queue.push(notified, written: 4))
+        #expect(try memory.read(UInt16.self, at: usedEventAddress) == 0xA55A)
+        #expect(try memory.read(UInt16.self, at: availEventAddress) == 0x5AA5)
+    }
+
+    @Test func eventIndexUsesUsedEventCrossingsAndRearmsAvailableEvent() throws {
+        let memory = try makeMemory()
+        let queue = try makeReadyQueue(memory: memory, size: 2)
+        queue.setNegotiatedFeatures(VirtqueueFeature.eventIndex)
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 0,
+            address: dataA,
+            length: 4,
+            flags: 2
+        )
+        let usedEventAddress = availRing + 4 + 2 * 2
+        let availEventAddress = usedRing + 4 + 2 * 8
+
+        // The first completion crosses event 0; the next does not. Updating the threshold to 2
+        // asks for the third completion, independent of the legacy avail flags.
+        try memory.write(UInt16(1), at: availRing)  // ignored while EVENT_IDX is active
+        try memory.write(UInt16(0), at: usedEventAddress)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+        let first = try #require(try queue.pop())
+        #expect(try memory.read(UInt16.self, at: availEventAddress) == 1)
+        #expect(try queue.push(first, written: 4))
+
+        try memory.write(UInt16(0), at: usedEventAddress)
+        try memory.write(UInt16(0), at: availRing + 6)
+        try memory.write(UInt16(2), at: availRing + 2)
+        let second = try #require(try queue.pop())
+        #expect(try memory.read(UInt16.self, at: availEventAddress) == 2)
+        #expect(try queue.push(second, written: 4) == false)
+
+        try memory.write(UInt16(2), at: usedEventAddress)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(3), at: availRing + 2)
+        let third = try #require(try queue.pop())
+        #expect(try queue.push(third, written: 4))
+    }
+
+    @Test func eventIndexIdleRearmRereadsWorkPublishedInTheArmWindow() throws {
+        let memory = try makeMemory()
+        let queue = try makeReadyQueue(memory: memory, size: 2)
+        queue.setNegotiatedFeatures(VirtqueueFeature.eventIndex)
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 0,
+            address: dataA,
+            length: 4,
+            flags: 2
+        )
+        let availEventAddress = usedRing + 4 + 2 * 8
+        let availRing = self.availRing
+        try memory.write(UInt16.max, at: availEventAddress)
+
+        // pop observes an idle avail.idx first. The hook runs only after its avail_event write
+        // and barrier, then publishes a head and advances avail.idx before the mandatory recheck.
+        queue.idleAvailEventRearmTestHook = {
+            guard try memory.read(UInt16.self, at: availEventAddress) == 0 else {
+                throw VMError.unexpectedExit("idle avail_event arm was not published")
+            }
+            try memory.write(UInt16(0), at: availRing + 4)
+            try memory.write(UInt16(1), at: availRing + 2)
+        }
+        let chain = try #require(try queue.pop())
+        queue.idleAvailEventRearmTestHook = nil
+
+        #expect(chain.head == 0)
+        #expect(try memory.read(UInt16.self, at: availEventAddress) == 1)
+    }
+
+    @Test func eventIndexUsedEventReadFailureKeepsClaimAndPublishesNothing() throws {
+        let memory = try makeMemory()
+        let queue = try makeReadyQueue(memory: memory, size: 2)
+        queue.setNegotiatedFeatures(VirtqueueFeature.eventIndex)
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 0,
+            address: dataA,
+            length: 4,
+            flags: 2
+        )
+        try publish(memory)
+        let chain = try #require(try queue.pop())
+        let usedBefore = try memory.readBytes(at: usedRing + 2, count: 10)
+        let usedEventAddress = availRing + 8
+
+        // This is immediately before the optional driver-owned tail read, before either used
+        // element field or used.idx can be written.
+        queue.beforeUsedEventReadTestHook = {
+            throw VMError.guestMemoryFault(address: usedEventAddress, count: 2)
+        }
+        #expect(throws: (any Error).self) { _ = try queue.pushOutcome(chain, written: 4) }
+        queue.beforeUsedEventReadTestHook = nil
+
+        #expect(try memory.readBytes(at: usedRing + 2, count: 10) == usedBefore)
+        #expect(try queue.pushOutcome(chain, written: 4) == .published(wantsInterrupt: true))
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(throws: (any Error).self) { _ = try queue.pushOutcome(chain, written: 4) }
+    }
+
+    @Test func eventIndexUsedEventArithmeticWrapsAtUInt16Boundary() throws {
+        let memory = try makeMemory()
+        let queue = try makeReadyQueue(memory: memory, size: 2)
+        queue.setNegotiatedFeatures(VirtqueueFeature.eventIndex)
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 0,
+            address: dataA,
+            length: 1,
+            flags: 2
+        )
+        let usedEventAddress = availRing + 4 + 2 * 2
+        var index: UInt16 = 0
+        var notifiedEveryCrossing = true
+        for _ in 0..<65_536 {
+            let next = index &+ 1
+            try memory.write(UInt16(0), at: availRing + 4 + UInt64(index % 2) * 2)
+            try memory.write(index, at: usedEventAddress)
+            try memory.write(next, at: availRing + 2)
+            let chain = try #require(try queue.pop())
+            notifiedEveryCrossing = notifiedEveryCrossing && (try queue.push(chain, written: 1))
+            index = next
+        }
+        #expect(index == 0)
+        #expect(notifiedEveryCrossing)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+    }
+
+    @Test func inaccessibleEventTailDoesNotConsumeOrClaimTheAvailableHead() throws {
+        let memory = try makeMemory()
+        let mandatoryUsedBytes: UInt64 = 4 + 2 * 8
+        let usedAtEnd = base + 64 * HostPage.size - mandatoryUsedBytes
+        let queue = Virtqueue(memory: memory)
+        #expect(queue.configure(
+            size: 2,
+            descriptorTable: descriptorTable,
+            availRing: availRing,
+            usedRing: usedAtEnd
+        ))
+        #expect(queue.setReady(true))
+        queue.setNegotiatedFeatures(VirtqueueFeature.eventIndex)
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 0,
+            address: dataA,
+            length: 4,
+            flags: 2
+        )
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+
+        #expect(throws: (any Error).self) { _ = try queue.pop() }
+        #expect(try memory.read(UInt16.self, at: usedAtEnd + 2) == 0)
+
+        // Feature renegotiation revokes nothing here because the failed arm established no claim;
+        // the same head remains available to the legacy queue.
+        queue.setNegotiatedFeatures(0)
+        #expect(try queue.pop()?.head == 0)
+    }
+
     @Test func resetAndReconfigureRevokeHeadClaimsWithoutPublishingStaleChains() throws {
         let memory = try makeMemory()
         let queue = try makeReadyQueue(memory: memory)
@@ -689,7 +885,7 @@ import Testing
         #expect(transport.read(offset: 0x044, width: 4) == 0)
     }
 
-    @Test func transportOffersAndPropagatesNegotiatedIndirectDescriptorFeature() throws {
+    @Test func transportOffersAndPropagatesNegotiatedRingFeatures() throws {
         let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 64 * HostPage.size)
         let backend = Backend()
         let transport = VirtioMMIOTransport(
@@ -702,19 +898,23 @@ import Testing
             transport.read(offset: 0x010, width: 4)
                 & VirtqueueFeature.indirectDescriptors != 0
         )
+        #expect(
+            transport.read(offset: 0x010, width: 4)
+                & VirtqueueFeature.eventIndex != 0
+        )
         writeDriverFeatures(
-            VirtqueueFeature.indirectDescriptors | VirtqueueFeature.version1,
+            VirtqueueFeature.indirectDescriptors | VirtqueueFeature.eventIndex | VirtqueueFeature.version1,
             to: transport
         )
         transport.write(offset: 0x070, value: 0x0B, width: 4)
 
         #expect(
             transport.negotiatedFeatures
-                == (VirtqueueFeature.indirectDescriptors | VirtqueueFeature.version1)
+                == (VirtqueueFeature.indirectDescriptors | VirtqueueFeature.eventIndex | VirtqueueFeature.version1)
         )
         #expect(
             transport.queues[0].negotiatedFeatures
-                == (VirtqueueFeature.indirectDescriptors | VirtqueueFeature.version1)
+                == (VirtqueueFeature.indirectDescriptors | VirtqueueFeature.eventIndex | VirtqueueFeature.version1)
         )
         #expect(transport.read(offset: 0x070, width: 4) == 0x0B)
         #expect(backend.deviceReadyCount == 0)

@@ -5,6 +5,8 @@ import Synchronization
 public enum VirtqueueFeature {
     /// VIRTIO_RING_F_INDIRECT_DESC, virtio 1.2 section 2.7.5.3.
     public static let indirectDescriptors: UInt64 = 1 << 28
+    /// VIRTIO_RING_F_EVENT_IDX, virtio 1.2 section 2.7.10.
+    public static let eventIndex: UInt64 = 1 << 29
     /// VIRTIO_F_VERSION_1. Virtio-MMIO v2 devices reject negotiation without this feature.
     public static let version1: UInt64 = 1 << 32
 }
@@ -330,6 +332,14 @@ public final class Virtqueue {
     private let limits: VirtqueueLimits
     private let leaseAuthority = VirtqueueLeaseAuthority()
 
+    /// Test-only interlock for the EVENT_IDX idle rearm window. Production leaves this nil.
+    /// It runs after avail_event is published and ordered, immediately before avail.idx is reread.
+    var idleAvailEventRearmTestHook: (@Sendable () throws -> Void)?
+
+    /// Test-only fault injection before the optional driver-owned used_event read. Production
+    /// leaves this nil, so it cannot affect completion publication outside deterministic tests.
+    var beforeUsedEventReadTestHook: (@Sendable () throws -> Void)?
+
     private struct DescriptorFlags {
         static let next: UInt16 = 1
         static let write: UInt16 = 2
@@ -509,7 +519,15 @@ public final class Virtqueue {
         guard ready, size > 0 else { return nil }
         let lease = currentLease
         let availIndexAddress = try checkedAdd(availRing, 2, "available-index address")
-        let availIndex = try memory.read(UInt16.self, at: availIndexAddress)
+        var availIndex = try memory.read(UInt16.self, at: availIndexAddress)
+        if eventIndexNegotiated, availIndex == lastAvailIndex {
+            // A driver can publish work while notifications are suppressed. Request the next
+            // available index, order that write before the idle observation, then recheck so an
+            // arrival in this rearm window is not lost.
+            try armAvailableNotification(lastAvailIndex)
+            try idleAvailEventRearmTestHook?()
+            availIndex = try memory.read(UInt16.self, at: availIndexAddress)
+        }
         let pending = availIndex &- lastAvailIndex
         guard pending > 0 else { return nil }
         guard pending <= size else {
@@ -522,7 +540,10 @@ public final class Virtqueue {
         let ringOffset = try checkedAdd(4, slotOffset, "available-ring element offset")
         let headAddress = try checkedAdd(availRing, ringOffset, "available-ring element address")
         let head = try memory.read(UInt16.self, at: headAddress)
-        if consume {
+        // Preserve the legacy queue's established consume-on-parse-fault behavior exactly. An
+        // EVENT_IDX queue instead arms its next notification before claiming or consuming the
+        // head, so an inaccessible optional tail cannot lose guest work.
+        if consume, !eventIndexNegotiated {
             lastAvailIndex &+= 1
         }
 
@@ -543,8 +564,15 @@ public final class Virtqueue {
         if consume {
             let newClaimID = UUID()
             guard outstandingClaims[head] == nil else {
-                lastAvailIndex = currentAvailIndex
+                if !eventIndexNegotiated {
+                    lastAvailIndex = currentAvailIndex
+                }
                 throw VMError.unexpectedExit("virtqueue descriptor head is already outstanding")
+            }
+            if eventIndexNegotiated {
+                let nextAvailIndex = currentAvailIndex &+ 1
+                try armAvailableNotification(nextAvailIndex)
+                lastAvailIndex = nextAvailIndex
             }
             outstandingClaims[head] = newClaimID
             claimID = newClaimID
@@ -559,6 +587,34 @@ public final class Virtqueue {
             leaseAuthority: leaseAuthority,
             claimID: claimID
         )
+    }
+
+    /// The device-owned avail_event field follows the mandatory used-ring entries. It exists only
+    /// when VIRTIO_RING_F_EVENT_IDX was negotiated; callers must never touch it for legacy rings.
+    private func armAvailableNotification(_ index: UInt16) throws {
+        let entriesBytes = try checkedMultiply(UInt64(size), 8, "available-event entry bytes")
+        let eventOffset = try checkedAdd(4, entriesBytes, "available-event offset")
+        let eventAddress = try checkedAdd(usedRing, eventOffset, "available-event address")
+        try memory.write(index, at: eventAddress)
+        OSMemoryBarrier()
+    }
+
+    /// The driver-owned used_event field follows the mandatory available-ring entries.
+    private func usedEvent() throws -> UInt16 {
+        let entriesBytes = try checkedMultiply(UInt64(size), 2, "used-event entry bytes")
+        let eventOffset = try checkedAdd(4, entriesBytes, "used-event offset")
+        let eventAddress = try checkedAdd(availRing, eventOffset, "used-event address")
+        return try memory.read(UInt16.self, at: eventAddress)
+    }
+
+    private var eventIndexNegotiated: Bool {
+        negotiatedFeatures & VirtqueueFeature.eventIndex != 0
+    }
+
+    /// virtio 1.2's `vring_need_event(event, new, old)`, using intentionally wrapping UInt16
+    /// arithmetic for the split-ring indices.
+    private func needsEvent(event: UInt16, new: UInt16, old: UInt16) -> Bool {
+        (new &- event &- 1) < (new &- old)
     }
 
     private func walkChain(
@@ -682,13 +738,30 @@ public final class Virtqueue {
             let slotOffset = try checkedMultiply(slot, 8, "used-ring slot offset")
             let elementOffset = try checkedAdd(4, slotOffset, "used-ring element offset")
             let elementAddress = try checkedAdd(usedRing, elementOffset, "used-ring element address")
+            let oldUsedIndex = usedIndex
+            let newUsedIndex = oldUsedIndex &+ 1
+            let eventIndexWantsInterrupt: Bool?
+            if eventIndexNegotiated {
+                // Read and validate the optional driver-owned tail before publishing any used
+                // data. A malformed tail therefore leaves this completion claim intact.
+                try beforeUsedEventReadTestHook?()
+                eventIndexWantsInterrupt = needsEvent(
+                    event: try usedEvent(),
+                    new: newUsedIndex,
+                    old: oldUsedIndex
+                )
+            } else {
+                eventIndexWantsInterrupt = nil
+            }
             try memory.write(UInt32(chain.head), at: elementAddress)
             try memory.write(written, at: checkedAdd(elementAddress, 4, "used-ring length address"))
-            let newUsedIndex = usedIndex &+ 1
             OSMemoryBarrier()  // used entries visible before the index publish
             try memory.write(newUsedIndex, at: checkedAdd(usedRing, 2, "used-index address"))
             usedIndex = newUsedIndex
             outstandingClaims.removeValue(forKey: chain.head)
+            if let eventIndexWantsInterrupt {
+                return eventIndexWantsInterrupt
+            }
             let availFlags = try memory.read(UInt16.self, at: availRing)
             return availFlags & 1 == 0  // VRING_AVAIL_F_NO_INTERRUPT
         }

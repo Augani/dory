@@ -123,6 +123,7 @@ public final class VirtioMMIOTransport: MMIODevice {
         backend.deviceFeatures
             | VirtqueueFeature.version1
             | VirtqueueFeature.indirectDescriptors
+            | VirtqueueFeature.eventIndex
     }
 
     private var driverFeaturesAreValid: Bool {
