@@ -10,6 +10,35 @@ import DorydKit
 import DoryVMMKit
 import Foundation
 
+/// Writes a campaign-only trace as one JSON value per line. The renderer and display queues may
+/// report the same frame from different threads, so serialize file writes without making trace
+/// delivery part of the guest completion path.
+private final class DesktopGraphicsTraceWriter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let handle: FileHandle
+
+    init(stateDirectory: String) throws {
+        let url = URL(fileURLWithPath: stateDirectory)
+            .appendingPathComponent("graphics-trace.ndjson")
+        guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+            throw VMError.bootFailure("could not create graphics trace output")
+        }
+        handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+    }
+
+    func record(_ event: VirtioGPUGraphicsTraceEvent) {
+        guard var line = try? JSONEncoder().encode(event) else { return }
+        line.append(0x0A)
+        lock.withLock { try? handle.write(contentsOf: line) }
+    }
+
+    deinit {
+        try? handle.synchronize()
+        try? handle.close()
+    }
+}
+
 private final class DoryDesktopCameraAttachment: @unchecked Sendable {
     enum Result: Sendable, Equatable {
         case attached
@@ -1479,6 +1508,34 @@ enum DesktopMode {
             let hostVisibleMemory = try rendererWorkerLaunch != nil
                 ? VirtioGPUHostVisibleMemory(guestBase: GuestLayout.daxWindowBase)
                 : nil
+            let graphicsTraceWriter: DesktopGraphicsTraceWriter?
+            if configuration.environment["DORY_GPU_TRACE_GRAPHICS"] == "1",
+               rendererWorkerLaunch != nil {
+                graphicsTraceWriter = try DesktopGraphicsTraceWriter(
+                    stateDirectory: configuration.stateDirectory
+                )
+                Self.log(
+                    "graphics trace enabled at \(configuration.stateDirectory)/graphics-trace.ndjson"
+                )
+            } else {
+                graphicsTraceWriter = nil
+                if configuration.environment["DORY_GPU_TRACE_GRAPHICS"] == "1" {
+                    Self.log("graphics trace requested without an admitted renderer worker")
+                }
+            }
+            let graphicsTraceContext: VirtioGPUGraphicsTraceContext?
+            let onGraphicsTrace: (@Sendable (VirtioGPUGraphicsTraceEvent) -> Void)?
+            if let graphicsTraceWriter, let rendererWorkerLaunch {
+                graphicsTraceContext = VirtioGPUGraphicsTraceContext(
+                    machineID: configuration.machineID,
+                    operationID: DoryOperationIdentity.canonical(configuration.operationID),
+                    workerGeneration: rendererWorkerLaunch.workerGeneration.rawValue
+                )
+                onGraphicsTrace = { event in graphicsTraceWriter.record(event) }
+            } else {
+                graphicsTraceContext = nil
+                onGraphicsTrace = nil
+            }
             let gpu = VirtioGPU(
                 hostMemoryBase: GuestLayout.daxWindowBase,
                 scanoutSizes: displayPlans.map {
@@ -1486,6 +1543,8 @@ enum DesktopMode {
                 },
                 rendererWorkerCandidate: rendererWorkerLaunch?.commandLane,
                 hostVisibleMemory: hostVisibleMemory,
+                graphicsTraceContext: graphicsTraceContext,
+                onGraphicsTrace: onGraphicsTrace,
                 onScanoutFrame: { [mailboxes, firstFrame] frame in
                     guard mailboxes.indices.contains(Int(frame.scanoutID)) else { return }
                     mailboxes[Int(frame.scanoutID)].submit(frame)
@@ -1537,7 +1596,7 @@ enum DesktopMode {
             defer { initializationRollback.performIfNeeded() }
             initializationRollback.register {
                 let receipt = DesktopGPUShutdownBoundary.begin(
-                    quiesce: { gpu.quiesce(reason: .shutdown) },
+                    quiesce: { gpu.quiesce(reason: VirtioGPUQuiescenceReason.shutdown) },
                     detachPresentations: {
                         for mailbox in mailboxes { mailbox.deliver() }
                     }

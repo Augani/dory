@@ -8,6 +8,7 @@ public enum DoryMachineDiagnosticOverride:
     String, Codable, Sendable, CaseIterable, Comparable, Hashable
 {
     case gpuResourceTracing = "gpu-resource-tracing"
+    case gpuGraphicsTracing = "gpu-graphics-tracing"
 
     public static func < (lhs: Self, rhs: Self) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -20,6 +21,8 @@ public enum DoryMachineDiagnosticOverride:
             switch override {
             case .gpuResourceTracing:
                 return environment["DORY_GPU_TRACE_RESOURCES"] == "1"
+            case .gpuGraphicsTracing:
+                return environment["DORY_GPU_TRACE_GRAPHICS"] == "1"
             }
         }.sorted()
     }
