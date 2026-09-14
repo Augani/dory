@@ -54,8 +54,9 @@ final class DoryRuntimeReconnectTests: XCTestCase {
     }
 
     func testControlSocketAuthenticatesExactPrivateLaunchIdentity() throws {
-        let socket = "/tmp/dory-rc-\(UUID().uuidString.prefix(8)).sock"
-        defer { try? FileManager.default.removeItem(atPath: socket) }
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let socket = root + "/control.sock"
         let identity = makeIdentity()
         let state = ReconnectFixtureExecutionState()
         let server = VmmLifecycleReceiptServer(
@@ -206,7 +207,9 @@ final class DoryRuntimeReconnectTests: XCTestCase {
     }
 
     func testAuthenticatedSurvivingNonchildIsAdoptedAndStoppedAsExactGeneration() throws {
-        let socket = "/tmp/dory-rc-\(UUID().uuidString.prefix(8)).sock"
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let socket = root + "/control.sock"
         let identity = makeIdentity()
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
@@ -228,7 +231,6 @@ final class DoryRuntimeReconnectTests: XCTestCase {
                 _ = kill(child.processIdentifier, SIGKILL)
             }
             child.waitUntilExit()
-            try? FileManager.default.removeItem(atPath: socket)
         }
 
         let deadline = Date().addingTimeInterval(3)
@@ -374,9 +376,14 @@ final class DoryRuntimeReconnectTests: XCTestCase {
     }
 
     private func temporaryDirectory() -> String {
-        let path = NSTemporaryDirectory() + "/dory-runtime-reconnect-tests-"
-            + UUID().uuidString.lowercased()
-        try! FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+        // Keep the control endpoint below sockaddr_un's short pathname limit while making the
+        // immediate parent private. `/tmp` itself is intentionally rejected by the listener.
+        let path = "/tmp/drc-" + UUID().uuidString.prefix(12).lowercased()
+        try! FileManager.default.createDirectory(
+            atPath: path,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
         return path
     }
 }
