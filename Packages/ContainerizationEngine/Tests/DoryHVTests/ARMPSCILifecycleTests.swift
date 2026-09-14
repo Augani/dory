@@ -8,6 +8,71 @@ import Testing
   /// the interaction between PSCI state transitions and the GIC interrupt model.
   @Suite struct ARMPSCILifecycleTests {
 
+    private let executableRAM: [Range<UInt64>] = [0x4000_0000..<0x8000_0000]
+
+    @Test func machineCpuOnAdmissionRejectsOffCpuWhoseVCPUWasTornDown() {
+      var state = ARMPSCICPUState(cpuCount: 2)
+      #expect(state.requestOn(target: 1, entry: 0x4000_0000, executableRanges: executableRAM) == 0)
+      state.completeOn(index: 1)
+      #expect(state.requestOff(index: 1) == 0)
+
+      // This is the machine-level CPU_ON gate, rather than the detached PSCI state machine:
+      // when teardown has removed the VCPU handle, no thread can consume a queued start. The
+      // rejection must leave the PSCI state off.
+      let rejected = ARMPSCISecondaryStartAdmission.requestOn(
+        state: &state,
+        target: 1,
+        entry: 0x4000_0000,
+        executableRanges: executableRAM,
+        isStopping: false,
+        hasLiveVCPU: { _ in false }
+      )
+      #expect(rejected.result == ARMPSCISecondaryStartAdmission.unavailableResult)
+      #expect(rejected.index == nil)
+      #expect(state.affinityInfo(target: 1, lowestLevel: 0) == 1)
+
+      // A live parked vCPU still permits the existing CPU_OFF -> CPU_ON lifecycle.
+      let admitted = ARMPSCISecondaryStartAdmission.requestOn(
+        state: &state,
+        target: 1,
+        entry: 0x4000_0000,
+        executableRanges: executableRAM,
+        isStopping: false,
+        hasLiveVCPU: { $0 == 1 }
+      )
+      #expect(admitted.result == 0)
+      #expect(admitted.index == 1)
+      #expect(state.affinityInfo(target: 1, lowestLevel: 0) == 2)
+
+      // The resource gate does not change duplicate CPU_ON semantics.
+      let duplicate = ARMPSCISecondaryStartAdmission.requestOn(
+        state: &state,
+        target: 1,
+        entry: 0x4000_0000,
+        executableRanges: executableRAM,
+        isStopping: false,
+        hasLiveVCPU: { $0 == 1 }
+      )
+      #expect(duplicate.result == -5)
+      #expect(duplicate.index == nil)
+    }
+
+    @Test func machineCpuOnAdmissionRejectsStartDuringShutdownWithoutStateTransition() {
+      var state = ARMPSCICPUState(cpuCount: 2)
+
+      let admission = ARMPSCISecondaryStartAdmission.requestOn(
+        state: &state,
+        target: 1,
+        entry: 0x4000_0000,
+        executableRanges: executableRAM,
+        isStopping: true,
+        hasLiveVCPU: { _ in true }
+      )
+      #expect(admission.result == ARMPSCISecondaryStartAdmission.unavailableResult)
+      #expect(admission.index == nil)
+      #expect(state.affinityInfo(target: 1, lowestLevel: 0) == 1)
+    }
+
     // MARK: - PSCI state transitions across CPU_ON / CPU_OFF / CPU_SUSPEND
 
     @Test func cpuOnThenOffThenOnCyclesCorrectly() {

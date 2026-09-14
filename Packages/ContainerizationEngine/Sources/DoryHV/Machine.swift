@@ -392,6 +392,40 @@ enum VirtioMMIODeviceTree {
     }
   }
 
+  /// Commits a PSCI CPU_ON state transition only when the machine can hand the start tuple to
+  /// a live secondary vCPU. `Machine.startSecondary` calls this while holding `teamCondition`,
+  /// which also serializes handle removal during vCPU-thread teardown.
+  struct ARMPSCISecondaryStartAdmission {
+    static let unavailableResult: Int64 = -3  // PSCI_DENIED
+
+    @discardableResult
+    static func requestOn(
+      state: inout ARMPSCICPUState,
+      target: UInt64,
+      entry: UInt64,
+      executableRanges: [Range<UInt64>],
+      isStopping: Bool,
+      hasLiveVCPU: (Int) -> Bool
+    ) -> (result: Int64, index: Int?) {
+      // Validate against a proposal first. This preserves normal PSCI errors (including
+      // ALREADY_ON and ON_PENDING), but prevents a rejected start from consuming the off state.
+      var proposedState = state
+      let result = proposedState.requestOn(
+        target: target,
+        entry: entry,
+        executableRanges: executableRanges
+      )
+      guard result == 0, let index = proposedState.index(for: target) else {
+        return (result, nil)
+      }
+      guard !isStopping, hasLiveVCPU(index) else {
+        return (unavailableResult, nil)
+      }
+      state = proposedState
+      return (0, index)
+    }
+  }
+
   /// The virtual machine: RAM, GIC, devices, and the vCPU threads. SMP: secondaries are created
   /// eagerly, parked, and released by PSCI CPU_ON. Thread-shared state is guarded by
   /// `teamCondition`; devices serialize their own guest-facing surfaces.
@@ -890,11 +924,14 @@ enum VirtioMMIODeviceTree {
           GuestLayout.firmwareCodeBase..<(GuestLayout.firmwareCodeBase + GuestLayout.firmwareCodeBytes)
         )
       }
-      let result = psciCPUState.requestOn(
+      let admission = ARMPSCISecondaryStartAdmission.requestOn(
+        state: &psciCPUState,
         target: mpidr, entry: entry,
-        executableRanges: executableRanges
+        executableRanges: executableRanges,
+        isStopping: stopReason != nil,
+        hasLiveVCPU: { teamHandles[$0] != nil }
       )
-      guard result == 0, let index = psciCPUState.index(for: mpidr) else { return result }
+      guard admission.result == 0, let index = admission.index else { return admission.result }
       secondaryStarts[index] = (entry: entry, context: context)
       teamCondition.broadcast()
       return 0
