@@ -47,6 +47,7 @@ class ReleaseOrchestratorTests(unittest.TestCase):
             "scripts/generate-appcast.sh",
             "write_release_manifest",
             "package_macos_guest_tools",
+            "preflight_macos_guest_tools_package",
             "public releases must build the signed macOS Guest Tools package",
         ):
             self.assertIn(contract, source)
@@ -69,6 +70,17 @@ class ReleaseOrchestratorTests(unittest.TestCase):
         )
         self.assertEqual(default_public.returncode, 0)
         self.assertEqual(default_public.stdout, "1")
+
+    def test_guest_tools_package_preflight_rejects_an_unsafe_candidate_label(self) -> None:
+        result = self.run_bash(
+            "set -euo pipefail; "
+            "export DORY_RELEASE_SOURCE_ONLY=1 DORY_BUILD_MACOS_GUEST_TOOLS=1 "
+            "DORY_GUEST_TOOLS_CANDIDATE_ID='unsafe label'; "
+            "source scripts/release.sh 1.2.3 4; "
+            "preflight_macos_guest_tools_package"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("package candidate ID", result.stdout)
 
     def test_missing_metadata_fails_before_release_mutation(self) -> None:
         result = subprocess.run(

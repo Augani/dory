@@ -161,6 +161,10 @@ guest_tools_package_enabled() {
   esac
 }
 
+guest_tools_candidate_id() {
+  printf '%s' "${DORY_GUEST_TOOLS_CANDIDATE_ID:-dory-$BUILD-$SOURCE_COMMIT}"
+}
+
 require_tool() {
   command -v "$1" >/dev/null 2>&1 || release_error "required tool '$1' not found"
 }
@@ -484,6 +488,30 @@ preflight_guest_assets() {
   [ -z "$missing" ] || release_error "engine-bundled release needs guest assets on this runner; missing:$missing. Build them with guest/kernel/build.sh and guest/initfs/build.sh (or use the matching DORY_HV_KERNEL_*, DORY_KERNEL_*, DORY_INITFS_*, DORY_GUEST_AGENT_*, and DORY_ENGINE_ROOTFS_* overrides with the explicit development escape), or set DORY_BUNDLE_ENGINE=0 for an app-only dry-run"
 }
 
+preflight_macos_guest_tools_package() {
+  [ "$(guest_tools_package_enabled)" = 1 ] || return 0
+  [ "$SIGN_IDENTITY" != "-" ] \
+    || release_error "macOS Guest Tools packages require a Developer ID Application signing identity"
+  printf '%s\n' "$SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' \
+    || release_error "macOS Guest Tools package requires a full lowercase source commit"
+  printf '%s\n' "$(guest_tools_candidate_id)" | grep -Eq '^[A-Za-z0-9._:-]{1,128}$' \
+    || release_error "macOS Guest Tools package candidate ID must use 1-128 ASCII letters, digits, '.', '_', ':', or '-'"
+  require_tool productbuild
+  require_tool pkgutil
+  for script in \
+    scripts/generate-macos-guest-tools-manifest.py \
+    scripts/package-macos-guest-tools.py \
+    scripts/verify-macos-guest-tools-package.py; do
+    [ -f "$script" ] && [ ! -L "$script" ] && [ -x "$script" ] \
+      || release_error "macOS Guest Tools package producer must be a direct executable file: $script"
+  done
+  if [ "${DORY_SKIP_SIGNING_PREFLIGHT:-0}" != "1" ]; then
+    local installer_identity="${DORY_GUEST_TOOLS_INSTALLER_SIGN_IDENTITY:-Developer ID Installer: Dory ($TEAM)}"
+    security find-identity -v -p basic | grep -F "$installer_identity" >/dev/null \
+      || release_error "installer signing identity '$installer_identity' not found; import the Developer ID Installer certificate or set DORY_SKIP_SIGNING_PREFLIGHT=1 for local dry-runs"
+  fi
+}
+
 preflight_release() {
   local requested
   echo "==> Release preflight..."
@@ -494,6 +522,7 @@ preflight_release() {
   preflight_public_release
   preflight_macos_floor
   preflight_guest_assets
+  preflight_macos_guest_tools_package
   if [ "${DORY_MAKE_DMG:-1}" = "1" ]; then
     require_tool hdiutil
   fi
@@ -948,7 +977,8 @@ package_macos_guest_tools() {
   local manifest="$BUILD_DIR/DoryGuestTools-$VERSION-arm64.pkg.json"
   # Keep the candidate label inside the package verifier's portable identifier grammar. The package
   # filename and embedded app receipt carry the human SemVer release identifier separately.
-  local candidate="${DORY_GUEST_TOOLS_CANDIDATE_ID:-dory-$BUILD-$SOURCE_COMMIT}"
+  local candidate
+  candidate="$(guest_tools_candidate_id)"
   local installer_identity="${DORY_GUEST_TOOLS_INSTALLER_SIGN_IDENTITY:-Developer ID Installer: Dory ($TEAM)}"
 
   echo "==> Archiving signed macOS Guest Tools for the Apple-silicon guest..."
