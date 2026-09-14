@@ -32,6 +32,7 @@ public struct PVHKernelImage {
     private static let elfMachineX8664: UInt16 = 0x3E
     private static let programHeaderLoad: UInt32 = 1
     private static let programHeaderNote: UInt32 = 4
+    private static let programHeaderFlagExecute: UInt32 = 1
     private static let xenNoteName = [UInt8]("Xen".utf8)
     private static let xenPhys32EntryNoteType: UInt32 = 0x12
 
@@ -70,21 +71,40 @@ public struct PVHKernelImage {
         }
 
         var segments: [PVHKernelSegment] = []
+        var segmentIsExecutable: [Bool] = []
+        var physicalExtents: [(start: UInt64, end: UInt64)] = []
         var pvhEntry: UInt64?
         for index in 0..<programHeaderCount {
             let offset = programHeaders.lowerBound + index * programHeaderEntrySize
             let type = data.readLittleEndian(UInt32.self, at: offset)
             switch type {
             case Self.programHeaderLoad:
+                let flags = data.readLittleEndian(UInt32.self, at: offset + 4)
                 let fileOffset = data.readLittleEndian(UInt64.self, at: offset + 8)
+                let virtualAddress = data.readLittleEndian(UInt64.self, at: offset + 16)
                 let physicalAddress = data.readLittleEndian(UInt64.self, at: offset + 24)
                 let fileSize = data.readLittleEndian(UInt64.self, at: offset + 32)
                 let memorySize = data.readLittleEndian(UInt64.self, at: offset + 40)
+                let alignment = data.readLittleEndian(UInt64.self, at: offset + 48)
                 guard fileSize <= memorySize else {
                     throw VMError.bootFailure("ELF PT_LOAD file size exceeds memory size")
                 }
                 guard Self.range(offset: fileOffset, count: fileSize, dataCount: data.count) != nil else {
                     throw VMError.bootFailure("ELF PT_LOAD segment is outside the kernel image")
+                }
+                let physicalEnd = physicalAddress.addingReportingOverflow(memorySize)
+                guard !physicalEnd.overflow else {
+                    throw VMError.bootFailure("ELF PT_LOAD physical extent overflows")
+                }
+                guard Self.isValidAlignment(alignment, virtualAddress: virtualAddress, fileOffset: fileOffset) else {
+                    throw VMError.bootFailure("ELF PT_LOAD has invalid p_align")
+                }
+                if memorySize > 0 {
+                    let extent = (start: physicalAddress, end: physicalEnd.partialValue)
+                    for existing in physicalExtents where extent.start < existing.end && existing.start < extent.end {
+                        throw VMError.bootFailure("ELF PT_LOAD segments overlap in guest memory")
+                    }
+                    physicalExtents.append(extent)
                 }
                 segments.append(PVHKernelSegment(
                     physicalAddress: physicalAddress,
@@ -92,6 +112,7 @@ public struct PVHKernelImage {
                     fileSize: fileSize,
                     memorySize: memorySize
                 ))
+                segmentIsExecutable.append((flags & Self.programHeaderFlagExecute) != 0)
             case Self.programHeaderNote:
                 let noteOffset = data.readLittleEndian(UInt64.self, at: offset + 8)
                 let noteSize = data.readLittleEndian(UInt64.self, at: offset + 32)
@@ -110,6 +131,9 @@ public struct PVHKernelImage {
         guard let pvhEntry else {
             throw VMError.bootFailure("PVH kernel ELF is missing XEN_ELFNOTE_PHYS32_ENTRY")
         }
+        guard Self.isFileBackedExecutableEntry(pvhEntry, segments: segments, executable: segmentIsExecutable) else {
+            throw VMError.bootFailure("PVH entry point is not inside an executable file-backed PT_LOAD byte")
+        }
         self.data = data
         self.entryPoint = pvhEntry
         self.segments = segments
@@ -117,25 +141,37 @@ public struct PVHKernelImage {
 
     @discardableResult
     public func load(into memory: GuestMemory) throws -> UInt64 {
+        var sourceRanges: [Range<Int>] = []
+        sourceRanges.reserveCapacity(segments.count)
         for segment in segments {
             guard memory.contains(segment.physicalAddress, count: segment.memorySize) else {
                 throw VMError.bootFailure("PVH kernel segment does not fit in guest RAM")
             }
-            guard segment.memorySize <= UInt64(Int.max) else {
+            guard segment.memorySize <= UInt64(Int.max), segment.fileSize <= UInt64(Int.max) else {
                 throw VMError.bootFailure("PVH kernel segment is too large to map")
-            }
-            let destination = try memory.hostPointer(at: segment.physicalAddress, count: segment.memorySize)
-            if segment.memorySize > 0 {
-                memset(destination, 0, Int(segment.memorySize))
             }
             guard let sourceRange = Self.range(offset: segment.fileOffset, count: segment.fileSize, dataCount: data.count) else {
                 throw VMError.bootFailure("PVH kernel segment source is outside the image")
             }
-            data.withUnsafeBytes { bytes in
-                destination.copyMemory(
-                    from: bytes.baseAddress!.advanced(by: sourceRange.lowerBound),
-                    byteCount: Int(segment.fileSize)
-                )
+            _ = try memory.hostPointer(at: segment.physicalAddress, count: segment.memorySize)
+            sourceRanges.append(sourceRange)
+        }
+        for (index, segment) in segments.enumerated() {
+            let destination = try memory.hostPointer(at: segment.physicalAddress, count: segment.memorySize)
+            if segment.memorySize > 0 {
+                memset(destination, 0, Int(segment.memorySize))
+            }
+            let sourceRange = sourceRanges[index]
+            guard segment.fileSize == UInt64(sourceRange.count) else {
+                throw VMError.bootFailure("PVH kernel segment source is outside the image")
+            }
+            if segment.fileSize > 0 {
+                data.withUnsafeBytes { bytes in
+                    destination.copyMemory(
+                        from: bytes.baseAddress!.advanced(by: sourceRange.lowerBound),
+                        byteCount: Int(segment.fileSize)
+                    )
+                }
             }
         }
         return entryPoint
@@ -179,9 +215,43 @@ public struct PVHKernelImage {
         return trimmed
     }
 
+    private static func isValidAlignment(_ alignment: UInt64, virtualAddress: UInt64, fileOffset: UInt64) -> Bool {
+        if alignment == 0 || alignment == 1 {
+            return true
+        }
+        guard alignment & (alignment - 1) == 0 else {
+            return false
+        }
+        return (virtualAddress % alignment) == (fileOffset % alignment)
+    }
+
+    private static func isFileBackedExecutableEntry(
+        _ entry: UInt64,
+        segments: [PVHKernelSegment],
+        executable: [Bool]
+    ) -> Bool {
+        for (index, segment) in segments.enumerated() {
+            guard index < executable.count, executable[index] else {
+                continue
+            }
+            guard segment.fileSize > 0, entry >= segment.physicalAddress else {
+                continue
+            }
+            let delta = entry - segment.physicalAddress
+            if delta < segment.fileSize {
+                return true
+            }
+        }
+        return false
+    }
+
     private static func range(offset: UInt64, count: UInt64, dataCount: Int) -> Range<Int>? {
         let sum = offset.addingReportingOverflow(count)
-        guard !sum.overflow, offset <= UInt64(Int.max), count <= UInt64(Int.max) else { return nil }
+        guard !sum.overflow,
+              offset <= UInt64(Int.max),
+              count <= UInt64(Int.max),
+              sum.partialValue <= UInt64(Int.max)
+        else { return nil }
         let start = Int(offset)
         let end = Int(sum.partialValue)
         guard end >= start, end <= dataCount else { return nil }
