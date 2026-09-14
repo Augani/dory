@@ -13,6 +13,21 @@ public enum DoryGuestIntegrationPermission: String, Codable, Sendable, CaseItera
     case openURL = "open-url"
     case displayTopology = "display-topology"
     case clockSynchronization = "clock-sync"
+
+    /// Permissions are gated both by host policy and by a matching live capability declaration.
+    /// In particular, a guest cannot turn a generic connection into a file-transfer or command
+    /// channel merely by naming the permission in its hello.
+    public var requiredCapability: DoryGuestIntegrationCapabilityID {
+        switch self {
+        case .gracefulShutdown: .gracefulShutdown
+        case .clipboardRead, .clipboardWrite: .clipboardText
+        case .fileTransferPush: .fileTransferPush
+        case .fileTransferPull: .fileTransferPull
+        case .openURL: .openURL
+        case .displayTopology: .displayTopology
+        case .clockSynchronization: .clockSynchronization
+        }
+    }
 }
 
 public enum DoryGuestIntegrationHandshakeValidationCode: String, Codable, Sendable, Hashable {
@@ -30,6 +45,7 @@ public enum DoryGuestIntegrationHandshakeValidationCode: String, Codable, Sendab
     case protocolMismatch = "protocol-mismatch"
     case nonceMismatch = "nonce-mismatch"
     case permissionDenied = "permission-denied"
+    case requiredCapabilityMissing = "required-capability-missing"
 }
 
 public struct DoryGuestIntegrationHandshakeValidationIssue: Sendable, Equatable, Hashable {
@@ -183,6 +199,12 @@ public struct DoryGuestIntegrationHandshakeExpectation: Sendable, Equatable, Has
         if handshake.nonce != nonce { add(.nonceMismatch, "nonce") }
         if !Set(handshake.requestedPermissions).isSubset(of: grantedPermissions) {
             add(.permissionDenied, "requestedPermissions")
+        }
+        let advertised = Set(handshake.capabilities.map(\.id))
+        if handshake.requestedPermissions.contains(where: {
+            !advertised.contains($0.requiredCapability.rawValue)
+        }) {
+            add(.requiredCapabilityMissing, "requestedPermissions")
         }
         return issues
     }

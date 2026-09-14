@@ -16,6 +16,7 @@ public enum DoryGuestIntegrationCapabilityID: String, Codable, Sendable, CaseIte
     case sharedFolderMountStatus = "shared-folder-mount-status"
     case fileTransferPush = "sync-push"
     case fileTransferPull = "sync-pull"
+    case openURL = "open-url"
     case networkIdentity = "network-identity"
     case processLaunch = "exec"
     case processInput = "exec-stdin"

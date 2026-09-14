@@ -35,6 +35,17 @@ struct DoryGuestIntegrationHandshakeTests {
         #expect(expectation().admit(escalating).contains { $0.code == .permissionDenied })
     }
 
+    @Test("a granted action remains unavailable until the peer advertises its matching capability")
+    func rejectsPermissionWithoutCapability() {
+        var incomplete = handshake()
+        incomplete.requestedPermissions = [.clipboardRead]
+        incomplete.capabilities = [.init(id: "readiness", version: 1)]
+
+        #expect(expectation().admit(incomplete).contains {
+            $0.code == .requiredCapabilityMissing
+        })
+    }
+
     @Test("malformed or ambiguous peers fail before host comparison")
     func rejectsMalformedPeer() {
         var malformed = handshake()
@@ -69,6 +80,7 @@ struct DoryGuestIntegrationHandshakeTests {
             toolsBuild: "dory-guest-tools/1.0.0",
             protocolVersion: 1,
             capabilities: [
+                .init(id: "clipboard-text", version: 1),
                 .init(id: "clock-sync", version: 1),
                 .init(id: "readiness", version: 1),
             ],
