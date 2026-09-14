@@ -2,6 +2,7 @@ import Darwin
 import Dispatch
 import Foundation
 import Testing
+import XCTest
 
 @testable import DoryDBTX86
 
@@ -4510,7 +4511,7 @@ import Testing
     #endif
   }
 
-  @Test func memoryCompareExchangeHandlesPatchedLockAliasAndFaultRollback() throws {
+  fileprivate static func assertMemoryCompareExchangeHandlesPatchedLockAliasAndFaultRollback() throws {
     #if arch(arm64)
       for bytes in [[UInt8(0x3E), 0x0F, 0xB1, 0x12], [0x3E, 0x48, 0x0F, 0xB1, 0x12]] {
         for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
@@ -11371,6 +11372,15 @@ import Testing
       #expect(receipts.first?.traceGuestStart == UInt64(0x60_000 + 1 * 0x100))
       #expect(receipts.last?.traceGuestStart == UInt64(0x60_000 + capacity * 0x100))
     #endif
+  }
+}
+
+/// XCTest does not capture a backtrace for the decoder's expected truncated-prefix probes.
+/// Keep this dense interpreter/JIT differential fixture on that runner until Swift Testing's
+/// macOS 27 worker-stack regression is resolved.
+final class DoryARM64BaselineJITXCTest: XCTestCase {
+  func testMemoryCompareExchangeHandlesPatchedLockAliasAndFaultRollback() throws {
+    try DoryARM64BaselineJITTests.assertMemoryCompareExchangeHandlesPatchedLockAliasAndFaultRollback()
   }
 }
 
