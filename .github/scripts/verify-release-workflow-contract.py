@@ -43,6 +43,7 @@ def expect_failure(callback, expected: str, message: str) -> None:
 
 workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 pages_workflow = Path(".github/workflows/pages.yml").read_text(encoding="utf-8")
+tests_workflow = Path(".github/workflows/tests.yml").read_text(encoding="utf-8")
 publisher = Path("scripts/publish-release.sh").read_text(encoding="utf-8")
 release_script = Path("scripts/release.sh").read_text(encoding="utf-8")
 component_tests = Path("scripts/test-build-components.sh").read_text(encoding="utf-8")
@@ -58,6 +59,13 @@ for name, source in (("release", workflow), ("pages", pages_workflow)):
         raise SystemExit(
             f"release workflow contract: {name} workflow uses optimization-sensitive Python assert"
         )
+
+for name, source in (("tests", tests_workflow), ("release", workflow)):
+    require(
+        source,
+        "python3 .github/scripts/verify-release-workflow-contract.py",
+        f"{name} workflow does not execute the release workflow contract gate",
+    )
 
 candidate = workflow.split("      - name: Stage immutable public candidate", 1)[1].split(
     "\n  homebrew_install_certification:", 1

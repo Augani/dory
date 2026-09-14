@@ -222,6 +222,7 @@ jobs:
           python3 -B scripts/test-inventory-wave0-candidate.py -v
           python3 -B scripts/test-preflight-wave0-fixtures.py -v
           python3 .github/scripts/test-release-orchestrator.py
+          python3 .github/scripts/verify-release-workflow-contract.py
           bash scripts/test-dmg-distribution-signing.sh
           python3 .github/scripts/test-ci-umbrella.py
           python3 .github/scripts/test-interrupted-upgrade-rollback-gate.py
