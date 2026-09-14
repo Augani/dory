@@ -146,4 +146,44 @@ import DoryExecutionContracts
     ]
     try DoryARMVirtV1ABI.validateRegions(unsorted)
   }
+
+  @Test func misalignedRegionBaseIsRejected() {
+    #expect(
+      throws: DoryARMVirtV1ABIError.misalignedRegionBase(
+        kind: .uart,
+        base: DoryGuestPhysicalAddress(0x1800),
+        requiredAlignment: DoryARMVirtV1ABI.guestPageBytes
+      )
+    ) {
+      let regions = [
+        try DoryARMVirtV1Region(kind: .uart, base: 0x1800, byteCount: 0x1000)
+      ]
+      try DoryARMVirtV1ABI.validateRegions(regions)
+    }
+  }
+
+  @Test func regionsSharingOneGuestPageAreRejected() throws {
+    // 0x1000..<0x1400 and 0x1800..<0x1C00 are byte-disjoint but both occupy guest
+    // page 0x1000. The page-ownership check must reject them even though the
+    // byte ranges do not overlap.
+    let first = try DoryARMVirtV1Region(kind: .uart, base: 0x1000, byteCount: 0x400)
+    let second = try DoryARMVirtV1Region(kind: .rtc, base: 0x1800, byteCount: 0x400)
+    #expect(
+      throws: DoryARMVirtV1ABIError.regionsShareGuestPage(
+        previous: first.range,
+        current: second.range
+      )
+    ) {
+      try DoryARMVirtV1ABI.validateRegions([first, second])
+    }
+  }
+
+  @Test func subPageRegionOnDedicatedGuestPageIsAccepted() throws {
+    // A sub-page reservation is valid when no other region lands in its page.
+    let regions = [
+      try DoryARMVirtV1Region(kind: .uart, base: 0x1000, byteCount: 0x400),
+      try DoryARMVirtV1Region(kind: .rtc, base: 0x2000, byteCount: 0x1000),
+    ]
+    try DoryARMVirtV1ABI.validateRegions(regions)
+  }
 }

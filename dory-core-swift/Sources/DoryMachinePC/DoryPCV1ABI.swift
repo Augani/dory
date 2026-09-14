@@ -73,6 +73,12 @@ public enum DoryPCV1ABI {
   public static let minimumProductMemoryBytes: UInt64 = 512 << 20
   public static let maximumMemoryBytes: UInt64 = 512 << 30
   public static let maximumVCPUCount = 255
+
+  /// Guest-page granularity for region ownership. The x86 guest uses 4-KiB pages, so
+  /// every region base must be 4-KiB-aligned and each region exclusively owns the guest
+  /// pages its range rounds up to. This is a guest-layout contract only; it does not
+  /// depend on the host page size or mapping granule.
+  public static let guestPageBytes: UInt64 = 0x1000
   public static let minimumGuestPhysicalAddressBits: UInt8 = 36
   public static let maximumGuestPhysicalAddressBits: UInt8 = 40
 
@@ -218,13 +224,19 @@ public enum DoryPCV1ABI {
     try Self.validateRegions(regions)
   }
 
-  /// Validates an arbitrary region list for overlaps and zero-length regions.
+  /// Validates an arbitrary region list against the guest-page ownership contract.
   /// Each region's byteCount must be positive (DoryGuestAddressRange already checks
-  /// overflow at construction), and no two regions may overlap. Overlap detection is
-  /// independent of caller order: a checked local view is sorted by base address
-  /// before neighboring ranges are compared, so an unsorted list cannot hide an
-  /// overlap between non-adjacent regions. The caller-owned layout is never reordered
-  /// or mutated; only the validation view is sorted.
+  /// end overflow at construction) and its base must be aligned to `guestPageBytes`.
+  /// A region's guest-page coverage runs from its containing page through its end
+  /// rounded up to the next page boundary; no two regions may share a guest page, so
+  /// a sub-page reservation such as the frozen 1-KiB HPET window is valid only when
+  /// no other region lands in its page. Page-ownership is checked on the caller's
+  /// input before base alignment is enforced, so a region that intrudes into another
+  /// region's page is reported as a sharing violation rather than only an unaligned
+  /// base. Detection is independent of caller order: a checked local view is sorted
+  /// by base address before neighboring coverages are compared, so an unsorted list
+  /// cannot hide a shared page between non-adjacent regions. The caller-owned layout
+  /// is never reordered or mutated; only the validation view is sorted.
   public static func validateRegions(_ regions: [DoryPCV1Region]) throws {
     for region in regions {
       guard region.range.byteCount > 0 else {
@@ -233,13 +245,38 @@ public enum DoryPCV1ABI {
     }
     let sorted = regions.sorted { $0.range.base < $1.range.base }
     for pair in zip(sorted, sorted.dropFirst()) {
-      guard !pair.0.range.overlaps(pair.1.range) else {
-        throw DoryPCV1ABIError.overlappingRegions(
+      guard pair.1.range.base.rawValue >= guestPageCoverageEnd(of: pair.0.range) else {
+        if pair.0.range.overlaps(pair.1.range) {
+          throw DoryPCV1ABIError.overlappingRegions(
+            previous: pair.0.range,
+            current: pair.1.range
+          )
+        }
+        throw DoryPCV1ABIError.regionsShareGuestPage(
           previous: pair.0.range,
           current: pair.1.range
         )
       }
     }
+    for region in regions {
+      guard region.range.base.rawValue.isMultiple(of: guestPageBytes) else {
+        throw DoryPCV1ABIError.misalignedRegionBase(
+          kind: region.kind,
+          base: region.range.base,
+          requiredAlignment: guestPageBytes
+        )
+      }
+    }
+  }
+
+  /// Exclusive end of a region's guest-page coverage: the range end rounded up to the
+  /// next `guestPageBytes` boundary, saturating at UInt64.max instead of overflowing.
+  private static func guestPageCoverageEnd(of range: DoryGuestAddressRange) -> UInt64 {
+    let end = range.endExclusive.rawValue
+    let remainder = end % guestPageBytes
+    guard remainder != 0 else { return end }
+    let (rounded, overflow) = (end - remainder).addingReportingOverflow(guestPageBytes)
+    return overflow ? UInt64.max : rounded
   }
 
   public static let markdown = """
@@ -345,5 +382,11 @@ public enum DoryPCV1ABIError: Error, Sendable, Equatable {
   case unalignedMemory(UInt64)
   case invalidVCPUCount(maximum: Int, actual: Int)
   case zeroLengthRegion(kind: DoryPCV1RegionKind)
+  case misalignedRegionBase(
+    kind: DoryPCV1RegionKind,
+    base: DoryGuestPhysicalAddress,
+    requiredAlignment: UInt64
+  )
   case overlappingRegions(previous: DoryGuestAddressRange, current: DoryGuestAddressRange)
+  case regionsShareGuestPage(previous: DoryGuestAddressRange, current: DoryGuestAddressRange)
 }

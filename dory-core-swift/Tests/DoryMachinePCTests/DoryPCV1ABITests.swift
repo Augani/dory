@@ -112,4 +112,45 @@ import DoryExecutionContracts
     ]
     try DoryPCV1ABI.validateRegions(unsorted)
   }
+
+  @Test func misalignedRegionBaseIsRejected() {
+    #expect(
+      throws: DoryPCV1ABIError.misalignedRegionBase(
+        kind: .ioAPIC,
+        base: DoryGuestPhysicalAddress(0x1800),
+        requiredAlignment: DoryPCV1ABI.guestPageBytes
+      )
+    ) {
+      let regions = [
+        try DoryPCV1Region(kind: .ioAPIC, base: 0x1800, byteCount: 0x1000)
+      ]
+      try DoryPCV1ABI.validateRegions(regions)
+    }
+  }
+
+  @Test func regionsSharingOneGuestPageAreRejected() throws {
+    // 0x1000..<0x1400 and 0x1800..<0x1C00 are byte-disjoint but both occupy guest
+    // page 0x1000. The page-ownership check must reject them even though the
+    // byte ranges do not overlap.
+    let first = try DoryPCV1Region(kind: .hpet, base: 0x1000, byteCount: 0x400)
+    let second = try DoryPCV1Region(kind: .ioAPIC, base: 0x1800, byteCount: 0x400)
+    #expect(
+      throws: DoryPCV1ABIError.regionsShareGuestPage(
+        previous: first.range,
+        current: second.range
+      )
+    ) {
+      try DoryPCV1ABI.validateRegions([first, second])
+    }
+  }
+
+  @Test func subPageRegionOnDedicatedGuestPageIsAccepted() throws {
+    // Mirrors the frozen 1-KiB HPET window: a sub-page reservation is valid when
+    // no other region lands in its page.
+    let regions = [
+      try DoryPCV1Region(kind: .hpet, base: 0xFED0_0000, byteCount: 0x400),
+      try DoryPCV1Region(kind: .ioAPIC, base: 0x2000, byteCount: 0x1000),
+    ]
+    try DoryPCV1ABI.validateRegions(regions)
+  }
 }
