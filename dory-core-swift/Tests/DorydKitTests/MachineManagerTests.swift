@@ -4024,9 +4024,27 @@ final class MachineManagerTests: XCTestCase {
         try Data("arbitrary-non-gpt-destination".utf8).write(to: URL(fileURLWithPath: disk))
         let state = base + "/machines"
         let lifecycleJournalHome = base + "/lifecycle-journal"
+        let firmware = base + "/arm-firmware"
+        let firmwareBundle = try DoryFirmwareBundleBuilder.build(
+            DoryFirmwareBundleBuildInput(
+                platform: .armVirtV1,
+                buildIdentifier: "dory-armvirt-eject-rejection-test.1",
+                source: try DoryFirmwareSourcePin(
+                    repository: "https://github.com/tianocore/edk2.git",
+                    revision: String(repeating: "a", count: 40)
+                ),
+                sourceDateEpoch: 1_788_048_000,
+                platformConfiguration: Data("DoryARMVirt.dsc".utf8),
+                toolchainDescriptor: Data("clang-17F109".utf8),
+                firmwareCode: Data(repeating: 0, count: 4_096),
+                secureBootPolicy: .disabled
+            )
+        )
+        try firmwareBundle.write(to: URL(fileURLWithPath: firmware))
         let manager = MachineManager(
             diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
+                armVirtFirmwareBundlePath: firmware,
                 stateDirectory: state,
                 lifecycleJournalHome: lifecycleJournalHome,
                 baseArguments: ["30"],
