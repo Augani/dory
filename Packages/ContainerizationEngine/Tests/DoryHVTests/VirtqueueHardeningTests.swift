@@ -318,7 +318,7 @@ import Testing
             try memory.write(index, at: usedEventAddress)
             try memory.write(next, at: availRing + 2)
             let chain = try #require(try queue.pop())
-            notifiedEveryCrossing = notifiedEveryCrossing && (try queue.push(chain, written: 1))
+            notifiedEveryCrossing = try notifiedEveryCrossing && queue.push(chain, written: 1)
             index = next
         }
         #expect(index == 0)

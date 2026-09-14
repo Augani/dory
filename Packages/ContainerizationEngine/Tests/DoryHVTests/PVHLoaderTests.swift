@@ -39,14 +39,14 @@ import Testing
 
     @Test func rejectsFileExtentOutsideImage() {
         #expect(throws: VMError.self) {
-            _ = try PVHKernelImage(data: makeELF(pvhEntry: Self.validEntry, fileOffset: 0x1000, fileSize: 4))
+            _ = try PVHKernelImage(data: makeELF(pvhEntry: Self.validEntry, fileSize: 4, fileOffset: 0x1000))
         }
     }
 
     @Test func rejectsOverflowingFileExtent() {
         #expect(throws: VMError.self) {
             _ = try PVHKernelImage(
-                data: makeELF(pvhEntry: Self.validEntry, fileOffset: UInt64.max - 2, fileSize: 4)
+                data: makeELF(pvhEntry: Self.validEntry, fileSize: 4, fileOffset: UInt64.max - 2)
             )
         }
     }
@@ -54,7 +54,7 @@ import Testing
     @Test func rejectsFileExtentEndingBeyondIntMax() {
         #expect(throws: VMError.self) {
             _ = try PVHKernelImage(
-                data: makeELF(pvhEntry: Self.validEntry, fileOffset: UInt64(Int.max), fileSize: 1)
+                data: makeELF(pvhEntry: Self.validEntry, fileSize: 1, fileOffset: UInt64(Int.max))
             )
         }
     }
@@ -64,10 +64,10 @@ import Testing
             _ = try PVHKernelImage(
                 data: makeELF(
                     pvhEntry: Self.validEntry,
-                    physicalAddress: UInt64.max - 4,
-                    virtualAddress: UInt64.max - 4,
                     fileSize: 4,
-                    memorySize: 8
+                    memorySize: 8,
+                    virtualAddress: UInt64.max - 4,
+                    physicalAddress: UInt64.max - 4
                 )
             )
         }
@@ -109,9 +109,9 @@ import Testing
             _ = try PVHKernelImage(
                 data: makeELF(
                     pvhEntry: Self.validEntry,
+                    align: 0x1000,
                     virtualAddress: 0,
-                    fileOffset: 0x200,
-                    align: 0x1000
+                    fileOffset: 0x200
                 )
             )
         }
@@ -121,9 +121,9 @@ import Testing
         let image = try PVHKernelImage(
             data: makeELF(
                 pvhEntry: Self.validEntry,
+                align: 0x1000,
                 virtualAddress: 0x0010_0200,
-                fileOffset: 0x200,
-                align: 0x1000
+                fileOffset: 0x200
             )
         )
         #expect(image.entryPoint == UInt64(Self.validEntry))
@@ -131,7 +131,7 @@ import Testing
 
     @Test func acceptsZeroAlignWithoutCongruence() throws {
         let image = try PVHKernelImage(
-            data: makeELF(pvhEntry: Self.validEntry, virtualAddress: 0, fileOffset: 0x200, align: 0)
+            data: makeELF(pvhEntry: Self.validEntry, align: 0, virtualAddress: 0, fileOffset: 0x200)
         )
         #expect(image.entryPoint == UInt64(Self.validEntry))
     }

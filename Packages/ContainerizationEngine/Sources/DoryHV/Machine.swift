@@ -450,7 +450,10 @@ enum VirtioMMIODeviceTree {
 
     public init(configuration: MachineConfiguration) throws {
       try configuration.validateDoryARMVirtV1()
-      self.vmOwnership = try MachineVMOwnership(createVM: hvCreateVM, destroyVM: hv_vm_destroy)
+      self.vmOwnership = try MachineVMOwnership(
+        createVM: hvCreateVM,
+        destroyVM: { _ = hv_vm_destroy() }
+      )
       self.configuration = configuration
       switch configuration.boot {
       case .directLinux:
