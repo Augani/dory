@@ -2691,7 +2691,9 @@ final class DockerTierTests: XCTestCase {
     }
 
     func testGuestDeviceBindingIsStrictWithinGenerationButRebindsOnNewBoot() throws {
-        let base = "/tmp/dory-tier-guest-dev-binding-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let base = try DoryDataDrive.canonicalPath(
+            "/tmp/dory-tier-guest-dev-binding-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        )
         defer { try? FileManager.default.removeItem(atPath: base) }
         let dataDriveRoot = base + "/selected.dorydrive"
         let authority = guestDataDiskAuthority(
@@ -2854,7 +2856,9 @@ final class DockerTierTests: XCTestCase {
     }
 
     func testGuestResourceProbeRejectsAStopAcrossTheExactExecGeneration() throws {
-        let base = "/tmp/dory-tier-guest-stop-race-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let base = try DoryDataDrive.canonicalPath(
+            "/tmp/dory-tier-guest-stop-race-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        )
         defer { try? FileManager.default.removeItem(atPath: base) }
         let client = GuestResourceProbeAgentClient(
             records: [
