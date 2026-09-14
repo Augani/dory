@@ -9,6 +9,48 @@ import Testing
 
 #if arch(arm64)
   @Suite struct ARMVirtMachineContractTests {
+    private final class VMOperationCounter {
+      var creates = 0
+      var destroys = 0
+    }
+
+    private enum VMConstructionFailure: Error {
+      case expected
+    }
+
+    @Test func createdVMIsDestroyedWhenSubsequentConstructionFails() throws {
+      let operations = VMOperationCounter()
+
+      func failAfterCreatingVM() throws {
+        let ownership = try MachineVMOwnership(
+          createVM: { operations.creates += 1 },
+          destroyVM: { operations.destroys += 1 }
+        )
+        _ = ownership
+        throw VMConstructionFailure.expected
+      }
+
+      #expect(throws: VMConstructionFailure.expected) {
+        try failAfterCreatingVM()
+      }
+      #expect(operations.creates == 1)
+      #expect(operations.destroys == 1)
+    }
+
+    @Test func successfulMachineTeardownDestroysCreatedVMExactlyOnce() throws {
+      let operations = VMOperationCounter()
+      do {
+        let ownership = try MachineVMOwnership(
+          createVM: { operations.creates += 1 },
+          destroyVM: { operations.destroys += 1 }
+        )
+        ownership.destroy()
+      }
+
+      #expect(operations.creates == 1)
+      #expect(operations.destroys == 1)
+    }
+
     @Test func liveGuestLayoutIsAnExactProjectionOfTheFrozenABI() {
         #expect(DoryARMVirtV1Topology.requiredMachineABIIdentity == DoryARMVirtV1ABI.identity)
       #expect(GuestLayout.gicDistributorBase == DoryARMVirtV1ABI.gicDistributorBase)

@@ -213,6 +213,29 @@ enum VirtioMMIODeviceTree {
 }
 
 #if arch(arm64)
+  /// Owns a created VM while `Machine` is still being initialized.
+  ///
+  /// A failed class initializer does not run the enclosing instance's `deinit`, but it does
+  /// release initialized stored properties. Keeping the VM in this separate owner therefore
+  /// closes the gap between `hvCreateVM()` and a fully initialized `Machine`.
+  final class MachineVMOwnership {
+    private var destroyVM: (() -> Void)?
+
+    init(createVM: () throws -> Void, destroyVM: @escaping () -> Void) throws {
+      try createVM()
+      self.destroyVM = destroyVM
+    }
+
+    func destroy() {
+      destroyVM?()
+      destroyVM = nil
+    }
+
+    deinit {
+      destroy()
+    }
+  }
+
   /// Device-wiring view of the frozen `dory.armvirt@1` machine ABI. The ABI package is the sole
   /// authority for guest-visible addresses and interrupt assignments.
   public enum GuestLayout {
@@ -373,6 +396,7 @@ enum VirtioMMIODeviceTree {
   /// eagerly, parked, and released by PSCI CPU_ON. Thread-shared state is guarded by
   /// `teamCondition`; devices serialize their own guest-facing surfaces.
   public final class Machine: @unchecked Sendable {
+    private let vmOwnership: MachineVMOwnership
     public let configuration: MachineConfiguration
     public let memory: GuestMemory
     public let bus = MMIOBus()
@@ -392,7 +416,7 @@ enum VirtioMMIODeviceTree {
 
     public init(configuration: MachineConfiguration) throws {
       try configuration.validateDoryARMVirtV1()
-      try hvCreateVM()
+      self.vmOwnership = try MachineVMOwnership(createVM: hvCreateVM, destroyVM: hv_vm_destroy)
       self.configuration = configuration
       switch configuration.boot {
       case .directLinux:
@@ -432,7 +456,7 @@ enum VirtioMMIODeviceTree {
 
     deinit {
       try? firmwareCode?.unmapFromGuest()
-      hv_vm_destroy()
+      vmOwnership.destroy()
     }
 
     // Dirty tracking (P2-02 item 8):
