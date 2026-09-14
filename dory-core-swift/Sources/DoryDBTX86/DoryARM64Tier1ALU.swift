@@ -576,9 +576,18 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     }
     var fragment: [UInt32] = []
     DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
-    guard Self.emitMemoryRead(width: width, address: address, into: &fragment) else {
+    guard Self.emitMemoryAddress(address, into: &fragment) else {
       return false
     }
+    // The mandatory read remains ahead of predicate evaluation. The guarded probe preserves the
+    // callback boundary for every non-hit case; stage x26 because predicate materialization uses
+    // both regular scratch registers before the select consumes the loaded source.
+    Self.emitInlineReadTLBThenCallback(
+      width: width,
+      loadedValueRegister: 26,
+      into: &fragment
+    )
+    fragment.append(Self.encodeStore64(register: 26, word: .rip))
     Self.emitConditionFromMaterializedFlags(condition, into: &fragment)
     fragment.append(Self.encodeLoad64(register: 17, word: .rip))
     fragment.append(

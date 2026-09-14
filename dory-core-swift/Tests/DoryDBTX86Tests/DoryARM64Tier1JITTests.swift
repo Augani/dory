@@ -2428,6 +2428,201 @@ import Testing
     #endif
   }
 
+  @Test func memoryCMOVFillThenHitsReadTLBForBothWidthsAndPredicates() throws {
+    #if arch(arm64)
+      let cases: [(bytes: [UInt8], byteCount: Int, comment: String)] = [
+        ([0x48, 0x0F, 0x44, 0x00], 8, "cmove rax,[rax]"),
+        ([0x0F, 0x44, 0x00], 4, "cmove eax,[rax]"),
+      ]
+      let codeAddress: UInt64 = 0x1000
+      let dataAddress: UInt64 = 0x80
+
+      for (caseIndex, testCase) in cases.enumerated() {
+        for predicate in [false, true] {
+          let physical = try DoryX86MmapMemory(validatingByteCount: 0x2000)
+          try physical.write(at: codeAddress, bytes: testCase.bytes)
+          try physical.writeScalar(
+            at: dataAddress,
+            value: 0x1122_3344_5566_7788,
+            byteCount: testCase.byteCount
+          )
+          var flags: DoryX86RFLAGS = [.reservedOne, .carry, .direction]
+          if predicate { flags.insert(.zero) }
+          let initial = try DoryX86ArchitecturalState(
+            registers: .init(rax: dataAddress),
+            rip: codeAddress,
+            rflags: flags
+          )
+          var interpreted = initial
+          guard case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: physical,
+            mode: .long64
+          ) else {
+            Issue.record("interpreter did not retire \(testCase.comment)")
+            return
+          }
+
+          let executor = try DoryARM64BaselineExecutor(
+            maximumCodeBytes: 4096,
+            tier1Enabled: true
+          )
+          let addressSpaceID = UInt64(caseIndex * 2 + (predicate ? 1 : 0))
+          var first = initial
+          let firstExecution = try #require(executor.execute(
+            bytes: testCase.bytes,
+            at: codeAddress,
+            mode: .long64,
+            addressSpaceID: addressSpaceID,
+            maximumInstructions: 1,
+            state: &first,
+            memory: physical
+          ))
+          #expect(firstExecution.block.tier == .tier1, Comment(rawValue: testCase.comment))
+          #expect(first == interpreted, Comment(rawValue: testCase.comment))
+          let tlb = try #require(executor.translationTLBForTesting)
+          #expect(tlb.diagnostics.hits == 0, Comment(rawValue: testCase.comment))
+
+          let hostAddress =
+            physical.hostAddressSpaceBase
+            + (physical.hostAddressSpaceOffset(
+              at: dataAddress, byteCount: testCase.byteCount, access: .read) ?? 0)
+          try tlb.fill(
+            linearAddress: dataAddress,
+            addressSpaceGeneration: executor.translationTLBGenerationForTesting,
+            access: .read,
+            hostAddress: hostAddress
+          )
+
+          var second = initial
+          let secondExecution = try #require(executor.execute(
+            bytes: testCase.bytes,
+            at: codeAddress,
+            mode: .long64,
+            addressSpaceID: addressSpaceID,
+            maximumInstructions: 1,
+            state: &second,
+            memory: physical
+          ))
+          #expect(secondExecution.block.tier == .tier1, Comment(rawValue: testCase.comment))
+          #expect(second == interpreted, Comment(rawValue: testCase.comment))
+          #expect(tlb.diagnostics.hits == 1, Comment(rawValue: testCase.comment))
+        }
+      }
+    #endif
+  }
+
+  @Test func memoryCMOVFallsBackOnCrossPageAndOutOfRangeReadTLBEntries() throws {
+    #if arch(arm64)
+      let codeAddress: UInt64 = 0x1000
+      let bytes: [UInt8] = [0x48, 0x0F, 0x44, 0x00]  // cmove rax,[rax]
+      let page = Int(getpagesize())
+      let physical = try DoryX86MmapMemory(validatingByteCount: page * 2)
+      try physical.write(at: codeAddress, bytes: bytes)
+      let nearEnd = UInt64(page) - 4
+      try physical.writeScalar(at: nearEnd, value: 0x0102_0304_0506_0708, byteCount: 8)
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        tier1Enabled: true
+      )
+
+      var crossPage = try DoryX86ArchitecturalState(
+        registers: .init(rax: nearEnd),
+        rip: codeAddress,
+        rflags: [.reservedOne, .zero]
+      )
+      var interpretedCrossPage = crossPage
+      guard case .retired = DoryX86Interpreter().step(
+        state: &interpretedCrossPage,
+        memory: physical,
+        mode: .long64
+      ) else {
+        Issue.record("interpreter did not retire cross-page memory CMOV")
+        return
+      }
+      _ = try #require(executor.execute(
+        bytes: bytes,
+        at: codeAddress,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &crossPage,
+        memory: physical
+      ))
+      let tlb = try #require(executor.translationTLBForTesting)
+      let crossPageHostAddress =
+        physical.hostAddressSpaceBase
+        + (physical.hostAddressSpaceOffset(at: nearEnd, byteCount: 8, access: .read) ?? 0)
+      try tlb.fill(
+        linearAddress: nearEnd,
+        addressSpaceGeneration: executor.translationTLBGenerationForTesting,
+        access: .read,
+        hostAddress: crossPageHostAddress
+      )
+      crossPage = try DoryX86ArchitecturalState(
+        registers: .init(rax: nearEnd),
+        rip: codeAddress,
+        rflags: [.reservedOne, .zero]
+      )
+      let crossPageExecution = try #require(executor.execute(
+        bytes: bytes,
+        at: codeAddress,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &crossPage,
+        memory: physical
+      ))
+      #expect(crossPageExecution.block.tier == .tier1)
+      #expect(crossPage == interpretedCrossPage)
+      #expect(tlb.diagnostics.hits == 0)
+
+      let linearAddress: UInt64 = 0x80
+      try physical.writeScalar(at: linearAddress, value: 0x1234, byteCount: 8)
+      var outOfRange = try DoryX86ArchitecturalState(
+        registers: .init(rax: linearAddress),
+        rip: codeAddress,
+        rflags: [.reservedOne, .zero]
+      )
+      var interpretedOutOfRange = outOfRange
+      guard case .retired = DoryX86Interpreter().step(
+        state: &interpretedOutOfRange,
+        memory: physical,
+        mode: .long64
+      ) else {
+        Issue.record("interpreter did not retire out-of-range memory CMOV")
+        return
+      }
+      try tlb.fill(
+        linearAddress: linearAddress,
+        addressSpaceGeneration: executor.translationTLBGenerationForTesting,
+        access: .read,
+        hostAddress: 0xffff_8880_0000_0000
+      )
+      // The manually installed entry has the same page tag and live address-space generation.
+      // Its only invalid property is the resolved host address, so the inline host-bounds guard
+      // must reject it before the preserved read callback supplies the architectural value.
+      #expect(try tlb.lookup(
+        linearAddress: linearAddress,
+        addressSpaceGeneration: executor.translationTLBGenerationForTesting,
+        access: .read
+      ) == 0xffff_8880_0000_0000)
+      let hitsBeforeHostBoundsFallback = tlb.diagnostics.hits
+      let outOfRangeExecution = try #require(executor.execute(
+        bytes: bytes,
+        at: codeAddress,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &outOfRange,
+        memory: physical
+      ))
+      #expect(outOfRangeExecution.block.tier == .tier1)
+      #expect(outOfRange == interpretedOutOfRange)
+      #expect(tlb.diagnostics.hits == hitsBeforeHostBoundsFallback)
+    #endif
+  }
+
   @Test func measuredHighCanonicalMemoryCMOVExecutesLikeTheInterpreter() throws {
     #if arch(arm64)
       let address: UInt64 = 0xFFFF_FFFF_81E2_DC27
@@ -5600,6 +5795,101 @@ import Testing
       )))
       #expect(state.rip == 0x1003)
       #expect(state.registers.rcx == 1)
+      #expect(state.registers.rax == 0xBBBB)
+    #endif
+  }
+
+  @Test func tier1CMOVCallbackFaultAfterTLBInvalidationExitsAtFaultingInstruction() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [
+        0x48, 0xFF, 0xC1,  // inc rcx
+        0x48, 0x0F, 0x44, 0x03,  // cmove rax,[rbx]
+      ]
+      let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)
+      for (address, value): (UInt64, UInt64) in [
+        (0x9000, 0xA007), (0xA000, 0xB007), (0xB000, 0xC007),
+        (0xC008, 0x1007), (0xC010, 0x2007), (0xC040, 0x8007),
+      ] {
+        try physical.writeScalar(at: address, value: value, byteCount: 8)
+      }
+      try physical.write(at: 0x1000, bytes: bytes)
+      try physical.writeScalar(at: 0x8000, value: 0x1234_ABCD, byteCount: 8)
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0xAAAA, rcx: .max, rbx: 0x8000),
+        rip: 0x1000,
+        rflags: [.reservedOne, .zero],
+        cs: .init(selector: 3, attributes: 0xA0FB, limit: .max),
+        control: .init(
+          cr0: 0x8001_0011,
+          cr3: 0x9000,
+          cr4: 1 << 5,
+          efer: (1 << 10) | (1 << 11)
+        )
+      )
+      let paging = DoryX86PagingUnit()
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: initial, mode: .long64)
+      )
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: true,
+        optimization: .optimizing
+      )
+
+      var warm = initial
+      _ = try #require(executor.execute(
+        bytes: bytes,
+        at: 0x1000,
+        mode: .long64,
+        addressSpaceID: 0x9000,
+        maximumInstructions: 2,
+        state: &warm,
+        memory: translated
+      ))
+      #expect(warm.rip == 0x1007)
+      #expect(warm.registers.rcx == 0)
+      #expect(warm.registers.rax == 0x1234_ABCD)
+
+      var hit = initial
+      _ = try #require(executor.execute(
+        bytes: bytes,
+        at: 0x1000,
+        mode: .long64,
+        addressSpaceID: 0x9000,
+        maximumInstructions: 2,
+        state: &hit,
+        memory: translated
+      ))
+      #expect(hit.rip == 0x1007)
+      #expect(hit.registers.rax == 0x1234_ABCD)
+      #expect(executor.diagnostics.translationCacheHits > 0)
+
+      // Invalidation intentionally rejects the warmed entry, so this exercises the callback
+      // fault boundary (not a stale inline direct-load recovery).
+      try physical.writeScalar(at: 0xC040, value: 0x8006, byteCount: 8)
+      paging.invalidateAll()
+      executor.synchronizeTranslationCache(with: paging)
+      var state = initial
+      state.registers.rax = 0xBBBB
+      translated.updateContext(.init(state: state, mode: .long64))
+      let summary = try #require(executor.executeChainedSummary(
+        byteProvider: { address, maximumCount in
+          (try? translated.instructionBytes(at: address, maximumCount: maximumCount)) ?? []
+        },
+        codeGenerationProvider: { try translated.codeGeneration(at: $0, byteCount: $1) },
+        at: state.rip,
+        mode: .long64,
+        addressSpaceID: 0x9000,
+        maximumInstructions: 2,
+        state: &state,
+        memory: translated
+      ))
+      #expect(summary.exitCode == .interpreter)
+      #expect(summary.guestInstructionCount == 1)
+      #expect(state.rip == 0x1003)
+      #expect(state.registers.rcx == 0)
       #expect(state.registers.rax == 0xBBBB)
     #endif
   }
