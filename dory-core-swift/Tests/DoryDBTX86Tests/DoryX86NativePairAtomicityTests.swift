@@ -1,3 +1,4 @@
+import Darwin
 import Dispatch
 import DoryJITRuntimeC
 import Foundation
@@ -6,6 +7,77 @@ import Testing
 @testable import DoryDBTX86
 
 @Suite struct DoryX86NativePairAtomicityTests {
+  @Test(arguments: [1, 2, 4, 8] as [UInt32])
+  func scalarNativeHelpersWaitForInterpreterAtomicGate(byteCount: UInt32) throws {
+    #if arch(arm64)
+      let fixture = try PairAtomicityFixture()
+      let offset: UInt64 = 0x100
+      let mask = UInt64.max >> (64 - byteCount * 8)
+
+      for helper in ScalarAtomicHelper.allCases {
+        fixture.memory.storeBytes(of: UInt64(0x35), toByteOffset: Int(offset), as: UInt64.self)
+        let probe = ScalarAtomicGateProbe()
+        let completed = DispatchGroup()
+        let result = ScalarAtomicResult()
+        completed.enter()
+        try DoryX86AtomicGate.shared.withLock {
+          DispatchQueue.global().async {
+            result.run(helper, fixture: fixture, offset: offset, byteCount: byteCount, probe: probe)
+            completed.leave()
+          }
+          try #require(try probe.waitUntilBlocked(timeout: .now() + 2),
+            "\(helper) did not block inside its native invocation")
+          // Admission requires a kernel-observed wait inside the invocation, not
+          // merely a worker scheduled (or descheduled) just before the helper call.
+          #expect(completed.wait(timeout: .now()) == .timedOut,
+            "\(helper) completed while the interpreter atomic gate was held")
+          #expect(fixture.memory.load(fromByteOffset: Int(offset), as: UInt64.self) == 0x35,
+            "\(helper) changed memory before acquiring the interpreter atomic gate")
+        }
+        try #require(completed.wait(timeout: .now() + 2) == .success)
+        #expect(result.status == DORY_JIT_ATOMIC_RESOLUTION_SUCCESS.rawValue)
+        #expect(result.observed == 0x35)
+        // Reading after completion also keeps the failure path free of concurrent loads.
+        #expect(fixture.memory.load(fromByteOffset: Int(offset), as: UInt64.self)
+          == helper.finalValue & mask)
+      }
+    #endif
+  }
+
+  @Test func rejectedScalarNativeOperandsDoNotWaitForInterpreterAtomicGate() throws {
+    #if arch(arm64)
+      let fixture = try PairAtomicityFixture()
+      fixture.memory.storeBytes(of: UInt64(0x35), toByteOffset: 0x100, as: UInt64.self)
+      fixture.memory.storeBytes(of: UInt64(0x35), toByteOffset: 0xFF8, as: UInt64.self)
+      let operands: [(UInt64, UInt32, UInt32)] = [
+        (0x101, 8, DORY_JIT_ATOMIC_RESOLUTION_FALLBACK.rawValue),  // Unaligned host operand.
+        (0xFFF, 8, DORY_JIT_ATOMIC_RESOLUTION_FALLBACK.rawValue),  // Split page operand.
+        (0x100, 3, DORY_JIT_ATOMIC_RESOLUTION_ERROR.rawValue),  // Invalid scalar width.
+      ]
+
+      for helper in ScalarAtomicHelper.allCases {
+        for (offset, byteCount, status) in operands {
+          let completed = DispatchGroup()
+          let result = ScalarAtomicResult()
+          completed.enter()
+          try DoryX86AtomicGate.shared.withLock {
+            DispatchQueue.global().async {
+              result.run(helper, fixture: fixture, offset: offset, byteCount: byteCount)
+              completed.leave()
+            }
+            // Rejected operands must return even while this thread owns the gate.
+            try #require(completed.wait(timeout: .now() + 2) == .success,
+              "\(helper) waited for the gate on a rejected operand")
+          }
+          #expect(result.status == status)
+          #expect(result.observed == UInt64.max)
+          #expect(fixture.memory.load(fromByteOffset: 0x100, as: UInt64.self) == 0x35)
+          #expect(fixture.memory.load(fromByteOffset: 0xFF8, as: UInt64.self) == 0x35)
+        }
+      }
+    #endif
+  }
+
   @Test func alignedScalarJITAtomicHelpersUseLockFreeHostOperationsAtEveryWidth() throws {
     #if arch(arm64)
       let fixture = try PairAtomicityFixture()
@@ -95,6 +167,121 @@ import Testing
 }
 
 #if arch(arm64)
+private enum ScalarAtomicHelper: CaseIterable, Sendable {
+  case compareExchange, compareExchangeMismatch, exchange, fetchAdd
+  case add, subtract, and, or, xor, negate
+
+  var finalValue: UInt64 {
+    switch self {
+    case .compareExchange, .exchange: return 0x12
+    case .compareExchangeMismatch: return 0x35
+    case .fetchAdd, .add: return 0x47
+    case .subtract: return 0x23
+    case .and: return 0x10
+    case .or: return 0x37
+    case .xor: return 0x27
+    case .negate: return 0 &- 0x35
+    }
+  }
+}
+
+// Written by one worker and read only after its completion group establishes happens-before.
+private final class ScalarAtomicResult: @unchecked Sendable {
+  private(set) var status: Int32 = -1
+  private(set) var observed: UInt64 = .max
+
+  func run(
+    _ helper: ScalarAtomicHelper, fixture: PairAtomicityFixture, offset: UInt64, byteCount: UInt32,
+    probe: ScalarAtomicGateProbe? = nil
+  ) {
+    // Resolve Swift properties before the probe interval. The interval contains
+    // only the C invocation and scalar result assignments; its only blocking
+    // operation is the native gate (the fixture supplies a resident TLB hit).
+    let context = fixture.context
+    let memory = fixture.memory
+    var observed = UInt64.max
+    let status: Int32
+    switch helper {
+    case .compareExchange, .compareExchangeMismatch:
+      let expected: UInt64 = helper == .compareExchange ? 0x35 : 0
+      probe?.begin()
+      status = dory_jit_atomic_compare_exchange_from_context(
+        context, memory, offset, expected, 0x12, byteCount, &observed)
+      probe?.end()
+    case .exchange:
+      probe?.begin()
+      status = dory_jit_atomic_exchange_from_context(
+        context, memory, offset, 0x12, byteCount, &observed)
+      probe?.end()
+    case .fetchAdd:
+      probe?.begin()
+      status = dory_jit_atomic_fetch_add_from_context(
+        context, memory, offset, 0x12, byteCount, &observed)
+      probe?.end()
+    default:
+      let operation: UInt32
+      switch helper {
+      case .add: operation = UInt32(DORY_JIT_ATOMIC_RMW_ADD.rawValue)
+      case .subtract: operation = UInt32(DORY_JIT_ATOMIC_RMW_SUBTRACT.rawValue)
+      case .and: operation = UInt32(DORY_JIT_ATOMIC_RMW_AND.rawValue)
+      case .or: operation = UInt32(DORY_JIT_ATOMIC_RMW_OR.rawValue)
+      case .xor: operation = UInt32(DORY_JIT_ATOMIC_RMW_XOR.rawValue)
+      case .negate: operation = UInt32(DORY_JIT_ATOMIC_RMW_NEGATE.rawValue)
+      default: preconditionFailure("Expected a generic RMW helper")
+      }
+      probe?.begin()
+      status = dory_jit_atomic_rmw_from_context(
+        context, memory, offset, 0x12, byteCount, operation, &observed)
+      probe?.end()
+    }
+    self.status = status
+    self.observed = observed
+  }
+}
+
+private final class ScalarAtomicGateProbe: @unchecked Sendable {
+  // 0: setup; 1: native invocation; 2: returned. The release/acquire edge also
+  // publishes the Mach thread port. It is never read before phase 1 is observed.
+  private let phase: UnsafeMutablePointer<UInt8> = .allocate(capacity: 1)
+  private var worker: mach_port_t = 0
+
+  init() { phase.initialize(to: 0) }
+  deinit { phase.deallocate() }
+
+  func begin() {
+    worker = pthread_mach_thread_np(pthread_self())
+    dory_jit_pending_work_store_release(phase, 1)
+  }
+
+  func end() { dory_jit_pending_work_store_release(phase, 2) }
+
+  func waitUntilBlocked(timeout: DispatchTime) throws -> Bool {
+    while DispatchTime.now() < timeout {
+      let current = dory_jit_pending_work_load_acquire(phase)
+      if current == 2 { return false }
+      if current == 1 {
+        var info = thread_basic_info()
+        var count = mach_msg_type_number_t(
+          MemoryLayout<thread_basic_info>.size / MemoryLayout<integer_t>.size)
+        let status = withUnsafeMutablePointer(to: &info) {
+          $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            thread_info(worker, thread_flavor_t(THREAD_BASIC_INFO), $0, &count)
+          }
+        }
+        // Recheck after the snapshot: a finished dispatch worker may already be
+        // parked on unrelated queue work. Such a wait must never count as admission.
+        if dory_jit_pending_work_load_acquire(phase) == 2 { return false }
+        try #require(status == KERN_SUCCESS, "Cannot inspect the native helper worker")
+        if info.run_state == TH_STATE_WAITING { return true }
+      }
+      // Yield only to let the worker progress. Elapsed time is a failure bound,
+      // never evidence of contention; a descheduled runnable worker cannot pass.
+      sched_yield()
+    }
+    return false
+  }
+}
+
 // The writer is real generated AArch64 code, independent of C/Swift alias or
 // data-race optimization assumptions. It uses ordinary acquire/release scalar
 // accesses, never dory_jit_atomic_lock or any locked-RMW helper. On a mismatch
