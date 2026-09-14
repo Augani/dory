@@ -15537,13 +15537,15 @@ public final class MachineManager: @unchecked Sendable {
         if machine.bootMode == .efi, let installerISOPath = machine.installerISOPath {
             let detected: DoryInstallerISOArchitecture
             do {
-                // The public daemon has already minted structural portable-EFI evidence before
-                // calling the manager. Keep this internal boundary architecture-only so recovery
-                // and isolated manager harnesses can use synthetic media without bypassing the
-                // daemon's stricter admission path.
-                detected = try DoryInstallerISOInspector.architecture(
+                // Direct manager ingestion enforces the same strict portable-EFI identity
+                // as staged CLI admission. A bare BOOTAA64/BOOTX64 marker or ISO9660
+                // filename is not launch authority: this requires a matching PE32+ EFI
+                // application in a valid FAT ESP and throws before managed copy,
+                // machine.json, guest architecture, or boot-plan state is written.
+                let identity = try DoryInstallerISOInspector.portableEFIMediaIdentity(
                     atPath: installerISOPath
                 )
+                detected = identity.architecture
             } catch {
                 throw MachineManagerError.persistence(
                     "could not inspect installer ISO architecture: \(error)"
@@ -18540,7 +18542,14 @@ public final class MachineManager: @unchecked Sendable {
                     try Self.createPrivateFile(path: kernelDestination, contents: Data("DORY-EFI\n".utf8))
                 }
                 if let installerISOPath = machine.installerISOPath {
-                    try Self.cloneOrCopyFile(source: installerISOPath, destination: installerDestination)
+                    let selectedGuestArchitecture = try effectiveGuestArchitecture(for: machine)
+                    let expectedInstallerArchitecture: DoryInstallerISOArchitecture =
+                        selectedGuestArchitecture == .arm64 ? .arm64 : .x86_64
+                    try Self.cloneOrCopyFile(
+                        source: installerISOPath,
+                        destination: installerDestination,
+                        portableEFIExpectedArchitecture: expectedInstallerArchitecture
+                    )
                     copy.installerISOPath = installerDestination
                 }
             case .macOSRestore:
@@ -21018,7 +21027,56 @@ public final class MachineManager: @unchecked Sendable {
         return "\(prefix)\(stamp)-\(token)"
     }
 
-    private static func cloneOrCopyFile(
+    /// Strict portable-EFI preflight for the exact source descriptor that will be cloned
+    /// or copied. This is the narrowest TOCTOU seam: it runs immediately after safe open/fstat
+    /// and before `fclonefileat`/`fcopyfile`, reading only from the open descriptor so a
+    /// rename/replacement at the source path cannot validate one file and copy another. A
+    /// multi-architecture carrier satisfies either selected ISA; any other mismatch fails
+    /// before managed media is written.
+    static func validatePortableEFIInstallerSource(
+        descriptor: Int32,
+        size: Int64,
+        expectedArchitecture: DoryInstallerISOArchitecture,
+        path: String
+    ) throws {
+        let identity: DoryInstallerISOMediaIdentity
+        do {
+            identity = try DoryInstallerISOInspector.portableEFIMediaIdentity(
+                descriptor: descriptor,
+                size: size,
+                path: path
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "installer ISO failed strict portable-EFI validation: \(error)"
+            )
+        }
+        guard identity.architecture == expectedArchitecture
+            || identity.architecture == .multiArchitecture else {
+            throw MachineManagerError.persistence(
+                "installer ISO architecture \(identity.architecture.rawValue) does not match "
+                    + "selected guest architecture \(expectedArchitecture.rawValue)"
+            )
+        }
+    }
+
+    /// Managed-copy seam: opens the source with `O_NOFOLLOW`, fstats, runs the
+    /// descriptor-bound portable-EFI preflight on that same open descriptor before
+    /// any clone/copy, then copies from the descriptor. The private destination is
+    /// strictly revalidated against the expected portable EFI ISA after clone/copy
+    /// and before link/rename publication. `copyMutationHook` is a narrow
+    /// deterministic seam for tests to mutate same-size source bytes after source
+    /// validation and before the real copy. Internal (not public) so
+    /// deterministic `@testable` coverage can exercise the exact production seam.
+    /// `postPublicationDirectorySync` is limited to the durability boundary after
+    /// atomic publication so tests can force its failure without global state.
+    /// `postCleanupDirectorySync` is limited to the durability boundary after the
+    /// private replacement rollback link is unlinked, so tests can force that exact
+    /// cleanup failure. A failed cleanup sync never returns success: the replacement
+    /// entry is already directory-durable at that point, so the operation throws an
+    /// explicit durability error, leaves the durable new destination in place, and
+    /// deletes nothing else.
+    static func cloneOrCopyFile(
         source: String,
         destination: String,
         replaceExisting: Bool = false,
@@ -21027,7 +21085,11 @@ public final class MachineManager: @unchecked Sendable {
         expectedByteCount: UInt64? = nil,
         copyCapacityProvider: (@Sendable (String) throws -> UInt64)? = nil,
         capacityOperation: String? = nil,
-        forceCopyFallback: Bool = false
+        forceCopyFallback: Bool = false,
+        portableEFIExpectedArchitecture: DoryInstallerISOArchitecture? = nil,
+        copyMutationHook: (@Sendable () -> Void)? = nil,
+        postPublicationDirectorySync: (@Sendable (Int32) -> Int32)? = nil,
+        postCleanupDirectorySync: (@Sendable (Int32) -> Int32)? = nil
     ) throws {
         guard (expectedSHA256 == nil) == (expectedByteCount == nil),
               (copyCapacityProvider == nil) == (capacityOperation == nil),
@@ -21050,7 +21112,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         let destinationName = destinationURL.lastPathComponent
         let temporaryName = ".\(destinationName).tmp-\(UUID().uuidString)"
-        _ = unlinkat(parentDescriptor, temporaryName, 0)
+        let rollbackName = ".\(destinationName).rollback-\(UUID().uuidString)"
         let sourceDescriptor = open(source, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         guard sourceDescriptor >= 0 else {
             throw MachineManagerError.persistence(
@@ -21064,13 +21126,34 @@ public final class MachineManager: @unchecked Sendable {
               sourceInfo.st_size > 0 else {
             throw MachineManagerError.persistence("artifact source is not a nonempty regular file")
         }
+        if let expectedArchitecture = portableEFIExpectedArchitecture {
+            try Self.validatePortableEFIInstallerSource(
+                descriptor: sourceDescriptor,
+                size: Int64(sourceInfo.st_size),
+                expectedArchitecture: expectedArchitecture,
+                path: source
+            )
+        }
+        var temporaryCreated = false
+        var publishedDestination = false
+        var preservedDestinationName: String?
+        // Set once the replacement entry is directory-durable and its private
+        // rollback link has been unlinked. From here on the old bytes are
+        // discarded, so a cleanup durability failure must not roll the new
+        // destination back and must not return success; it throws explicitly
+        // and leaves the durable new destination in place for reconciliation.
+        var replacementCleanupUncertain = false
         do {
+            // Deterministic copy seam: a test may mutate same-inode source bytes
+            // here, after source preflight and before the real clone/copy. The
+            // private destination is revalidated below before publication, so such
+            // a mutation cannot publish unvalidated media or stale boot metadata.
+            copyMutationHook?()
             let cloneResult = forceCopyFallback
                 ? -1
                 : fclonefileat(sourceDescriptor, parentDescriptor, temporaryName, 0)
             if cloneResult != 0 {
                 let cloneError = forceCopyFallback ? ENOTSUP : errno
-                _ = unlinkat(parentDescriptor, temporaryName, 0)
                 guard !requiresCopyOnWrite else {
                     throw MachineManagerError.persistence(
                         "APFS copy-on-write cloning is unavailable: "
@@ -21096,6 +21179,7 @@ public final class MachineManager: @unchecked Sendable {
                         "could not create artifact copy: \(String(cString: strerror(errno)))"
                     )
                 }
+                temporaryCreated = true
                 defer { close(destinationDescriptor) }
                 guard lseek(sourceDescriptor, 0, SEEK_SET) == 0,
                       fcopyfile(sourceDescriptor, destinationDescriptor, nil, copyfile_flags_t(COPYFILE_DATA)) == 0,
@@ -21107,6 +21191,7 @@ public final class MachineManager: @unchecked Sendable {
                     )
                 }
             } else {
+                temporaryCreated = true
                 let clonedDescriptor = openat(parentDescriptor, temporaryName, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
                 guard clonedDescriptor >= 0 else {
                     throw MachineManagerError.persistence("could not reopen cloned artifact")
@@ -21141,34 +21226,163 @@ public final class MachineManager: @unchecked Sendable {
                     }
                 }
             }
+            // Strictly revalidate the exact private destination bytes before the
+            // directory entry is published. A same-inode source write between
+            // preflight and clone/copy lands in the copied bytes; validating the
+            // temporary destination with O_NOFOLLOW and unlinking on mismatch
+            // prevents unvalidated media or stale boot metadata from becoming
+            // visible through link/rename.
+            if let expectedArchitecture = portableEFIExpectedArchitecture {
+                let validationDescriptor = openat(
+                    parentDescriptor,
+                    temporaryName,
+                    O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+                )
+                guard validationDescriptor >= 0 else {
+                    throw MachineManagerError.persistence(
+                        "could not reopen managed installer destination: \(String(cString: strerror(errno)))"
+                    )
+                }
+                defer { close(validationDescriptor) }
+                var validationInfo = stat()
+                guard fstat(validationDescriptor, &validationInfo) == 0,
+                      (validationInfo.st_mode & S_IFMT) == S_IFREG,
+                      validationInfo.st_size > 0 else {
+                    throw MachineManagerError.persistence(
+                        "managed installer destination is not a nonempty regular file"
+                    )
+                }
+                do {
+                    try Self.validatePortableEFIInstallerSource(
+                        descriptor: validationDescriptor,
+                        size: Int64(validationInfo.st_size),
+                        expectedArchitecture: expectedArchitecture,
+                        path: destination
+                    )
+                } catch {
+                    // Unlinking is handled by the outer catch; surface the strict
+                    // validation failure without minting managed state.
+                    throw error
+                }
+            }
             if replaceExisting {
+                // Preserve a pre-existing valid artifact under a private hard link
+                // before replacing its final name. If the following directory fsync
+                // fails, renaming this link back atomically replaces the new media.
+                // Keeping the backup in the same directory also avoids a copy or a
+                // window in which an old valid destination is silently discarded.
+                var existingInfo = stat()
+                let existingResult = fstatat(
+                    parentDescriptor,
+                    destinationName,
+                    &existingInfo,
+                    AT_SYMLINK_NOFOLLOW
+                )
+                if existingResult == 0 {
+                    guard linkat(
+                        parentDescriptor,
+                        destinationName,
+                        parentDescriptor,
+                        rollbackName,
+                        0
+                    ) == 0 else {
+                        throw MachineManagerError.persistence(
+                            "could not preserve existing \(destination): \(String(cString: strerror(errno)))"
+                        )
+                    }
+                    preservedDestinationName = rollbackName
+                } else if errno != ENOENT {
+                    throw MachineManagerError.persistence(
+                        "could not inspect existing \(destination): \(String(cString: strerror(errno)))"
+                    )
+                }
                 guard renameat(parentDescriptor, temporaryName, parentDescriptor, destinationName) == 0 else {
                     throw MachineManagerError.persistence(
                         "could not replace \(destination): \(String(cString: strerror(errno)))"
                     )
                 }
+                temporaryCreated = false
+                publishedDestination = true
             } else {
                 guard linkat(parentDescriptor, temporaryName, parentDescriptor, destinationName, 0) == 0 else {
                     throw MachineManagerError.persistence(
                         "could not publish \(destination): \(String(cString: strerror(errno)))"
                     )
                 }
+                publishedDestination = true
                 guard unlinkat(parentDescriptor, temporaryName, 0) == 0 else {
                     _ = unlinkat(parentDescriptor, destinationName, 0)
+                    publishedDestination = false
                     throw MachineManagerError.persistence(
                         "could not finalize \(destination): \(String(cString: strerror(errno)))"
                     )
                 }
+                temporaryCreated = false
             }
             // The file fsync above does not make the published directory entry durable.
             // Callers may checkpoint immediately after this return, including restore backups.
-            guard fsync(parentDescriptor) == 0 else {
+            let syncResult = postPublicationDirectorySync?(parentDescriptor)
+                ?? fsync(parentDescriptor)
+            guard syncResult == 0 else {
                 throw MachineManagerError.persistence(
                     "could not synchronize managed artifact directory: \(String(cString: strerror(errno)))"
                 )
             }
+            if let rollbackEntryName = preservedDestinationName {
+                guard unlinkat(parentDescriptor, rollbackEntryName, 0) == 0 else {
+                    throw MachineManagerError.persistence(
+                        "could not finalize replacement \(destination): \(String(cString: strerror(errno)))"
+                    )
+                }
+                preservedDestinationName = nil
+                // The newly published replacement entry was already made
+                // directory-durable by the publication sync above, so its old
+                // rollback state is now discarded. This cleanup sync only records
+                // removal of the private rollback link; unlike the previous
+                // best-effort behavior, its failure must fail closed rather than
+                // return success.
+                // On failure the durable new destination stays in place and
+                // nothing else is deleted; the caller must re-verify the
+                // destination and remove any resurrected private
+                // `.<name>.rollback-*` link before retrying.
+                replacementCleanupUncertain = true
+                let cleanupSyncResult = postCleanupDirectorySync?(parentDescriptor)
+                    ?? fsync(parentDescriptor)
+                guard cleanupSyncResult == 0 else {
+                    throw MachineManagerError.persistence(
+                        "could not synchronize managed artifact directory after replacement cleanup for "
+                            + "\(destination): \(String(cString: strerror(errno))); the replacement entry is "
+                            + "directory-durable but removal of its private rollback link is uncertain"
+                    )
+                }
+                replacementCleanupUncertain = false
+            }
         } catch {
-            _ = unlinkat(parentDescriptor, temporaryName, 0)
+            // Roll back only a destination this invocation actually published, and
+            // only while its publication is not yet durable. For replacement, atomically
+            // restore the preserved old entry; for a new destination, remove the new
+            // name. This state separation prevents cleanup of unrelated pre-existing
+            // media after an earlier failure. Once `replacementCleanupUncertain` is set,
+            // the replacement entry is already directory-durable and the old rollback
+            // state is discarded, so the catch must leave the new destination in place
+            // and delete nothing: the thrown cleanup error carries the uncertainty.
+            if replacementCleanupUncertain {
+                _ = fsync(parentDescriptor)
+            } else if let preservedDestinationName {
+                _ = renameat(
+                    parentDescriptor,
+                    preservedDestinationName,
+                    parentDescriptor,
+                    destinationName
+                )
+                _ = fsync(parentDescriptor)
+            } else if publishedDestination {
+                _ = unlinkat(parentDescriptor, destinationName, 0)
+                _ = fsync(parentDescriptor)
+            }
+            if temporaryCreated {
+                _ = unlinkat(parentDescriptor, temporaryName, 0)
+            }
             throw error
         }
     }

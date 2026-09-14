@@ -193,6 +193,43 @@ public enum DoryInstallerISOInspector {
     /// as launch authority. It requires the standard fallback loader inside a validated El Torito
     /// or MBR FAT EFI-system partition and validates the loader as a matching PE32+ EFI application.
     public static func portableEFIMediaIdentity(
+        descriptor: Int32,
+        size: Int64,
+        path: String
+    ) throws -> DoryInstallerISOMediaIdentity {
+        guard descriptor >= 0, size > 0 else {
+            throw DoryInstallerISOInspectionError.notRegularFile(path)
+        }
+        // Independently prove the open descriptor is a nonempty regular file whose
+        // full size exactly matches the caller-supplied size. This closes a
+        // validated-prefix versus copied-full-file mismatch: parser and hash work
+        // below always use the fstat-validated full size, so a stale or prefix
+        // size can never certify bytes that clone/copy would not consume.
+        var actual = stat()
+        guard fstat(descriptor, &actual) == 0,
+              (actual.st_mode & S_IFMT) == S_IFREG,
+              actual.st_size > 0,
+              size == Int64(actual.st_size) else {
+            throw DoryInstallerISOInspectionError.notRegularFile(path)
+        }
+        let validatedSize = Int64(actual.st_size)
+        let architecture = try portableEFIArchitecture(
+            descriptor: descriptor,
+            size: validatedSize,
+            path: path
+        )
+        return try mediaIdentity(
+            descriptor: descriptor,
+            size: validatedSize,
+            path: path,
+            architecture: architecture
+        )
+    }
+
+    /// Path-based admission opens with `O_NOFOLLOW`, verifies a nonempty regular file, then
+    /// delegates to the descriptor-bound entry point so the validated bytes and the hashed
+    /// bytes are read from the same open file description.
+    public static func portableEFIMediaIdentity(
         atPath path: String
     ) throws -> DoryInstallerISOMediaIdentity {
         let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
@@ -208,17 +245,10 @@ public enum DoryInstallerISOInspector {
             throw DoryInstallerISOInspectionError.notRegularFile(path)
         }
 
-        let size = Int64(info.st_size)
-        let architecture = try portableEFIArchitecture(
+        return try portableEFIMediaIdentity(
             descriptor: descriptor,
-            size: size,
+            size: Int64(info.st_size),
             path: path
-        )
-        return try mediaIdentity(
-            descriptor: descriptor,
-            size: size,
-            path: path,
-            architecture: architecture
         )
     }
 
@@ -1928,9 +1958,61 @@ public enum DoryInstallerISOStager {
             throw DoryInstallerISOStagingError.invalidSource(sourcePath)
         }
 
-        let identity = try DoryInstallerISOInspector.mediaIdentity(
+        return try stageValidatedSource(
             descriptor: sourceDescriptor,
             size: Int64(sourceInfo.st_size),
+            sourcePath: sourcePath,
+            stagingDirectory: requestedDirectory,
+            hostArchitecture: hostArchitecture,
+            hostRuntime: requestedHostRuntime,
+            allowsTranslatedX86_64OnARM64: allowsTranslatedX86_64OnARM64
+        )
+    }
+
+    /// Production staging seam operating on an already-open source descriptor.
+    /// `stage(atPath:)` opens with `O_NOFOLLOW`, fstats for defense in depth, then
+    /// delegates here; validation and the subsequent clone/copy both read this same
+    /// open file description, so a rename/replacement at `sourcePath` after the open
+    /// cannot validate one file and stage another. Tests exercise this helper
+    /// directly with a pre-opened descriptor across a rename.
+    /// The private destination is strictly revalidated against the expected portable
+    /// EFI ISA after clone/copy and before publication; the returned identity always
+    /// describes the destination bytes. `copyMutationHook` is a narrow deterministic
+    /// seam for tests to mutate same-size source bytes after source validation and
+    /// before the real copy. `postPublicationDirectorySync` is an internal test seam
+    /// for the one durability boundary after the final name is atomically published.
+    static func stageValidatedSource(
+        descriptor sourceDescriptor: Int32,
+        size validatedSize: Int64,
+        sourcePath: String,
+        stagingDirectory requestedDirectory: URL? = nil,
+        hostArchitecture: String = DoryInstallerISOInspector.currentHostArchitecture,
+        hostRuntime requestedHostRuntime: DoryInstallerHostRuntime? = nil,
+        allowsTranslatedX86_64OnARM64: Bool = false,
+        copyMutationHook: (@Sendable () -> Void)? = nil,
+        postPublicationDirectorySync: (@Sendable (Int32) -> Int32)? = nil
+    ) throws -> DoryStagedInstallerISO {
+        guard DoryHostArchitecture.current == .arm64 else {
+            throw DoryInstallerISOStagingError.unsupportedHost(
+                DoryHostArchitecture.current.rawValue
+            )
+        }
+        guard sourceDescriptor >= 0, validatedSize > 0 else {
+            throw DoryInstallerISOStagingError.invalidSource(sourcePath)
+        }
+
+        // Ordinary installer admission requires a structurally valid portable EFI boot
+        // path. Marker or ISO9660-filename inference must not select an architecture,
+        // copy managed media, or create staging state. This throws before any staging
+        // directory or managed copy is created. Validation reads the exact open source
+        // descriptor later cloned/copied, so a rename/replacement at sourcePath cannot
+        // validate one file and stage another.
+        // The descriptor overload independently fstats and requires the supplied size
+        // to equal the descriptor's full st_size; the caller fstat above is retained
+        // as defense in depth.
+        let identity = try DoryInstallerISOInspector.portableEFIMediaIdentity(
+            descriptor: sourceDescriptor,
+            size: validatedSize,
             path: sourcePath
         )
         let compatibilityArchitecture = allowsTranslatedX86_64OnARM64
@@ -1988,17 +2070,31 @@ public enum DoryInstallerISOStager {
         }
 
         let destinationName = "\(UUID().uuidString.lowercased()).iso"
+        let temporaryName = ".\(destinationName).tmp-\(UUID().uuidString.lowercased())"
+        var publishedIdentity: DoryInstallerISOMediaIdentity?
+        var publishedQualification: DoryInstallerISORuntimeQualification?
+        var temporaryCreated = false
+        var publishedDestination = false
         do {
-            if fclonefileat(sourceDescriptor, directoryDescriptor, destinationName, 0) != 0 {
+            // Deterministic copy seam: a test may mutate same-inode source bytes here,
+            // after source preflight and before the real clone/copy. The private
+            // temporary destination is revalidated below, so such a mutation cannot publish
+            // unvalidated media or a stale identity. The final UUID `.iso` name is
+            // never created before that strict destination validation succeeds; it
+            // appears only via the atomic link below.
+            copyMutationHook?()
+            if fclonefileat(sourceDescriptor, directoryDescriptor, temporaryName, 0) != 0 {
+                let cloneError = errno
                 let destinationDescriptor = openat(
                     directoryDescriptor,
-                    destinationName,
+                    temporaryName,
                     O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
                     mode_t(0o600)
                 )
                 guard destinationDescriptor >= 0 else {
                     throw DoryInstallerISOStagingError.copy(sourcePath, errno)
                 }
+                temporaryCreated = true
                 defer { close(destinationDescriptor) }
                 guard lseek(sourceDescriptor, 0, SEEK_SET) == 0,
                       fcopyfile(
@@ -2011,11 +2107,14 @@ public enum DoryInstallerISOStager {
                       fsync(destinationDescriptor) == 0 else {
                     throw DoryInstallerISOStagingError.copy(sourcePath, errno)
                 }
+                _ = cloneError
+            } else {
+                temporaryCreated = true
             }
 
             let stagedDescriptor = openat(
                 directoryDescriptor,
-                destinationName,
+                temporaryName,
                 O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
             )
             guard stagedDescriptor >= 0 else {
@@ -2027,21 +2126,87 @@ public enum DoryInstallerISOStager {
                   fstat(stagedDescriptor, &stagedInfo) == 0,
                   (stagedInfo.st_mode & S_IFMT) == S_IFREG,
                   stagedInfo.st_uid == geteuid(),
-                  stagedInfo.st_size == sourceInfo.st_size,
+                  stagedInfo.st_size == validatedSize,
                   stagedInfo.st_mode & 0o077 == 0,
-                  fsync(stagedDescriptor) == 0,
-                  fsync(directoryDescriptor) == 0 else {
+                  fsync(stagedDescriptor) == 0 else {
                 throw DoryInstallerISOStagingError.verify(sourcePath, errno)
             }
+            // Strictly revalidate the exact private temporary destination bytes before
+            // atomic publication. A same-inode source write between preflight and
+            // clone/copy lands in the copied bytes; rejecting here and unlinking only
+            // the temporary object keeps the final `.iso` name from ever appearing
+            // with unvalidated bytes.
+            let stagedPath = stagingDirectory.appendingPathComponent(temporaryName).path
+            let destinationIdentity = try DoryInstallerISOInspector.portableEFIMediaIdentity(
+                descriptor: stagedDescriptor,
+                size: Int64(stagedInfo.st_size),
+                path: stagedPath
+            )
+            let destinationCompatibilityArchitecture = allowsTranslatedX86_64OnARM64
+                && DoryInstallerISOInspector.currentHostArchitecture == "arm64"
+                && destinationIdentity.architecture == .x86_64
+                    ? "x86_64" : hostArchitecture
+            if case let .incompatible(message) = DoryInstallerISOInspector.compatibility(
+                of: destinationIdentity.architecture,
+                hostArchitecture: destinationCompatibilityArchitecture
+            ) {
+                throw DoryInstallerISOStagingError.incompatible(message)
+            }
+            let destinationQualification = DoryInstallerISORuntimeCatalog.qualification(
+                of: destinationIdentity,
+                on: hostRuntime
+            )
+            if case let .knownUnstable(message) = destinationQualification {
+                throw DoryInstallerISOStagingError.knownUnstable(message)
+            }
+            // Link publication is create-only: even an improbable UUID collision
+            // cannot replace an unrelated staged artifact that cleanup might then
+            // remove after a durability failure.
+            guard linkat(
+                directoryDescriptor,
+                temporaryName,
+                directoryDescriptor,
+                destinationName,
+                0
+            ) == 0 else {
+                throw DoryInstallerISOStagingError.verify(sourcePath, errno)
+            }
+            publishedDestination = true
+            guard unlinkat(directoryDescriptor, temporaryName, 0) == 0 else {
+                throw DoryInstallerISOStagingError.verify(sourcePath, errno)
+            }
+            temporaryCreated = false
+            // The file fsync above does not make the published directory entry durable.
+            let syncResult = postPublicationDirectorySync?(directoryDescriptor)
+                ?? fsync(directoryDescriptor)
+            guard syncResult == 0 else {
+                throw DoryInstallerISOStagingError.verify(sourcePath, errno)
+            }
+            publishedIdentity = destinationIdentity
+            publishedQualification = destinationQualification
         } catch {
-            _ = unlinkat(directoryDescriptor, destinationName, 0)
+            // A failed post-publication directory fsync means the newly admitted
+            // name cannot be considered durable. It is safe to remove only after
+            // this invocation has atomically published it; failures while creating
+            // or validating the private temporary file must never target the final
+            // UUID name. Best-effort fsync records the rollback where supported.
+            if publishedDestination {
+                _ = unlinkat(directoryDescriptor, destinationName, 0)
+                _ = fsync(directoryDescriptor)
+            }
+            if temporaryCreated {
+                _ = unlinkat(directoryDescriptor, temporaryName, 0)
+            }
             throw error
         }
 
+        guard let publishedIdentity, let publishedQualification else {
+            throw DoryInstallerISOStagingError.verify(sourcePath, EIO)
+        }
         return DoryStagedInstallerISO(
             path: stagingDirectory.appendingPathComponent(destinationName).path,
-            identity: identity,
-            runtimeQualification: runtimeQualification
+            identity: publishedIdentity,
+            runtimeQualification: publishedQualification
         )
     }
 }

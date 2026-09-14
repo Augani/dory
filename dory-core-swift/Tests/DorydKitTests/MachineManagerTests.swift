@@ -57,7 +57,7 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         let installer = "\(base)/installer.iso"
         let disk = "\(base)/disk.raw"
-        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(
+        try portableARM64Installer().write(
             to: URL(fileURLWithPath: installer)
         )
         try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
@@ -148,6 +148,164 @@ final class MachineManagerTests: XCTestCase {
         putUInt64(34, into: &image, at: entries + 32)
         putUInt64(63, into: &image, at: entries + 40)
         return image
+    }
+
+    private func portableARM64Installer() -> Data {
+        makePortableFAT12Installer(loaderBase: "BOOTAA64", machine: 0xAA64)
+    }
+
+    private func portableX86Installer() -> Data {
+        makePortableFAT12Installer(loaderBase: "BOOTX64", machine: 0x8664)
+    }
+
+    private func makePortableFAT12Installer(loaderBase: String, machine: UInt16) -> Data {
+        func putUInt16(_ value: UInt16, into data: inout Data, at offset: Int) {
+            data[offset] = UInt8(truncatingIfNeeded: value)
+            data[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        }
+        func putUInt32(_ value: UInt32, into data: inout Data, at offset: Int) {
+            for byte in 0..<4 {
+                data[offset + byte] = UInt8(truncatingIfNeeded: value >> (byte * 8))
+            }
+        }
+        func putFAT12(_ value: UInt16, forCluster cluster: UInt16, into fat: inout Data) {
+            let offset = Int(cluster) + Int(cluster / 2)
+            if cluster & 1 == 0 {
+                fat[offset] = UInt8(truncatingIfNeeded: value)
+                fat[offset + 1] = (fat[offset + 1] & 0xF0)
+                    | UInt8(truncatingIfNeeded: value >> 8) & 0x0F
+            } else {
+                fat[offset] = (fat[offset] & 0x0F)
+                    | UInt8(truncatingIfNeeded: value << 4) & 0xF0
+                fat[offset + 1] = UInt8(truncatingIfNeeded: value >> 4)
+            }
+        }
+        func writeFATShortEntry(
+            base: String,
+            ext: String,
+            attributes: UInt8,
+            firstCluster: UInt16,
+            byteCount: UInt32,
+            at offset: Int,
+            in directory: inout Data
+        ) {
+            let baseBytes = Array(base.uppercased().utf8.prefix(8))
+            let extBytes = Array(ext.uppercased().utf8.prefix(3))
+            directory.replaceSubrange(offset..<(offset + 8), with: Data(
+                baseBytes + Array(repeating: 0x20, count: 8 - baseBytes.count)
+            ))
+            directory.replaceSubrange((offset + 8)..<(offset + 11), with: Data(
+                extBytes + Array(repeating: 0x20, count: 3 - extBytes.count)
+            ))
+            directory[offset + 11] = attributes
+            putUInt16(firstCluster, into: &directory, at: offset + 26)
+            putUInt32(byteCount, into: &directory, at: offset + 28)
+        }
+        let sectorBytes = 512
+        let partitionSectors = 2_880
+        let partitionOffset = sectorBytes
+        var image = Data(repeating: 0, count: (partitionSectors + 1) * sectorBytes)
+        image[446 + 4] = 0xEF
+        putUInt32(1, into: &image, at: 446 + 8)
+        putUInt32(UInt32(partitionSectors), into: &image, at: 446 + 12)
+        image[510] = 0x55
+        image[511] = 0xAA
+        var boot = Data(repeating: 0, count: sectorBytes)
+        boot.replaceSubrange(0..<3, with: Data([0xEB, 0x3C, 0x90]))
+        putUInt16(UInt16(sectorBytes), into: &boot, at: 11)
+        boot[13] = 1
+        putUInt16(1, into: &boot, at: 14)
+        boot[16] = 2
+        putUInt16(224, into: &boot, at: 17)
+        putUInt16(UInt16(partitionSectors), into: &boot, at: 19)
+        boot[21] = 0xF0
+        putUInt16(9, into: &boot, at: 22)
+        boot[510] = 0x55
+        boot[511] = 0xAA
+        image.replaceSubrange(partitionOffset..<(partitionOffset + sectorBytes), with: boot)
+        var fat = Data(repeating: 0, count: 9 * sectorBytes)
+        fat[0] = 0xF0
+        fat[1] = 0xFF
+        fat[2] = 0xFF
+        for cluster: UInt16 in [2, 3, 4] {
+            putFAT12(0x0FFF, forCluster: cluster, into: &fat)
+        }
+        let firstFATOffset = partitionOffset + sectorBytes
+        image.replaceSubrange(firstFATOffset..<(firstFATOffset + fat.count), with: fat)
+        image.replaceSubrange(
+            (firstFATOffset + fat.count)..<(firstFATOffset + fat.count * 2),
+            with: fat
+        )
+        let rootOffset = partitionOffset + 19 * sectorBytes
+        var root = Data(repeating: 0, count: 14 * sectorBytes)
+        writeFATShortEntry(
+            base: "EFI", ext: "", attributes: 0x10, firstCluster: 2, byteCount: 0, at: 0, in: &root
+        )
+        image.replaceSubrange(rootOffset..<(rootOffset + root.count), with: root)
+        let dataOffset = partitionOffset + 33 * sectorBytes
+        var efiDirectory = Data(repeating: 0, count: sectorBytes)
+        writeFATShortEntry(
+            base: "BOOT", ext: "", attributes: 0x10, firstCluster: 3, byteCount: 0, at: 0,
+            in: &efiDirectory
+        )
+        image.replaceSubrange(dataOffset..<(dataOffset + sectorBytes), with: efiDirectory)
+        var bootDirectory = Data(repeating: 0, count: sectorBytes)
+        writeFATShortEntry(
+            base: loaderBase, ext: "EFI", attributes: 0x20, firstCluster: 4, byteCount: 512,
+            at: 0, in: &bootDirectory
+        )
+        image.replaceSubrange(
+            (dataOffset + sectorBytes)..<(dataOffset + 2 * sectorBytes),
+            with: bootDirectory
+        )
+        let loader = makePortableEFIApplicationPE(machine: machine)
+        image.replaceSubrange(
+            (dataOffset + 2 * sectorBytes)..<(dataOffset + 2 * sectorBytes + loader.count),
+            with: loader
+        )
+        return image
+    }
+
+    private func makePortableEFIApplicationPE(machine: UInt16) -> Data {
+        func putUInt16(_ value: UInt16, into data: inout Data, at offset: Int) {
+            data[offset] = UInt8(truncatingIfNeeded: value)
+            data[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        }
+        func putUInt32(_ value: UInt32, into data: inout Data, at offset: Int) {
+            for byte in 0..<4 {
+                data[offset + byte] = UInt8(truncatingIfNeeded: value >> (byte * 8))
+            }
+        }
+        let peOffset = 0x80
+        let optionalHeaderSize = 0xF0
+        var data = Data(repeating: 0, count: 512)
+        data[0] = 0x4D
+        data[1] = 0x5A
+        putUInt32(UInt32(peOffset), into: &data, at: 0x3C)
+        data.replaceSubrange(peOffset..<(peOffset + 4), with: Data([0x50, 0x45, 0, 0]))
+        putUInt16(machine, into: &data, at: peOffset + 4)
+        putUInt16(1, into: &data, at: peOffset + 6)
+        putUInt16(UInt16(optionalHeaderSize), into: &data, at: peOffset + 20)
+        putUInt16(0x0002, into: &data, at: peOffset + 22)
+        putUInt16(0x020B, into: &data, at: peOffset + 24)
+        putUInt32(64, into: &data, at: peOffset + 24 + 4)
+        putUInt32(0x1C0, into: &data, at: peOffset + 24 + 16)
+        putUInt32(0x1C0, into: &data, at: peOffset + 24 + 20)
+        putUInt32(0x20, into: &data, at: peOffset + 24 + 32)
+        putUInt32(0x20, into: &data, at: peOffset + 24 + 36)
+        putUInt32(0x200, into: &data, at: peOffset + 24 + 56)
+        putUInt32(0x1C0, into: &data, at: peOffset + 24 + 60)
+        putUInt16(10, into: &data, at: peOffset + 24 + 68)
+        putUInt32(16, into: &data, at: peOffset + 24 + 108)
+        let section = peOffset + 24 + optionalHeaderSize
+        data.replaceSubrange(section..<(section + 5), with: Data(".text".utf8))
+        putUInt32(64, into: &data, at: section + 8)
+        putUInt32(0x1C0, into: &data, at: section + 12)
+        putUInt32(64, into: &data, at: section + 16)
+        putUInt32(0x1C0, into: &data, at: section + 20)
+        putUInt32(0x6000_0020, into: &data, at: section + 36)
+        data[0x1C0] = 0xC3
+        return data
     }
 
     func testShareArgumentsRoundTripDelimiterHeavyPathsAndJSON() throws {
@@ -3508,7 +3666,7 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
         let installer = "\(base)/ubuntu-arm64.iso"
-        let installerData = Data("EFI/BOOT/BOOTAA64.EFI".utf8)
+        let installerData = portableARM64Installer()
         try installerData.write(to: URL(fileURLWithPath: installer))
         let state = "\(base)/machines"
         let configuration = MachineManagerConfiguration(
@@ -3597,7 +3755,7 @@ final class MachineManagerTests: XCTestCase {
         )
         let installer = base + "/generic-arm64.iso"
         let disk = base + "/installed-system.raw"
-        try Data("EFI/BOOT/BOOTAA64.EFI\nno-supported-direct-kernel-layout".utf8).write(
+        try portableARM64Installer().write(
             to: URL(fileURLWithPath: installer)
         )
         try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
@@ -3688,7 +3846,7 @@ final class MachineManagerTests: XCTestCase {
 
         let installer = "\(base)/installer.iso"
         let disk = "\(base)/installed-disk.raw"
-        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try portableARM64Installer().write(to: URL(fileURLWithPath: installer))
         try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
         let starter = RecordingProcessStarter(failingAttempts: [2])
         let state = "\(base)/machines"
@@ -3756,7 +3914,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let installer = "\(base)/installer.iso"
         let disk = "\(base)/disk.raw"
-        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try portableARM64Installer().write(to: URL(fileURLWithPath: installer))
         try Data("disk".utf8).write(to: URL(fileURLWithPath: disk))
         let state = "\(base)/machines"
         let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
@@ -3802,7 +3960,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let installer = base + "/linux-x86_64.iso"
         let disk = base + "/disk.raw"
-        try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try portableX86Installer().write(to: URL(fileURLWithPath: installer))
         try Data("blank disk".utf8).write(to: URL(fileURLWithPath: disk))
         let state = base + "/machines"
         let manager = MachineManager(
@@ -3862,7 +4020,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let installer = base + "/ubuntu-arm64.iso"
         let disk = base + "/disk.raw"
-        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try portableARM64Installer().write(to: URL(fileURLWithPath: installer))
         try Data("arbitrary-non-gpt-destination".utf8).write(to: URL(fileURLWithPath: disk))
         let state = base + "/machines"
         let lifecycleJournalHome = base + "/lifecycle-journal"
@@ -3994,11 +4152,7 @@ final class MachineManagerTests: XCTestCase {
             encoding: .utf8
         )
         XCTAssertEqual(chmod(helper, 0o755), 0)
-        var installerBytes = Data(repeating: 0, count: 512)
-        installerBytes.replaceSubrange(
-            0..<"EFI/BOOT/BOOTX64.EFI".utf8.count,
-            with: "EFI/BOOT/BOOTX64.EFI".utf8
-        )
+        let installerBytes = portableX86Installer()
         try installerBytes.write(to: URL(fileURLWithPath: installer))
         let firmwareBundle = try DoryFirmwareBundleBuilder.build(
             DoryFirmwareBundleBuildInput(
@@ -4245,7 +4399,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let installer = base + "/linux-x86_64.iso"
         let disk = base + "/disk.raw"
-        try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try portableX86Installer().write(to: URL(fileURLWithPath: installer))
         try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
         let starter = RecordingProcessStarter(failingAttempts: [1])
         let state = base + "/machines"
@@ -4297,7 +4451,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let installer = base + "/linux-x86_64.iso"
         let disk = base + "/disk.raw"
-        try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try portableX86Installer().write(to: URL(fileURLWithPath: installer))
         try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
         let state = base + "/machines"
         let manager = MachineManager(
@@ -4382,7 +4536,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let installer = "\(base)/installer.iso"
         let disk = "\(base)/disk.raw"
-        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try portableARM64Installer().write(to: URL(fileURLWithPath: installer))
         try Data("disk".utf8).write(to: URL(fileURLWithPath: disk))
         let state = "\(base)/machines"
         let configuration = MachineManagerConfiguration(
@@ -4545,7 +4699,7 @@ final class MachineManagerTests: XCTestCase {
 
         let installer = "\(base)/installer.iso"
         let disk = "\(base)/installed-disk.img"
-        try Data("EFI/BOOT/BOOTAA64.EFI\narm64 installer".utf8).write(
+        try portableARM64Installer().write(
             to: URL(fileURLWithPath: installer)
         )
         try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
@@ -4641,7 +4795,7 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
         let installer = "\(base)/omarchy-x86-only.iso"
-        try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try portableX86Installer().write(to: URL(fileURLWithPath: installer))
         let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
@@ -4669,6 +4823,435 @@ final class MachineManagerTests: XCTestCase {
             )
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/omarchy"))
+    }
+
+    func testCreateEFIMachineRejectsMarkerOnlyInstallerBeforePersistence() throws {
+        for marker in ["EFI/BOOT/BOOTAA64.EFI", "EFI/BOOT/BOOTX64.EFI"] {
+            let base = "/tmp/dory-machine-marker-rejection-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+            try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: base) }
+            let installer = "\(base)/marker.iso"
+            try Data(marker.utf8).write(to: URL(fileURLWithPath: installer))
+            let state = "\(base)/machines"
+            let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ))
+
+            XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
+                id: "marker",
+                kernelPath: "",
+                rootfsPath: "",
+                bootMode: .efi,
+                installerISOPath: installer,
+                diskSizeBytes: MachineManager.minimumEFIDiskSizeBytes,
+                memoryMB: 4096,
+                cpuCount: 4,
+                displayMode: .desktop
+            ))) { error in
+                XCTAssertTrue(
+                    String(describing: error).contains("could not inspect installer ISO architecture"),
+                    "marker-only input must fail strict portable-EFI admission: \(error)"
+                )
+            }
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: "\(state)/marker"),
+                "marker-only input must not persist a workspace"
+            )
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: "\(state)/marker/installer.iso"),
+                "marker-only input must not copy managed installer media"
+            )
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: "\(state)/marker/machine.json"),
+                "marker-only input must not persist boot metadata"
+            )
+        }
+    }
+
+    func testInstallerSourceDescriptorPreflightRejectsMarkerAndWrongISABeforeCopy() throws {
+        let base = "/tmp/dory-machine-descriptor-preflight-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        func openValidatedDescriptor(for contents: Data, named name: String) throws -> (Int32, Int64, String) {
+            let path = "\(base)/\(name)"
+            try contents.write(to: URL(fileURLWithPath: path))
+            let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+            XCTAssertGreaterThanOrEqual(descriptor, 0)
+            var info = stat()
+            XCTAssertEqual(fstat(descriptor, &info), 0)
+            return (descriptor, Int64(info.st_size), path)
+        }
+
+        let (markerDescriptor, markerSize, markerPath) = try openValidatedDescriptor(
+            for: Data("EFI/BOOT/BOOTAA64.EFI".utf8),
+            named: "marker.iso"
+        )
+        defer { if markerDescriptor >= 0 { close(markerDescriptor) } }
+        XCTAssertThrowsError(try MachineManager.validatePortableEFIInstallerSource(
+            descriptor: markerDescriptor,
+            size: markerSize,
+            expectedArchitecture: .arm64,
+            path: markerPath
+        )) { error in
+            XCTAssertTrue(
+                String(describing: error).contains("strict portable-EFI validation"),
+                "marker-only descriptor must fail before any copy: \(error)"
+            )
+        }
+
+        let (x86Descriptor, x86Size, x86Path) = try openValidatedDescriptor(
+            for: portableX86Installer(),
+            named: "x86.iso"
+        )
+        defer { if x86Descriptor >= 0 { close(x86Descriptor) } }
+        XCTAssertThrowsError(try MachineManager.validatePortableEFIInstallerSource(
+            descriptor: x86Descriptor,
+            size: x86Size,
+            expectedArchitecture: .arm64,
+            path: x86Path
+        )) { error in
+            XCTAssertTrue(
+                String(describing: error).contains("does not match"),
+                "a valid cross-ISA replacement must fail before managed media is written: \(error)"
+            )
+        }
+        XCTAssertNoThrow(try MachineManager.validatePortableEFIInstallerSource(
+            descriptor: x86Descriptor,
+            size: x86Size,
+            expectedArchitecture: .x86_64,
+            path: x86Path
+        ))
+
+        let (armDescriptor, armSize, armPath) = try openValidatedDescriptor(
+            for: portableARM64Installer(),
+            named: "arm64.iso"
+        )
+        defer { if armDescriptor >= 0 { close(armDescriptor) } }
+        XCTAssertNoThrow(try MachineManager.validatePortableEFIInstallerSource(
+            descriptor: armDescriptor,
+            size: armSize,
+            expectedArchitecture: .arm64,
+            path: armPath
+        ))
+        XCTAssertThrowsError(try MachineManager.validatePortableEFIInstallerSource(
+            descriptor: armDescriptor,
+            size: armSize,
+            expectedArchitecture: .x86_64,
+            path: armPath
+        ))
+
+        let destination = "\(base)/should-not-exist.iso"
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination))
+    }
+
+    func testInstallerManagedCopySeamBlocksReplacementBeforePersistence() throws {
+        let base = "/tmp/dory-machine-managed-copy-seam-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let initialARM64 = portableARM64Installer()
+        let initialPath = "\(base)/initial-arm64.iso"
+        try initialARM64.write(to: URL(fileURLWithPath: initialPath))
+        let markerPath = "\(base)/marker.iso"
+        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: markerPath))
+        let x86Path = "\(base)/replacement-x86.iso"
+        try portableX86Installer().write(to: URL(fileURLWithPath: x86Path))
+
+        // Valid ARM64 initial selection model: strict admission mints the workspace.
+        let state = "\(base)/machines"
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        let staged = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
+            id: "arm64",
+            kernelPath: "",
+            rootfsPath: "",
+            bootMode: .efi,
+            installerISOPath: initialPath,
+            diskSizeBytes: MachineManager.minimumEFIDiskSizeBytes,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        XCTAssertEqual(staged.guestArchitecture, .arm64)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(state)/arm64/installer.iso"))
+
+        // Managed-copy seam: the exact production helper that opens, preflights the
+        // open descriptor, then clones/copies. It must fail before destination
+        // creation when presented with a marker-only or wrong-ISA replacement for
+        // the ARM64 selection.
+        let managed = "\(base)/managed"
+        try FileManager.default.createDirectory(
+            atPath: managed,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+
+        let markerDestination = "\(managed)/marker-copy.iso"
+        XCTAssertThrowsError(try MachineManager.cloneOrCopyFile(
+            source: markerPath,
+            destination: markerDestination,
+            portableEFIExpectedArchitecture: .arm64
+        )) { error in
+            XCTAssertTrue(
+                String(describing: error).contains("strict portable-EFI validation"),
+                "marker-only replacement must fail the managed copy seam: \(error)"
+            )
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: markerDestination),
+            "marker-only replacement must not create a managed destination"
+        )
+
+        let x86Destination = "\(managed)/x86-copy.iso"
+        XCTAssertThrowsError(try MachineManager.cloneOrCopyFile(
+            source: x86Path,
+            destination: x86Destination,
+            portableEFIExpectedArchitecture: .arm64
+        )) { error in
+            XCTAssertTrue(
+                String(describing: error).contains("does not match"),
+                "wrong-ISA replacement must fail the managed copy seam: \(error)"
+            )
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: x86Destination),
+            "wrong-ISA replacement must not create a managed destination"
+        )
+
+        // Rename replacement at the same source path must also fail: the seam
+        // validates whatever it opens, not the earlier valid selection.
+        let swapPath = "\(base)/swap.iso"
+        try initialARM64.write(to: URL(fileURLWithPath: swapPath))
+        let swapStaging = "\(swapPath).replacement"
+        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: swapStaging))
+        XCTAssertEqual(rename(swapStaging, swapPath), 0)
+        let swapDestination = "\(managed)/swap-copy.iso"
+        XCTAssertThrowsError(try MachineManager.cloneOrCopyFile(
+            source: swapPath,
+            destination: swapDestination,
+            portableEFIExpectedArchitecture: .arm64
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: swapDestination))
+
+        // The valid ARM64 source still copies through the same seam.
+        let validDestination = "\(managed)/valid-copy.iso"
+        XCTAssertNoThrow(try MachineManager.cloneOrCopyFile(
+            source: initialPath,
+            destination: validDestination,
+            portableEFIExpectedArchitecture: .arm64
+        ))
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: validDestination)),
+            initialARM64
+        )
+        // No replacement workspace or persistence was minted.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(state)/marker"))
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: "\(state)/arm64/installer.iso")),
+            initialARM64,
+            "the initial ARM64 managed media must be unchanged by replacement attempts"
+        )
+    }
+
+    func testInstallerManagedCopySeamRejectsSameSizeMutationAfterValidation() throws {
+        let base = "/tmp/dory-machine-managed-mutation-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let original = portableARM64Installer()
+        let mutated = portableX86Installer()
+        XCTAssertEqual(original.count, mutated.count)
+        XCTAssertNotEqual(original, mutated)
+        let sourcePath = "\(base)/source.iso"
+        try original.write(to: URL(fileURLWithPath: sourcePath))
+
+        let managed = "\(base)/managed"
+        try FileManager.default.createDirectory(
+            atPath: managed,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let destination = "\(managed)/installer-copy.iso"
+        let mutationPayload = mutated
+        let hook: @Sendable () -> Void = {
+            let writer = open(sourcePath, O_WRONLY | O_CLOEXEC | O_NOFOLLOW)
+            guard writer >= 0 else { return }
+            defer { close(writer) }
+            mutationPayload.withUnsafeBytes { raw in
+                guard let baseAddress = raw.baseAddress else { return }
+                var offset = 0
+                while offset < mutationPayload.count {
+                    let result = pwrite(
+                        writer,
+                        baseAddress.advanced(by: offset),
+                        mutationPayload.count - offset,
+                        off_t(offset)
+                    )
+                    if result > 0 {
+                        offset += result
+                    } else if result < 0, errno == EINTR {
+                        continue
+                    } else {
+                        break
+                    }
+                }
+            }
+            _ = fsync(writer)
+        }
+
+        XCTAssertThrowsError(try MachineManager.cloneOrCopyFile(
+            source: sourcePath,
+            destination: destination,
+            portableEFIExpectedArchitecture: .arm64,
+            copyMutationHook: hook
+        )) { error in
+            XCTAssertTrue(
+                String(describing: error).contains("does not match")
+                    || String(describing: error).contains("strict portable-EFI validation"),
+                "same-size post-validation mutation must fail destination validation, got \(error)"
+            )
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: destination),
+            "mutated destination must not be published"
+        )
+        // The source was mutated in place without changing its size.
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: sourcePath)), mutated)
+        // No stray temporary may remain visible beside the unpublished destination.
+        let names = try FileManager.default.contentsOfDirectory(atPath: managed)
+        XCTAssertTrue(
+            names.filter({ $0.hasSuffix(".iso") }).isEmpty,
+            "mutated managed copy must leave no staged artifact: \(names)"
+        )
+    }
+
+    func testManagedReplacementDirectorySyncFailureRestoresExistingArtifact() throws {
+        let base = "/tmp/dory-managed-publication-fsync-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let managed = "\(base)/managed"
+        try FileManager.default.createDirectory(
+            atPath: managed,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let source = "\(base)/new-installer.iso"
+        let destination = "\(managed)/installer.iso"
+        let oldBytes = Data("old valid managed installer".utf8)
+        let newBytes = Data("new managed installer".utf8)
+        try newBytes.write(to: URL(fileURLWithPath: source))
+        try oldBytes.write(to: URL(fileURLWithPath: destination))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: destination
+        )
+
+        // Force only the final directory durability boundary after the replacement
+        // rename. The previous artifact must be atomically restored, not deleted.
+        XCTAssertThrowsError(try MachineManager.cloneOrCopyFile(
+            source: source,
+            destination: destination,
+            replaceExisting: true,
+            forceCopyFallback: true,
+            postPublicationDirectorySync: { _ in -1 }
+        ))
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: destination)),
+            oldBytes,
+            "failed replacement must retain the prior managed artifact"
+        )
+        let rollbackNames = try FileManager.default.contentsOfDirectory(atPath: managed)
+        XCTAssertEqual(
+            rollbackNames,
+            ["installer.iso"],
+            "rollback must remove the newly published artifact and private backup: \(rollbackNames)"
+        )
+
+        // The normal production path remains able to replace that artifact once
+        // the directory durability boundary succeeds.
+        XCTAssertNoThrow(try MachineManager.cloneOrCopyFile(
+            source: source,
+            destination: destination,
+            replaceExisting: true,
+            forceCopyFallback: true
+        ))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: destination)), newBytes)
+    }
+
+    func testManagedReplacementCleanupSyncFailureFailsClosed() throws {
+        let base = "/tmp/dory-managed-cleanup-fsync-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let managed = "\(base)/managed"
+        try FileManager.default.createDirectory(
+            atPath: managed,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let source = "\(base)/new-installer.iso"
+        let destination = "\(managed)/installer.iso"
+        let oldBytes = Data("old valid managed installer".utf8)
+        let newBytes = Data("new managed installer".utf8)
+        try newBytes.write(to: URL(fileURLWithPath: source))
+        try oldBytes.write(to: URL(fileURLWithPath: destination))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: destination
+        )
+
+        // Force exactly the replacement cleanup durability boundary: the
+        // publication sync succeeds (so the new entry is directory-durable and
+        // the old rollback link is unlinked), then the cleanup sync fails. The
+        // operation must throw rather than return success, must keep the durable
+        // new destination in place, and must leave no private temporary or
+        // rollback link behind.
+        XCTAssertThrowsError(try MachineManager.cloneOrCopyFile(
+            source: source,
+            destination: destination,
+            replaceExisting: true,
+            forceCopyFallback: true,
+            postPublicationDirectorySync: { _ in 0 },
+            postCleanupDirectorySync: { _ in -1 }
+        )) { error in
+            XCTAssertTrue(
+                String(describing: error).contains("after replacement cleanup"),
+                "cleanup durability failure must surface an explicit error, got \(error)"
+            )
+        }
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: destination)),
+            newBytes,
+            "the replacement entry was directory-durable before cleanup failed, so it stays"
+        )
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: managed),
+            ["installer.iso"],
+            "cleanup failure must leave no private temporary or rollback link behind"
+        )
+
+        // With the durability boundary healthy again, the replacement reconciles
+        // without further intervention.
+        XCTAssertNoThrow(try MachineManager.cloneOrCopyFile(
+            source: source,
+            destination: destination,
+            replaceExisting: true,
+            forceCopyFallback: true
+        ))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: destination)), newBytes)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: managed),
+            ["installer.iso"]
+        )
     }
 
     func testEFISnapshotRestoresAndPortsFirmwareState() throws {

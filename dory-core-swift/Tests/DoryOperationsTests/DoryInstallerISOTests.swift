@@ -1,4 +1,5 @@
 @testable import DoryOperations
+import Darwin
 import DoryCore
 import XCTest
 
@@ -436,7 +437,8 @@ final class DoryInstallerISOTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: base) }
 
         let source = sourceDirectory.appendingPathComponent("ubuntu.iso")
-        let contents = Data("EFI/BOOT/BOOTAA64.EFI\nubuntu desktop".utf8)
+        // Ordinary admission requires a validated FAT ESP + PE32+ loader, not a marker.
+        let contents = makeMBRFAT12EFI(includesFallbackEntry: true)
         try contents.write(to: source)
 
         let staged = try DoryInstallerISOStager.stage(
@@ -464,7 +466,9 @@ final class DoryInstallerISOTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: base) }
         let source = base.appendingPathComponent("omarchy.iso")
         let stagingDirectory = base.appendingPathComponent("staging", isDirectory: true)
-        try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: source)
+        // Use structurally valid x86_64 portable EFI media so the rejection exercises
+        // the architecture gate rather than the structural preflight.
+        try makeMBRFAT16EFIWithLargeLoader().write(to: source)
 
         XCTAssertThrowsError(try DoryInstallerISOStager.stage(
             atPath: source.path,
@@ -476,6 +480,387 @@ final class DoryInstallerISOTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: stagingDirectory.path))
     }
 
+    func testRejectsMarkerOnlyMediaBeforeStagingCopy() throws {
+        for marker in ["EFI/BOOT/BOOTAA64.EFI", "EFI/BOOT/BOOTX64.EFI"] {
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("dory-marker-stager-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: base) }
+            let source = base.appendingPathComponent("marker.iso")
+            let stagingDirectory = base.appendingPathComponent("staging", isDirectory: true)
+            try Data(marker.utf8).write(to: source)
+
+            XCTAssertThrowsError(try DoryInstallerISOStager.stage(
+                atPath: source.path,
+                stagingDirectory: stagingDirectory,
+                hostArchitecture: "arm64",
+                allowsTranslatedX86_64OnARM64: true
+            )) { error in
+                guard case .notPortableEFIBootable = error as? DoryInstallerISOInspectionError else {
+                    return XCTFail("marker-only input must fail structural EFI admission, got \(error)")
+                }
+            }
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: stagingDirectory.path),
+                "marker-only input must not create managed staging state"
+            )
+        }
+    }
+
+    func testDescriptorBoundPreflightRejectsMarkerOnlySourceDescriptor() throws {
+        for marker in ["EFI/BOOT/BOOTAA64.EFI", "EFI/BOOT/BOOTX64.EFI"] {
+            let media = FileManager.default.temporaryDirectory
+                .appendingPathComponent("dory-descriptor-marker-\(UUID().uuidString).iso")
+            defer { try? FileManager.default.removeItem(at: media) }
+            try Data(marker.utf8).write(to: media)
+
+            let descriptor = Darwin.open(
+                media.path,
+                O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+            )
+            XCTAssertGreaterThanOrEqual(descriptor, 0)
+            defer { if descriptor >= 0 { Darwin.close(descriptor) } }
+            var info = stat()
+            XCTAssertEqual(fstat(descriptor, &info), 0)
+
+            XCTAssertThrowsError(try DoryInstallerISOInspector.portableEFIMediaIdentity(
+                descriptor: descriptor,
+                size: Int64(info.st_size),
+                path: media.path
+            )) { error in
+                guard case .notPortableEFIBootable = error as? DoryInstallerISOInspectionError else {
+                    return XCTFail("marker-only descriptor must fail structural EFI admission, got \(error)")
+                }
+            }
+        }
+    }
+
+    func testDescriptorBoundIdentityReadsOpenDescriptorAcrossRenameReplacement() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-descriptor-bind-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = base.appendingPathComponent("source.iso")
+        let replacement = base.appendingPathComponent("replacement.iso")
+        try makeMBRFAT12EFI(includesFallbackEntry: true).write(to: source)
+        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: replacement)
+
+        let descriptor = Darwin.open(
+            source.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        )
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { if descriptor >= 0 { Darwin.close(descriptor) } }
+        var info = stat()
+        XCTAssertEqual(fstat(descriptor, &info), 0)
+        let validatedSize = Int64(info.st_size)
+        XCTAssertGreaterThan(validatedSize, 0)
+
+        let renameResult = replacement.path.withCString { replacementCString in
+            source.path.withCString { sourceCString in
+                rename(replacementCString, sourceCString)
+            }
+        }
+        XCTAssertEqual(
+            renameResult,
+            0,
+            "the test must atomically replace the source path after the descriptor was opened"
+        )
+
+        let boundIdentity = try DoryInstallerISOInspector.portableEFIMediaIdentity(
+            descriptor: descriptor,
+            size: validatedSize,
+            path: source.path
+        )
+        XCTAssertEqual(
+            boundIdentity.architecture,
+            .arm64,
+            "descriptor-bound validation must describe the open file, not the renamed path"
+        )
+        XCTAssertEqual(boundIdentity.byteCount, UInt64(validatedSize))
+        XCTAssertThrowsError(
+            try DoryInstallerISOInspector.portableEFIMediaIdentity(atPath: source.path)
+        ) { error in
+            guard case .notPortableEFIBootable = error as? DoryInstallerISOInspectionError else {
+                return XCTFail("the replaced path must now fail structural admission, got \(error)")
+            }
+        }
+    }
+
+    func testDescriptorBoundIdentityReportsWrongISAWithoutCopying() throws {
+        let media = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-descriptor-isa-\(UUID().uuidString).img")
+        defer { try? FileManager.default.removeItem(at: media) }
+        try makeMBRFAT16EFIWithLargeLoader().write(to: media)
+
+        let descriptor = Darwin.open(
+            media.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        )
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { if descriptor >= 0 { Darwin.close(descriptor) } }
+        var info = stat()
+        XCTAssertEqual(fstat(descriptor, &info), 0)
+
+        let identity = try DoryInstallerISOInspector.portableEFIMediaIdentity(
+            descriptor: descriptor,
+            size: Int64(info.st_size),
+            path: media.path
+        )
+        XCTAssertEqual(identity.architecture, .x86_64)
+        XCTAssertNotEqual(
+            identity.architecture,
+            .arm64,
+            "a descriptor preflight must surface ISA mismatch before any copy begins"
+        )
+    }
+
+    func testDescriptorBoundIdentityRejectsPrefixSizeWithAppendedBytes() throws {
+        let media = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-descriptor-prefix-\(UUID().uuidString).img")
+        defer { try? FileManager.default.removeItem(at: media) }
+        let prefix = makeMBRFAT12EFI(includesFallbackEntry: true)
+        var full = prefix
+        full.append(Data(repeating: 0xA5, count: 4_096))
+        XCTAssertGreaterThan(full.count, prefix.count)
+        try full.write(to: media)
+
+        let descriptor = Darwin.open(
+            media.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        )
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { if descriptor >= 0 { Darwin.close(descriptor) } }
+        var info = stat()
+        XCTAssertEqual(fstat(descriptor, &info), 0)
+        XCTAssertEqual(Int64(info.st_size), Int64(full.count))
+
+        // Passing only the valid prefix size must reject so identity/hash can never
+        // describe a prefix while clone/copy consumes the full open descriptor.
+        XCTAssertThrowsError(try DoryInstallerISOInspector.portableEFIMediaIdentity(
+            descriptor: descriptor,
+            size: Int64(prefix.count),
+            path: media.path
+        )) { error in
+            guard case .notRegularFile = error as? DoryInstallerISOInspectionError else {
+                return XCTFail("prefix size must fail regular-file/full-size admission, got \(error)")
+            }
+        }
+
+        // The full descriptor remains admittable with its exact size.
+        let fullIdentity = try DoryInstallerISOInspector.portableEFIMediaIdentity(
+            descriptor: descriptor,
+            size: Int64(full.count),
+            path: media.path
+        )
+        XCTAssertEqual(fullIdentity.architecture, .arm64)
+        XCTAssertEqual(fullIdentity.byteCount, UInt64(full.count))
+    }
+
+    func testStagingCopySeamUsesOpenDescriptorAcrossRenameReplacement() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-staging-bind-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = base.appendingPathComponent("source.iso")
+        let replacement = base.appendingPathComponent("replacement.iso")
+        let stagingDirectory = base.appendingPathComponent("staging", isDirectory: true)
+        let original = makeMBRFAT12EFI(includesFallbackEntry: true)
+        try original.write(to: source)
+        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: replacement)
+
+        let descriptor = Darwin.open(
+            source.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        )
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { if descriptor >= 0 { Darwin.close(descriptor) } }
+        var info = stat()
+        XCTAssertEqual(fstat(descriptor, &info), 0)
+        let validatedSize = Int64(info.st_size)
+        XCTAssertEqual(validatedSize, Int64(original.count))
+
+        let renameResult = replacement.path.withCString { replacementCString in
+            source.path.withCString { sourceCString in
+                rename(replacementCString, sourceCString)
+            }
+        }
+        XCTAssertEqual(
+            renameResult,
+            0,
+            "the test must atomically replace the source path after the descriptor was opened"
+        )
+
+        // Execute the same production helper `stage(atPath:)` delegates to after its
+        // source open: validation and clone/copy both consume the pre-open descriptor.
+        let staged = try DoryInstallerISOStager.stageValidatedSource(
+            descriptor: descriptor,
+            size: validatedSize,
+            sourcePath: source.path,
+            stagingDirectory: stagingDirectory,
+            hostArchitecture: "arm64"
+        )
+        XCTAssertEqual(staged.architecture, .arm64)
+        XCTAssertEqual(staged.identity.byteCount, UInt64(validatedSize))
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: staged.path)),
+            original,
+            "staged bytes must match the open descriptor, not the renamed replacement"
+        )
+        XCTAssertThrowsError(
+            try DoryInstallerISOInspector.portableEFIMediaIdentity(atPath: source.path)
+        ) { error in
+            guard case .notPortableEFIBootable = error as? DoryInstallerISOInspectionError else {
+                return XCTFail("the replaced path must now fail structural admission, got \(error)")
+            }
+        }
+    }
+
+    func testStagingCopySeamRejectsSameSizeSourceMutationAfterValidation() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-staging-mutation-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = base.appendingPathComponent("source.iso")
+        let stagingDirectory = base.appendingPathComponent("staging", isDirectory: true)
+        let original = makeMBRFAT12EFI(includesFallbackEntry: true)
+        try original.write(to: source)
+
+        // Same-size, same-inode mutation payload: valid x86_64 portable EFI media.
+        // Patch the FAT fallback entry and PE machine so the mutated bytes remain
+        // structurally valid but carry the wrong ISA for an ARM64 expectation.
+        var mutated = original
+        let bootDirectoryOffset = 512 + 33 * 512 + 512
+        let loaderOffset = 512 + 33 * 512 + 2 * 512
+        mutated.replaceSubrange(
+            bootDirectoryOffset..<(bootDirectoryOffset + 8),
+            with: Data("BOOTX64 ".utf8)
+        )
+        mutated[loaderOffset + 0x80 + 5] = 0x86
+        XCTAssertEqual(mutated.count, original.count)
+        XCTAssertNotEqual(mutated, original)
+
+        // Prove the payload is a valid wrong-ISA carrier before using it as the
+        // in-place mutation.
+        let probe = base.appendingPathComponent("probe-x86.iso")
+        try mutated.write(to: probe)
+        defer { try? FileManager.default.removeItem(at: probe) }
+        XCTAssertEqual(
+            try DoryInstallerISOInspector.portableEFIMediaIdentity(atPath: probe.path)
+                .architecture,
+            .x86_64
+        )
+
+        let descriptor = Darwin.open(
+            source.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        )
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { if descriptor >= 0 { Darwin.close(descriptor) } }
+        var info = stat()
+        XCTAssertEqual(fstat(descriptor, &info), 0)
+        let validatedSize = Int64(info.st_size)
+        XCTAssertEqual(validatedSize, Int64(original.count))
+
+        let sourcePath = source.path
+        let mutationPayload = mutated
+        let hook: @Sendable () -> Void = {
+            let writer = Darwin.open(sourcePath, O_WRONLY | O_CLOEXEC | O_NOFOLLOW)
+            guard writer >= 0 else { return }
+            defer { Darwin.close(writer) }
+            mutationPayload.withUnsafeBytes { raw in
+                guard let baseAddress = raw.baseAddress else { return }
+                var offset = 0
+                while offset < mutationPayload.count {
+                    let result = Darwin.pwrite(
+                        writer,
+                        baseAddress.advanced(by: offset),
+                        mutationPayload.count - offset,
+                        off_t(offset)
+                    )
+                    if result > 0 {
+                        offset += result
+                    } else if result < 0, errno == EINTR {
+                        continue
+                    } else {
+                        break
+                    }
+                }
+            }
+            _ = Darwin.fsync(writer)
+        }
+
+        XCTAssertThrowsError(try DoryInstallerISOStager.stageValidatedSource(
+            descriptor: descriptor,
+            size: validatedSize,
+            sourcePath: source.path,
+            stagingDirectory: stagingDirectory,
+            hostArchitecture: "arm64",
+            copyMutationHook: hook
+        )) { error in
+            XCTAssertTrue(
+                String(describing: error).contains("x86_64-only")
+                    || String(describing: error).contains("does not match")
+                    || String(describing: error).contains("verify")
+                    || String(describing: error).contains("notPortableEFIBootable")
+                    || String(describing: error).contains("structurally valid"),
+                "same-size post-validation mutation must fail destination validation, got \(error)"
+            )
+        }
+        // The source was mutated in place without changing its size.
+        XCTAssertEqual(Int64(mutationPayload.count), validatedSize)
+        XCTAssertEqual(try Data(contentsOf: source), mutationPayload)
+        // No staged artifact may remain visible. The final UUID `.iso` name must
+        // never appear before strict destination validation, and the private
+        // temporary object must be unlinked on failure.
+        if FileManager.default.fileExists(atPath: stagingDirectory.path) {
+            let names = try FileManager.default.contentsOfDirectory(atPath: stagingDirectory.path)
+            XCTAssertTrue(
+                names.filter({ $0.hasSuffix(".iso") }).isEmpty,
+                "mutated destination must never publish a final staged name: \(names)"
+            )
+            XCTAssertTrue(
+                names.isEmpty,
+                "mutated temporary destination must be unlinked before publication: \(names)"
+            )
+        }
+    }
+
+    func testStagingPublicationDirectorySyncFailureRollsBackFinalMedia() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-staging-publication-fsync-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = base.appendingPathComponent("source.iso")
+        let stagingDirectory = base.appendingPathComponent("staging", isDirectory: true)
+        try makeMBRFAT12EFI(includesFallbackEntry: true).write(to: source)
+
+        let descriptor = Darwin.open(
+            source.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        )
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { if descriptor >= 0 { Darwin.close(descriptor) } }
+        var info = stat()
+        XCTAssertEqual(fstat(descriptor, &info), 0)
+
+        // This is the exact post-rename production durability seam. Its failure
+        // must remove the newly visible UUID final name and its private temporary.
+        XCTAssertThrowsError(try DoryInstallerISOStager.stageValidatedSource(
+            descriptor: descriptor,
+            size: Int64(info.st_size),
+            sourcePath: source.path,
+            stagingDirectory: stagingDirectory,
+            hostArchitecture: "arm64",
+            postPublicationDirectorySync: { _ in -1 }
+        ))
+        let names = try FileManager.default.contentsOfDirectory(atPath: stagingDirectory.path)
+        XCTAssertTrue(
+            names.isEmpty,
+            "post-publication sync failure must not leave new staged media visible: \(names)"
+        )
+    }
+
     func testStagesX86MediaOnlyWithExplicitAppleSiliconTranslationAuthority() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("dory-x86-iso-stager-\(UUID().uuidString)")
@@ -483,7 +868,8 @@ final class DoryInstallerISOTests: XCTestCase {
         let stagingDirectory = base.appendingPathComponent("staging", isDirectory: true)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: source)
+        let contents = makeMBRFAT16EFIWithLargeLoader()
+        try contents.write(to: source)
 
         let staged = try DoryInstallerISOStager.stage(
             atPath: source.path,
@@ -494,7 +880,7 @@ final class DoryInstallerISOTests: XCTestCase {
 
         XCTAssertEqual(staged.architecture, .x86_64)
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: staged.path)),
-                       Data("EFI/BOOT/BOOTX64.EFI".utf8))
+                       contents)
     }
 
     func testDaemonAdmissionStagesX86MediaWithoutMintingLaunchAuthority() throws {
@@ -505,7 +891,7 @@ final class DoryInstallerISOTests: XCTestCase {
         let daemonStaging = base.appendingPathComponent("daemon", isDirectory: true)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        let contents = Data("EFI/BOOT/BOOTX64.EFI\ndaemon-decides-launch-policy".utf8)
+        let contents = makeMBRFAT16EFIWithLargeLoader()
         try contents.write(to: source)
 
         XCTAssertThrowsError(try DoryInstallerISOStager.stage(
