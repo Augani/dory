@@ -74,6 +74,8 @@ enum DoryX86InstructionFeaturePolicy {
       return profile.supports(.sse2)
     case .saveFloatingPointState, .restoreFloatingPointState:
       return profile.supports(.fxsave)
+    case .saveExtendedState, .restoreExtendedState:
+      return profile.supports(.xsave)
     case .cacheLineFlush:
       return profile.supports(.clflush)
     case .loadMXCSR, .storeMXCSR:

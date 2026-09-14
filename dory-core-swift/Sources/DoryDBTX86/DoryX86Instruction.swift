@@ -434,6 +434,8 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case storeX87StatusWord(DoryX86Operand)
   case saveFloatingPointState(DoryX86MemoryOperand)
   case restoreFloatingPointState(DoryX86MemoryOperand)
+  case saveExtendedState(DoryX86MemoryOperand)
+  case restoreExtendedState(DoryX86MemoryOperand)
   case loadMXCSR(DoryX86Operand)
   case storeMXCSR(DoryX86Operand)
   case moveMMX(

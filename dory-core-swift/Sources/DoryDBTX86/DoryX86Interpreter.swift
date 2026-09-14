@@ -196,6 +196,9 @@ public struct DoryX86Interpreter: Sendable {
     if let fault = DoryX86InstructionFeaturePolicy.executionFault(instruction, profile: profile) {
       return .exception(fault)
     }
+    if let fault = extendedStateExecutionFault(instruction, state: state) {
+      return .exception(fault)
+    }
     if let fault = DoryX86LegacyFloatingPointPolicy.executionFault(instruction, state: state) {
       return .exception(fault)
     }
@@ -1321,6 +1324,72 @@ public struct DoryX86Interpreter: Sendable {
             preserving: state.floatingPoint
           )
         else { return generalProtection(at: originalRIP) }
+        state.floatingPoint = restored
+      case .saveExtendedState(let destination):
+        let requested = extendedStateRequestMask(state: state)
+        guard requested & ~baseExtendedStateMask == 0,
+          requested & ~state.control.xcr0 == 0
+        else { return generalProtection(at: originalRIP) }
+        let address = effectiveAddress(destination, instruction: instruction, state: state)
+        guard address & 0x3F == 0 else { return generalProtection(at: originalRIP) }
+        try validateFloatingPointTransfer(
+          destination, byteCount: baseExtendedStateByteCount, write: true,
+          instruction: instruction, state: state)
+        // One complete preflight makes the separately represented legacy components and
+        // header an all-or-nothing guest-memory commit.
+        try executionMemory.validateWrite(at: address, byteCount: baseExtendedStateByteCount)
+        // XSAVE updates only the XSTATE_BV bits selected by RFBM. It must retain
+        // XCOMP_BV, reserved bytes, and XSTATE_BV bits belonging to other components.
+        // Read this before any writes so a fault cannot leave a partial save image.
+        let priorXStateBV = UInt64(fromLittleEndian(try executionMemory.read(
+          at: address + 512, byteCount: MemoryLayout<UInt64>.size)))
+        let legacy = floatingPointSaveArea(
+          state.floatingPoint, mode: mode,
+          widePointers: mode == .long64 && instruction.prefixes.rex?.w == true)
+        let saved = requested & state.control.xcr0
+        if saved & 1 != 0 {
+          // MXCSR and MXCSR_MASK (bytes 24...31) belong to SSE, not x87.
+          try executionMemory.write(at: address, bytes: Array(legacy[0..<24]))
+          try executionMemory.write(at: address + 32, bytes: Array(legacy[32..<160]))
+        }
+        if saved & 2 != 0 {
+          try executionMemory.write(at: address + 24, bytes: Array(legacy[24..<32]))
+          try executionMemory.write(at: address + 160, bytes: Array(legacy[160..<legacy.count]))
+        }
+        let updatedXStateBV = (priorXStateBV & ~saved) | saved
+        var updatedHeader = [UInt8](repeating: 0, count: MemoryLayout<UInt64>.size)
+        replaceLittleEndian(updatedXStateBV, in: &updatedHeader, at: 0)
+        try executionMemory.write(at: address + 512, bytes: updatedHeader)
+      case .restoreExtendedState(let source):
+        let requested = extendedStateRequestMask(state: state)
+        guard requested & ~baseExtendedStateMask == 0,
+          requested & ~state.control.xcr0 == 0
+        else { return generalProtection(at: originalRIP) }
+        let address = effectiveAddress(source, instruction: instruction, state: state)
+        guard address & 0x3F == 0 else { return generalProtection(at: originalRIP) }
+        try validateFloatingPointTransfer(
+          source, byteCount: baseExtendedStateByteCount, write: false,
+          instruction: instruction, state: state)
+        let image = try executionMemory.read(at: address, byteCount: baseExtendedStateByteCount)
+        let xstateBV = UInt64(fromLittleEndian(Array(image[512..<520])))
+        // This bounded implementation accepts only the standard layout: no YMM_Hi128,
+        // compacted format, or future header fields may be introduced by an image.
+        guard xstateBV & ~baseExtendedStateMask == 0,
+          xstateBV & ~state.control.xcr0 == 0,
+          image[520..<576].allSatisfy({ $0 == 0 })
+        else { return generalProtection(at: originalRIP) }
+        let restoreX87 = requested & xstateBV & 1 != 0
+        let restoreSSE = requested & xstateBV & 2 != 0
+        let initializeX87 = requested & 1 != 0 && !restoreX87
+        let initializeSSE = requested & 2 != 0 && !restoreSSE
+        guard let restored = try restoredFloatingPointState(
+          from: Array(image[0..<floatingPointTransferByteCount(mode: mode)]), mode: mode,
+          widePointers: mode == .long64 && instruction.prefixes.rex?.w == true,
+          preserving: state.floatingPoint, restoringX87: restoreX87, restoringSSE: restoreSSE,
+          initializingX87: initializeX87, initializingSSE: initializeSSE,
+          restoringImageMXCSRMask: true)
+        else { return generalProtection(at: originalRIP) }
+        // All image, header, and component validation completes before this sole publication.
         state.floatingPoint = restored
       case .loadMXCSR(let source):
         let value = UInt32(
@@ -3920,6 +3989,28 @@ public struct DoryX86Interpreter: Sendable {
       instructionPointer: instruction.address))
   }
 
+  private func extendedStateExecutionFault(
+    _ instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState
+  ) -> DoryX86Exception? {
+    switch instruction.operation {
+    case .saveExtendedState, .restoreExtendedState:
+      // XSAVE and XRSTOR are unprivileged. OSXSAVE is nevertheless an execution
+      // prerequisite, and takes #UD precedence over the x87 #NM conditions.
+      guard state.control.cr4 & (1 << 18) != 0 else {
+        return .init(kind: .invalidOpcode, vector: 6, instructionPointer: instruction.address)
+      }
+      // Unlike legacy x87 instructions, XSAVE/XRSTOR ignore CR0.EM. They fault
+      // #NM only while CR0.TS is set.
+      guard state.control.cr0 & (1 << 3) == 0 else {
+        return .init(kind: .deviceNotAvailable, vector: 7, instructionPointer: instruction.address)
+      }
+      return nil
+    default:
+      return nil
+    }
+  }
+
   private func validateFloatingPointTransfer(
     _ operand: DoryX86MemoryOperand, byteCount: Int, write: Bool,
     instruction: DoryX86DecodedInstruction, state: DoryX86ArchitecturalState
@@ -3944,6 +4035,15 @@ public struct DoryX86Interpreter: Sendable {
     // slots at 288...415 are also neither saved nor restored (§10.5.1.2).
     // The architectural operand remains m512 for segment-range validation.
     mode == .long64 ? 416 : 288
+  }
+
+  private var baseExtendedStateMask: UInt64 { 0x3 }
+  private var extendedStateHeaderByteCount: Int { 64 }
+  private var baseExtendedStateByteCount: Int { 512 + extendedStateHeaderByteCount }
+
+  private func extendedStateRequestMask(state: DoryX86ArchitecturalState) -> UInt64 {
+    UInt64(UInt32(truncatingIfNeeded: state.registers.rax))
+      | UInt64(UInt32(truncatingIfNeeded: state.registers.rdx)) << 32
   }
 
   private func floatingPointSaveArea(
@@ -3993,46 +4093,81 @@ public struct DoryX86Interpreter: Sendable {
     from bytes: [UInt8],
     mode: DoryX86ExecutionMode,
     widePointers: Bool,
-    preserving floatingPoint: DoryX86FloatingPointState
+    preserving floatingPoint: DoryX86FloatingPointState,
+    restoringX87: Bool = true,
+    restoringSSE: Bool = true,
+    initializingX87: Bool = false,
+    initializingSSE: Bool = false,
+    restoringImageMXCSRMask: Bool = false
   ) throws -> DoryX86FloatingPointState? {
     precondition(bytes.count == floatingPointTransferByteCount(mode: mode))
+    var result = floatingPoint
+    if initializingX87 {
+      let initial = try DoryX86FloatingPointState(mxcsrMask: floatingPoint.mxcsrMask)
+      result.x87 = initial.x87
+      result.x87ControlWord = initial.x87ControlWord
+      result.x87StatusWord = initial.x87StatusWord
+      result.x87TagWord = initial.x87TagWord
+      result.x87InstructionPointer = initial.x87InstructionPointer
+      result.x87InstructionSelector = initial.x87InstructionSelector
+      result.x87DataPointer = initial.x87DataPointer
+      result.x87DataSelector = initial.x87DataSelector
+      result.x87Opcode = initial.x87Opcode
+    }
+    if initializingSSE {
+      result.mxcsr = 0x1F80
+      let vectorCount = mode == .long64 ? 16 : 8
+      for index in 0..<vectorCount {
+        var register = result.ymm[index].bytes
+        register.replaceSubrange(0..<16, with: repeatElement(0, count: 16))
+        result.ymm[index] = try .init(bytes: register, expectedByteCount: 32)
+      }
+    }
+    guard restoringX87 || restoringSSE else { return result }
     let mxcsr = UInt32(fromLittleEndian(Array(bytes[24..<28])))
-    guard mxcsr & ~floatingPoint.mxcsrMask == 0 else { return nil }
+    guard !restoringSSE || mxcsr & ~floatingPoint.mxcsrMask == 0 else { return nil }
     let abridgedTag = bytes[4]
     let status = UInt16(fromLittleEndian(Array(bytes[2..<4])))
     var tagWord: UInt16 = 0
     var x87 = floatingPoint.x87
-    for index in 0..<8 {
-      tagWord |=
-        UInt16(abridgedTag & (UInt8(1) << UInt8(index)) == 0 ? 3 : 0)
-        << UInt16(index * 2)
-      let physicalIndex = (Int(status >> 11) + index) & 7
-      x87[physicalIndex] = try .init(bytes: Array(bytes[32 + index * 16..<42 + index * 16]), expectedByteCount: 10)
+    if restoringX87 {
+      for index in 0..<8 {
+        tagWord |=
+          UInt16(abridgedTag & (UInt8(1) << UInt8(index)) == 0 ? 3 : 0)
+          << UInt16(index * 2)
+        let physicalIndex = (Int(status >> 11) + index) & 7
+        x87[physicalIndex] = try .init(bytes: Array(bytes[32 + index * 16..<42 + index * 16]), expectedByteCount: 10)
+      }
+      tagWord = DoryX86FloatingPointEnvironment.classifiedTags(emptyTags: tagWord, registers: x87)
+      result.x87 = x87
+      result.x87ControlWord = UInt16(fromLittleEndian(Array(bytes[0..<2])))
+      result.x87StatusWord = status
+      result.x87TagWord = tagWord
+      result.x87InstructionPointer = fromLittleEndian(Array(bytes[8..<(widePointers ? 16 : 12)]))
+      result.x87InstructionSelector = widePointers ? 0 : UInt16(fromLittleEndian(Array(bytes[12..<14])))
+      result.x87DataPointer = fromLittleEndian(Array(bytes[16..<(widePointers ? 24 : 20)]))
+      result.x87DataSelector = widePointers ? 0 : UInt16(fromLittleEndian(Array(bytes[20..<22])))
+      result.x87Opcode = UInt16(fromLittleEndian(Array(bytes[6..<8]))) & 0x7FF
     }
-    tagWord = DoryX86FloatingPointEnvironment.classifiedTags(emptyTags: tagWord, registers: x87)
     // FXRSTOR loads SSE state, not the AVX upper halves. In non-64-bit modes
     // it also leaves XMM8...15 unchanged (Intel SDM Vol. 1 §10.5.1.2).
-    var ymm = floatingPoint.ymm
-    let vectorCount = mode == .long64 ? 16 : 8
-    for index in 0..<vectorCount {
-      var register = ymm[index].bytes
-      register.replaceSubrange(0..<16, with: bytes[160 + index * 16..<176 + index * 16])
-      ymm[index] = try .init(bytes: register, expectedByteCount: 32)
+    if restoringSSE {
+      var ymm = floatingPoint.ymm
+      let vectorCount = mode == .long64 ? 16 : 8
+      for index in 0..<vectorCount {
+        var register = ymm[index].bytes
+        register.replaceSubrange(0..<16, with: bytes[160 + index * 16..<176 + index * 16])
+        ymm[index] = try .init(bytes: register, expectedByteCount: 32)
+      }
+      result.ymm = ymm
+      result.mxcsr = mxcsr
+      // FXRSTOR ignores MXCSR_MASK (bytes 28...31); only XRSTOR's supported
+      // SSE component restores the mask from its standard XSAVE image.
+      if restoringImageMXCSRMask {
+        result.mxcsrMask = UInt32(fromLittleEndian(Array(bytes[28..<32])))
+      }
     }
-    return try .init(
-      x87: x87,
-      ymm: ymm,
-      x87ControlWord: UInt16(fromLittleEndian(Array(bytes[0..<2]))),
-      x87StatusWord: status,
-      x87TagWord: tagWord,
-      mxcsr: mxcsr,
-      mxcsrMask: floatingPoint.mxcsrMask,
-      x87InstructionPointer: fromLittleEndian(Array(bytes[8..<(widePointers ? 16 : 12)])),
-      x87InstructionSelector: widePointers ? 0 : UInt16(fromLittleEndian(Array(bytes[12..<14]))),
-      x87DataPointer: fromLittleEndian(Array(bytes[16..<(widePointers ? 24 : 20)])),
-      x87DataSelector: widePointers ? 0 : UInt16(fromLittleEndian(Array(bytes[20..<22]))),
-      x87Opcode: UInt16(fromLittleEndian(Array(bytes[6..<8]))) & 0x7FF
-    )
+    return result
   }
 
   private func replaceLittleEndian<T: FixedWidthInteger>(

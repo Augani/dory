@@ -1137,8 +1137,8 @@ public struct DoryX86Decoder: Sendable {
         case 1: operation = .restoreFloatingPointState(memory)
         case 2: operation = .loadMXCSR(operands.rm)
         case 3: operation = .storeMXCSR(operands.rm)
-        case 4: operation = .unsupportedSystemInstruction(.xsave)
-        case 5: operation = .unsupportedSystemInstruction(.xrstor)
+        case 4: operation = .saveExtendedState(memory)
+        case 5: operation = .restoreExtendedState(memory)
         case 6: operation = .unsupportedSystemInstruction(.xsaveopt)
         case 7:
           guard prefixes.repeatPrefix == nil, !prefixes.operandSizeOverride else {

@@ -296,15 +296,30 @@ import Testing
     }
   }
 
-  @Test func unsupportedExtendedStateInstructionsRetainLengthWithoutNoOpSemantics() throws {
-    for (modRM, operation): (UInt8, DoryX86UnsupportedSystemInstruction) in [
-      (0xA0, .xsave), (0xA8, .xrstor), (0xB0, .xsaveopt),
-    ] {
+  @Test func baseExtendedStateInstructionsDecodeWhileXSAVEOPTRemainsUnsupported() throws {
+    for modRM in [UInt8(0xA0), 0xA8] {
       let instruction = try decoder.decode(
         [0x48, 0x0F, 0xAE, modRM, 0x78, 0x56, 0x34, 0x12], at: 0, mode: .long64)
       #expect(instruction.length == 8)
-      #expect(instruction.operation == .unsupportedSystemInstruction(operation))
+      switch modRM {
+      case 0xA0:
+        guard case .saveExtendedState = instruction.operation else {
+          Issue.record("XSAVE decoded as \(instruction.operation)")
+          continue
+        }
+      case 0xA8:
+        guard case .restoreExtendedState = instruction.operation else {
+          Issue.record("XRSTOR decoded as \(instruction.operation)")
+          continue
+        }
+      default:
+        Issue.record("Unexpected extended-state ModR/M")
+      }
     }
+    let xsaveopt = try decoder.decode(
+      [0x48, 0x0F, 0xAE, 0xB0, 0x78, 0x56, 0x34, 0x12], at: 0, mode: .long64)
+    #expect(xsaveopt.length == 8)
+    #expect(xsaveopt.operation == .unsupportedSystemInstruction(.xsaveopt))
   }
 
   @Test func decodesNearReturnWithStackCleanup() throws {
