@@ -1202,6 +1202,47 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         try #require(result.value.ok, Comment(rawValue: result.value.message))
     }
 
+    /// The production ejection path accepts only an installed disk that has a structurally valid
+    /// EFI System Partition. The process fixture does not perform a real installer run, so stage
+    /// the smallest bounded GPT shape that exercises that preflight without claiming a bootable OS.
+    private func stagePortableEFIInstalledDisk(at path: String) throws {
+        func putUInt32(_ value: UInt32, into data: inout Data, at offset: Int) {
+            for byte in 0..<4 {
+                data[offset + byte] = UInt8(truncatingIfNeeded: value >> (byte * 8))
+            }
+        }
+        func putUInt64(_ value: UInt64, into data: inout Data, at offset: Int) {
+            for byte in 0..<8 {
+                data[offset + byte] = UInt8(truncatingIfNeeded: value >> (byte * 8))
+            }
+        }
+
+        let sectorBytes = 512
+        var image = Data(repeating: 0, count: 128 * sectorBytes)
+        let header = sectorBytes
+        image.replaceSubrange(header..<(header + 8), with: Data("EFI PART".utf8))
+        putUInt32(92, into: &image, at: header + 12)
+        putUInt64(1, into: &image, at: header + 24)
+        putUInt64(127, into: &image, at: header + 32)
+        putUInt64(34, into: &image, at: header + 40)
+        putUInt64(126, into: &image, at: header + 48)
+        putUInt64(2, into: &image, at: header + 72)
+        putUInt32(4, into: &image, at: header + 80)
+        putUInt32(128, into: &image, at: header + 84)
+        let entries = 2 * sectorBytes
+        image.replaceSubrange(entries..<(entries + 16), with: Data([
+            0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11,
+            0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
+        ]))
+        putUInt64(34, into: &image, at: entries + 32)
+        putUInt64(63, into: &image, at: entries + 40)
+
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        defer { try? handle.close() }
+        try handle.write(contentsOf: image)
+        try handle.synchronize()
+    }
+
     private func recordARMVirtInstallerVariableStore(
         in directory: String,
         markerData: Data = Data([0x05, 0x12])
@@ -1876,6 +1917,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
                     ofItemAtPath: path
                 )
             }
+            try stagePortableEFIInstalledDisk(at: machineDirectory + "/rootfs.ext4")
 
             let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
             let resumesBefore = try journal.list().filter { $0.plan.kind == .workspaceResume }.map(\.plan.id)
