@@ -18,6 +18,7 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
             "--audio-output", "true",
             "--clipboard", "false",
             "--directory-sharing", "true",
+            "--share", "project=/tmp/project:/Users/dory/project:ro",
             "--camera", "false",
         ])
 
@@ -32,6 +33,12 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
         XCTAssertTrue(arguments.devicePolicy.audio.outputEnabled)
         XCTAssertFalse(arguments.devicePolicy.clipboardEnabled)
         XCTAssertTrue(arguments.devicePolicy.directorySharingEnabled)
+        XCTAssertEqual(arguments.shares, [DoryMachineShareConfiguration(
+            tag: "project",
+            hostPath: "/tmp/project",
+            guestPath: "/Users/dory/project",
+            readOnly: true
+        )])
         XCTAssertFalse(arguments.devicePolicy.cameraBridgeEnabled)
     }
 
@@ -122,6 +129,48 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
             XCTAssertEqual(
                 error as? DoryVZMacDesktopArgumentError,
                 .incompleteManagedLifecycleContract
+            )
+        }
+    }
+
+    func testManagedLaunchRejectsDirectoryPolicyWithoutMatchingShares() throws {
+        let identity = DoryRuntimeReconnectLaunchIdentity(
+            machineID: "mac-work",
+            operationID: UUID(uuidString: "d1ec76d2-a4a0-42dc-a725-643167a06f52")!,
+            resolvedPlanSHA256: String(repeating: "a", count: 64),
+            planRevision: 1,
+            secret: String(repeating: "b", count: 64)
+        )
+        let authority = try makeRuntimeReconnectIdentityDescriptor(identity)
+        defer { authority.close() }
+        let target = DoryRuntimeReconnectContract.childFileDescriptor
+        let previousFlags = fcntl(target, F_GETFD)
+        let previous = dup(target)
+        defer {
+            if previous >= 0 {
+                _ = dup2(previous, target)
+                _ = fcntl(target, F_SETFD, previousFlags)
+                close(previous)
+            } else {
+                close(target)
+            }
+        }
+        try authority.withBorrowedDescriptor {
+            guard dup2($0, target) == target else { throw POSIXError(.EBADF) }
+        }
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
+            "run", "--machine", "/tmp/test.dorymac",
+            "--machine-id", "mac-work",
+            "--operation-id", "d1ec76d2-a4a0-42dc-a725-643167a06f52",
+            "--state-dir", "/tmp/machines/mac-work",
+            "--control-sock", "/tmp/runtime/c.sock",
+            "--handoff-sock", "/tmp/runtime/h.sock",
+            "--runtime-reconnect-fd", String(target),
+            "--directory-sharing", "true",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DoryVZMacDesktopArgumentError,
+                .managedDirectoryShareMismatch
             )
         }
     }

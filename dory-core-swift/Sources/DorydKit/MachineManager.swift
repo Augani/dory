@@ -15648,6 +15648,7 @@ public final class MachineManager: @unchecked Sendable {
 
     static func appendVZMacResolvedDevicePolicyArguments(
         from devices: DoryVirtualMachineDeviceCapabilityRequest,
+        shares: [DoryMachineShareConfiguration] = [],
         to arguments: inout [String]
     ) throws {
         let network: DoryVZMacNetworkPolicy
@@ -15661,10 +15662,17 @@ public final class MachineManager: @unchecked Sendable {
                 "native macOS VZMac cannot implement \(devices.networkAttachment.rawValue) networking"
             )
         }
-        if devices.directorySharing {
+        guard devices.directorySharing == !shares.isEmpty else {
             throw MachineManagerError.persistence(
-                "native macOS VZMac launch has no resolved shared-directory authority"
+                "native macOS VZMac directory-sharing policy does not match resolved share authority"
             )
+        }
+        var shareTags = Set<String>()
+        for share in shares {
+            try share.validate()
+            guard shareTags.insert(share.tag).inserted else {
+                throw MachineManagerError.invalidShare(share.tag)
+            }
         }
         if devices.cameraInput {
             throw MachineManagerError.persistence(
@@ -15691,6 +15699,9 @@ public final class MachineManager: @unchecked Sendable {
             "--directory-sharing", String(devices.directorySharing),
             "--camera", String(devices.cameraInput),
         ])
+        for share in shares {
+            arguments.append(contentsOf: ["--share", share.argumentValue])
+        }
     }
 
     private func isManagedSavedStatePath(_ path: String, machineID: String) -> Bool {
@@ -15794,6 +15805,7 @@ public final class MachineManager: @unchecked Sendable {
             }
             try Self.appendVZMacResolvedDevicePolicyArguments(
                 from: launchBinding.devices,
+                shares: machine.shares,
                 to: &arguments
             )
             return arguments

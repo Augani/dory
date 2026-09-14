@@ -116,6 +116,23 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("native VZMac launch emits only its resolved shared-directory authority")
+    func nativeVZMacLaunchEmitsResolvedShareAuthority() throws {
+        let share = DoryMachineShareConfiguration(
+            tag: "project",
+            hostPath: "/tmp/dory-project",
+            guestPath: "/Users/dory/project",
+            readOnly: true
+        )
+        var arguments = [String]()
+        try MachineManager.appendVZMacResolvedDevicePolicyArguments(
+            from: DoryVirtualMachineDeviceCapabilityRequest(directorySharing: true),
+            shares: [share],
+            to: &arguments
+        )
+        #expect(arguments.suffix(2) == ["--share", share.argumentValue])
+    }
+
     @Test("single-use renderer identity binds only the resolved RawHV hardware-3D launch")
     func rendererIdentityBindsExactResolvedLaunch() throws {
         let identity = try rendererReleaseIdentityFixture()

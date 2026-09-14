@@ -1,4 +1,5 @@
 import DoryVZMacCore
+import DorydKit
 import DoryOperations
 import Foundation
 @preconcurrency import Virtualization
@@ -67,6 +68,8 @@ public struct DoryVZMacAdapterConfiguration: Sendable, Equatable {
     public let guestToolsURL: URL?
     public let usbDiskURL: URL?
     public let usbDiskReadOnly: Bool
+    /// User-selected directory roots already admitted by the daemon for this launch.
+    public let shares: [DoryMachineShareConfiguration]
     public let devicePolicy: DoryVZMacDevicePolicy
 
     public init(
@@ -74,12 +77,18 @@ public struct DoryVZMacAdapterConfiguration: Sendable, Equatable {
         guestToolsURL: URL? = nil,
         usbDiskURL: URL? = nil,
         usbDiskReadOnly: Bool = true,
+        shares: [DoryMachineShareConfiguration] = [],
         devicePolicy: DoryVZMacDevicePolicy = .legacyDefault
     ) {
         self.machineBundleURL = machineBundleURL.standardizedFileURL
         self.guestToolsURL = guestToolsURL?.standardizedFileURL
         self.usbDiskURL = usbDiskURL?.standardizedFileURL
         self.usbDiskReadOnly = usbDiskReadOnly
+        self.shares = shares.map { share in
+            var normalized = share
+            normalized.hostPath = URL(fileURLWithPath: share.hostPath).standardizedFileURL.path
+            return normalized
+        }
         self.devicePolicy = devicePolicy
     }
 }
@@ -105,15 +114,26 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws {
         let bundle = try DoryVZMacMachineBundle.load(from: configuration.machineBundleURL)
-        let shares = try configuration.guestToolsURL.map {
-            [try DoryVZMacSharedDirectory(name: "Dory Guest Tools", url: $0, readOnly: true)]
-        } ?? []
+        var sharedDirectories = try configuration.shares.map { share in
+            try DoryVZMacSharedDirectory(
+                name: share.tag,
+                url: URL(fileURLWithPath: share.hostPath, isDirectory: true),
+                readOnly: share.readOnly
+            )
+        }
+        if let guestToolsURL = configuration.guestToolsURL {
+            sharedDirectories.append(try DoryVZMacSharedDirectory(
+                name: "Dory Guest Tools",
+                url: guestToolsURL,
+                readOnly: true
+            ))
+        }
         let usbMassStorage = try configuration.usbDiskURL.map {
             try DoryVZMacUSBMassStorage(url: $0, readOnly: configuration.usbDiskReadOnly)
         }
         runtime = try DoryVZMacRuntime(
             bundle: bundle,
-            sharedDirectories: shares,
+            sharedDirectories: sharedDirectories,
             usbMassStorage: usbMassStorage,
             devicePolicy: configuration.devicePolicy,
             log: log

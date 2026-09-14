@@ -55,6 +55,8 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
     public var guestToolsURL: URL?
     public var usbDiskURL: URL?
     public var usbDiskReadOnly: Bool
+    /// Canonicalized directory roots from the daemon's pre-spawn share authority.
+    public var shares: [DoryMachineShareConfiguration]
     public var devicePolicy: DoryVZMacDevicePolicy
     public var restoreStateURL: URL?
     public var machineID: String?
@@ -71,6 +73,7 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
         guestToolsURL: URL? = nil,
         usbDiskURL: URL? = nil,
         usbDiskReadOnly: Bool = true,
+        shares: [DoryMachineShareConfiguration] = [],
         devicePolicy: DoryVZMacDevicePolicy = .legacyDefault,
         restoreStateURL: URL? = nil,
         machineID: String? = nil,
@@ -86,6 +89,7 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
         self.guestToolsURL = guestToolsURL?.standardizedFileURL
         self.usbDiskURL = usbDiskURL?.standardizedFileURL
         self.usbDiskReadOnly = usbDiskReadOnly
+        self.shares = shares
         self.devicePolicy = devicePolicy
         self.restoreStateURL = restoreStateURL?.standardizedFileURL
         self.machineID = machineID
@@ -121,6 +125,9 @@ public enum DoryVZMacDesktopArgumentError: Error, Sendable, Equatable, CustomStr
     case invalidOperationID
     case invalidNetworkPolicy(String)
     case invalidBoolean(String, String)
+    case invalidShare(String)
+    case duplicateShareTag(String)
+    case managedDirectoryShareMismatch
     case managedCameraUnsupported
 
     public var description: String {
@@ -145,6 +152,12 @@ public enum DoryVZMacDesktopArgumentError: Error, Sendable, Equatable, CustomStr
             "unsupported VZMac network policy: \(value)"
         case .invalidBoolean(let flag, let value):
             "\(flag) must be true or false, not \(value)"
+        case .invalidShare(let value):
+            "invalid VZMac shared directory: \(value)"
+        case .duplicateShareTag(let tag):
+            "duplicate VZMac shared-directory tag: \(tag)"
+        case .managedDirectoryShareMismatch:
+            "managed VZMac directory-sharing policy does not match its authorized shares"
         case .managedCameraUnsupported:
             "managed VZMac launch cannot enable the unsupported host-camera bridge"
         }
@@ -161,6 +174,7 @@ public func parseDoryVZMacDesktopArguments(
         throw DoryVZMacDesktopArgumentError.unsupportedOperation(rawOperation)
     }
     var values: [String: String] = [:]
+    var shares = [DoryMachineShareConfiguration]()
     let usbDiskReadOnly = true
     var sawUSBReadOnlyFlag = false
     var index = 1
@@ -172,6 +186,19 @@ public func parseDoryVZMacDesktopArguments(
             }
             sawUSBReadOnlyFlag = true
             index += 1
+            continue
+        }
+        if flag == "--share" {
+            guard index + 1 < raw.count else {
+                throw DoryVZMacDesktopArgumentError.missingValue(flag)
+            }
+            let rawShare = raw[index + 1]
+            do {
+                shares.append(try DoryMachineShareConfiguration(argument: rawShare))
+            } catch {
+                throw DoryVZMacDesktopArgumentError.invalidShare(rawShare)
+            }
+            index += 2
             continue
         }
         guard [
@@ -272,6 +299,17 @@ public func parseDoryVZMacDesktopArguments(
         ),
         cameraBridgeEnabled: cameraBridgeEnabled
     )
+    var shareTags = Set<String>()
+    for share in shares {
+        guard shareTags.insert(share.tag).inserted else {
+            throw DoryVZMacDesktopArgumentError.duplicateShareTag(share.tag)
+        }
+    }
+    if managedLifecycleFlagPresent,
+       values["--directory-sharing"] != nil,
+       devicePolicy.directorySharingEnabled != !shares.isEmpty {
+        throw DoryVZMacDesktopArgumentError.managedDirectoryShareMismatch
+    }
     let machineID = values["--machine-id"]
     if let machineID,
        machineID.isEmpty || machineID.utf8.count > 63
@@ -345,6 +383,7 @@ public func parseDoryVZMacDesktopArguments(
         guestToolsURL: toolsURL,
         usbDiskURL: usbURL,
         usbDiskReadOnly: usbDiskReadOnly,
+        shares: shares,
         devicePolicy: devicePolicy,
         restoreStateURL: restoreStateURL,
         machineID: machineID,
@@ -523,6 +562,7 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
             guestToolsURL: arguments.guestToolsURL,
             usbDiskURL: arguments.usbDiskURL,
             usbDiskReadOnly: arguments.usbDiskReadOnly,
+            shares: arguments.shares,
             devicePolicy: arguments.devicePolicy
         )) { message in
             FileHandle.standardError.write(Data("dory-vmm VZMac: \(message)\n".utf8))

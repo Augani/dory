@@ -1,4 +1,5 @@
 import DoryVZMacCore
+@testable import DorydKit
 @testable import DoryVMMKit
 import Foundation
 import XCTest
@@ -64,13 +65,19 @@ final class DoryVZMacAdapterTests: XCTestCase {
             machineBundleURL: URL(fileURLWithPath: "/tmp/machines/../mac.doryvm"),
             guestToolsURL: URL(fileURLWithPath: "/tmp/tools/../guest-tools"),
             usbDiskURL: URL(fileURLWithPath: "/tmp/disks/../removable.img"),
-            usbDiskReadOnly: false
+            usbDiskReadOnly: false,
+            shares: [DoryMachineShareConfiguration(
+                tag: "project",
+                hostPath: "/tmp/shares/../project",
+                guestPath: "/Users/dory/project"
+            )]
         )
 
         XCTAssertEqual(configuration.machineBundleURL.path, "/tmp/mac.doryvm")
         XCTAssertEqual(configuration.guestToolsURL?.path, "/tmp/guest-tools")
         XCTAssertEqual(configuration.usbDiskURL?.path, "/tmp/removable.img")
         XCTAssertFalse(configuration.usbDiskReadOnly)
+        XCTAssertEqual(configuration.shares.first?.hostPath, "/tmp/project")
         XCTAssertEqual(DoryVZMacAdapter.maximumGuestDisplayCount, 1)
     }
 
