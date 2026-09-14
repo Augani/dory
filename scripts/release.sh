@@ -149,6 +149,18 @@ release_error() {
   exit 1
 }
 
+guest_tools_package_enabled() {
+  local requested="${DORY_BUILD_MACOS_GUEST_TOOLS:-}"
+  if [ -z "$requested" ]; then
+    [ "${DORY_PUBLIC_RELEASE:-0}" = "1" ] && printf '%s' 1 || printf '%s' 0
+    return 0
+  fi
+  case "$requested" in
+    0|1) printf '%s' "$requested" ;;
+    *) release_error "DORY_BUILD_MACOS_GUEST_TOOLS must be 0 or 1" ;;
+  esac
+}
+
 require_tool() {
   command -v "$1" >/dev/null 2>&1 || release_error "required tool '$1' not found"
 }
@@ -259,6 +271,8 @@ preflight_public_release() {
   preflight_public_toolchain
   [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] \
     || release_error "public releases must bundle the engine"
+  [ "$(guest_tools_package_enabled)" = 1 ] \
+    || release_error "public releases must build the signed macOS Guest Tools package"
   [ "$RELEASE_VARIANTS" = "arm64" ] \
     || release_error "public releases must build exactly the Apple Silicon variant: arm64"
   [ "${DORY_REQUIRE_BUNDLE_ASSETS:-1}" = "1" ] \
@@ -921,6 +935,55 @@ archive_variant() {
     archive
 }
 
+package_macos_guest_tools() {
+  [ "$(guest_tools_package_enabled)" = 1 ] || return 0
+  [ "$SIGN_IDENTITY" != "-" ] \
+    || release_error "macOS Guest Tools packages require a Developer ID Application signing identity"
+  printf '%s\n' "$SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' \
+    || release_error "macOS Guest Tools package requires a full lowercase source commit"
+
+  local archive="$BUILD_DIR/DoryGuestTools-arm64.xcarchive"
+  local app="$archive/Products/Applications/DoryGuestTools.app"
+  local package="$BUILD_DIR/DoryGuestTools-$VERSION-arm64.pkg"
+  local manifest="$BUILD_DIR/DoryGuestTools-$VERSION-arm64.pkg.json"
+  # Keep the candidate label inside the package verifier's portable identifier grammar. The package
+  # filename and embedded app receipt carry the human SemVer release identifier separately.
+  local candidate="${DORY_GUEST_TOOLS_CANDIDATE_ID:-dory-$BUILD-$SOURCE_COMMIT}"
+  local installer_identity="${DORY_GUEST_TOOLS_INSTALLER_SIGN_IDENTITY:-Developer ID Installer: Dory ($TEAM)}"
+
+  echo "==> Archiving signed macOS Guest Tools for the Apple-silicon guest..."
+  rm -rf "$archive" "$package" "$manifest"
+  xcodebuild -project Dory.xcodeproj -scheme DoryGuestTools -configuration Release -scmProvider system \
+    -destination 'generic/platform=macOS' -derivedDataPath "$DERIVED_DATA_DIR" -archivePath "$archive" \
+    ARCHS=arm64 \
+    ONLY_ACTIVE_ARCH=NO \
+    MARKETING_VERSION="$VERSION" \
+    CURRENT_PROJECT_VERSION="$BUILD" \
+    CODE_SIGN_STYLE=Manual \
+    CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
+    OTHER_CODE_SIGN_FLAGS=--timestamp \
+    DEVELOPMENT_TEAM="$TEAM" \
+    archive
+  [ -d "$app" ] && [ ! -L "$app" ] \
+    || release_error "macOS Guest Tools archive did not produce a direct app bundle"
+  verify_developer_id_signature "$app"
+
+  python3 scripts/package-macos-guest-tools.py \
+    --app "$app" \
+    --candidate-id "$candidate" \
+    --source-commit "$SOURCE_COMMIT" \
+    --installer-signing-identity "$installer_identity" \
+    --output "$package" \
+    --manifest-output "$manifest"
+  python3 scripts/verify-macos-guest-tools-package.py \
+    --package "$package" \
+    --manifest "$manifest" \
+    --candidate-id "$candidate" \
+    --source-commit "$SOURCE_COMMIT"
+  GUEST_TOOLS_PACKAGE="$package"
+  GUEST_TOOLS_PACKAGE_MANIFEST="$manifest"
+}
+
 zip_app() {
   local app="$1" zip="$2"
   rm -f "$zip"
@@ -1074,6 +1137,8 @@ COMPONENT_INPUT_DIR="$BUILD_DIR/component-inputs"
 COMPONENT_KUBECTL="$COMPONENT_INPUT_DIR/kubectl"
 COMPONENT_KUBECTL_PROVENANCE="$COMPONENT_INPUT_DIR/kubectl.provenance.txt"
 COMPONENT_ASSETS=()
+GUEST_TOOLS_PACKAGE=""
+GUEST_TOOLS_PACKAGE_MANIFEST=""
 
 if [ "${DORY_RELEASE_RESUME_ACCEPTED_DESKTOP:-0}" = "1" ]; then
   echo "==> Resuming after accepted Desktop ZIP notarization..."
@@ -1255,6 +1320,10 @@ for requested in $RELEASE_VARIANTS; do
   fi
 done
 fi
+
+# Guest Tools are a separately signed macOS distribution, but their provenance is bound to the
+# same source commit and release build as the host application artifacts above.
+package_macos_guest_tools
 
 # Keep the historic cask/download filenames as aliases for the public primary artifact. During the
 # Apple-Silicon-first phase that is arm64; a future universal release can take precedence unchanged.
@@ -1471,7 +1540,7 @@ if [ "${#DMGS[@]}" -gt 0 ]; then
     echo "    $artifact  (sha256: $(sha256_file "$artifact"))"
   done
 fi
-for artifact in "$LITE_ZIP" "$APP_UPDATE_ZIP" "$DESKTOP_APP_UPDATE_ZIP" "$RUNTIME_TAR" "$SBOM" "$DESKTOP_SBOM"; do
+for artifact in "$LITE_ZIP" "$APP_UPDATE_ZIP" "$DESKTOP_APP_UPDATE_ZIP" "$RUNTIME_TAR" "$SBOM" "$DESKTOP_SBOM" "$GUEST_TOOLS_PACKAGE" "$GUEST_TOOLS_PACKAGE_MANIFEST"; do
   [ -n "$artifact" ] && [ -f "$artifact" ] || continue
   echo "    $artifact  (sha256: $(sha256_file "$artifact"))"
 done
@@ -1491,7 +1560,7 @@ if [ "${#DMGS[@]}" -gt 0 ]; then
     MANIFEST_ARTIFACTS+=("$artifact")
   done
 fi
-MANIFEST_ARTIFACTS+=("$LITE_ZIP" "$APP_UPDATE_ZIP" "$DESKTOP_APP_UPDATE_ZIP" "$RUNTIME_TAR" "$APPCAST" "$DESKTOP_APPCAST" "$SBOM" "$DESKTOP_SBOM")
+MANIFEST_ARTIFACTS+=("$LITE_ZIP" "$APP_UPDATE_ZIP" "$DESKTOP_APP_UPDATE_ZIP" "$RUNTIME_TAR" "$APPCAST" "$DESKTOP_APPCAST" "$SBOM" "$DESKTOP_SBOM" "$GUEST_TOOLS_PACKAGE" "$GUEST_TOOLS_PACKAGE_MANIFEST")
 if [ "${#COMPONENT_ASSETS[@]}" -gt 0 ]; then
   MANIFEST_ARTIFACTS+=("${COMPONENT_ASSETS[@]}")
 fi
@@ -1513,6 +1582,8 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "runtime=$RUNTIME_TAR"
     echo "sbom=$SBOM"
     echo "desktop_sbom=$DESKTOP_SBOM"
+    echo "guest_tools_package=$GUEST_TOOLS_PACKAGE"
+    echo "guest_tools_package_manifest=$GUEST_TOOLS_PACKAGE_MANIFEST"
     echo "manifest=$MANIFEST"
     echo "appcast=$APPCAST"
     echo "desktop_appcast=$DESKTOP_APPCAST"

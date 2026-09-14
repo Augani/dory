@@ -46,8 +46,29 @@ class ReleaseOrchestratorTests(unittest.TestCase):
             "scripts/verify-release-sbom.py",
             "scripts/generate-appcast.sh",
             "write_release_manifest",
+            "package_macos_guest_tools",
+            "public releases must build the signed macOS Guest Tools package",
         ):
             self.assertIn(contract, source)
+
+    def test_guest_tools_packaging_defaults_to_public_release_only(self) -> None:
+        disabled = self.run_bash(
+            "set -euo pipefail; "
+            "export DORY_RELEASE_SOURCE_ONLY=1 DORY_BUILD_MACOS_GUEST_TOOLS=0; "
+            "source scripts/release.sh 1.2.3 4; "
+            "guest_tools_package_enabled"
+        )
+        self.assertEqual(disabled.returncode, 0)
+        self.assertEqual(disabled.stdout, "0")
+
+        default_public = self.run_bash(
+            "set -euo pipefail; "
+            "export DORY_RELEASE_SOURCE_ONLY=1 DORY_PUBLIC_RELEASE=1; "
+            "source scripts/release.sh 1.2.3 4; "
+            "guest_tools_package_enabled"
+        )
+        self.assertEqual(default_public.returncode, 0)
+        self.assertEqual(default_public.stdout, "1")
 
     def test_missing_metadata_fails_before_release_mutation(self) -> None:
         result = subprocess.run(
