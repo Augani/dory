@@ -176,6 +176,109 @@ import Testing
         #expect(try memory.readBytes(at: 0x0010_0000, count: 8) == sentinel)
     }
 
+    @Test func malformedLaterSegmentsLeaveAllGuestBytesUntouched() throws {
+        let invalidLoads: [(load: LoadSpec, error: String)] = [
+            (LoadSpec(physicalAddress: 0x0010_0010, fileSize: 9),
+             "ELF PT_LOAD file size exceeds memory size"),
+            (LoadSpec(physicalAddress: 0x0010_0010, fileOffset: 0x400),
+             "ELF PT_LOAD segment is outside the kernel image"),
+            (LoadSpec(physicalAddress: 0x0010_0010, fileOffset: UInt64.max - 2),
+             "ELF PT_LOAD segment is outside the kernel image"),
+            (LoadSpec(physicalAddress: UInt64.max - 2),
+             "ELF PT_LOAD physical extent overflows"),
+            // The file bytes fit in physical arithmetic, but the BSS tail does not.
+            (LoadSpec(physicalAddress: UInt64.max - 4),
+             "ELF PT_LOAD physical extent overflows"),
+            (LoadSpec(physicalAddress: 0x0010_0010, fileSize: 0, memorySize: UInt64.max),
+             "ELF PT_LOAD physical extent overflows"),
+            (LoadSpec(physicalAddress: 0x0010_0010, align: 3),
+             "ELF PT_LOAD has invalid p_align"),
+            (LoadSpec(physicalAddress: 0x0010_0010, align: 0x1000),
+             "ELF PT_LOAD has invalid p_align"),
+            // Include BSS overlap, a preceding range, and full containment.
+            (LoadSpec(physicalAddress: 0x0010_0004),
+             "ELF PT_LOAD segments overlap in guest memory"),
+            (LoadSpec(physicalAddress: 0x000F_FFFC),
+             "ELF PT_LOAD segments overlap in guest memory"),
+            (LoadSpec(physicalAddress: 0x000F_FFFC, memorySize: 16),
+             "ELF PT_LOAD segments overlap in guest memory"),
+        ]
+        let memory = try GuestMemory(guestBase: Self.validPaddr, size: 0x4000)
+        let sentinel = [UInt8](repeating: 0xAA, count: Int(memory.size))
+        try memory.write(sentinel, at: memory.guestBase)
+
+        for invalid in invalidLoads {
+            let data = makeMultiSegmentELF(
+                pvhEntry: Self.validEntry,
+                loads: [LoadSpec(), invalid.load]
+            )
+            do {
+                let image = try PVHKernelImage(data: data)
+                try image.load(into: memory)
+                Issue.record("Accepted malformed later PT_LOAD: \(invalid.error)")
+            } catch VMError.bootFailure(let message) {
+                #expect(message == invalid.error)
+            }
+            #expect(try memory.readBytes(at: memory.guestBase, count: sentinel.count) == sentinel)
+        }
+    }
+
+    @Test func lateBSSExtendingPastRAMLeavesAllGuestBytesUntouched() throws {
+        let memory = try GuestMemory(guestBase: Self.validPaddr, size: 0x4000)
+        let loads = [
+            LoadSpec(),
+            LoadSpec(physicalAddress: memory.guestBase + memory.size - 4, fileOffset: 0x210),
+        ]
+        let image = try PVHKernelImage(data: makeMultiSegmentELF(pvhEntry: Self.validEntry, loads: loads))
+        let sentinel = [UInt8](repeating: 0xAA, count: Int(memory.size))
+        try memory.write(sentinel, at: memory.guestBase)
+
+        do {
+            try image.load(into: memory)
+            Issue.record("Accepted a BSS tail outside guest RAM")
+        } catch VMError.bootFailure(let message) {
+            #expect(message == "PVH kernel segment does not fit in guest RAM")
+        }
+        #expect(try memory.readBytes(at: memory.guestBase, count: sentinel.count) == sentinel)
+    }
+
+    @Test(arguments: [UInt32(0x000F_FFFF), 0x0010_0004, 0x0010_0008])
+    func invalidEntryLeavesGuestBytesUntouched(entry: UInt32) throws {
+        let memory = try GuestMemory(guestBase: Self.validPaddr, size: 0x4000)
+        let sentinel = [UInt8](repeating: 0xAA, count: Int(memory.size))
+        try memory.write(sentinel, at: memory.guestBase)
+
+        do {
+            let image = try PVHKernelImage(data: makeELF(pvhEntry: entry))
+            try image.load(into: memory)
+            Issue.record("Accepted entry outside executable file bytes")
+        } catch VMError.bootFailure(let message) {
+            #expect(message == "PVH entry point is not inside an executable file-backed PT_LOAD byte")
+        }
+        #expect(try memory.readBytes(at: memory.guestBase, count: sentinel.count) == sentinel)
+    }
+
+    @Test func loadsAdjacentUnsortedSegmentsAndBSSOnlySegment() throws {
+        let loads = [
+            LoadSpec(physicalAddress: Self.validPaddr + 8, fileOffset: 0x210, flags: 4),
+            LoadSpec(virtualAddress: 0xFFFF_FFFF_8000_0200, align: 0x1000),
+            LoadSpec(physicalAddress: Self.validPaddr + 16, fileOffset: 0x400, fileSize: 0, flags: 6),
+            LoadSpec(physicalAddress: Self.validPaddr, fileOffset: 0x400, fileSize: 0, memorySize: 0),
+        ]
+        // The last file-backed byte is valid, even in a later program header.
+        let image = try PVHKernelImage(data: makeMultiSegmentELF(pvhEntry: Self.validEntry + 3, loads: loads))
+        let memory = try GuestMemory(guestBase: Self.validPaddr, size: 0x4000)
+        try memory.write([UInt8](repeating: 0xAA, count: 28), at: Self.validPaddr)
+
+        #expect(try image.load(into: memory) == UInt64(Self.validEntry + 3))
+        #expect(try memory.readBytes(at: Self.validPaddr, count: 28) == [
+            17, 18, 19, 20, 0, 0, 0, 0,
+            1, 2, 3, 4, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0xAA, 0xAA, 0xAA, 0xAA,
+        ])
+    }
+
     private struct LoadSpec {
         var physicalAddress: UInt64 = 0x0010_0000
         var virtualAddress: UInt64 = 0x0010_0000

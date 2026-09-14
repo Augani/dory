@@ -141,8 +141,10 @@ public struct PVHKernelImage {
 
     @discardableResult
     public func load(into memory: GuestMemory) throws -> UInt64 {
-        var sourceRanges: [Range<Int>] = []
-        sourceRanges.reserveCapacity(segments.count)
+        // Initialization validates the immutable ELF layout and entry. Resolve every
+        // RAM destination and byte count before any copy or BSS zeroing can occur.
+        var loadPlan: [(destination: UnsafeMutableRawPointer, source: Range<Int>, bssSize: Int)] = []
+        loadPlan.reserveCapacity(segments.count)
         for segment in segments {
             guard memory.contains(segment.physicalAddress, count: segment.memorySize) else {
                 throw VMError.bootFailure("PVH kernel segment does not fit in guest RAM")
@@ -153,24 +155,34 @@ public struct PVHKernelImage {
             guard let sourceRange = Self.range(offset: segment.fileOffset, count: segment.fileSize, dataCount: data.count) else {
                 throw VMError.bootFailure("PVH kernel segment source is outside the image")
             }
-            _ = try memory.hostPointer(at: segment.physicalAddress, count: segment.memorySize)
-            sourceRanges.append(sourceRange)
-        }
-        for (index, segment) in segments.enumerated() {
-            let destination = try memory.hostPointer(at: segment.physicalAddress, count: segment.memorySize)
-            if segment.memorySize > 0 {
-                memset(destination, 0, Int(segment.memorySize))
-            }
-            let sourceRange = sourceRanges[index]
             guard segment.fileSize == UInt64(sourceRange.count) else {
                 throw VMError.bootFailure("PVH kernel segment source is outside the image")
             }
-            if segment.fileSize > 0 {
-                data.withUnsafeBytes { bytes in
-                    destination.copyMemory(
-                        from: bytes.baseAddress!.advanced(by: sourceRange.lowerBound),
-                        byteCount: Int(segment.fileSize)
-                    )
+            let bssSize = segment.memorySize.subtractingReportingOverflow(segment.fileSize)
+            guard !bssSize.overflow else {
+                throw VMError.bootFailure("ELF PT_LOAD file size exceeds memory size")
+            }
+            let destination = try memory.hostPointer(at: segment.physicalAddress, count: segment.memorySize)
+            loadPlan.append((destination, sourceRange, Int(bssSize.partialValue)))
+        }
+        // No fallible validation remains once guest RAM starts changing. Keep the
+        // backing allocation alive while using the plan's resolved host pointers.
+        withExtendedLifetime(memory) {
+            data.withUnsafeBytes { bytes in
+                for operation in loadPlan {
+                    if !operation.source.isEmpty {
+                        operation.destination.copyMemory(
+                            from: bytes.baseAddress!.advanced(by: operation.source.lowerBound),
+                            byteCount: operation.source.count
+                        )
+                    }
+                    if operation.bssSize > 0 {
+                        memset(
+                            operation.destination.advanced(by: operation.source.count),
+                            0,
+                            operation.bssSize
+                        )
+                    }
                 }
             }
         }
