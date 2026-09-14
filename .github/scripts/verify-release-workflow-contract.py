@@ -66,6 +66,16 @@ for name, source in (("tests", tests_workflow), ("release", workflow)):
         "python3 .github/scripts/verify-release-workflow-contract.py",
         f"{name} workflow does not execute the release workflow contract gate",
     )
+    for guest_tools_test in (
+        "scripts/test-generate-macos-guest-tools-manifest.py",
+        "scripts/test-verify-macos-guest-metal-probe.py",
+        "scripts/test-package-macos-guest-tools.py",
+    ):
+        require(
+            source,
+            guest_tools_test,
+            f"{name} workflow does not exercise the macOS guest-tools package boundary",
+        )
 
 candidate = workflow.split("      - name: Stage immutable public candidate", 1)[1].split(
     "\n  homebrew_install_certification:", 1
