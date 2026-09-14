@@ -1327,17 +1327,17 @@ public struct DoryX86Interpreter: Sendable {
         state.floatingPoint = restored
       case .saveExtendedState(let destination):
         let requested = extendedStateRequestMask(state: state)
-        guard requested & ~baseExtendedStateMask == 0,
-          requested & ~state.control.xcr0 == 0
+        guard requested & ~supportedExtendedStateMask == 0
         else { return generalProtection(at: originalRIP) }
+        let byteCount = extendedStateByteCount(requested: requested)
         let address = effectiveAddress(destination, instruction: instruction, state: state)
         guard address & 0x3F == 0 else { return generalProtection(at: originalRIP) }
         try validateFloatingPointTransfer(
-          destination, byteCount: baseExtendedStateByteCount, write: true,
+          destination, byteCount: byteCount, write: true,
           instruction: instruction, state: state)
         // One complete preflight makes the separately represented legacy components and
         // header an all-or-nothing guest-memory commit.
-        try executionMemory.validateWrite(at: address, byteCount: baseExtendedStateByteCount)
+        try executionMemory.validateWrite(at: address, byteCount: byteCount)
         // XSAVE updates only the XSTATE_BV bits selected by RFBM. It must retain
         // XCOMP_BV, reserved bytes, and XSTATE_BV bits belonging to other components.
         // Read this before any writes so a fault cannot leave a partial save image.
@@ -1346,49 +1346,70 @@ public struct DoryX86Interpreter: Sendable {
         let legacy = floatingPointSaveArea(
           state.floatingPoint, mode: mode,
           widePointers: mode == .long64 && instruction.prefixes.rex?.w == true)
-        let saved = requested & state.control.xcr0
+        let saved = requested
         if saved & 1 != 0 {
           // MXCSR and MXCSR_MASK (bytes 24...31) belong to SSE, not x87.
           try executionMemory.write(at: address, bytes: Array(legacy[0..<24]))
           try executionMemory.write(at: address + 32, bytes: Array(legacy[32..<160]))
         }
-        if saved & 2 != 0 {
+        // MXCSR and MXCSR_MASK are part of the legacy area needed by both
+        // SSE and YMM_Hi128 requests. XMM register payload remains SSE-only.
+        if saved & 6 != 0 {
           try executionMemory.write(at: address + 24, bytes: Array(legacy[24..<32]))
+        }
+        if saved & 2 != 0 {
           try executionMemory.write(at: address + 160, bytes: Array(legacy[160..<legacy.count]))
         }
-        let updatedXStateBV = (priorXStateBV & ~saved) | saved
+        if saved & 4 != 0 {
+          try executionMemory.write(
+            at: address + extendedStateYMMHi128Offset,
+            bytes: ymmHi128SaveArea(state.floatingPoint, mode: mode)
+          )
+        }
+        let updatedXStateBV = (priorXStateBV & ~saved)
+          | (extendedStateInUseMask(state.floatingPoint, mode: mode) & saved)
         var updatedHeader = [UInt8](repeating: 0, count: MemoryLayout<UInt64>.size)
         replaceLittleEndian(updatedXStateBV, in: &updatedHeader, at: 0)
         try executionMemory.write(at: address + 512, bytes: updatedHeader)
       case .restoreExtendedState(let source):
         let requested = extendedStateRequestMask(state: state)
-        guard requested & ~baseExtendedStateMask == 0,
-          requested & ~state.control.xcr0 == 0
+        guard requested & ~supportedExtendedStateMask == 0
         else { return generalProtection(at: originalRIP) }
+        let byteCount = extendedStateByteCount(requested: requested)
         let address = effectiveAddress(source, instruction: instruction, state: state)
         guard address & 0x3F == 0 else { return generalProtection(at: originalRIP) }
         try validateFloatingPointTransfer(
-          source, byteCount: baseExtendedStateByteCount, write: false,
+          source, byteCount: byteCount, write: false,
           instruction: instruction, state: state)
-        let image = try executionMemory.read(at: address, byteCount: baseExtendedStateByteCount)
+        let image = try executionMemory.read(at: address, byteCount: byteCount)
         let xstateBV = UInt64(fromLittleEndian(Array(image[512..<520])))
-        // This bounded implementation accepts only the standard layout: no YMM_Hi128,
-        // compacted format, or future header fields may be introduced by an image.
-        guard xstateBV & ~baseExtendedStateMask == 0,
+        // This bounded implementation accepts only the standard layout. Component 2 is
+        // YMM_Hi128 at 576...831; compacted format and future header fields remain invalid.
+        guard xstateBV & ~supportedExtendedStateMask == 0,
           xstateBV & ~state.control.xcr0 == 0,
           image[520..<576].allSatisfy({ $0 == 0 })
         else { return generalProtection(at: originalRIP) }
         let restoreX87 = requested & xstateBV & 1 != 0
         let restoreSSE = requested & xstateBV & 2 != 0
+        let restoreYMMHi128 = requested & xstateBV & 4 != 0
         let initializeX87 = requested & 1 != 0 && !restoreX87
         let initializeSSE = requested & 2 != 0 && !restoreSSE
-        guard let restored = try restoredFloatingPointState(
+        let initializeYMMHi128 = requested & 4 != 0 && !restoreYMMHi128
+        guard let legacyRestored = try restoredFloatingPointState(
           from: Array(image[0..<floatingPointTransferByteCount(mode: mode)]), mode: mode,
           widePointers: mode == .long64 && instruction.prefixes.rex?.w == true,
           preserving: state.floatingPoint, restoringX87: restoreX87, restoringSSE: restoreSSE,
           initializingX87: initializeX87, initializingSSE: initializeSSE,
-          restoringImageMXCSRMask: true)
+          restoringMXCSR: requested & 6 != 0)
         else { return generalProtection(at: originalRIP) }
+        var restored = try restoredYMMHi128State(
+          legacyRestored,
+          from: restoreYMMHi128
+            ? Array(image[extendedStateYMMHi128Offset..<byteCount])
+            : nil,
+          initializing: initializeYMMHi128, mode: mode
+        )
+        restored.xstateInUseMask = (restored.xstateInUseMask & ~requested) | (xstateBV & requested)
         // All image, header, and component validation completes before this sole publication.
         state.floatingPoint = restored
       case .loadMXCSR(let source):
@@ -4037,13 +4058,84 @@ public struct DoryX86Interpreter: Sendable {
     mode == .long64 ? 416 : 288
   }
 
-  private var baseExtendedStateMask: UInt64 { 0x3 }
+  private var supportedExtendedStateMask: UInt64 { profile.supports(.avx) ? 0x7 : 0x3 }
   private var extendedStateHeaderByteCount: Int { 64 }
   private var baseExtendedStateByteCount: Int { 512 + extendedStateHeaderByteCount }
+  private var extendedStateYMMHi128Offset: Int { baseExtendedStateByteCount }
+  private var extendedStateYMMHi128ByteCount: Int { 16 * 16 }
+
+  private func extendedStateByteCount(requested: UInt64) -> Int {
+    requested & 4 != 0
+      ? extendedStateYMMHi128Offset + extendedStateYMMHi128ByteCount
+      : baseExtendedStateByteCount
+  }
 
   private func extendedStateRequestMask(state: DoryX86ArchitecturalState) -> UInt64 {
-    UInt64(UInt32(truncatingIfNeeded: state.registers.rax))
-      | UInt64(UInt32(truncatingIfNeeded: state.registers.rdx)) << 32
+    (UInt64(UInt32(truncatingIfNeeded: state.registers.rax))
+      | UInt64(UInt32(truncatingIfNeeded: state.registers.rdx)) << 32) & state.control.xcr0
+  }
+
+  private func extendedStateInUseMask(
+    _ floatingPoint: DoryX86FloatingPointState, mode: DoryX86ExecutionMode
+  ) -> UInt64 {
+    let initial = try! DoryX86FloatingPointState()
+    // Explicitly restored use survives even when a component contains only zeros.
+    // Value checks also cover ordinary register writes and snapshots predating the bitmap.
+    var mask = floatingPoint.xstateInUseMask
+    let vectors = floatingPoint.ymm.prefix(mode == .long64 ? 16 : 8)
+    if floatingPoint.x87 != initial.x87
+      || floatingPoint.x87ControlWord != initial.x87ControlWord
+      || floatingPoint.x87StatusWord != initial.x87StatusWord
+      || floatingPoint.x87TagWord != initial.x87TagWord
+      || floatingPoint.x87InstructionPointer != initial.x87InstructionPointer
+      || floatingPoint.x87InstructionSelector != initial.x87InstructionSelector
+      || floatingPoint.x87DataPointer != initial.x87DataPointer
+      || floatingPoint.x87DataSelector != initial.x87DataSelector
+      || floatingPoint.x87Opcode != initial.x87Opcode
+    {
+      mask |= 1
+    }
+    if floatingPoint.mxcsr != initial.mxcsr
+      || vectors.contains(where: { $0.bytes[0..<16].contains(where: { $0 != 0 }) })
+    {
+      mask |= 2
+    }
+    if vectors.contains(where: { $0.bytes[16..<32].contains(where: { $0 != 0 }) }) {
+      mask |= 4
+    }
+    return mask
+  }
+
+  private func ymmHi128SaveArea(
+    _ floatingPoint: DoryX86FloatingPointState, mode: DoryX86ExecutionMode
+  ) -> [UInt8] {
+    let vectorCount = mode == .long64 ? 16 : 8
+    var bytes = [UInt8](repeating: 0, count: vectorCount * 16)
+    for index in 0..<vectorCount {
+      bytes.replaceSubrange(
+        index * 16..<index * 16 + 16,
+        with: floatingPoint.ymm[index].bytes[16..<32]
+      )
+    }
+    return bytes
+  }
+
+  private func restoredYMMHi128State(
+    _ floatingPoint: DoryX86FloatingPointState,
+    from bytes: [UInt8]?,
+    initializing: Bool,
+    mode: DoryX86ExecutionMode
+  ) throws -> DoryX86FloatingPointState {
+    guard bytes != nil || initializing else { return floatingPoint }
+    let payload = bytes ?? [UInt8](repeating: 0, count: extendedStateYMMHi128ByteCount)
+    precondition(payload.count == extendedStateYMMHi128ByteCount)
+    var result = floatingPoint
+    for index in 0..<(mode == .long64 ? 16 : 8) {
+      var register = result.ymm[index].bytes
+      register.replaceSubrange(16..<32, with: payload[index * 16..<index * 16 + 16])
+      result.ymm[index] = try .init(bytes: register, expectedByteCount: 32)
+    }
+    return result
   }
 
   private func floatingPointSaveArea(
@@ -4098,7 +4190,7 @@ public struct DoryX86Interpreter: Sendable {
     restoringSSE: Bool = true,
     initializingX87: Bool = false,
     initializingSSE: Bool = false,
-    restoringImageMXCSRMask: Bool = false
+    restoringMXCSR: Bool = true
   ) throws -> DoryX86FloatingPointState? {
     precondition(bytes.count == floatingPointTransferByteCount(mode: mode))
     var result = floatingPoint
@@ -4123,9 +4215,9 @@ public struct DoryX86Interpreter: Sendable {
         result.ymm[index] = try .init(bytes: register, expectedByteCount: 32)
       }
     }
-    guard restoringX87 || restoringSSE else { return result }
+    guard restoringX87 || restoringSSE || restoringMXCSR else { return result }
     let mxcsr = UInt32(fromLittleEndian(Array(bytes[24..<28])))
-    guard !restoringSSE || mxcsr & ~floatingPoint.mxcsrMask == 0 else { return nil }
+    guard !restoringMXCSR || mxcsr & ~floatingPoint.mxcsrMask == 0 else { return nil }
     let abridgedTag = bytes[4]
     let status = UInt16(fromLittleEndian(Array(bytes[2..<4])))
     var tagWord: UInt16 = 0
@@ -4160,12 +4252,11 @@ public struct DoryX86Interpreter: Sendable {
         ymm[index] = try .init(bytes: register, expectedByteCount: 32)
       }
       result.ymm = ymm
+    }
+    if restoringMXCSR {
       result.mxcsr = mxcsr
-      // FXRSTOR ignores MXCSR_MASK (bytes 28...31); only XRSTOR's supported
-      // SSE component restores the mask from its standard XSAVE image.
-      if restoringImageMXCSRMask {
-        result.mxcsrMask = UInt32(fromLittleEndian(Array(bytes[28..<32])))
-      }
+      // Both FXRSTOR and XRSTOR ignore the image's MXCSR_MASK (bytes 28...31).
+      // The processor's current validity mask is preserved.
     }
     return result
   }

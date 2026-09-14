@@ -403,6 +403,9 @@ public struct DoryX86FloatingPointState: Codable, Sendable, Hashable {
   public var x87Opcode: UInt16
   public var mxcsr: UInt32
   public var mxcsrMask: UInt32
+  /// Component use established by XRSTOR, including restored all-zero payloads.
+  /// XSAVE also detects noninitial register values for ordinary writes and old snapshots.
+  public var xstateInUseMask: UInt64
 
   public init(
     x87: [DoryX86RegisterBytes] = .init(repeating: .x87Zero(), count: 8),
@@ -416,7 +419,8 @@ public struct DoryX86FloatingPointState: Codable, Sendable, Hashable {
     x87InstructionSelector: UInt16 = 0,
     x87DataPointer: UInt64 = 0,
     x87DataSelector: UInt16 = 0,
-    x87Opcode: UInt16 = 0
+    x87Opcode: UInt16 = 0,
+    xstateInUseMask: UInt64 = 0
   ) throws {
     guard x87.count == 8 else { throw DoryX86StateError.invalidX87RegisterCount(x87.count) }
     guard x87Opcode <= 0x7ff else { throw DoryX86StateError.invalidX87Opcode(x87Opcode) }
@@ -443,10 +447,11 @@ public struct DoryX86FloatingPointState: Codable, Sendable, Hashable {
     self.x87Opcode = x87Opcode
     self.mxcsr = mxcsr
     self.mxcsrMask = mxcsrMask
+    self.xstateInUseMask = xstateInUseMask
   }
 
   private enum CodingKeys: String, CodingKey {
-    case x87, ymm, x87ControlWord, x87StatusWord, x87TagWord, mxcsr, mxcsrMask
+    case x87, ymm, x87ControlWord, x87StatusWord, x87TagWord, mxcsr, mxcsrMask, xstateInUseMask
     case x87InstructionPointer, x87InstructionSelector, x87DataPointer, x87DataSelector, x87Opcode
   }
 
@@ -464,7 +469,8 @@ public struct DoryX86FloatingPointState: Codable, Sendable, Hashable {
       x87InstructionSelector: values.decodeIfPresent(UInt16.self, forKey: .x87InstructionSelector) ?? 0,
       x87DataPointer: values.decodeIfPresent(UInt64.self, forKey: .x87DataPointer) ?? 0,
       x87DataSelector: values.decodeIfPresent(UInt16.self, forKey: .x87DataSelector) ?? 0,
-      x87Opcode: values.decodeIfPresent(UInt16.self, forKey: .x87Opcode) ?? 0
+      x87Opcode: values.decodeIfPresent(UInt16.self, forKey: .x87Opcode) ?? 0,
+      xstateInUseMask: values.decodeIfPresent(UInt64.self, forKey: .xstateInUseMask) ?? 0
     )
   }
 
@@ -478,6 +484,7 @@ public struct DoryX86FloatingPointState: Codable, Sendable, Hashable {
     try values.encode(x87TagWord, forKey: .x87TagWord)
     try values.encode(mxcsr, forKey: .mxcsr)
     try values.encode(mxcsrMask, forKey: .mxcsrMask)
+    if xstateInUseMask != 0 { try values.encode(xstateInUseMask, forKey: .xstateInUseMask) }
     // Keep the reset snapshot shape compatible with snapshots predating these
     // registers; missing fields decode to the architectural reset value.
     if x87InstructionPointer != 0 { try values.encode(x87InstructionPointer, forKey: .x87InstructionPointer) }
