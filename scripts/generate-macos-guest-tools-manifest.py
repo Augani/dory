@@ -94,7 +94,7 @@ def inventory_tree(root: Path) -> tuple[list[dict[str, object]], str]:
 def source_inventory(root: Path) -> tuple[list[dict[str, str]], str]:
     entries: list[dict[str, str]] = []
     digest = hashlib.sha256()
-    for relative in SOURCE_FILES:
+    for relative in sorted(SOURCE_FILES, key=lambda item: item.encode("utf-8")):
         path = root / relative
         payload = read_regular(path)
         item = {"path": relative, "sha256": sha256(payload)}

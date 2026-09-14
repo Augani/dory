@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -79,6 +81,17 @@ printf 'signed package' > \"$output\"
         completed = self.invoke()
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("expected Dory Developer ID Installer team", completed.stderr)
+
+    def test_recomputed_manifest_rejects_a_malformed_inventory(self) -> None:
+        document = json.loads(self.manifest.read_text(encoding="utf-8"))
+        document["bundleManifest"]["bundle"]["entries"][0]["mode"] = "not-a-mode"
+        embedded = (json.dumps(document["bundleManifest"], indent=2, sort_keys=True) + "\n").encode("utf-8")
+        document["bundleManifestSHA256"] = hashlib.sha256(embedded).hexdigest()
+        self.manifest.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        completed = self.invoke()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("inventory entry mode is invalid", completed.stderr)
 
 
 if __name__ == "__main__":

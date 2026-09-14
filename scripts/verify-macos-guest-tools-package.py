@@ -18,6 +18,7 @@ PACKAGE_SCHEMA = "dory.macos-guest-tools-package@1"
 BUNDLE_SCHEMA = "dory.macos-guest-tools-manifest@1"
 LABEL = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+MODE = re.compile(r"^[0-7]{4}$")
 
 
 class VerificationError(ValueError):
@@ -83,6 +84,50 @@ def positive(value: object, name: str) -> int:
     return value
 
 
+def relative_path(value: object, name: str) -> str:
+    require(isinstance(value, str) and value and not value.startswith("/"), f"{name} is invalid")
+    require(all(part not in {"", ".", ".."} for part in value.split("/")), f"{name} is invalid")
+    return value
+
+
+def inventory_digest(entries: object, label_name: str) -> str:
+    require(isinstance(entries, list) and entries, f"{label_name} inventory is invalid")
+    normalized: list[tuple[str, str, str, int, str]] = []
+    for index, entry in enumerate(entries):
+        item = exact_keys(entry, {"path", "type", "mode", "byteCount", "sha256"}, f"{label_name} inventory entry")
+        path = relative_path(item["path"], f"{label_name} inventory path")
+        kind = item["type"]
+        require(kind in {"regular", "symlink"}, f"{label_name} inventory entry type is invalid")
+        mode = item["mode"]
+        require(isinstance(mode, str) and MODE.fullmatch(mode) is not None, f"{label_name} inventory entry mode is invalid")
+        byte_count = item["byteCount"]
+        require(isinstance(byte_count, int) and not isinstance(byte_count, bool) and byte_count >= 0, f"{label_name} inventory entry byte count is invalid")
+        normalized.append((path, kind, mode, byte_count, digest(item["sha256"], f"{label_name} inventory entry digest")))
+    paths = [entry[0] for entry in normalized]
+    require(paths == sorted(paths, key=lambda item: item.encode("utf-8")) and len(set(paths)) == len(paths), f"{label_name} inventory is not canonical")
+    accumulator = hashlib.sha256()
+    for path, kind, mode, byte_count, entry_digest in normalized:
+        accumulator.update(f"{path}\0{kind}\0{mode}\0{byte_count}\0{entry_digest}\n".encode("utf-8"))
+    return accumulator.hexdigest()
+
+
+def source_inventory_digest(entries: object) -> str:
+    require(isinstance(entries, list) and entries, "embedded source inventory is invalid")
+    normalized: list[tuple[str, str]] = []
+    for entry in entries:
+        item = exact_keys(entry, {"path", "sha256"}, "embedded source inventory entry")
+        normalized.append((
+            relative_path(item["path"], "embedded source inventory path"),
+            digest(item["sha256"], "embedded source inventory entry digest"),
+        ))
+    paths = [entry[0] for entry in normalized]
+    require(paths == sorted(paths, key=lambda item: item.encode("utf-8")) and len(set(paths)) == len(paths), "embedded source inventory is not canonical")
+    accumulator = hashlib.sha256()
+    for path, entry_digest in normalized:
+        accumulator.update(f"{path}\0{entry_digest}\n".encode("utf-8"))
+    return accumulator.hexdigest()
+
+
 def verify_bundle(value: object, candidate: str, commit: str) -> bytes:
     bundle = exact_keys(value, {
         "schema", "candidateID", "sourceCommit", "bundle", "source", "capabilities", "signing",
@@ -94,11 +139,17 @@ def verify_bundle(value: object, candidate: str, commit: str) -> bytes:
     require(app["identifier"] == "com.pythonxi.Dory.GuestTools", "embedded bundle identifier is invalid")
     label(app["version"], "embedded bundle version")
     label(app["build"], "embedded bundle build")
-    digest(app["treeSHA256"], "embedded bundle tree digest")
-    require(isinstance(app["entries"], list) and app["entries"], "embedded bundle inventory is invalid")
+    require(
+        digest(app["treeSHA256"], "embedded bundle tree digest")
+        == inventory_digest(app["entries"], "embedded bundle"),
+        "embedded bundle tree digest differs from its inventory",
+    )
     source = exact_keys(bundle["source"], {"treeSHA256", "entries"}, "embedded source inventory")
-    digest(source["treeSHA256"], "embedded source tree digest")
-    require(isinstance(source["entries"], list) and source["entries"], "embedded source inventory is invalid")
+    require(
+        digest(source["treeSHA256"], "embedded source tree digest")
+        == source_inventory_digest(source["entries"]),
+        "embedded source tree digest differs from its inventory",
+    )
     require(bundle["capabilities"] == [{"id": "metal-probe", "version": 1}], "embedded capabilities are invalid")
     signing = exact_keys(bundle["signing"], {"classification", "teamIdentifier", "authority", "hardenedRuntime"}, "embedded signing")
     require(signing["classification"] == "developer-id-signed", "embedded bundle is not release signed")
