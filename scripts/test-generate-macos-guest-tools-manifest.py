@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import plistlib
 import subprocess
@@ -34,11 +35,11 @@ class GuestToolsManifestTests(unittest.TestCase):
         (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))
         self.output = self.root / "manifest.json"
 
-    def invoke(self, *extra: str) -> subprocess.CompletedProcess[str]:
+    def invoke(self, *extra: str, environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(GENERATOR), "--app", str(self.app), "--candidate-id", "macos-dev-1",
              "--source-commit", "a" * 40, "--output", str(self.output), *extra],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, env=environment,
         )
 
     def test_unsigned_development_inventory_is_explicit_and_deterministic(self) -> None:
@@ -55,6 +56,24 @@ class GuestToolsManifestTests(unittest.TestCase):
 
     def test_unsigned_bundle_is_not_a_release_manifest(self) -> None:
         result = self.invoke()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Developer-ID-signed", result.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_displayed_signature_without_strict_verification_is_rejected(self) -> None:
+        tools = self.root / "tools"
+        tools.mkdir()
+        codesign = tools / "codesign"
+        codesign.write_text(
+            "#!/bin/sh\n"
+            "case \"$*\" in\n"
+            "  *--verify*) exit 1 ;;\n"
+            "esac\n"
+            "printf '%s\\n' 'Authority=Developer ID Application: Dory' 'TeamIdentifier=864H636QW4' 'CodeDirectory=v=20400 flags=0x10000(runtime)' >&2\n"
+        )
+        codesign.chmod(0o755)
+        environment = {**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"]}
+        result = self.invoke(environment=environment)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Developer-ID-signed", result.stderr)
         self.assertFalse(self.output.exists())

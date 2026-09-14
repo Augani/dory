@@ -106,6 +106,13 @@ def source_inventory(root: Path) -> tuple[list[dict[str, str]], str]:
 def signing(app: Path, allow_unsigned_development: bool) -> dict[str, object]:
     command = ["codesign", "-dvvv", str(app)]
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    verification = subprocess.run(
+        ["codesign", "--verify", "--strict", "--deep", str(app)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
     details = result.stdout + result.stderr
     fields: dict[str, list[str]] = {}
     for line in details.splitlines():
@@ -116,7 +123,8 @@ def signing(app: Path, allow_unsigned_development: bool) -> dict[str, object]:
     authorities = fields.get("Authority", [])
     hardened = any("runtime" in item for item in fields.get("CodeDirectory", []))
     developer_id = bool(authorities) and authorities[0].startswith("Developer ID Application:")
-    if result.returncode == 0 and team == EXPECTED_TEAM_IDENTIFIER and developer_id and hardened:
+    if (result.returncode == 0 and verification.returncode == 0
+            and team == EXPECTED_TEAM_IDENTIFIER and developer_id and hardened):
         return {
             "classification": "developer-id-signed",
             "teamIdentifier": team,
