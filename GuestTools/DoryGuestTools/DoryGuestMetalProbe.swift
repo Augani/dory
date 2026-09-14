@@ -15,9 +15,14 @@ enum DoryGuestMetalProbe {
     static let elementCount = 1_024
     static let imageExtent = 64
 
-    static func run(nonce: String, candidateID: String) throws -> DoryGuestMetalProbeResult {
+    static func run(
+        nonce: String,
+        candidateID: String,
+        machineID: String
+    ) throws -> DoryGuestMetalProbeResult {
         let nonce = try normalizedIdentifier(nonce, label: "nonce")
         let candidateID = try normalizedIdentifier(candidateID, label: "candidate ID")
+        let machineID = try normalizedIdentifier(machineID, label: "machine ID")
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw DoryGuestMetalProbeError.metalUnavailable
         }
@@ -61,6 +66,7 @@ enum DoryGuestMetalProbe {
             createdAt: ISO8601DateFormatter().string(from: Date()),
             nonce: nonce,
             candidateID: candidateID,
+            machineID: machineID,
             guestOperatingSystemVersion: "\(operatingSystem.majorVersion).\(operatingSystem.minorVersion).\(operatingSystem.patchVersion)",
             guestOperatingSystemBuild: try operatingSystemBuild(),
             guestActiveProcessorCount: process.activeProcessorCount,
@@ -299,6 +305,7 @@ struct DoryGuestMetalProbeResult: Codable, Equatable {
     let createdAt: String
     let nonce: String
     let candidateID: String
+    let machineID: String
     let guestOperatingSystemVersion: String
     let guestOperatingSystemBuild: String
     let guestActiveProcessorCount: Int
@@ -400,14 +407,19 @@ struct DoryGuestMetalProbePatternView: NSViewRepresentable {
 final class DoryGuestMetalProbeController: ObservableObject {
     @Published var nonce = ""
     @Published var candidateID = ""
-    @Published private(set) var status = "Enter the host-issued nonce and candidate ID, then run the probe inside this guest."
+    @Published var machineID = ""
+    @Published private(set) var status = "Enter the host-issued nonce, candidate ID, and machine ID, then run the probe inside this guest."
     @Published private(set) var resultJSON = ""
 
     var hasResult: Bool { !resultJSON.isEmpty }
 
     func run() {
         do {
-            let result = try DoryGuestMetalProbe.run(nonce: nonce, candidateID: candidateID)
+            let result = try DoryGuestMetalProbe.run(
+                nonce: nonce,
+                candidateID: candidateID,
+                machineID: machineID
+            )
             resultJSON = try DoryGuestMetalProbe.encodedResult(result)
             status = "Metal compute and render completed. Copy the raw JSON into the matching host qualification receipt."
         } catch {

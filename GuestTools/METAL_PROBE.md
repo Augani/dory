@@ -11,13 +11,14 @@ Build the `DoryGuestTools` target with the intended signed candidate, install
 the resulting app in the macOS guest, and open **Dory Guest Tools**. In the
 **Metal qualification probe** panel:
 
-1. Enter the host-issued nonce and the exact staged candidate identifier.
+1. Enter the host-issued nonce, exact staged candidate identifier, and Dory machine ID
+   from the corresponding host challenge.
 2. Run the probe while the Dory VM window is visible.
 3. Confirm the checkerboard preview and successful result message.
 4. Copy the raw JSON and retain it unchanged with the corresponding host-side
    qualification receipt.
 
-The JSON binds the nonce, candidate identifier, guest-tools bundle identity,
+The JSON binds the nonce, candidate identifier, Dory machine identity, guest-tools bundle identity,
 observed guest OS version/build/resources and Metal device, shader digest,
 verified compute output digest, and verified render-pattern digest. The probe rejects malformed identifiers,
 unavailable Metal, shader/pipeline failures, incomplete command buffers,
@@ -63,7 +64,7 @@ python3 scripts/verify-macos-guest-metal-probe.py verify \
   --output metal-probe-verification.json
 ```
 
-The verifier confirms the exact nonce/candidate/bundle metadata, guest OS
+The verifier confirms the exact nonce/candidate/machine/bundle metadata, guest OS
 version/build/resources, retained source inventory, command-buffer statuses,
 and deterministic compute digest.
 It writes only `development-observed` evidence with `releaseEligible: false`:

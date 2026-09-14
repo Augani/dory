@@ -247,6 +247,7 @@ struct DoryGuestToolsApp: App {
                             .fixedSize(horizontal: false, vertical: true)
                         TextField("Host-issued nonce", text: $metalProbe.nonce)
                         TextField("Staged candidate ID", text: $metalProbe.candidateID)
+                        TextField("Dory machine ID", text: $metalProbe.machineID)
                         Text(metalProbe.status)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

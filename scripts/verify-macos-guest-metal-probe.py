@@ -223,7 +223,7 @@ def validate_challenge(value: dict[str, Any]) -> dict[str, str]:
 
 def validate_result(value: dict[str, Any], challenge: dict[str, str]) -> dict[str, Any]:
     exact_keys(value, {
-        "schema", "createdAt", "nonce", "candidateID", "guestOperatingSystemVersion",
+        "schema", "createdAt", "nonce", "candidateID", "machineID", "guestOperatingSystemVersion",
         "guestOperatingSystemBuild",
         "guestActiveProcessorCount", "guestPhysicalMemoryBytes", "guestToolsBundleIdentifier",
         "guestToolsVersion", "guestToolsBuild", "metalDeviceName", "metalRegistryID",
@@ -235,6 +235,8 @@ def validate_result(value: dict[str, Any], challenge: dict[str, str]) -> dict[st
         raise ProbeError("guest probe result schema is unsupported")
     if value["candidateID"] != challenge["candidateID"] or value["nonce"] != challenge["nonce"]:
         raise ProbeError("guest probe result does not match the host-issued candidate or nonce")
+    if value["machineID"] != challenge["machineID"]:
+        raise ProbeError("guest probe result does not match the host-issued machine ID")
     if (value["guestToolsBundleIdentifier"], value["guestToolsVersion"], value["guestToolsBuild"]) != (
         challenge["bundleIdentifier"], challenge["bundleVersion"], challenge["bundleBuild"],
     ):
@@ -264,6 +266,7 @@ def validate_result(value: dict[str, Any], challenge: dict[str, str]) -> dict[st
     return {
         "guestOperatingSystemVersion": value["guestOperatingSystemVersion"],
         "guestOperatingSystemBuild": value["guestOperatingSystemBuild"],
+        "machineID": value["machineID"],
         "guestActiveProcessorCount": value["guestActiveProcessorCount"],
         "guestPhysicalMemoryBytes": value["guestPhysicalMemoryBytes"],
         "metalDeviceName": value["metalDeviceName"],
