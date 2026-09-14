@@ -144,6 +144,7 @@ def validate_catalog(
     source_commit: str,
     *,
     public_key: str = CATALOG_PUBLIC_KEY,
+    sbom_digest: str | None = None,
 ) -> set[str]:
     component_dir = build_dir / "components" / "arm64"
     catalog_path = component_dir / "catalog.json"
@@ -230,6 +231,11 @@ def validate_catalog(
         nonempty_string(provenance["builder"], f"component {component_id} builder")
         for field in ("recipeDigest", "sbomDigest", "attestationDigest"):
             digest_value(provenance[field], f"component {component_id} {field}")
+        if sbom_digest is not None:
+            require(
+                provenance["sbomDigest"] == sbom_digest,
+                f"component {component_id} SBOM digest does not bind the staged release SBOM",
+            )
         assets = component["assets"]
         require(isinstance(assets, list), f"component {component_id} assets are invalid")
         for asset_index, raw_asset in enumerate(assets):
@@ -360,7 +366,17 @@ def validate_manifest(build_dir: pathlib.Path, version: str, build: str) -> tupl
         "catalog.json.sha256",
         "catalog.json.sig",
     }
-    required.update(validate_catalog(build_dir, version, source_commit))
+    sbom_path = build_dir / f"Dory-{version}.cdx.json"
+    require(
+        sbom_path.is_file() and not sbom_path.is_symlink(),
+        "release SBOM is missing or indirect",
+    )
+    required.update(validate_catalog(
+        build_dir,
+        version,
+        source_commit,
+        sbom_digest=sha256_file(sbom_path),
+    ))
     records = manifest["artifacts"]
     require(isinstance(records, list) and records, "manifest has no artifacts")
     require(

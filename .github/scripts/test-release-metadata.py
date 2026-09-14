@@ -78,6 +78,9 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.build = pathlib.Path(self.directory.name)
         self.components = self.build / "components" / "arm64"
         self.components.mkdir(parents=True)
+        self.sbom = self.build / "Dory-9.8.7.cdx.json"
+        self.sbom.write_bytes(b'{"bomFormat":"CycloneDX"}\n')
+        self.sbom_digest = hashlib.sha256(self.sbom.read_bytes()).hexdigest()
         self.catalog_path = self.components / "catalog.json"
         self.digest_path = self.components / "catalog.json.sha256"
         self.signature_path = self.components / "catalog.json.sig"
@@ -127,6 +130,8 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "signingKeyID": key_id,
             },
         }
+        for component in self.catalog["components"]:
+            component["provenance"]["sbomDigest"] = self.sbom_digest
 
     def tearDown(self) -> None:
         self.directory.cleanup()
@@ -190,6 +195,7 @@ class ReleaseCatalogTests(unittest.TestCase):
             "9.8.7",
             "a" * 40,
             public_key=self.public_key,
+            sbom_digest=self.sbom_digest,
         )
 
     def test_signed_schema_two_catalog_is_accepted(self) -> None:
@@ -235,6 +241,12 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.catalog["components"][1]["assets"][0]["installedSHA256"] = "e" * 64
         self.publish()
         with self.assertRaisesRegex(ValueError, "digest differs from catalog"):
+            self.validate()
+
+    def test_signed_catalog_sbom_digest_must_match_the_staged_release_sbom(self) -> None:
+        self.catalog["components"][0]["provenance"]["sbomDigest"] = "e" * 64
+        self.publish()
+        with self.assertRaisesRegex(ValueError, "does not bind the staged release SBOM"):
             self.validate()
 
     def test_signed_asset_size_must_match_delivered_bytes(self) -> None:
