@@ -60,8 +60,10 @@ public struct ISAEngineComparisonResult: Codable, Sendable, Hashable {
 }
 
 /// P2-05 item 3: Tier1 decline attribution by executed guest work.
-/// This records which guest instruction forms caused the most Tier1
-/// declines during execution, not just which forms failed compilation.
+/// Legacy report shape. Historical records are unverified without source-owned evidence.
+/// New harness records set hitCount to zero (hits are not measured) and place confirmed retired
+/// instructions in estimatedRuntimeExitCount as compatibility runtime-work evidence, not exits.
+/// Use DoryARM64InterpreterFallbackCounters for explicit units, availability and full site identity.
 public struct ISATier1DeclineAttribution: Codable, Sendable, Hashable {
   public let guestRIP: UInt64
   public let executionMode: String
@@ -113,21 +115,51 @@ public enum ISAEngineComparisonHarness {
       valid: valid)
   }
 
-  /// P2-05 item 3: Attribute Tier1 declines by executed guest work.
-  /// Uses the negative cache hot sites from the executor diagnostics
-  /// to identify the guest instruction forms causing the most runtime
-  /// exits due to Tier1 declines.
+  /// Compatibility projection of confirmed retired work at known decline sites.
+  /// Unavailable snapshots, unattributed work and zero-work sites produce no records. hitCount
+  /// is zero because retirement counters do not measure hits; estimatedRuntimeExitCount contains
+  /// retired instructions as runtime-work evidence, not a measured exit count. Cache activity
+  /// never supplies attribution. Use confirmedInterpreterFallbackCounters(from:) for availability,
+  /// the unattributed bucket and full site identity (including address space and privilege).
   public static func attributeTier1Declines(
     from diagnostics: DoryARM64BaselineExecutorDiagnostics
   ) -> [ISATier1DeclineAttribution] {
-    diagnostics.negativeCacheHotSites.map { site in
-      .init(
+    guard let counters = confirmedInterpreterFallbackCounters(from: diagnostics) else { return [] }
+    return counters.work.compactMap { work in
+      guard let site = work.site, work.retiredInstructions > 0 else { return nil }
+      return .init(
         guestRIP: site.guestRIP,
         executionMode: site.executionMode.rawValue,
         declineReason: site.declineReason.rawValue,
-        hitCount: site.hitCount,
-        estimatedRuntimeExitCount: site.hitCount)
+        hitCount: 0,
+        estimatedRuntimeExitCount: work.retiredInstructions)
     }
+  }
+
+  /// Ranked cumulative source-owned confirmed work, including the explicit unattributed bucket.
+  /// Nil means the executor's caller did not supply retirement confirmation; an empty snapshot
+  /// means tracking is available with no confirmed work. Source tracking bounds retained sites
+  /// and routes overflow to the unattributed bucket. Cache hits prove no retired work.
+  public static func confirmedInterpreterFallbackCounters(
+    from diagnostics: DoryARM64BaselineExecutorDiagnostics
+  ) -> DoryARM64InterpreterFallbackCounters? {
+    diagnostics.confirmedInterpreterFallback
+  }
+
+  /// Samples may be cumulative or per-run. Legacy samples without source-owned evidence remain
+  /// unavailable even if their old reason totals contain compilation/cache counts.
+  public static func attributeTier1Declines(
+    from sample: ISAEngineProfileSample
+  ) -> DoryARM64InterpreterFallbackCounters? {
+    sample.confirmedInterpreterFallback
+  }
+
+  /// Receipt comparisons use only verified, monotonic per-run executed-work deltas.
+  public static func attributeTier1Declines(
+    from receipt: ISAEngineProfileReceipt
+  ) -> DoryARM64InterpreterFallbackCounters? {
+    guard receipt.isProvenanceVerified else { return nil }
+    return receipt.runSample.confirmedInterpreterFallback
   }
 
   /// P2-05 item 5: Generate a comparison report from multiple tier

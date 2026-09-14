@@ -5668,9 +5668,94 @@ public struct DoryARM64ExecutionSummary: Sendable, Hashable {
 }
 
 /// The stage that rejected a translated guest block before it could enter executable memory.
-public enum DoryARM64CompilationDeclineReason: String, Sendable, Hashable {
+public enum DoryARM64CompilationDeclineReason: String, Codable, Sendable, Hashable {
   case interpreterHelper
   case nativeEmitter
+}
+
+/// Stable guest location and decline reason, independent of cache residency and dispatch budget.
+/// A site describes the rejected block entry, not necessarily the unsupported instruction within it.
+public struct DoryARM64InterpreterFallbackSite: Codable, Sendable, Hashable {
+  public let guestRIP: UInt64
+  public let executionMode: DoryX86ExecutionMode
+  public let addressSpaceID: UInt64
+  public let privilegeLevel: UInt8
+  public let pagingEnabled: Bool
+  public let declineReason: DoryARM64CompilationDeclineReason
+
+  public init(
+    guestRIP: UInt64, executionMode: DoryX86ExecutionMode, addressSpaceID: UInt64,
+    privilegeLevel: UInt8, pagingEnabled: Bool, declineReason: DoryARM64CompilationDeclineReason
+  ) {
+    self.guestRIP = guestRIP
+    self.executionMode = executionMode
+    self.addressSpaceID = addressSpaceID
+    self.privilegeLevel = privilegeLevel
+    self.pagingEnabled = pagingEnabled
+    self.declineReason = declineReason
+  }
+}
+
+/// Confirmed interpreter retirements causally following a Tier1 compilation decline. A nil site
+/// retains only known Tier1-decline work whose site identity is unavailable, such as site overflow.
+public struct DoryARM64InterpreterFallbackWork: Codable, Sendable, Hashable {
+  public let site: DoryARM64InterpreterFallbackSite?
+  public let retiredInstructions: UInt64
+
+  public init(site: DoryARM64InterpreterFallbackSite?, retiredInstructions: UInt64) {
+    self.site = site
+    self.retiredInstructions = retiredInstructions
+  }
+}
+
+/// Cumulative, cache-independent work. Absence of this snapshot means retirement was not tracked.
+public struct DoryARM64InterpreterFallbackCounters: Codable, Sendable, Hashable {
+  public let work: [DoryARM64InterpreterFallbackWork]
+
+  public init(work: [DoryARM64InterpreterFallbackWork] = []) {
+    var counts: [DoryARM64InterpreterFallbackSite?: UInt64] = [:]
+    for record in work {
+      let old = counts[record.site, default: 0]
+      let (sum, overflow) = old.addingReportingOverflow(record.retiredInstructions)
+      counts[record.site] = overflow ? .max : sum
+    }
+    self.work = counts.map { .init(site: $0.key, retiredInstructions: $0.value) }.sorted {
+      if $0.retiredInstructions != $1.retiredInstructions {
+        return $0.retiredInstructions > $1.retiredInstructions
+      }
+      // A total ordering keeps snapshots and receipt serialization deterministic.
+      guard let lhs = $0.site else { return $1.site != nil }
+      guard let rhs = $1.site else { return false }
+      if lhs.guestRIP != rhs.guestRIP { return lhs.guestRIP < rhs.guestRIP }
+      if lhs.addressSpaceID != rhs.addressSpaceID { return lhs.addressSpaceID < rhs.addressSpaceID }
+      if lhs.executionMode != rhs.executionMode { return lhs.executionMode.rawValue < rhs.executionMode.rawValue }
+      if lhs.privilegeLevel != rhs.privilegeLevel { return lhs.privilegeLevel < rhs.privilegeLevel }
+      if lhs.pagingEnabled != rhs.pagingEnabled { return !lhs.pagingEnabled }
+      return lhs.declineReason.rawValue < rhs.declineReason.rawValue
+    }
+  }
+
+  public func retiredInstructions(for reason: DoryARM64CompilationDeclineReason?) -> UInt64 {
+    work.filter { $0.site?.declineReason == reason }.reduce(0) {
+      let (sum, overflow) = $0.addingReportingOverflow($1.retiredInstructions)
+      return overflow ? .max : sum
+    }
+  }
+
+  /// Missing sites are regressions too: cache eviction must never erase executed-work evidence.
+  public func hasRegression(since start: Self) -> Bool {
+    let endCounts = Dictionary(work.map { ($0.site, $0.retiredInstructions) }, uniquingKeysWith: max)
+    return start.work.contains { endCounts[$0.site, default: 0] < $0.retiredInstructions }
+  }
+
+  public func delta(since start: Self) -> Self? {
+    guard !hasRegression(since: start) else { return nil }
+    let startCounts = Dictionary(start.work.map { ($0.site, $0.retiredInstructions) }, uniquingKeysWith: max)
+    return .init(work: work.compactMap {
+      let count = $0.retiredInstructions - startCounts[$0.site, default: 0]
+      return count > 0 ? .init(site: $0.site, retiredInstructions: count) : nil
+    })
+  }
 }
 
 /// One exact, currently live negative-cache identity and its saturating validated-hit count.
@@ -5715,6 +5800,7 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   /// Exact hit counts for the 16 hottest currently live negative entries. Replacing or removing an
   /// entry through collision, invalidation, generation mismatch, or cache reset discards its count.
   public let negativeCacheHotSites: [DoryARM64NegativeCacheHotSite]
+  public var confirmedInterpreterFallback: DoryARM64InterpreterFallbackCounters? = nil
   public let codeCacheWraps: UInt64
   public let codeCacheEvictedBlocks: UInt64
   public let nativeTraceAttempts: UInt64
@@ -6119,6 +6205,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var tier1CompiledBlockCount: UInt64 = 0
   private var lazyFlagMaterializationCount: UInt64 = 0
   private var declinedCompilationCount: UInt64 = 0
+  private var interpreterFallbackCounts: [DoryARM64InterpreterFallbackSite?: UInt64]?
   private var negativeCacheHitCount: UInt64 = 0
   private var negativeCacheMissCount: UInt64 = 0
   private var negativeGenerationMismatchCount: UInt64 = 0
@@ -6174,7 +6261,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     tier1Enabled: Bool = false,
     rawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions = .all,
     optimization: DoryARM64JITOptimization = .baseline,
-    optimizer: DoryIROptimizer = .init()
+    optimizer: DoryIROptimizer = .init(),
+    tracksInterpreterFallback: Bool = false
   ) throws {
     guard (32...52).contains(physicalAddressBits) else {
       throw DoryX86StateError.invalidPhysicalAddressBits(physicalAddressBits)
@@ -6190,6 +6278,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     self.rawTargetPredictionOptions = rawTargetPredictionOptions
     self.optimization = optimization
     self.optimizer = optimizer
+    interpreterFallbackCounts = tracksInterpreterFallback ? [:] : nil
     executionContextStorage = .init()
     let executableRegion = try DoryJITExecutableRegion(minimumCapacity: self.maximumCodeBytes)
     region = executableRegion
@@ -6275,6 +6364,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         negativeGenerationMismatches: negativeGenerationMismatchCount,
         negativeEntryCount: UInt64(negativeEntries.lazy.compactMap { $0 }.count),
         negativeCacheHotSites: Array(negativeCacheHotSites.prefix(16)),
+        confirmedInterpreterFallback: interpreterFallbackCounts.map { counts in
+          .init(work: counts.map { .init(site: $0.key, retiredInstructions: $0.value) })
+        },
         codeCacheWraps: codeCacheWrapCount,
         codeCacheEvictedBlocks: codeCacheEvictedBlockCount,
         nativeTraceAttempts: nativeTraceAttemptCount,
@@ -6630,6 +6722,25 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     return hostPC - entryAddress < UInt64(resident.block.machineByteCount)
   }
 
+  /// Called by a retirement-aware machine only after a Tier1 decline callback and interpreter
+  /// retirement. A nil site means unavailable site identity, never absence of a Tier1 decline.
+  /// Cache invalidation never clears these counters. Retain at most 1,024 distinct sites; new
+  /// sites beyond that bound contribute to the explicit unattributed bucket without eviction.
+  public func recordInterpreterFallback(
+    site: DoryARM64InterpreterFallbackSite?, retiredInstructions: UInt64
+  ) {
+    guard retiredInstructions > 0 else { return }
+    lock.withLock {
+      guard interpreterFallbackCounts != nil else { return }
+      let key = site.flatMap {
+        interpreterFallbackCounts![$0] != nil || interpreterFallbackCounts!.count < 1_024 ? $0 : nil
+      }
+      let old = interpreterFallbackCounts![key, default: 0]
+      let (sum, overflow) = old.addingReportingOverflow(retiredInstructions)
+      interpreterFallbackCounts![key] = overflow ? .max : sum
+    }
+  }
+
   /// Runs consecutive resident basic blocks while the machine's interrupt deadline permits it.
   /// The execution context crosses block boundaries without round-tripping all architectural
   /// registers through Swift. System, port-I/O, halt, and restartable-memory exits still return at
@@ -6643,7 +6754,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     addressSpaceID: UInt64,
     maximumInstructions: Int,
     state: inout DoryX86ArchitecturalState,
-    memory: (any DoryX86Memory)? = nil
+    memory: (any DoryX86Memory)? = nil,
+    // Reports a Tier1 decline (including validated negative-cache hits) before any native work.
+    // Called under the executor lock; consumers must only copy the value and must not reenter.
+    onCompilationDecline: ((DoryARM64InterpreterFallbackSite) -> Void)? = nil
   ) throws -> DoryARM64ExecutionSummary? {
     guard maximumInstructions > 0, state.interruptShadow == nil,
       !state.rflags.contains(.virtual8086),
@@ -6772,7 +6886,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 addressSpaceID: addressSpaceID,
                 maximumInstructions: residentInstructionBudget,
                 state: state,
-                memory: memory
+                memory: memory,
+                onCompilationDecline: onCompilationDecline
               )
             else {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
@@ -7301,7 +7416,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     addressSpaceID: UInt64,
     maximumInstructions: Int,
     state: DoryX86ArchitecturalState,
-    memory: (any DoryX86Memory)?
+    memory: (any DoryX86Memory)?,
+    onCompilationDecline: ((DoryARM64InterpreterFallbackSite) -> Void)? = nil
   ) throws -> ResidentBlock? {
     let compilationInstructionBudget = min(
       maximumInstructions, Self.maximumResidentInstructionBudget)
@@ -7372,10 +7488,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       }
       removeResident(for: key)
     }
-    if negativeCacheHit(
+    func reportDecline(_ reason: DoryARM64CompilationDeclineReason) {
+      guard tier1Enabled else { return }
+      onCompilationDecline?(.init(
+        guestRIP: guestStart, executionMode: mode, addressSpaceID: addressSpaceID,
+        privilegeLevel: key.privilegeLevel, pagingEnabled: key.pagingEnabled, declineReason: reason))
+    }
+    if let entry = negativeCacheHit(
       for: negativeKey,
       codeGenerationProvider: codeGenerationProvider
     ) {
+      reportDecline(entry.declineReason)
       return nil
     }
     let pageBoundedFetch = physicalRIPProvider != nil || memory is DoryX86TranslatedMemory
@@ -7406,6 +7529,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     if let guestByteCount = compilation.emitterDeclineByteCount,
       let declineReason = compilation.declineReason
     {
+      reportDecline(declineReason)
       publishNegativeEntry(
         for: negativeKey,
         guestByteCount: guestByteCount,
@@ -7835,14 +7959,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private func negativeCacheHit(
     for key: NegativeLookupKey,
     codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)?
-  ) -> Bool {
+  ) -> NegativeEntry? {
     let index = negativeIndex(for: key)
     guard let entry = negativeEntries[index], entry.key == key,
       entry.codeCacheEpoch == codeCacheEpoch,
       let codeGenerationProvider
     else {
       negativeCacheMissCount &+= 1
-      return false
+      return nil
     }
     do {
       codeGenerationCheckCount &+= 1
@@ -7851,7 +7975,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         negativeGenerationMismatchCount &+= 1
         negativeCacheMissCount &+= 1
         negativeEntries[index] = nil
-        return false
+        return nil
       }
       negativeCacheHitCount &+= 1
       var updatedEntry = entry
@@ -7859,10 +7983,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         updatedEntry.hitCount += 1
       }
       negativeEntries[index] = updatedEntry
-      return true
+      return updatedEntry
     } catch {
       negativeCacheMissCount &+= 1
-      return false
+      return nil
     }
   }
 

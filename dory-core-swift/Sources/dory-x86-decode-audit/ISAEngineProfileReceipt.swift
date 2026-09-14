@@ -370,6 +370,13 @@ public struct ISAEngineProfileReceipt: Codable, Sendable, Hashable {
     check("translationCacheInvalidations", e.translationCacheInvalidations, s.translationCacheInvalidations)
     check("tier1DeclineInterpreterHelper", e.tier1DeclineInterpreterHelper, s.tier1DeclineInterpreterHelper)
     check("tier1DeclineNativeEmitter", e.tier1DeclineNativeEmitter, s.tier1DeclineNativeEmitter)
+    if let start = s.confirmedInterpreterFallback {
+      if let end = e.confirmedInterpreterFallback {
+        if end.hasRegression(since: start) { regressions.append("confirmedInterpreterFallback") }
+      } else {
+        regressions.append("confirmedInterpreterFallback.unavailable")
+      }
+    }
     check("tier1CompiledBlocks", e.tier1CompiledBlocks, s.tier1CompiledBlocks)
     check("tier1CompilationAttempts", e.tier1CompilationAttempts, s.tier1CompilationAttempts)
     check("tier1CompilationDeclines", e.tier1CompilationDeclines, s.tier1CompilationDeclines)
@@ -405,6 +412,9 @@ public struct ISAEngineProfileReceipt: Codable, Sendable, Hashable {
     func delta(_ end: UInt64, _ start: UInt64) -> UInt64 {
       end >= start ? end - start : 0
     }
+    let fallbackDelta = s.confirmedInterpreterFallback.flatMap { start in
+      e.confirmedInterpreterFallback?.delta(since: start)
+    }
     return ISAEngineProfileSample(
       configuration: e.configuration,
       workloadName: e.workloadName,
@@ -420,8 +430,8 @@ public struct ISAEngineProfileReceipt: Codable, Sendable, Hashable {
       translationCacheHits: delta(e.translationCacheHits, s.translationCacheHits),
       translationCacheMisses: delta(e.translationCacheMisses, s.translationCacheMisses),
       translationCacheInvalidations: delta(e.translationCacheInvalidations, s.translationCacheInvalidations),
-      tier1DeclineInterpreterHelper: delta(e.tier1DeclineInterpreterHelper, s.tier1DeclineInterpreterHelper),
-      tier1DeclineNativeEmitter: delta(e.tier1DeclineNativeEmitter, s.tier1DeclineNativeEmitter),
+      tier1DeclineInterpreterHelper: fallbackDelta?.retiredInstructions(for: .interpreterHelper) ?? 0,
+      tier1DeclineNativeEmitter: fallbackDelta?.retiredInstructions(for: .nativeEmitter) ?? 0,
       tier1CompiledBlocks: delta(e.tier1CompiledBlocks, s.tier1CompiledBlocks),
       tier1CompilationAttempts: delta(e.tier1CompilationAttempts, s.tier1CompilationAttempts),
       tier1CompilationDeclines: delta(e.tier1CompilationDeclines, s.tier1CompilationDeclines),
@@ -440,7 +450,8 @@ public struct ISAEngineProfileReceipt: Codable, Sendable, Hashable {
       codeCacheEvictedBlocks: delta(e.codeCacheEvictedBlocks, s.codeCacheEvictedBlocks),
       negativeCacheHits: delta(e.negativeCacheHits, s.negativeCacheHits),
       negativeCacheMisses: delta(e.negativeCacheMisses, s.negativeCacheMisses),
-      pendingWorkExits: delta(e.pendingWorkExits, s.pendingWorkExits))
+      pendingWorkExits: delta(e.pendingWorkExits, s.pendingWorkExits),
+      confirmedInterpreterFallback: fallbackDelta)
   }
 }
 
@@ -834,8 +845,8 @@ public enum ISAEngineReceiptBuilder {
       translationCacheHits: jit.translationCacheHits,
       translationCacheMisses: jit.translationCacheMisses,
       translationCacheInvalidations: jit.translationCacheInvalidations,
-      tier1DeclineInterpreterHelper: jit.negativeCacheMisses,
-      tier1DeclineNativeEmitter: jit.declinedCompilations,
+      tier1DeclineInterpreterHelper: jit.confirmedInterpreterFallback?.retiredInstructions(for: .interpreterHelper) ?? 0,
+      tier1DeclineNativeEmitter: jit.confirmedInterpreterFallback?.retiredInstructions(for: .nativeEmitter) ?? 0,
       tier1CompiledBlocks: jit.tier1CompiledBlocks,
       tier1CompilationAttempts: jit.tier1CompilationAttempts,
       tier1CompilationDeclines: jit.tier1CompilationDeclines,
@@ -858,7 +869,8 @@ public enum ISAEngineReceiptBuilder {
       codeCacheEvictedBlocks: jit.codeCacheEvictedBlocks,
       negativeCacheHits: jit.negativeCacheHits,
       negativeCacheMisses: jit.negativeCacheMisses,
-      pendingWorkExits: jit.pendingWorkExits)
+      pendingWorkExits: jit.pendingWorkExits,
+      confirmedInterpreterFallback: jit.confirmedInterpreterFallback)
   }
 
   private static func matches(

@@ -282,6 +282,7 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let negativeGenerationMismatches: UInt64
   public let negativeEntryCount: UInt64
   public let negativeCacheHotSites: [DoryPCJITNegativeCacheHotSite]
+  public let confirmedInterpreterFallback: DoryARM64InterpreterFallbackCounters?
   public let codeCacheWraps: UInt64
   public let codeCacheEvictedBlocks: UInt64
   public let nativeTraceAttempts: UInt64
@@ -354,6 +355,9 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     negativeCacheMisses = sum(\.negativeCacheMisses)
     negativeGenerationMismatches = sum(\.negativeGenerationMismatches)
     negativeEntryCount = sum(\.negativeEntryCount)
+    let fallbackSources = sources.compactMap(\.confirmedInterpreterFallback)
+    confirmedInterpreterFallback = fallbackSources.count == sources.count
+      ? .init(work: fallbackSources.flatMap(\.work)) : nil
     negativeCacheHotSites = Array(
       sources.flatMap(\.negativeCacheHotSites)
         .sorted { lhs, rhs in
@@ -749,7 +753,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           profile: interpreter.profile,
           tier1Enabled: baselineJITTier1Enabled,
           rawTargetPredictionOptions: baselineJITRawTargetPredictionOptions,
-          optimization: .baseline
+          optimization: .baseline,
+          tracksInterpreterFallback: true
         )
       }
     }
@@ -768,7 +773,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           physicalAddressBits: interpreter.profile.physicalAddressBits,
           profile: interpreter.profile,
           rawTargetPredictionOptions: baselineJITRawTargetPredictionOptions,
-          optimization: .optimizing
+          optimization: .optimizing,
+          tracksInterpreterFallback: true
         )
       }
     }
@@ -1573,11 +1579,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     let mode = executionMode(state)
     var deoptimizedPrefix: DoryARM64ExecutionSummary?
+    var attemptedJIT: DoryARM64BaselineExecutor?
+    var hadTier1Decline = false
+    var declinedSite: DoryARM64InterpreterFallbackSite?
     if let jit = selectedJIT(forProcessor: processor, state: state, mode: mode),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0),
       !state.rflags.contains(.trap),
       state.interruptShadow == nil
     {
+      attemptedJIT = jit
       jit.synchronizeTranslationCache(with: pagingUnits[processor])
       let budget = jitInstructionBudget ?? 1
       let translatedMemory = translatedMemories[processor]
@@ -1607,7 +1617,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         addressSpaceID: state.control.cr3,
         maximumInstructions: budget,
         state: &state,
-        memory: translatedMemory
+        memory: translatedMemory,
+        onCompilationDecline: {
+          hadTier1Decline = true
+          declinedSite = $0
+        }
       ) {
         let count = UInt64(execution.guestInstructionCount)
         switch execution.exitCode {
@@ -1664,6 +1678,17 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       translatedMemory: translatedMemories[processor],
       ioBus: ioBus
     )
+    // Confirmed fallback requires a Tier1 decline callback and architectural retirement,
+    // including a successfully retired HLT. Keep causality separate from optional site identity:
+    // generic JIT admission/runtime paths must not contribute to the unattributed bucket.
+    if hadTier1Decline {
+      switch result {
+      case .retired, .halted:
+        attemptedJIT?.recordInterpreterFallback(site: declinedSite, retiredInstructions: 1)
+      case .yielded, .exception:
+        break
+      }
+    }
     let machineResult: ProcessorResult
     switch result {
     case .retired(let instruction):

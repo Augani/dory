@@ -68,7 +68,11 @@ public struct ISAEngineProfileSample: Codable, Sendable, Hashable {
   public let translationCacheMisses: UInt64
   public let translationCacheInvalidations: UInt64
 
-  // Tier1 decline reasons (attributed by executed guest work)
+  /// Source-owned retirement evidence. Nil means attribution is unavailable, not zero work.
+  public let confirmedInterpreterFallback: DoryARM64InterpreterFallbackCounters?
+  /// Legacy reason totals. Profilers derive these only from confirmed retirements, using zero
+  /// when unavailable. Caller-supplied or historical totals without a snapshot are unverified;
+  /// use confirmedInterpreterFallback to distinguish unavailable attribution from zero work.
   public let tier1DeclineInterpreterHelper: UInt64
   public let tier1DeclineNativeEmitter: UInt64
   public let tier1CompiledBlocks: UInt64
@@ -136,8 +140,10 @@ public struct ISAEngineProfileSample: Codable, Sendable, Hashable {
     codeCacheEvictedBlocks: UInt64,
     negativeCacheHits: UInt64,
     negativeCacheMisses: UInt64,
-    pendingWorkExits: UInt64
+    pendingWorkExits: UInt64,
+    confirmedInterpreterFallback: DoryARM64InterpreterFallbackCounters? = nil
   ) {
+    self.confirmedInterpreterFallback = confirmedInterpreterFallback
     self.configuration = configuration
     self.workloadName = workloadName
     self.workloadRevision = workloadRevision
@@ -260,8 +266,8 @@ public enum ISAEngineProfiler {
       translationCacheHits: diag.translationCacheHits,
       translationCacheMisses: diag.translationCacheMisses,
       translationCacheInvalidations: diag.translationCacheInvalidations,
-      tier1DeclineInterpreterHelper: diag.negativeCacheMisses,  // attributed by executed work
-      tier1DeclineNativeEmitter: diag.declinedCompilations,
+      tier1DeclineInterpreterHelper: diag.confirmedInterpreterFallback?.retiredInstructions(for: .interpreterHelper) ?? 0,
+      tier1DeclineNativeEmitter: diag.confirmedInterpreterFallback?.retiredInstructions(for: .nativeEmitter) ?? 0,
       tier1CompiledBlocks: diag.tier1CompiledBlocks,
       tier1CompilationAttempts: diag.tier1CompilationAttempts,
       tier1CompilationDeclines: diag.tier1CompilationDeclines,
@@ -283,7 +289,8 @@ public enum ISAEngineProfiler {
       codeCacheEvictedBlocks: diag.codeCacheEvictedBlocks,
       negativeCacheHits: diag.negativeCacheHits,
       negativeCacheMisses: diag.negativeCacheMisses,
-      pendingWorkExits: diag.pendingWorkExits)
+      pendingWorkExits: diag.pendingWorkExits,
+      confirmedInterpreterFallback: diag.confirmedInterpreterFallback)
   }
 
   /// Measure a block of engine work, returning a profile sample with

@@ -70,6 +70,28 @@ import Testing
       pendingWorkExits: pendingWorkExits)
   }
 
+  @Test func legacyNumericProfileAPIAndPayloadDoNotEstablishFallbackEvidence() throws {
+    let sample = makeSample()
+    // These assignments and arithmetic must compile for pre-snapshot callers.
+    let helper: UInt64 = sample.tier1DeclineInterpreterHelper
+    let emitter: UInt64 = sample.tier1DeclineNativeEmitter
+    #expect(helper + emitter == 100)
+    var payload = try #require(JSONSerialization.jsonObject(
+      with: JSONEncoder().encode(sample)) as? [String: Any])
+    payload.removeValue(forKey: "confirmedInterpreterFallback")
+    let legacy = try JSONDecoder().decode(ISAEngineProfileSample.self,
+      from: JSONSerialization.data(withJSONObject: payload))
+    #expect(legacy.tier1DeclineInterpreterHelper == helper)
+    #expect(legacy.tier1DeclineNativeEmitter == emitter)
+    #expect(legacy.confirmedInterpreterFallback == nil)
+    #expect(ISAEngineComparisonHarness.attributeTier1Declines(from: legacy) == nil)
+    let report = ISAEngineCostReportGenerator.generate(from: legacy)
+    let category = try #require(report.costCategories.first { $0.name == "tier1Declines" })
+    #expect(category.counterPressure == 0)
+    #expect(category.evidence.contains("unavailable"))
+    #expect(!report.optimizationOpportunities.contains { $0.targetCostCategory == "tier1Declines" })
+  }
+
   @Test func profileSampleComputesDerivedMetrics() {
     let sample = makeSample()
     #expect(sample.instructionsPerNanosecond == 0.001)  // 1M / 1B
@@ -421,8 +443,8 @@ import Testing
     #expect(results[1].speedup == 2.0)  // 3B / 1.5B
   }
 
-  @Test func tier1DeclineAttributionMapsHotSites() {
-    let diagnostics = DoryARM64BaselineExecutorDiagnostics(
+  @Test func tier1DeclineAttributionDoesNotInferWorkFromHotSites() {
+    var diagnostics = DoryARM64BaselineExecutorDiagnostics(
       recentLookupHits: 0, blockCacheLookupHits: 0, dictionaryLookupHits: 0,
       lookupMisses: 0, memoryGenerationHits: 0, byteValidationHits: 0,
       sharedCodeHits: 0, compiledBlocks: 0, tier1CompilationAttempts: 100,
@@ -469,13 +491,67 @@ import Testing
       translationCachePageFaults: 0, translationCacheFallbacks: 0,
       translationCacheHitRate: 0)
 
-    let attributions = ISAEngineComparisonHarness.attributeTier1Declines(from: diagnostics)
-    #expect(attributions.count == 2)
-    #expect(attributions[0].guestRIP == 0x1000)
-    #expect(attributions[0].declineReason == "interpreterHelper")
-    #expect(attributions[0].estimatedRuntimeExitCount == 500)
-    #expect(attributions[1].guestRIP == 0x2000)
-    #expect(attributions[1].declineReason == "nativeEmitter")
+    // A typed function reference protects the legacy public return signature.
+    let attribute: (DoryARM64BaselineExecutorDiagnostics) -> [ISATier1DeclineAttribution] =
+      ISAEngineComparisonHarness.attributeTier1Declines(from:)
+    let attributions: [ISATier1DeclineAttribution] = attribute(diagnostics)
+    #expect(attributions.isEmpty)
+    #expect(ISAEngineComparisonHarness.confirmedInterpreterFallbackCounters(from: diagnostics) == nil)
+    let sample = ISAEngineProfiler.sample(
+      configuration: .init(tier: "Tier1", cpuProfile: "compatibleV1", schedulingMode: "serialized",
+        firmwareVersion: "v1", kernelInitrdDiskHash: "fixture"),
+      workloadName: "w", workloadRevision: "r", wallTimeNanoseconds: 1,
+      diagnostics: diagnostics, retiredInstructions: 100, compilationTimeNanoseconds: 0,
+      translationCacheMaximumBytes: 4096)
+    #expect(sample.confirmedInterpreterFallback == nil)
+    #expect(sample.tier1DeclineInterpreterHelper == 0)
+    #expect(sample.tier1DeclineNativeEmitter == 0)
+    let report = ISAEngineCostReportGenerator.generate(from: sample)
+    #expect(report.costCategories.first { $0.name == "tier1Declines" }?
+      .evidence.contains("unavailable") == true)
+    #expect(!report.optimizationOpportunities.contains { $0.targetCostCategory == "tier1Declines" })
+    #expect(report.costCategories.first { $0.name == "tier1Declines" }?.counterPressure == 0)
+
+    let helperSite = DoryARM64InterpreterFallbackSite(
+      guestRIP: 0x1000, executionMode: .long64, addressSpaceID: 0,
+      privilegeLevel: 0, pagingEnabled: true, declineReason: .interpreterHelper)
+    let emitterSite = DoryARM64InterpreterFallbackSite(
+      guestRIP: 0x2000, executionMode: .long64, addressSpaceID: 0,
+      privilegeLevel: 0, pagingEnabled: true, declineReason: .nativeEmitter)
+    let zeroSite = DoryARM64InterpreterFallbackSite(
+      guestRIP: 0x3000, executionMode: .long64, addressSpaceID: 0,
+      privilegeLevel: 0, pagingEnabled: true, declineReason: .nativeEmitter)
+    diagnostics.confirmedInterpreterFallback = .init(work: [
+      .init(site: helperSite, retiredInstructions: 7),
+      .init(site: emitterSite, retiredInstructions: 3),
+      .init(site: nil, retiredInstructions: 11),
+      .init(site: zeroSite, retiredInstructions: 0),
+    ])
+    let confirmed = attribute(diagnostics)
+    #expect(confirmed == [
+      .init(guestRIP: 0x1000, executionMode: "long64", declineReason: "interpreterHelper",
+        hitCount: 0, estimatedRuntimeExitCount: 7),
+      .init(guestRIP: 0x2000, executionMode: "long64", declineReason: "nativeEmitter",
+        hitCount: 0, estimatedRuntimeExitCount: 3),
+    ])
+    let counters: DoryARM64InterpreterFallbackCounters? =
+      ISAEngineComparisonHarness.confirmedInterpreterFallbackCounters(from: diagnostics)
+    #expect(counters == diagnostics.confirmedInterpreterFallback)
+    #expect(counters?.retiredInstructions(for: nil) == 11)
+    let confirmedSample = ISAEngineProfiler.sample(
+      configuration: sample.configuration, workloadName: "w", workloadRevision: "r",
+      wallTimeNanoseconds: 1, diagnostics: diagnostics, retiredInstructions: 100,
+      compilationTimeNanoseconds: 0, translationCacheMaximumBytes: 4096)
+    let helper: UInt64 = confirmedSample.tier1DeclineInterpreterHelper
+    let emitter: UInt64 = confirmedSample.tier1DeclineNativeEmitter
+    #expect(helper == 7)
+    #expect(emitter == 3)
+
+    diagnostics.confirmedInterpreterFallback = .init(work: [.init(site: nil, retiredInstructions: 11)])
+    #expect(attribute(diagnostics).isEmpty)
+    diagnostics.confirmedInterpreterFallback = .init()
+    #expect(attribute(diagnostics).isEmpty)
+    #expect(ISAEngineComparisonHarness.confirmedInterpreterFallbackCounters(from: diagnostics) != nil)
   }
 }
 
@@ -718,7 +794,8 @@ import Testing
     retired: UInt64 = 0, cacheHits: UInt64 = 0, cacheMisses: UInt64 = 0,
     helperCalls: UInt64 = 0, lazyFlags: UInt64 = 0,
     chainAttempts: UInt64 = 0, chainAccepts: UInt64 = 0,
-    pendingExits: UInt64 = 0, wallTime: UInt64 = 0
+    pendingExits: UInt64 = 0, wallTime: UInt64 = 0,
+    fallback: DoryARM64InterpreterFallbackCounters? = nil
   ) -> ISAEngineProfileSample {
     ISAEngineProfileSample(
       configuration: configuration,
@@ -738,7 +815,62 @@ import Testing
       helperCalls: helperCalls, memoryFaultSlowPaths: 0,
       lazyFlagMaterializations: lazyFlags,
       codeCacheWraps: 0, codeCacheEvictedBlocks: 0,
-      negativeCacheHits: 0, negativeCacheMisses: 0, pendingWorkExits: pendingExits)
+      negativeCacheHits: 0, negativeCacheMisses: 0, pendingWorkExits: pendingExits,
+      confirmedInterpreterFallback: fallback)
+  }
+
+  @Test func confirmedFallbackDeltasPreserveUnknownAndRejectRegression() throws {
+    let site = DoryARM64InterpreterFallbackSite(
+      guestRIP: 0x1000, executionMode: .long64, addressSpaceID: 0,
+      privilegeLevel: 0, pagingEnabled: false, declineReason: .interpreterHelper)
+    func counters(_ known: UInt64, _ unknown: UInt64) -> DoryARM64InterpreterFallbackCounters {
+      .init(work: [.init(site: site, retiredInstructions: known),
+                   .init(site: nil, retiredInstructions: unknown)])
+    }
+    func receipt(_ start: DoryARM64InterpreterFallbackCounters?,
+                 _ end: DoryARM64InterpreterFallbackCounters?) -> ISAEngineProfileReceipt {
+      .init(configuration: configuration, workloadName: "w", workloadRevision: "r",
+        completionCondition: .instructionBudget(instructionCount: 10), outcome: .completed,
+        startSample: sample(fallback: start), endSample: sample(retired: 10, fallback: end),
+        hostTiming: .init(startNanoseconds: 0, endNanoseconds: 100), stopReason: "instructionBudget(10)",
+        observedTierEvidence: .verified(observedTier: .baselineJIT))
+    }
+    let valid = receipt(counters(8, 2), counters(13, 4))
+    let delta = try #require(ISAEngineComparisonHarness.attributeTier1Declines(from: valid))
+    #expect(delta.retiredInstructions(for: .interpreterHelper) == 5)
+    #expect(delta.retiredInstructions(for: nil) == 2)
+    #expect(valid.runSample.tier1DeclineInterpreterHelper == 5)
+    #expect(valid.isProvenanceVerified)
+    let category = try #require(ISAEngineCostReportGenerator.generate(from: valid)?
+      .costCategories.first { $0.name == "tier1Declines" })
+    #expect(category.counterPressure == 5)
+    #expect(category.evidence.contains("unattributedRetiredInstructions=2"))
+    for missing in [receipt(nil, nil), receipt(nil, counters(13, 4))] {
+      #expect(missing.runSample.confirmedInterpreterFallback == nil)
+      #expect(missing.runSample.tier1DeclineInterpreterHelper == 0)
+      #expect(missing.runSample.tier1DeclineNativeEmitter == 0)
+      #expect(ISAEngineComparisonHarness.attributeTier1Declines(from: missing) == nil)
+      let report = try #require(ISAEngineCostReportGenerator.generate(from: missing))
+      let category = try #require(report.costCategories.first { $0.name == "tier1Declines" })
+      #expect(category.counterPressure == 0)
+      #expect(category.evidence.contains("unavailable"))
+      #expect(!report.optimizationOpportunities.contains { $0.targetCostCategory == "tier1Declines" })
+    }
+    for invalid in [receipt(counters(8, 2), counters(7, 4)),
+                    receipt(counters(8, 2), counters(13, 1)),
+                    receipt(counters(8, 2), .init()), receipt(counters(8, 2), nil),
+                    receipt(.init(), nil)] {
+      #expect(!invalid.counterRegressions.isEmpty)
+      #expect(!invalid.isProvenanceVerified)
+      #expect(ISAEngineComparisonHarness.attributeTier1Declines(from: invalid) == nil)
+      #expect(ISAEngineCostReportGenerator.generate(from: invalid) == nil)
+    }
+    let encoded = try JSONEncoder().encode(valid)
+    let decoded = try JSONDecoder().decode(ISAEngineProfileReceipt.self, from: encoded)
+    #expect(decoded.runSample.confirmedInterpreterFallback == delta)
+    let legacy = sample()
+    #expect(try JSONDecoder().decode(ISAEngineProfileSample.self,
+      from: JSONEncoder().encode(legacy)).confirmedInterpreterFallback == nil)
   }
 
   @Test func runSampleSubtractsStartFromEnd() {
@@ -1286,6 +1418,125 @@ import Testing
     #endif
   }
 
+  @Test func repeatedCPUIDProducesPerRunConfirmedFallbackReceipts() throws {
+    #if arch(arm64)
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024, executionTier: .baselineJIT,
+        baselineJITMaximumCodeBytes: 16 * 1024)
+      try machine.load(kernel: makeMinimalELF(code: [0x0F, 0xA2, 0xEB, 0xFC]), commandLine: "x")
+      for budget: UInt64 in [130, 10] {
+        let receipt = try ISAEngineReceiptBuilder.run(
+          machine: machine, configuration: configuration, workloadName: "cpuid", workloadRevision: "r",
+          completionCondition: .instructionBudget(instructionCount: budget),
+          translationCacheMaximumBytes: 16 * 1024)
+        let work = try #require(ISAEngineComparisonHarness.attributeTier1Declines(from: receipt))
+        let confirmed = try #require(work.work.first { $0.site?.guestRIP == 0x10_0000 })
+        #expect(confirmed.site?.declineReason == .interpreterHelper)
+        #expect(confirmed.site?.executionMode == .protected32)
+        #expect(confirmed.retiredInstructions == budget / 2)
+        #expect(work.retiredInstructions(for: .nativeEmitter) == 0)
+        #expect(receipt.runSample.tier1DeclineInterpreterHelper == budget / 2)
+      }
+      let diagnostics = try #require(machine.baselineJITDiagnostics)
+      #expect(diagnostics.negativeCacheHotSites.first?.hitCount ?? 0 > 0)
+      #expect(diagnostics.confirmedInterpreterFallback?.retiredInstructions(for: .interpreterHelper) == 70)
+    #endif
+  }
+
+  @Test func nativePrefixThenCPUIDCountsOnlyConfirmedInterpreterRetirement() throws {
+    #if arch(arm64)
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024, executionTier: .baselineJIT,
+        baselineJITMaximumCodeBytes: 16 * 1024)
+      // JMP to CPUID; CPUID; JMP back: each run retires two native branches and one
+      // interpreter instruction. The first branch forces a separate native prefix.
+      try machine.load(
+        kernel: makeMinimalELF(code: [0xEB, 0x00, 0x0F, 0xA2, 0xEB, 0xFA]), commandLine: "x")
+      var previousNegativeHits: UInt64 = 0
+      for run: UInt64 in 1...2 {
+        let receipt = try ISAEngineReceiptBuilder.run(
+          machine: machine, configuration: configuration,
+          workloadName: "native-prefix-cpuid", workloadRevision: "r",
+          completionCondition: .instructionBudget(instructionCount: 3),
+          translationCacheMaximumBytes: 16 * 1024)
+        #expect(receipt.outcome == .completed)
+        #expect(receipt.runSample.retiredGuestInstructions == 3)
+        #expect(machine.state?.rip == 0x10_0000)
+        #expect(machine.executionStatistics.baselineJITInstructions == 2 * run)
+        #expect(machine.executionStatistics.interpreterInstructions == run)
+        let work = try #require(ISAEngineComparisonHarness.attributeTier1Declines(from: receipt))
+        #expect(work.work.count == 1)
+        let confirmed = try #require(work.work.first)
+        #expect(confirmed.site?.guestRIP == 0x10_0002)
+        #expect(confirmed.site?.executionMode == .protected32)
+        #expect(confirmed.site?.declineReason == .interpreterHelper)
+        #expect(confirmed.retiredInstructions == 1)
+        #expect(receipt.runSample.tier1DeclineInterpreterHelper == 1)
+        #expect(receipt.runSample.tier1DeclineNativeEmitter == 0)
+        let diagnostics = try #require(machine.baselineJITDiagnostics)
+        #expect(diagnostics.negativeCacheHits > previousNegativeHits)
+        #expect(diagnostics.confirmedInterpreterFallback?.retiredInstructions(for: .interpreterHelper) == run)
+        previousNegativeHits = diagnostics.negativeCacheHits
+      }
+    #endif
+  }
+
+  @Test func interpreterRetirementWithoutTier1DeclineDoesNotCreateFallbackEvidence() throws {
+    #if arch(arm64)
+      // Protected-mode RDTSC fails a JIT admission guard before Tier1 compilation.
+      // CPUID with Tier1 disabled reaches the legacy emitter but cannot report a Tier1 decline.
+      let cases: [(code: [UInt8], tier1Enabled: Bool)] = [
+        ([0x0F, 0x31], true),
+        ([0x0F, 0xA2], false),
+      ]
+      for testCase in cases {
+        let machine = try DoryPCDirectKernelMachine(
+          memoryBytes: 2 * 1024 * 1024, executionTier: .baselineJIT,
+          baselineJITMaximumCodeBytes: 16 * 1024,
+          baselineJITTier1Enabled: testCase.tier1Enabled)
+        try machine.load(kernel: makeMinimalELF(code: testCase.code), commandLine: "x")
+        let receipt = try ISAEngineReceiptBuilder.run(
+          machine: machine, configuration: configuration,
+          workloadName: "generic-interpreter", workloadRevision: "r",
+          completionCondition: .instructionBudget(instructionCount: 1),
+          translationCacheMaximumBytes: 16 * 1024)
+        #expect(receipt.outcome == .completed)
+        #expect(machine.state?.rip == 0x10_0002)
+        #expect(machine.executionStatistics.interpreterInstructions == 1)
+        #expect(machine.executionStatistics.baselineJITInstructions == 0)
+        let diagnostics = try #require(machine.baselineJITDiagnostics)
+        #expect(diagnostics.declinedCompilations > 0)
+        #expect(diagnostics.tier1CompilationAttempts == 0)
+        #expect(diagnostics.tier1CompilationDeclines == 0)
+        // Empty evidence, including no nil-site record, must survive profile and receipt mapping.
+        #expect(try #require(diagnostics.confirmedInterpreterFallback).work.isEmpty)
+        #expect(try #require(receipt.runSample.confirmedInterpreterFallback).work.isEmpty)
+        #expect(receipt.runSample.tier1DeclineInterpreterHelper == 0)
+        #expect(receipt.runSample.tier1DeclineNativeEmitter == 0)
+      }
+    #endif
+  }
+
+  @Test func legacyNativeRescueDoesNotCountAsInterpreterFallback() throws {
+    #if arch(arm64)
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024, executionTier: .baselineJIT,
+        baselineJITMaximumCodeBytes: 16 * 1024)
+      // A standalone store is declined by Tier1 but handled by the legacy native emitter.
+      try machine.load(kernel: makeMinimalELF(code: [0x89, 0x05, 0x00, 0x80, 0x00, 0x00]), commandLine: "x")
+      let receipt = try ISAEngineReceiptBuilder.run(
+        machine: machine, configuration: configuration, workloadName: "store", workloadRevision: "r",
+        completionCondition: .instructionBudget(instructionCount: 1),
+        translationCacheMaximumBytes: 16 * 1024)
+      #expect(receipt.runSample.tier1CompilationDeclines == 1)
+      #expect(machine.executionStatistics.baselineJITInstructions == 1)
+      #expect(machine.executionStatistics.interpreterInstructions == 0)
+      #expect(try #require(receipt.runSample.confirmedInterpreterFallback).work.isEmpty)
+      let report = try #require(ISAEngineCostReportGenerator.generate(from: receipt))
+      #expect(!report.optimizationOpportunities.contains { $0.targetCostCategory == "tier1Declines" })
+    #endif
+  }
+
   private func makeMinimalELF(code: [UInt8]) -> Data {
     let segmentOffset = 0x200
     var data = Data(repeating: 0, count: segmentOffset + code.count)
@@ -1337,5 +1588,66 @@ import Testing
     for index in 0..<MemoryLayout<T>.size {
       data[offset + index] = UInt8(truncatingIfNeeded: value >> T(index * 8))
     }
+  }
+}
+
+@Suite struct ISAConfirmedFallbackSourceTests {
+  @Test func nativePrefixPreservesFreshAndNegativeCacheDeclineCallbacks() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096, tier1Enabled: true, tracksInterpreterFallback: true)
+      let code: [UInt8] = [0xEB, 0x00, 0x0F, 0xA2]  // JMP to CPUID; CPUID
+      for attempt in 0..<2 {
+        var state = try DoryX86ArchitecturalState(rip: 0x1000)
+        var declines: [DoryARM64InterpreterFallbackSite] = []
+        let before = executor.diagnostics
+        let execution = try #require(executor.executeChainedSummary(
+          byteProvider: { address, count in
+            Array(code.dropFirst(Int(address - 0x1000)).prefix(count))
+          }, codeGenerationProvider: { _, _ in 1 },
+          at: 0x1000, mode: .long64, addressSpaceID: 0, maximumInstructions: 2,
+          state: &state, onCompilationDecline: { declines.append($0) }))
+        #expect(execution.exitCode == .dispatch)
+        #expect(execution.guestInstructionCount == 1)
+        #expect(execution.residentBlockCount == 1)
+        #expect(state.rip == 0x1002)
+        #expect(declines.count == 1)
+        let site = try #require(declines.first)
+        #expect(site.guestRIP == 0x1002)
+        #expect(site.declineReason == .interpreterHelper)
+        let after = executor.diagnostics
+        if attempt == 0 {
+          #expect(after.tier1CompilationDeclines == before.tier1CompilationDeclines + 1)
+        } else {
+          #expect(after.negativeCacheHits == before.negativeCacheHits + 1)
+          #expect(after.tier1CompilationAttempts == before.tier1CompilationAttempts)
+        }
+        // A decline and the already-retired native branch are not interpreter work.
+        #expect(try #require(after.confirmedInterpreterFallback).work.isEmpty)
+      }
+    #endif
+  }
+
+  @Test func declineWithoutRetirementIsNotWorkAndCacheResetPreservesConfirmation() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096, tier1Enabled: true, tracksInterpreterFallback: true)
+      var state = try DoryX86ArchitecturalState(rip: 0x1000)
+      var site: DoryARM64InterpreterFallbackSite?
+      let execution = try executor.executeChainedSummary(
+        byteProvider: { _, _ in [0x0F, 0xA2] }, codeGenerationProvider: { _, _ in 1 },
+        at: 0x1000, mode: .long64, addressSpaceID: 0, maximumInstructions: 1,
+        state: &state, onCompilationDecline: { site = $0 })
+      #expect(execution == nil)
+      #expect(executor.diagnostics.negativeCacheMisses > 0)
+      #expect(try #require(executor.diagnostics.confirmedInterpreterFallback).work.isEmpty)
+      let declined = try #require(site)
+      #expect(declined.guestRIP == 0x1000)
+      #expect(declined.declineReason == .interpreterHelper)
+      executor.recordInterpreterFallback(site: declined, retiredInstructions: 1)
+      executor.invalidateAll()
+      #expect(executor.diagnostics.negativeCacheHotSites.isEmpty)
+      #expect(executor.diagnostics.confirmedInterpreterFallback?.retiredInstructions(for: .interpreterHelper) == 1)
+    #endif
   }
 }

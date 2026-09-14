@@ -233,15 +233,28 @@ public enum ISAEngineCostReportGenerator {
       measured: false,
       counterPressure: Double(sample.pendingWorkExits)))
 
-    // 9. Tier1 declines (counter pressure — no fabricated ns)
+    // 9. Confirmed interpreter retirement after Tier1 decline. Unknown work stays explicit;
+    // compilation attempts and live negative-cache hits cannot establish this ranking signal.
+    let fallback = sample.confirmedInterpreterFallback
+    let helperWork = fallback?.retiredInstructions(for: .interpreterHelper)
+    let emitterWork = fallback?.retiredInstructions(for: .nativeEmitter)
+    let pressure = helperWork.map { Double($0) + Double(emitterWork ?? 0) }
+    let fallbackEvidence: String
+    if let fallback, let helperWork, let emitterWork {
+      fallbackEvidence = "interpreterHelperRetiredInstructions=\(helperWork), nativeEmitterRetiredInstructions=\(emitterWork), unattributedRetiredInstructions=\(fallback.retiredInstructions(for: nil))"
+    } else {
+      fallbackEvidence = "confirmed interpreter fallback attribution unavailable/unverified"
+    }
     categories.append(.init(
       name: "tier1Declines",
-      description: "Tier1 compilation declines falling back to interpreter (counter pressure, not measured time)",
+      description: "Confirmed interpreter work after Tier1 decline (instruction counts, not measured time)",
       estimatedNanoseconds: 0,
       fractionOfWallTime: 0,
-      evidence: "attempts=\(sample.tier1CompilationAttempts), declines=\(sample.tier1CompilationDeclines), declineRate=\(String(format: "%.1f%%", sample.tier1DeclineRate * 100))",
+      evidence: fallbackEvidence,
       measured: false,
-      counterPressure: Double(sample.tier1CompilationDeclines)))
+      // The legacy numeric ranking field has no optional representation. Unavailable categories
+      // receive no ranking weight; the evidence above must not present that weight as zero work.
+      counterPressure: pressure ?? 0))
 
     // Sort: measured categories first (by ns desc), then counter-pressure
     // categories (by pressure desc).
@@ -280,15 +293,17 @@ public enum ISAEngineCostReportGenerator {
         measurementPlan: "Increase code cache size, measure wraps and evictions on the same workload"))
     }
 
-    // Opportunity 3: Reduce Tier1 declines
-    if sample.tier1CompilationDeclines > 0 && sample.tier1DeclineRate > 0.05 {
+    // Opportunity 3: Reduce confirmed interpreter work caused by Tier1 declines.
+    if let fallback = sample.confirmedInterpreterFallback,
+      fallback.work.contains(where: { $0.site != nil && $0.retiredInstructions > 0 })
+    {
       opportunities.append(.init(
         rank: opportunities.count + 1,
-        title: "Expand Tier1 coverage for dominant decline reasons",
-        rationale: "Tier1 decline rate is \(String(format: "%.1f%%", sample.tier1DeclineRate * 100)) with \(sample.tier1CompilationDeclines) declines out of \(sample.tier1CompilationAttempts) attempts. Declined forms fall back to the interpreter.",
+        title: "Expand Tier1 coverage for confirmed interpreter fallback sites",
+        rationale: "Confirmed retired instructions: interpreterHelper=\(fallback.retiredInstructions(for: .interpreterHelper)), nativeEmitter=\(fallback.retiredInstructions(for: .nativeEmitter)); unattributed=\(fallback.retiredInstructions(for: nil)).",
         targetCostCategory: "tier1Declines",
         expectedBenefit: "Reduce interpreter fallback overhead",
-        measurementPlan: "Identify top decline reasons from negative cache hot sites, add Tier1 support for those forms, measure decline rate"))
+        measurementPlan: "Rank confirmed per-run retired instructions by decline site/reason, add support for the dominant forms, and remeasure the same workload"))
     }
 
     // Opportunity 4: Improve chain target acceptance
