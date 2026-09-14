@@ -19,3 +19,13 @@ python3 scripts/package-macos-guest-tools.py \
 The resulting package is an installable distribution artifact, not a guest
 qualification result. Release eligibility still requires the separately signed
 candidate-bound campaign and in-guest evidence.
+
+Verify a copied or downloaded package before installing it:
+
+```sh
+python3 scripts/verify-macos-guest-tools-package.py \
+  --package DoryGuestTools.pkg \
+  --manifest DoryGuestTools.pkg.json \
+  --candidate-id macos-candidate-1 \
+  --source-commit "$(git rev-parse HEAD)"
+```

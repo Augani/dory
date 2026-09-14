@@ -254,6 +254,8 @@ scripts/__pycache__/
 !/scripts/test-verify-macos-guest-metal-probe.py
 !/scripts/package-macos-guest-tools.py
 !/scripts/test-package-macos-guest-tools.py
+!/scripts/verify-macos-guest-tools-package.py
+!/scripts/test-verify-macos-guest-tools-package.py
 
 # Wave 0 preflight-wave0-fixtures.
 !/scripts/preflight-wave0-fixtures.py

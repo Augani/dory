@@ -70,6 +70,7 @@ for name, source in (("tests", tests_workflow), ("release", workflow)):
         "scripts/test-generate-macos-guest-tools-manifest.py",
         "scripts/test-verify-macos-guest-metal-probe.py",
         "scripts/test-package-macos-guest-tools.py",
+        "scripts/test-verify-macos-guest-tools-package.py",
     ):
         require(
             source,

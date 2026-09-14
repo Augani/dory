@@ -224,6 +224,7 @@ jobs:
           python3 -B scripts/test-generate-macos-guest-tools-manifest.py -v
           python3 -B scripts/test-verify-macos-guest-metal-probe.py -v
           python3 -B scripts/test-package-macos-guest-tools.py -v
+          python3 -B scripts/test-verify-macos-guest-tools-package.py -v
           python3 .github/scripts/test-release-orchestrator.py
           python3 .github/scripts/verify-release-workflow-contract.py
           bash scripts/test-dmg-distribution-signing.sh
