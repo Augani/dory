@@ -316,8 +316,13 @@ for proof in (
 require(candidate, "release-build/components/arm64/*", "candidate omits component payloads")
 require(
     release_script,
-    "public component publication is blocked: no physical Linux VM campaign producer is wired after immutable candidate assembly and SBOM generation",
+    "DORY_VM_CAMPAIGN_PRODUCER must name the physical Linux VM campaign producer invoked after immutable candidate assembly and SBOM generation",
     "public component publication is not fail-closed on the missing physical producer",
+)
+require(
+    release_script,
+    '"$DORY_VM_CAMPAIGN_PRODUCER" --help >/dev/null',
+    "public component publication does not verify the configured physical producer is executable",
 )
 require(
     release_script,
@@ -351,7 +356,7 @@ require(
 )
 require(
     component_tests,
-    "pre-candidate or synthetic qualification evidence cannot authorize schema-2 finalization",
+    "DORY_VM_CAMPAIGN_PRODUCER must name the physical Linux VM campaign producer",
     "component preflight contract does not verify the stop-line reason",
 )
 require(
