@@ -5192,6 +5192,118 @@ import Testing
     }
   }
 
+  @Test func scalarMemoryBinaryOperationsFillThenHitReadTLBOnMappedPhysicalMemory() throws {
+    #if arch(arm64)
+      struct MemoryALUCase {
+        let bytes: [UInt8]
+        let byteCount: Int
+        let destinationAliasesBase: Bool
+        let comment: String
+      }
+      let cases = [
+        MemoryALUCase(
+          bytes: [0x48, 0x03, 0x00], byteCount: 8, destinationAliasesBase: true,
+          comment: "add rax,[rax]"),
+        MemoryALUCase(
+          bytes: [0x13, 0x03], byteCount: 4, destinationAliasesBase: false,
+          comment: "adc eax,[rbx]"),
+        MemoryALUCase(
+          bytes: [0x66, 0x2B, 0x03], byteCount: 2, destinationAliasesBase: false,
+          comment: "sub ax,[rbx]"),
+        MemoryALUCase(
+          bytes: [0x1A, 0x03], byteCount: 1, destinationAliasesBase: false,
+          comment: "sbb al,[rbx]"),
+        MemoryALUCase(
+          bytes: [0x48, 0x3B, 0x03], byteCount: 8, destinationAliasesBase: false,
+          comment: "cmp rax,[rbx]"),
+        MemoryALUCase(
+          bytes: [0x23, 0x03], byteCount: 4, destinationAliasesBase: false,
+          comment: "and eax,[rbx]"),
+        MemoryALUCase(
+          bytes: [0x66, 0x0B, 0x03], byteCount: 2, destinationAliasesBase: false,
+          comment: "or ax,[rbx]"),
+        MemoryALUCase(
+          bytes: [0x32, 0x03], byteCount: 1, destinationAliasesBase: false,
+          comment: "xor al,[rbx]"),
+      ]
+      for (index, testCase) in cases.enumerated() {
+        let page = Int(getpagesize())
+        let physical = try DoryX86MmapMemory(validatingByteCount: page * 2)
+        let codeAddress: UInt64 = 0x1000
+        let dataAddress: UInt64 = 0x80 + UInt64(index * 8)
+        try physical.write(at: codeAddress, bytes: testCase.bytes)
+        try physical.writeScalar(
+          at: dataAddress,
+          value: 0x0123_4567_89AB_CDEF,
+          byteCount: testCase.byteCount
+        )
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(
+            rax: testCase.destinationAliasesBase ? dataAddress : 0xFFFF_FFFF_8000_00FF,
+            rbx: testCase.destinationAliasesBase ? 0 : dataAddress
+          ),
+          rip: codeAddress,
+          rflags: [.reservedOne, .carry, .zero]
+        )
+        var interpreted = initial
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: physical,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire \(testCase.comment)")
+          return
+        }
+
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: true
+        )
+        var first = initial
+        let firstExecution = try #require(
+          executor.execute(
+            bytes: testCase.bytes,
+            at: codeAddress,
+            mode: .long64,
+            addressSpaceID: UInt64(index),
+            maximumInstructions: 1,
+            state: &first,
+            memory: physical
+          ))
+        #expect(firstExecution.block.tier == .tier1, Comment(rawValue: testCase.comment))
+        #expect(first == interpreted, Comment(rawValue: testCase.comment))
+        let tlb = try #require(executor.translationTLBForTesting)
+        #expect(tlb.diagnostics.hits == 0, Comment(rawValue: testCase.comment))
+
+        let hostAddress =
+          physical.hostAddressSpaceBase
+          + (physical.hostAddressSpaceOffset(
+            at: dataAddress, byteCount: testCase.byteCount, access: .read) ?? 0)
+        try tlb.fill(
+          linearAddress: dataAddress,
+          addressSpaceGeneration: executor.translationTLBGenerationForTesting,
+          access: .read,
+          hostAddress: hostAddress
+        )
+
+        var second = initial
+        let secondExecution = try #require(
+          executor.execute(
+            bytes: testCase.bytes,
+            at: codeAddress,
+            mode: .long64,
+            addressSpaceID: UInt64(index),
+            maximumInstructions: 1,
+            state: &second,
+            memory: physical
+          ))
+        #expect(secondExecution.block.tier == .tier1, Comment(rawValue: testCase.comment))
+        #expect(second == interpreted, Comment(rawValue: testCase.comment))
+        #expect(tlb.diagnostics.hits == 1, Comment(rawValue: testCase.comment))
+      }
+    #endif
+  }
+
   @Test func scalarMOVLoadsFillThenHitReadTLBOnMappedPhysicalMemory() throws {
     #if arch(arm64)
       let cases: [(bytes: [UInt8], value: UInt64, expectedRAX: UInt64, initialRAX: UInt64)] = [
@@ -5273,10 +5385,10 @@ import Testing
     #endif
   }
 
-  @Test func scalarMOVLoadFallsBackOnCrossPageUnmappedAndStaleTLB() throws {
+  @Test func scalarMemoryBinaryFallsBackOnCrossPageUnmappedAndOutOfRangeTLB() throws {
     #if arch(arm64)
       let codeAddress: UInt64 = 0x1000
-      let bytes: [UInt8] = [0x48, 0x8B, 0x00]
+      let bytes: [UInt8] = [0x48, 0x03, 0x00]  // add rax,[rax]
       let page = Int(getpagesize())
       let physical = try DoryX86MmapMemory(validatingByteCount: page * 2)
       try physical.write(at: codeAddress, bytes: bytes)
@@ -5370,19 +5482,19 @@ import Testing
           memory: physical
         ))
       #expect(staleExecution.block.tier == .tier1)
-      #expect(stale.registers.rax == 0x1234)
+      #expect(stale.registers.rax == linearAddress + 0x1234)
       #expect(tlb.diagnostics.hits == 0)
     #endif
   }
 
-  @Test func tier1InlineReadTLBInvalidationExitsAtFaultingInstruction() throws {
+  @Test func tier1InlineReadTLBBinaryInvalidationExitsAtFaultingInstruction() throws {
     // Warm a Tier1 inline-TLB hit, revoke the data translation, and re-execute the same
     // resident block. The stale entry must miss into the recoverable callback boundary and
     // report the guest page fault at the faulting RIP instead of returning stale data.
     #if arch(arm64)
       let bytes: [UInt8] = [
         0x48, 0xFF, 0xC1,  // inc rcx
-        0x48, 0x8B, 0x03,  // mov rax,[rbx]
+        0x48, 0x03, 0x03,  // add rax,[rbx]
       ]
       let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)
       for (address, value): (UInt64, UInt64) in [
@@ -5430,7 +5542,7 @@ import Testing
       #expect(warmExecution.exitCode != .interpreter)
       #expect(warm.rip == 0x1006)
       #expect(warm.registers.rcx == 1)
-      #expect(warm.registers.rax == 0x1234_ABCD)
+      #expect(warm.registers.rax == 0x1235_5677)
 
       var hit = initial
       let hitExecution = try #require(executor.execute(
@@ -5446,7 +5558,7 @@ import Testing
       #expect(hitExecution.exitCode != .interpreter)
       #expect(hit.rip == 0x1006)
       #expect(hit.registers.rcx == 1)
-      #expect(hit.registers.rax == 0x1234_ABCD)
+      #expect(hit.registers.rax == 0x1235_5677)
       #expect(executor.diagnostics.translationCacheHits > 0)
 
       try physical.writeScalar(at: 0xC040, value: 0x8006, byteCount: 8)

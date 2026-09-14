@@ -21,6 +21,9 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     case guestRegister(Int)
     case immediate(UInt64)
     case stagedMemory
+    /// A scalar loaded by the inline read-TLB path into x26. x26 is available as local
+    /// lazy-flags scratch until `emitBinaryCore` publishes the next descriptor.
+    case inlineReadScratch
   }
 
   enum HighByteSource: Sendable, Equatable {
@@ -169,7 +172,13 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     guard Self.emitMemoryAddress(address, into: &fragment) else { return false }
     Self.emitInlineReadTLBThenCallback(
       width: width,
-      destinationGuestRegister: destinationGuestRegister,
+      loadedValueRegister: 16,
+      into: &fragment
+    )
+    Self.emitApplyLoadedScalar(
+      width: width,
+      destination: UInt32(destinationGuestRegister),
+      value: 16,
       into: &fragment
     )
     words.append(contentsOf: fragment)
@@ -1339,9 +1348,10 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     )
   }
 
-  /// Emits a binary operation whose source is read through the preserved memory callback.
-  /// The read completes before this operation changes its destination or publishes a new
-  /// lazy-flags record, so a failed callback can restart the block from its entry checkpoint.
+  /// Emits a binary operation whose source uses the inline read-TLB probe when safe, otherwise
+  /// the preserved memory callback. Both paths complete the read before this operation changes
+  /// its destination or publishes a new lazy-flags record, so a failed callback can restart the
+  /// block from its entry checkpoint.
   func emitMemorySourceBinary(
     _ operation: DoryIRBinaryOperation,
     width: DoryIRIntegerWidth,
@@ -1351,12 +1361,18 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     into words: inout [UInt32]
   ) -> NativeFlags? {
     var fragment: [UInt32] = []
-    guard Self.emitMemoryRead(width: width, address: address, into: &fragment),
+    guard Self.emitMemoryAddress(address, into: &fragment) else { return nil }
+    Self.emitInlineReadTLBThenCallback(
+      width: width,
+      loadedValueRegister: 26,
+      into: &fragment
+    )
+    guard
       let nativeFlags = emitBinaryCore(
         operation,
         width: width,
         left: .guestRegister(destinationGuestRegister),
-        source: .stagedMemory,
+        source: .inlineReadScratch,
         writesDestination: writesDestination,
         into: &fragment
       )
@@ -1447,7 +1463,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     switch left {
     case .guestRegister(let register):
       destination = UInt32(register)
-    case .immediate, .stagedMemory:
+    case .immediate, .stagedMemory, .inlineReadScratch:
       destination = 16
     }
     if operation == .addWithCarry || operation == .subtractWithBorrow {
@@ -1489,6 +1505,14 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       Self.emitImmediate(value & mask, register: 17, into: &fragment)
     case .stagedMemory:
       fragment.append(Self.encodeLoad64(register: 17, word: .rip))
+      if isNarrow {
+        Self.emitImmediate(mask, register: 26, into: &fragment)
+        fragment.append(
+          Self.encodeLogical(
+            .and, is64Bit: true, left: 17, right: 26, destination: 17))
+      }
+    case .inlineReadScratch:
+      fragment.append(Self.encodeMove(destination: 17, source: 26, is64Bit: true))
       if isNarrow {
         Self.emitImmediate(mask, register: 26, into: &fragment)
         fragment.append(
@@ -2936,16 +2960,15 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     }
   }
 
-  /// Attempts a same-page read-TLB hit into the destination GPR. Misses, stale/malformed
-  /// entries, missing tables, host-bound failures, and cross-page accesses fall through to the
-  /// existing callback lowering. The C resolver is never invoked from this path.
+  /// Attempts a same-page read-TLB hit into a non-guest result register. Misses,
+  /// stale/malformed entries, missing tables, host-bound failures, and cross-page accesses fall
+  /// through to the existing callback lowering. The C resolver is never invoked from this path.
   private static func emitInlineReadTLBThenCallback(
     width: DoryIRIntegerWidth,
-    destinationGuestRegister: Int,
+    loadedValueRegister: UInt32,
     into words: inout [UInt32]
   ) {
     let byteCount = UInt32(width.rawValue / 8)
-    let destination = UInt32(destinationGuestRegister)
     emitInlineReadFaultCheckpoint(into: &words)
     // Guest GPRs occupy x0...x15. Borrow x14/x15 as lookup scratch after checkpointing them.
 
@@ -3024,7 +3047,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     let hostBoundsHighBranch = words.count
     words.append(0)
     words.append(encodeDirectLoad(width: width, register: 17, base: 17))
-    words.append(encodeMove(destination: 16, source: 17, is64Bit: true))
+    words.append(encodeMove(destination: loadedValueRegister, source: 17, is64Bit: true))
 
     words.append(encodeLoad64(register: 14, word: .readTLBHitCounter))
     words.append(
@@ -3044,7 +3067,6 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     )
     words.append(encodeLoad64(register: 14, word: .r14))
     words.append(encodeLoad64(register: 15, word: .r15))
-    emitApplyLoadedScalar(width: width, destination: destination, value: 16, into: &words)
     let hitDoneBranch = words.count
     words.append(0)
 
@@ -3073,8 +3095,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       wordOffset: restoreScratch - hostBoundsHighBranch
     )
     emitMemoryReadAtAddress(width: width, into: &words)
-    words.append(encodeLoad64(register: 16, word: .rip))
-    emitApplyLoadedScalar(width: width, destination: destination, value: 16, into: &words)
+    words.append(encodeLoad64(register: loadedValueRegister, word: .rip))
 
     let done = words.count
     words[hitDoneBranch] = encodeUnconditionalBranch(wordOffset: done - hitDoneBranch)
