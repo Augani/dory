@@ -6,6 +6,55 @@ import Testing
 @testable import DoryDBTX86
 
 @Suite struct DoryX86NativePairAtomicityTests {
+  @Test func alignedScalarJITAtomicHelpersUseLockFreeHostOperationsAtEveryWidth() throws {
+    #if arch(arm64)
+      let fixture = try PairAtomicityFixture()
+      let offset: UInt64 = 0x100
+
+      for byteCount: UInt32 in [1, 2, 4, 8] {
+        let bitCount = UInt64(byteCount) * 8
+        let mask = bitCount == 64 ? UInt64.max : (UInt64(1) << bitCount) - 1
+        let initial = 0xA5A5_A5A5_A5A5_A5A5 & mask
+        let replacement = 0x3C3C_3C3C_3C3C_3C3C & mask
+        let exchanged = 0x1212_1212_1212_1212 & mask
+        fixture.memory.storeBytes(of: initial, toByteOffset: Int(offset), as: UInt64.self)
+
+        var observed: UInt64 = 0
+        // Failed compare-exchange must report the actual scalar value and leave it intact.
+        #expect(dory_jit_atomic_compare_exchange_from_context(
+          fixture.context, fixture.memory, offset, initial ^ mask, replacement, byteCount, &observed
+        ) == DORY_JIT_ATOMIC_RESOLUTION_SUCCESS.rawValue)
+        #expect(observed == initial)
+        #expect(fixture.memory.load(fromByteOffset: Int(offset), as: UInt64.self) & mask == initial)
+
+        #expect(dory_jit_atomic_compare_exchange_from_context(
+          fixture.context, fixture.memory, offset, initial, replacement, byteCount, &observed
+        ) == DORY_JIT_ATOMIC_RESOLUTION_SUCCESS.rawValue)
+        #expect(observed == initial)
+        #expect(fixture.memory.load(fromByteOffset: Int(offset), as: UInt64.self) & mask == replacement)
+
+        #expect(dory_jit_atomic_exchange_from_context(
+          fixture.context, fixture.memory, offset, exchanged, byteCount, &observed
+        ) == DORY_JIT_ATOMIC_RESOLUTION_SUCCESS.rawValue)
+        #expect(observed == replacement)
+
+        #expect(dory_jit_atomic_fetch_add_from_context(
+          fixture.context, fixture.memory, offset, 3, byteCount, &observed
+        ) == DORY_JIT_ATOMIC_RESOLUTION_SUCCESS.rawValue)
+        #expect(observed == exchanged)
+
+        #expect(dory_jit_atomic_rmw_from_context(
+          fixture.context, fixture.memory, offset, 5, byteCount, 0, &observed
+        ) == DORY_JIT_ATOMIC_RESOLUTION_SUCCESS.rawValue)
+        #expect(observed == (exchanged + 3) & mask)
+        #expect(
+          fixture.memory.load(fromByteOffset: Int(offset), as: UInt64.self) & mask
+            == (exchanged + 8) & mask
+        )
+      }
+    #endif
+  }
+
   @Test func mismatchingCMPXCHG16BDoesNotOverwriteConcurrentOrdinaryStores() throws {
     #if arch(arm64)
       let fixture = try PairAtomicityFixture()

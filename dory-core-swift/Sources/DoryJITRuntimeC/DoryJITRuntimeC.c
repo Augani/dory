@@ -23,6 +23,17 @@ enum {
 };
 
 static const uint64_t dory_jit_tlb_maximum_generation = (UINT64_C(1) << 28) - 1;
+// These are the scalar widths admitted by the resolver-backed JIT atomic helpers.
+// Requiring compiler-known lock freedom prevents an otherwise invisible libatomic lock
+// from becoming the implementation of a guest locked instruction.
+_Static_assert(__atomic_always_lock_free(1, 0), "8-bit JIT atomics must be lock-free");
+_Static_assert(__atomic_always_lock_free(2, 0), "16-bit JIT atomics must be lock-free");
+_Static_assert(__atomic_always_lock_free(4, 0), "32-bit JIT atomics must be lock-free");
+_Static_assert(__atomic_always_lock_free(8, 0), "64-bit JIT atomics must be lock-free");
+
+// This gate remains for cooperating interpreter and pair-helper paths. It cannot make
+// normal RAM safe for nonparticipating observers, which do not acquire it; aligned scalar
+// JIT helpers therefore use the lock-free host atomics below without taking this mutex.
 static pthread_mutex_t dory_jit_atomic_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 uint8_t dory_jit_pending_work_load_acquire(const uint8_t *value) {
@@ -961,14 +972,12 @@ int dory_jit_atomic_compare_exchange_from_context(
         return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
     }
 
-    dory_jit_atomic_lock();
     *observed_out = dory_jit_atomic_compare_exchange(
         (void *)(uintptr_t)resolution.host_address,
         expected,
         desired,
         byte_count
     );
-    dory_jit_atomic_unlock();
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
 
@@ -1057,13 +1066,11 @@ int dory_jit_atomic_exchange_from_context(
         return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
     }
 
-    dory_jit_atomic_lock();
     *observed_out = dory_jit_atomic_exchange(
         (void *)(uintptr_t)resolution.host_address,
         value,
         byte_count
     );
-    dory_jit_atomic_unlock();
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
 
@@ -1151,13 +1158,11 @@ int dory_jit_atomic_fetch_add_from_context(
         return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
     }
 
-    dory_jit_atomic_lock();
     *observed_out = dory_jit_atomic_fetch_add(
         (void *)(uintptr_t)resolution.host_address,
         value,
         byte_count
     );
-    dory_jit_atomic_unlock();
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
 
@@ -1267,14 +1272,12 @@ int dory_jit_atomic_rmw_from_context(
         return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
     }
 
-    dory_jit_atomic_lock();
     *observed_out = dory_jit_atomic_rmw(
         (void *)(uintptr_t)resolution.host_address,
         value,
         byte_count,
         operation
     );
-    dory_jit_atomic_unlock();
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
 
