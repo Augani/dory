@@ -10,6 +10,32 @@ typedef struct dory_jit_block_cache dory_jit_block_cache;
 typedef struct dory_jit_ibtc dory_jit_ibtc;
 typedef struct dory_jit_shadow_return_stack dory_jit_shadow_return_stack;
 
+#if defined(__aarch64__)
+// Test-only host ABI oracle. No production execution path calls these probes.
+// Captures are caller-owned, never recovered from a generated function's frame.
+typedef struct dory_jit_test_abi_snapshot {
+    uint64_t callee_saved[10]; // x19...x28
+    uint64_t sp;
+    uint64_t fp;
+    uint64_t lr;
+    uint64_t arguments[6];     // x0...x5
+    uint64_t pc;
+    uint64_t platform;         // x18, observed only
+    uint64_t context[95];      // populated at target entry and synchronize callback
+} dory_jit_test_abi_snapshot;
+
+// The generated entry receives exactly the usual six Darwin ABI arguments.
+// Restores the real caller's x19...x30 even if the generated code corrupts a seed.
+// Entry, arguments, seeds, and captures must be valid and disjoint. This is not
+// a signal/crash recovery mechanism for arbitrary SP or return-address damage.
+uint32_t dory_jit_test_abi_call(
+    uintptr_t entry, const uint64_t arguments[6], const uint64_t seeds[10],
+    dory_jit_test_abi_snapshot *before, dory_jit_test_abi_snapshot *after
+);
+void dory_jit_test_abi_synchronize(void *capture);
+uint64_t dory_jit_test_region_generation(const dory_jit_region *region);
+#endif
+
 uint8_t dory_jit_pending_work_load_acquire(const uint8_t *value);
 void dory_jit_pending_work_store_release(uint8_t *value, uint8_t desired);
 

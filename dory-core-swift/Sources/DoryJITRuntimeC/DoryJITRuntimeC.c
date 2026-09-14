@@ -1424,6 +1424,98 @@ uintptr_t dory_jit_atomic_compare_exchange_pair_from_context_address(void) {
 
 #if defined(__aarch64__)
 
+// These naked test probes intentionally have no compiler-generated frame or
+// register allocation. Only Darwin caller-saved scratch registers are used to
+// record state; x18 and d8...d15 are untouched. Keep offsets checked against C.
+_Static_assert(offsetof(dory_jit_test_abi_snapshot, sp) == 80, "probe SP offset");
+_Static_assert(offsetof(dory_jit_test_abi_snapshot, fp) == 88, "probe FP offset");
+_Static_assert(offsetof(dory_jit_test_abi_snapshot, lr) == 96, "probe LR offset");
+_Static_assert(offsetof(dory_jit_test_abi_snapshot, arguments) == 104, "probe args offset");
+_Static_assert(offsetof(dory_jit_test_abi_snapshot, pc) == 152, "probe PC offset");
+_Static_assert(offsetof(dory_jit_test_abi_snapshot, platform) == 160, "probe x18 offset");
+_Static_assert(offsetof(dory_jit_test_abi_snapshot, context) == 168, "probe context offset");
+_Static_assert(sizeof(dory_jit_test_abi_snapshot) == 928, "probe record size");
+
+// x16 points to independent caller-owned storage. No stores to generated frames.
+#define DORY_TEST_ABI_CAPTURE \
+    "stp x19, x20, [x16, #0]\n" \
+    "stp x21, x22, [x16, #16]\n" \
+    "stp x23, x24, [x16, #32]\n" \
+    "stp x25, x26, [x16, #48]\n" \
+    "stp x27, x28, [x16, #64]\n" \
+    "mov x17, sp\n" \
+    "str x17, [x16, #80]\n" \
+    "stp x29, x30, [x16, #88]\n" \
+    "stp x0, x1, [x16, #104]\n" \
+    "stp x2, x3, [x16, #120]\n" \
+    "stp x4, x5, [x16, #136]\n" \
+    "adr x17, .\n" \
+    "str x17, [x16, #152]\n" \
+    "str x18, [x16, #160]\n"
+
+__attribute__((naked))
+uint32_t dory_jit_test_abi_call(
+    uintptr_t entry, const uint64_t arguments[6], const uint64_t seeds[10],
+    dory_jit_test_abi_snapshot *before, dory_jit_test_abi_snapshot *after
+) {
+    __asm__ volatile(
+        "sub sp, sp, #128\n"
+        "stp x19, x20, [sp, #0]\n"
+        "stp x21, x22, [sp, #16]\n"
+        "stp x23, x24, [sp, #32]\n"
+        "stp x25, x26, [sp, #48]\n"
+        "stp x27, x28, [sp, #64]\n"
+        "stp x29, x30, [sp, #80]\n"
+        "add x29, sp, #80\n"
+        "stp x3, x4, [sp, #96]\n"
+        "stp x0, x1, [sp, #112]\n"
+        "ldp x19, x20, [x2, #0]\n"
+        "ldp x21, x22, [x2, #16]\n"
+        "ldp x23, x24, [x2, #32]\n"
+        "ldp x25, x26, [x2, #48]\n"
+        "ldp x27, x28, [x2, #64]\n"
+        "mov x9, x1\n"
+        "ldp x0, x1, [x9, #0]\n"
+        "ldp x2, x3, [x9, #16]\n"
+        "ldp x4, x5, [x9, #32]\n"
+        "adr x30, 1f\n"
+        "ldr x16, [sp, #96]\n"
+        DORY_TEST_ABI_CAPTURE
+        "ldr x16, [sp, #112]\n"
+        "blr x16\n"
+        "1:\n"
+        "ldr x16, [sp, #104]\n"
+        DORY_TEST_ABI_CAPTURE
+        "ldp x19, x20, [sp, #0]\n"
+        "ldp x21, x22, [sp, #16]\n"
+        "ldp x23, x24, [sp, #32]\n"
+        "ldp x25, x26, [sp, #48]\n"
+        "ldp x27, x28, [sp, #64]\n"
+        "ldp x29, x30, [sp, #80]\n"
+        "add sp, sp, #128\n"
+        "ret\n"
+    );
+}
+
+__attribute__((naked))
+void dory_jit_test_abi_synchronize(void *capture) {
+    __asm__ volatile(
+        "mov x16, x0\n"
+        DORY_TEST_ABI_CAPTURE
+        // x28 is the pinned vCPU context while inside the Tier1 helper boundary.
+        "add x16, x16, #168\n"
+        "mov x10, #0\n"
+        "1:\n"
+        "ldr x9, [x28, x10, lsl #3]\n"
+        "str x9, [x16, x10, lsl #3]\n"
+        "add x10, x10, #1\n"
+        "cmp x10, #95\n"
+        "b.ne 1b\n"
+        "ret\n"
+    );
+}
+#undef DORY_TEST_ABI_CAPTURE
+
 enum { dory_jit_region_magic = 0x444f5259 };
 
 struct dory_jit_region {
@@ -1435,6 +1527,10 @@ struct dory_jit_region {
     pthread_mutex_t publication_lock;
     _Atomic uint64_t generation;
 };
+
+uint64_t dory_jit_test_region_generation(const dory_jit_region *region) {
+    return region == NULL ? 0 : atomic_load_explicit(&region->generation, memory_order_acquire);
+}
 
 struct dory_jit_publication {
     struct dory_jit_region *region;
