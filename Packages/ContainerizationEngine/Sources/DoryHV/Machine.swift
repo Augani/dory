@@ -826,6 +826,7 @@ enum VirtioMMIODeviceTree {
       do {
         let vcpu = try VCPU()
         try vcpu.writeSystem(HV_SYS_REG_MPIDR_EL1, 0x8000_0000 | UInt64(index))
+        let initialSCTLR = try (index == 0 ? 0 : vcpu.readSystem(HV_SYS_REG_SCTLR_EL1))
         let redistributorFrameIndex = register(vcpu: vcpu, index: index)
         defer {
           // Pin the owner until both exit requests and redistributor MMIO have drained.
@@ -852,10 +853,29 @@ enum VirtioMMIODeviceTree {
             try vcpu.write(HV_REG_CPSR, 0x3C5)
             try vcpu.write(HV_REG_PC, start.entry)
             try vcpu.write(HV_REG_X0, start.context)
-            teamCondition.withLock { psciCPUState.completeOn(index: index) }
+            let canRun = teamCondition.withLock {
+              guard stopReason == nil else { return false }
+              psciCPUState.completeOn(index: index)
+              return true
+            }
+            guard canRun else { return }
             // CPU_OFF parks this already-created vCPU so a later CPU_ON can
             // resume it. Any terminal run-loop outcome exits the host thread.
             guard runLoop(vcpu: vcpu, index: index) else { return }
+            // A retained vCPU must enter the next physical entry address with its
+            // original translation/cache controls and without the previous virtual timer.
+            // Finish every fallible operation BEFORE publishing OFF: after that point a
+            // concurrent CPU_ON may enqueue a tuple that this same owner must consume.
+            try vcpu.writeSystem(HV_SYS_REG_SCTLR_EL1, initialSCTLR)
+            try vcpu.writeSystem(HV_SYS_REG_CNTV_CTL_EL0, 0)
+            try vcpu.setVTimerMask(false)
+            let canPark = teamCondition.withLock {
+              guard stopReason == nil else { return false }
+              let result = psciCPUState.requestOff(index: index)
+              precondition(result == 0)
+              return true
+            }
+            guard canPark else { return }
           }
         }
       } catch {
@@ -889,6 +909,11 @@ enum VirtioMMIODeviceTree {
       defer { teamCondition.unlock() }
       while secondaryStarts[index] == nil, stopReason == nil {
         teamCondition.wait()
+      }
+      // Stop wins over an accepted but not yet consumed start request.
+      guard stopReason == nil else {
+        secondaryStarts[index] = nil
+        return nil
       }
       let start = secondaryStarts[index]
       secondaryStarts[index] = nil
@@ -942,8 +967,8 @@ enum VirtioMMIODeviceTree {
       return 0
     }
 
-    /// Returns true only when a secondary CPU has completed PSCI CPU_OFF and
-    /// must park for a later CPU_ON. All other exits are terminal for this vCPU.
+    /// Returns true when a secondary requests PSCI CPU_OFF. Its owner prepares the
+    /// retained vCPU before publishing OFF and parking. All other exits are terminal.
     private func runLoop(vcpu: VCPU, index: Int) -> Bool {
       // WFI / idle waiting (P2-02 item 5):
       // `hv_vcpu_run` blocks inside Hypervisor.framework when the guest executes WFI; it
@@ -989,9 +1014,8 @@ enum VirtioMMIODeviceTree {
               mmioRouteCache: &mmioRouteCache
             ) {
               if case .cpuOff = stop {
-                // The secondary keeps its host thread and VCPU while parked so
-                // a later CPU_ON can consume a new start tuple. Its handle stays
-                // registered for stop/cancel ownership throughout the parked wait.
+                // Leave PSCI state ON until cpuMain finishes preparing the retained
+                // vCPU. No CPU_ON may succeed while that preparation can still fail.
                 return true
               }
               stopAll(stop)
@@ -1042,6 +1066,9 @@ enum VirtioMMIODeviceTree {
         return nil
       case .smc64:
         let result = try handleSMC(vcpu: vcpu)
+        // Successful CPU_OFF never returns to the old instruction stream. In particular,
+        // do not perform a fallible PC update after committing a power-state transition.
+        if case .cpuOff? = result { return result }
         try advancePC(vcpu)
         return result
       case .systemRegisterTrap:
@@ -1126,10 +1153,12 @@ enum VirtioMMIODeviceTree {
             (teamHandles.firstIndex { $0 == vcpu.handle }) ?? -1
           }
           let result = teamCondition.withLock {
-            cpuIndex >= 0 ? psciCPUState.requestOff(index: cpuIndex) : -1
+            // Validate only. cpuMain commits OFF once the retained worker is ready for
+            // another start; publishing it here would race fallible exit preparation.
+            var proposedState = psciCPUState
+            return cpuIndex >= 0 ? proposedState.requestOff(index: cpuIndex) : -1
           }
           if result == 0 {
-            try vcpu.write(HV_REG_X0, 0)  // PSCI_SUCCESS
             return .cpuOff
           } else {
             try vcpu.write(HV_REG_X0, UInt64(bitPattern: result))

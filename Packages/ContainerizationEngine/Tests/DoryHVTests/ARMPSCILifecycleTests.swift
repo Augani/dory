@@ -1,3 +1,6 @@
+import DoryMachineARMVirt
+import Foundation
+import Synchronization
 import Testing
 @testable import DoryHV
 
@@ -249,6 +252,172 @@ import Testing
       let descriptions = reasons.map { String(describing: $0) }
       // All descriptions should be unique.
       #expect(Set(descriptions).count == descriptions.count)
+    }
+  }
+
+  /// Runs real SMC instructions through Machine.cpuMain/runLoop and real retained HV handles.
+  /// Opt in with DORY_RUN_ARM_PSCI_MACHINE_TESTS=1 in a Hypervisor-entitled test runner.
+  /// VM creation errors are failures when enabled, never silently treated as passing tests.
+  @Suite(.serialized) struct ARMPSCIMachineLifecycleTests {
+    @Test(
+      .enabled(if: ProcessInfo.processInfo.environment["DORY_RUN_ARM_PSCI_MACHINE_TESTS"] == "1"),
+      arguments: [false, true]
+    )
+    func guestRestartsSecondaryAndStopsWithRetainedWorker(stopAfterFinalStart: Bool) throws {
+      let liveMachine = Mutex<Machine?>(nil)
+      let completed = DispatchSemaphore(value: 0)
+      let owner = RawHVOwnerThread<(String, [UInt64])>(name: "dory-hv.psci-restart-test") {
+        let machine = try Machine(configuration: MachineConfiguration(
+          bootPayload: .immutableBytes(kernel: Self.restartGuest(), initrd: nil),
+          commandLine: "",
+          memoryBytes: DoryARMVirtV1ABI.minimumMemoryBytes,
+          cpuCount: 2
+        ))
+        liveMachine.withLock { $0 = machine }
+        defer { liveMachine.withLock { $0 = nil } }
+        try machine.loadBootPayload()
+        let mailbox: UInt64 = 0x4020_0000
+        try machine.memory.write(UInt64(stopAfterFinalStart ? 1 : 0), at: mailbox + 48)
+        let reason = try machine.run()
+        // Read only after Machine.run has joined every secondary, avoiding host/guest races.
+        let observations = try [UInt64(0), 24, 32, 40].map {
+          try machine.memory.read(UInt64.self, at: mailbox + $0)
+        }
+        return (String(describing: reason), observations)
+      }
+      try owner.start { _ in completed.signal() }
+      let finishedInTime = completed.wait(timeout: .now() + 10) == .success
+      if !finishedInTime {
+        // A false CPU_ON success leaves the guest polling forever. Cancel and join before
+        // reporting failure, so the test cannot leak a VM or a parked secondary thread.
+        liveMachine.withLock { $0 }?.requestStop(.crash("PSCI restart test timed out"))
+      }
+      let (reason, observations) = try owner.wait()
+      #expect(finishedInTime)
+      #expect(reason == String(describing: GuestStopReason.powerOff))
+      // The final accepted request can run before stop; the first 16 must all have run.
+      #expect(observations[0] == 0xFEED_0000_0000_0010
+        || (stopAfterFinalStart && observations[0] == 0xFEED_0000_0000_0011))
+      // Stop may interrupt the final entry between its two mailbox stores. CPU 0 already
+      // checked the matching entry/context pair after each of the 16 completed CPU_OFFs.
+      #expect(observations[1] == 2 || (stopAfterFinalStart && observations[1] == 1))
+      #expect(observations[2] == 16)
+      #expect(observations[3] == 0)
+    }
+
+    private static func restartGuest() -> Data {
+      // Legacy ARM64 Image header: branch over 64 bytes; image_size=0 selects text_offset
+      // 0x80000. All instructions below are position-relative or use the RAM mailbox.
+      // Assemble as arm64 with clang; comments retain the source and branch labels.
+      // CPU 0 alternates two entry addresses and 64-bit contexts for 16 cycles. Each
+      // secondary waits for release, so a duplicate CPU_ON must return ON_PENDING or
+      // ALREADY_ON. CPU 0 then polls AFFINITY_INFO and immediately starts the next cycle.
+      // The secondary dirties SCTLR.WXN and CNTV_CTL before CPU_OFF and verifies both
+      // were reset on re-entry. Returning from CPU_OFF, lost starts, stale tuples, and
+      // execution at the wrong entry all fail or hit the host watchdog.
+      let instructions: [UInt32] = [
+        // start:
+        0xD2A80414,  // mov x20, #0x40200000
+        0x100007B5,  // adr x21, secondary_one
+        0x100007D6,  // adr x22, secondary_two
+        0xD2800037,  // mov x23, #1
+        0xF2FFDDB7,  // movk x23, #0xfeed, lsl #48
+        0xD2800218,  // mov x24, #16
+        0xD2800039,  // mov x25, #1
+        // cycle:
+        0xD2800060,  // mov x0, #3
+        0xF2B88000,  // movk x0, #0xc400, lsl #16
+        0xD2800021,  // mov x1, #1
+        0xAA1503E2,  // mov x2, x21
+        0xAA1703E3,  // mov x3, x23
+        0xD4000003,  // smc #0
+        0xB50005A0,  // cbnz x0, fail
+        0xD2800060,  // mov x0, #3
+        0xF2B88000,  // movk x0, #0xc400, lsl #16
+        0xD4000003,  // smc #0
+        0x91001400,  // add x0, x0, #5
+        0xF100041F,  // cmp x0, #1
+        0x540004E8,  // b.hi fail
+        0xF9000697,  // str x23, [x20, #8]
+        0xD5033FBF,  // dmb sy
+        // wait_off:
+        0xD2800080,  // mov x0, #4
+        0xF2B88000,  // movk x0, #0xc400, lsl #16
+        0xD2800021,  // mov x1, #1
+        0xD2800002,  // mov x2, #0
+        0xD4000003,  // smc #0
+        0xF100041F,  // cmp x0, #1
+        0x54FFFF41,  // b.ne wait_off
+        0xD5033FBF,  // dmb sy
+        0xF9400289,  // ldr x9, [x20]
+        0xEB17013F,  // cmp x9, x23
+        0x54000341,  // b.ne fail
+        0xF9400E89,  // ldr x9, [x20, #24]
+        0xEB19013F,  // cmp x9, x25
+        0x540002E1,  // b.ne fail
+        0x910006F7,  // add x23, x23, #1
+        0xAA1503E9,  // mov x9, x21
+        0xAA1603F5,  // mov x21, x22
+        0xAA0903F6,  // mov x22, x9
+        0xD2400739,  // eor x25, x25, #3
+        0xF1000718,  // subs x24, x24, #1
+        0x54FFFBA1,  // b.ne cycle
+        0xD2800209,  // mov x9, #16
+        0xF9001289,  // str x9, [x20, #32]
+        0xF9401A89,  // ldr x9, [x20, #48]
+        0xB4000109,  // cbz x9, power_off
+        0xD2800060,  // mov x0, #3
+        0xF2B88000,  // movk x0, #0xc400, lsl #16
+        0xD2800021,  // mov x1, #1
+        0xAA1503E2,  // mov x2, x21
+        0xAA1703E3,  // mov x3, x23
+        0xD4000003,  // smc #0
+        0xB50000A0,  // cbnz x0, fail
+        // power_off:
+        0xD2800100,  // mov x0, #8
+        0xF2B08000,  // movk x0, #0x8400, lsl #16
+        0xD4000003,  // smc #0
+        0x14000001,  // b fail
+        // fail:
+        0xD2A80414,  // mov x20, #0x40200000
+        0xD28175A9,  // mov x9, #0xbad
+        0xF9001689,  // str x9, [x20, #40]
+        0x17FFFFF9,  // b power_off
+        // secondary_one:
+        0xD280002A,  // mov x10, #1
+        0x14000002,  // b secondary
+        // secondary_two:
+        0xD280004A,  // mov x10, #2
+        // secondary:
+        0xD2A80414,  // mov x20, #0x40200000
+        0xD5381009,  // mrs x9, SCTLR_EL1
+        0x379FFEE9,  // tbnz x9, #19, fail
+        0xD53BE329,  // mrs x9, CNTV_CTL_EL0
+        0x3707FEA9,  // tbnz x9, #0, fail
+        0xF9000280,  // str x0, [x20]
+        0xF9000E8A,  // str x10, [x20, #24]
+        0xD5033FBF,  // dmb sy
+        // wait_release:
+        0xF9400689,  // ldr x9, [x20, #8]
+        0xEB00013F,  // cmp x9, x0
+        0x54FFFFC1,  // b.ne wait_release
+        0xD5381009,  // mrs x9, SCTLR_EL1
+        0xB26D0129,  // orr x9, x9, #0x80000
+        0xD5181009,  // msr SCTLR_EL1, x9
+        0xD2800069,  // mov x9, #3
+        0xD51BE329,  // msr CNTV_CTL_EL0, x9
+        0xD2800040,  // mov x0, #2
+        0xF2B08000,  // movk x0, #0x8400, lsl #16
+        0xD4000003,  // smc #0
+        0x17FFFFE6,  // b fail
+      ]
+      var image = Data(repeating: 0, count: 64)
+      image.replaceSubrange(0..<4, with: [0x10, 0x00, 0x00, 0x14])  // b +64
+      image.replaceSubrange(56..<60, with: [0x41, 0x52, 0x4D, 0x64])
+      for word in instructions {
+        image.append(contentsOf: (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) })
+      }
+      return image
     }
   }
 #endif
