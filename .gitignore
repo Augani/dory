@@ -247,6 +247,10 @@ scripts/__pycache__/
 !/scripts/inventory-wave0-candidate.py
 !/scripts/test-inventory-wave0-candidate.py
 
+# macOS guest-tools staged bundle inventory.
+!/scripts/generate-macos-guest-tools-manifest.py
+!/scripts/test-generate-macos-guest-tools-manifest.py
+
 # Wave 0 preflight-wave0-fixtures.
 !/scripts/preflight-wave0-fixtures.py
 !/scripts/test-preflight-wave0-fixtures.py

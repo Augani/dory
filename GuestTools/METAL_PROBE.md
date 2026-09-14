@@ -24,6 +24,24 @@ unavailable Metal, shader/pipeline failures, incomplete command buffers,
 compute mismatches, and a render target that differs from its full expected
 checkerboard pattern.
 
+## Candidate bundle inventory
+
+Before staging the guest app, create an inventory of the exact completed bundle:
+
+```sh
+python3 scripts/generate-macos-guest-tools-manifest.py \
+  --app /path/to/DoryGuestTools.app \
+  --candidate-id macos-candidate-123 \
+  --source-commit <40-character-lowercase-git-sha> \
+  --output guest-tools-manifest.json
+```
+
+The generator inventories the bundle and retained probe sources, binds both to
+the candidate identifier and source commit, and requires the Dory Developer ID
+identity plus hardened runtime. `--allow-unsigned-development` is only for
+local development inventories; its output is explicitly marked
+`unsigned-development` and is never release eligible.
+
 The current export path is explicit manual collection for development. It does
 not claim authenticated guest-to-host transport or release qualification; the
 final campaign still needs a candidate-bound collection and verification path.
