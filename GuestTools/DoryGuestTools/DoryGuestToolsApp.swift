@@ -195,6 +195,7 @@ final class CameraExtensionController: NSObject, ObservableObject, OSSystemExten
 struct DoryGuestToolsApp: App {
     @StateObject private var cameraExtension = CameraExtensionController()
     @StateObject private var cameraPreview = CameraPreviewController()
+    @StateObject private var metalProbe = DoryGuestMetalProbeController()
 
     var body: some Scene {
         WindowGroup {
@@ -230,6 +231,30 @@ struct DoryGuestToolsApp: App {
                                 .disabled(cameraPreview.isRunning)
                             Button("Stop Test") { cameraPreview.stop() }
                                 .disabled(!cameraPreview.isRunning)
+                        }
+                    }
+                    .padding(8)
+                }
+
+                GroupBox("Metal qualification probe") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        DoryGuestMetalProbePatternView()
+                            .frame(width: 480, height: 180)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                        Text("Runs deterministic Metal compute and rendering inside this macOS guest. It does not infer host results or release qualification.")
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        TextField("Host-issued nonce", text: $metalProbe.nonce)
+                        TextField("Staged candidate ID", text: $metalProbe.candidateID)
+                        Text(metalProbe.status)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack {
+                            Button("Run Metal Probe") { metalProbe.run() }
+                                .buttonStyle(.borderedProminent)
+                            Button("Copy Raw JSON") { metalProbe.copyResult() }
+                                .disabled(!metalProbe.hasResult)
                         }
                     }
                     .padding(8)
