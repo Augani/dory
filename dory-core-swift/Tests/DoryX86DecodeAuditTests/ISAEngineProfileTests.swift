@@ -1522,20 +1522,16 @@ import Testing
     #endif
   }
 
-  @Test func interpreterRetirementWithoutTier1DeclineDoesNotCreateFallbackEvidence() throws {
+  @Test func tier1DisabledInterpreterRetirementDoesNotCreateFallbackEvidence() throws {
     #if arch(arm64)
-      // Protected-mode RDTSC fails a JIT admission guard before Tier1 compilation.
-      // CPUID with Tier1 disabled reaches the legacy emitter but cannot report a Tier1 decline.
-      let cases: [(code: [UInt8], tier1Enabled: Bool)] = [
-        ([0x0F, 0x31], true),
-        ([0x0F, 0xA2], false),
-      ]
-      for testCase in cases {
+      // An interpreter-only instruction with Tier1 disabled must not be attributed as a
+      // Tier1 decline. Tier1-enabled helper attribution is covered separately above.
+      do {
         let machine = try DoryPCDirectKernelMachine(
           memoryBytes: 2 * 1024 * 1024, executionTier: .baselineJIT,
           baselineJITMaximumCodeBytes: 16 * 1024,
-          baselineJITTier1Enabled: testCase.tier1Enabled)
-        try machine.load(kernel: makeMinimalELF(code: testCase.code), commandLine: "x")
+          baselineJITTier1Enabled: false)
+        try machine.load(kernel: makeMinimalELF(code: [0x0F, 0xA2]), commandLine: "x")
         let receipt = try ISAEngineReceiptBuilder.run(
           machine: machine, configuration: configuration,
           workloadName: "generic-interpreter", workloadRevision: "r",
@@ -1558,23 +1554,25 @@ import Testing
     #endif
   }
 
-  @Test func legacyNativeRescueDoesNotCountAsInterpreterFallback() throws {
+  @Test func unsupportedProtectedModeStoreIsAttributedAsInterpreterFallback() throws {
     #if arch(arm64)
       let machine = try DoryPCDirectKernelMachine(
         memoryBytes: 2 * 1024 * 1024, executionTier: .baselineJIT,
         baselineJITMaximumCodeBytes: 16 * 1024)
-      // A standalone store is declined by Tier1 but handled by the legacy native emitter.
+      // This 32-bit store is outside the admitted native store path. It must remain an
+      // attributable Tier-1 decline rather than being misreported as a legacy native rescue.
       try machine.load(kernel: makeMinimalELF(code: [0x89, 0x05, 0x00, 0x80, 0x00, 0x00]), commandLine: "x")
       let receipt = try ISAEngineReceiptBuilder.run(
         machine: machine, configuration: configuration, workloadName: "store", workloadRevision: "r",
         completionCondition: .instructionBudget(instructionCount: 1),
         translationCacheMaximumBytes: 16 * 1024)
       #expect(receipt.runSample.tier1CompilationDeclines == 1)
-      #expect(machine.executionStatistics.baselineJITInstructions == 1)
-      #expect(machine.executionStatistics.interpreterInstructions == 0)
-      #expect(try #require(receipt.runSample.confirmedInterpreterFallback).work.isEmpty)
+      #expect(machine.executionStatistics.baselineJITInstructions == 0)
+      #expect(machine.executionStatistics.interpreterInstructions == 1)
+      let fallback = try #require(receipt.runSample.confirmedInterpreterFallback)
+      #expect(fallback.retiredInstructions(for: .nativeEmitter) == 1)
       let report = try #require(ISAEngineCostReportGenerator.generate(from: receipt))
-      #expect(!report.optimizationOpportunities.contains { $0.targetCostCategory == "tier1Declines" })
+      #expect(report.optimizationOpportunities.contains { $0.targetCostCategory == "tier1Declines" })
     #endif
   }
 
