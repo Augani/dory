@@ -3,6 +3,64 @@ import DoryDBTX86
 import DoryPlatformC
 import Foundation
 
+/// Device callbacks may hold their own locks. This leaf lock never calls out or acquires the
+/// machine execution lock, and the dispatcher releases it before touching any device state.
+private final class DoryPCPendingWorkWake: @unchecked Sendable {
+  private let condition = NSCondition()
+  private var generation: UInt64 = 0
+  private var waiting = false
+  private var dispatchThread: Thread?
+
+  func setDispatchThread(_ thread: Thread?) {
+    condition.lock()
+    dispatchThread = thread
+    condition.unlock()
+  }
+
+  func snapshot() -> UInt64 {
+    condition.lock()
+    defer { condition.unlock() }
+    return generation
+  }
+
+  func signal() {
+    condition.lock()
+    // Synchronous device work is already owned by this dispatch pass. In particular PIC
+    // acknowledgement republishes masked requests: treating that as an asynchronous edge
+    // would spin forever on an undeliverable IRQ (and advance deterministic time).
+    if dispatchThread !== Thread.current {
+      generation &+= 1
+      condition.broadcast()
+    }
+    condition.unlock()
+  }
+
+  func wait(after observed: UInt64, until deadline: Date) {
+    condition.lock()
+    defer {
+      waiting = false
+      condition.unlock()
+    }
+    // Compare with the generation captured BEFORE dispatch drained the controllers. An edge
+    // between that drain and this wait must force another pass, even if its signal came early.
+    while generation == observed {
+      waiting = true
+      condition.broadcast()
+      if !condition.wait(until: deadline) { break }
+    }
+  }
+
+  // Internal synchronization for production-boundary tests; no callbacks run under either lock.
+  func waitUntilWaiting(until deadline: Date) -> Bool {
+    condition.lock()
+    defer { condition.unlock() }
+    while !waiting {
+      if !condition.wait(until: deadline) { return waiting }
+    }
+    return true
+  }
+}
+
 public enum DoryPCMachineError: Error, Sendable, Equatable {
   case invalidMemorySize(Int)
   case invalidProcessorCount(Int)
@@ -537,6 +595,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy
 
   private let lock = NSLock()
+  private let pendingWorkWake = DoryPCPendingWorkWake()
   // `run` intentionally owns `lock` for a deterministic execution quantum. Observability must not
   // contend for that lock: a lifecycle telemetry request is served on another queue while the VM
   // is executing and would otherwise wait until the full quantum retired (or deadlock its socket
@@ -770,18 +829,20 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     memoryByteCount = memoryBytes
     ioBus = DoryPCPortIOBus()
     let requestPendingWorkForProcessor: @Sendable (Int) -> Void = {
-      [createdBaselineJITs, createdOptimizingJITs] processor in
+      [createdBaselineJITs, createdOptimizingJITs, pendingWorkWake] processor in
       if createdBaselineJITs.indices.contains(processor) {
         createdBaselineJITs[processor].requestPendingWork()
       }
       if createdOptimizingJITs.indices.contains(processor) {
         createdOptimizingJITs[processor].requestPendingWork()
       }
+      pendingWorkWake.signal()
     }
     let requestPendingWorkForAllProcessors: @Sendable () -> Void = {
-      [createdBaselineJITs, createdOptimizingJITs] in
+      [createdBaselineJITs, createdOptimizingJITs, pendingWorkWake] in
       createdBaselineJITs.forEach { $0.requestPendingWork() }
       createdOptimizingJITs.forEach { $0.requestPendingWork() }
+      pendingWorkWake.signal()
     }
     localAPICs = (0..<processorCount).map { processor in
       DoryPCLocalAPIC(
@@ -825,7 +886,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     pciExpress = DoryPCPCIExpressECAM()
     pciBARWindow = DoryPCPCIBARWindow()
-    powerController = DoryPCPowerController()
+    powerController = DoryPCPowerController(onPendingWork: requestPendingWorkForAllProcessors)
     let intxRouter = DoryPCPCIINTxRouter(ioAPIC: ioAPIC)
     for function in pciFunctions {
       try pciExpress.attach(function)
@@ -1201,6 +1262,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     guard maximumInstructions > 0 else { return .instructionBudget(0) }
     return try lock.withLock {
       guard loadedStates[0] != nil else { throw DoryPCMachineError.notLoaded }
+      pendingWorkWake.setDispatchThread(Thread.current)
+      defer { pendingWorkWake.setDispatchThread(nil) }
       // Validate installed latches before consuming device events, advancing clocks, or
       // entering either execution tier. Guest RAM is not a substitute for latched state.
       for processorState in loadedStates {
@@ -1217,6 +1280,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       }
       var completed: UInt64 = 0
       while completed < maximumInstructions {
+        let pendingWorkGeneration = pendingWorkWake.snapshot()
         if let stop = powerStop(instructionCount: completed) { return stop }
         if instrumentationEnabled {
           let sample = hostTimeSample()
@@ -1259,12 +1323,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           let resumed: Bool
           if instrumentationEnabled {
             let sample = hostTimeSample()
-            resumed = waitForNextInterrupt()
+            resumed = waitForNextInterrupt(after: pendingWorkGeneration)
             recordHostTime(.idleWait, since: sample)
           } else {
-            resumed = waitForNextInterrupt()
+            resumed = waitForNextInterrupt(after: pendingWorkGeneration)
           }
           if resumed { continue }
+          if let stop = powerStop(instructionCount: completed) { return stop }
+          if pendingWorkWake.snapshot() != pendingWorkGeneration { continue }
           return .halted(instructionCount: completed)
         }
         guard let processorState = loadedStates[processor] else { continue }
@@ -1993,19 +2059,24 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     return nil
   }
 
-  private func waitForNextInterrupt() -> Bool {
-    guard let ticks = ticksUntilNextAcceptedInterrupt() else { return false }
+  // Allows tests to coordinate asynchronous device requests with the actual condition wait.
+  func waitUntilIdle(until deadline: Date) -> Bool {
+    pendingWorkWake.waitUntilWaiting(until: deadline)
+  }
+
+  private func waitForNextInterrupt(after generation: UInt64) -> Bool {
+    let ticks = ticksUntilNextAcceptedInterrupt()
     if clockSource.monotonicNanoseconds != nil {
-      // Keep cancellation and lifecycle supervision responsive while a guest is halted. The next
-      // run-loop pass samples real elapsed time and delivers the interrupt once its deadline is
-      // reached; production time is never synthesized from translator throughput.
-      let nanoseconds = min(ticks, 10_000) * 100
-      if nanoseconds > 0 {
-        Thread.sleep(forTimeInterval: Double(nanoseconds) / 1_000_000_000)
-      }
+      // Timer waits retain their 1 ms cap. With no deadline, recheck lifecycle/device state at
+      // least every 50 ms; timeout is never evidence that a production machine has stopped.
+      let interval = ticks.map { Double(min($0, 10_000)) / 10_000_000 } ?? 0.05
+      pendingWorkWake.wait(after: generation, until: Date(timeIntervalSinceNow: interval))
       synchronizeHostClock()
       return true
     }
+    // Deterministic mode neither waits on host time nor invents a timer when none is armed.
+    if pendingWorkWake.snapshot() != generation { return true }
+    guard let ticks else { return false }
     advanceClocks(by: ticks)
     advanceTSCs(byMachineTicks: ticks)
     return true

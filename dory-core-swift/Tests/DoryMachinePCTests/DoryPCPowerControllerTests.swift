@@ -4,6 +4,46 @@ import Foundation
 import Testing
 
 @Suite struct DoryPCPowerControllerTests {
+  @Test func pendingWorkCallbackObservesLatchedActionOutsideControllerLock() throws {
+    final class Observation: @unchecked Sendable {
+      weak var controller: DoryPCPowerController?
+      let finished = DispatchSemaphore(value: 0)
+      private let lock = NSLock()
+      private var actions: [DoryPCPowerAction] = []
+
+      func observe() {
+        // Both calls reacquire the controller lock; invoking us under that lock would deadlock.
+        let snapshot = controller?.snapshot()
+        let consumed = controller?.consumeRequestedAction()
+        #expect(snapshot?.pendingAction == consumed)
+        if let consumed { lock.withLock { actions.append(consumed) } }
+      }
+
+      func observed() -> [DoryPCPowerAction] { lock.withLock { actions } }
+    }
+    let observation = Observation()
+    let controller = DoryPCPowerController(onPendingWork: { observation.observe() })
+    observation.controller = controller
+    let thread = Thread {
+      controller.request(.powerOff)
+      controller.request(.reset)
+      do {
+        let pm = DoryPCACPIPMControlPort(controller: controller)
+        try pm.write(portOffset: 0, value: 0, width: .word)
+        try pm.write(portOffset: 0,
+          value: UInt32(DoryPCPowerController.softOffSleepType << 10 | 1 << 13), width: .word)
+        let reset = DoryPCResetControlPort(controller: controller)
+        try reset.write(portOffset: 0, value: 4, width: .byte)
+        try reset.write(portOffset: 0, value: UInt32(DoryPCPowerController.resetValue), width: .byte)
+      } catch { Issue.record(error) }
+      observation.finished.signal()
+    }
+    thread.start()
+    try #require(observation.finished.wait(timeout: .now() + 2) == .success)
+    #expect(observation.observed() == [.powerOff, .reset, .powerOff, .reset])
+    #expect(controller.consumeRequestedAction() == nil)
+  }
+
   @Test func hostLifecycleRequestUsesTheArchitecturalActionLatch() {
     let controller = DoryPCPowerController()
     controller.request(.powerOff)

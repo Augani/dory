@@ -23,12 +23,15 @@ public final class DoryPCPowerController: @unchecked Sendable {
   public static let softOffSleepType: UInt16 = 5
 
   private let lock = NSLock()
+  private let onPendingWork: (@Sendable () -> Void)?
   private var pm1Control: UInt16 = 0
   private var pm1Enable: UInt16 = 0
   private var pendingAction: DoryPCPowerAction?
   private var pmTimerCounter: UInt32 = 0
 
-  public init() {}
+  public init(onPendingWork: (@Sendable () -> Void)? = nil) {
+    self.onPendingWork = onPendingWork
+  }
 
   public func snapshot() -> DoryPCPowerControllerSnapshot {
     lock.withLock {
@@ -48,6 +51,7 @@ public final class DoryPCPowerController: @unchecked Sendable {
   /// single-consumer action latch.
   public func request(_ action: DoryPCPowerAction) {
     lock.withLock { pendingAction = action }
+    onPendingWork?()
   }
 
   fileprivate func readPM1Control() -> UInt16 {
@@ -55,13 +59,16 @@ public final class DoryPCPowerController: @unchecked Sendable {
   }
 
   fileprivate func writePM1Control(_ value: UInt16) {
-    lock.withLock {
+    let requested = lock.withLock {
       pm1Control = value & ~(1 << 13)
       let sleepType = (value >> 10) & 0x7
       if value & (1 << 13) != 0, sleepType == Self.softOffSleepType {
         pendingAction = .powerOff
+        return true
       }
+      return false
     }
+    if requested { onPendingWork?() }
   }
 
   fileprivate func readPM1Enable() -> UInt16 {
@@ -87,7 +94,7 @@ public final class DoryPCPowerController: @unchecked Sendable {
 
   fileprivate func writeReset(_ value: UInt8) {
     guard value == Self.resetValue else { return }
-    lock.withLock { pendingAction = .reset }
+    request(.reset)
   }
 }
 

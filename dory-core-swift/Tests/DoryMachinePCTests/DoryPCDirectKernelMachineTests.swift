@@ -4,6 +4,106 @@ import Testing
 @testable import DoryMachinePC
 
 @Suite struct DoryPCDirectKernelMachineTests {
+  @Test(arguments: ["hostPowerOff", "hostReset", "pmPowerOff", "resetPort"])
+  func hostClockHaltWakesForAsynchronousPowerWithoutTimer(source: String) throws {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024, clockSource: .hostMonotonic)
+    try machine.load(kernel: makeELF(code: [0xF4]), commandLine: "x")
+    let run = HaltedMachineRun(machine: machine, maximumInstructions: 8)
+    defer { machine.powerController.request(.powerOff) }
+    try #require(machine.waitUntilIdle(until: Date(timeIntervalSinceNow: 2)))
+    switch source {
+    case "hostPowerOff": machine.powerController.request(.powerOff)
+    case "hostReset": machine.powerController.request(.reset)
+    case "pmPowerOff":
+      try machine.ioBus.write(port: DoryPCPowerController.pm1ControlPort,
+        value: UInt32(DoryPCPowerController.softOffSleepType << 10 | 1 << 13), width: .word)
+    default:
+      try machine.ioBus.write(port: DoryPCPowerController.resetPort,
+        value: UInt32(DoryPCPowerController.resetValue), width: .byte)
+    }
+    let expected: DoryPCMachineStop = source == "hostReset" || source == "resetPort"
+      ? .reset(instructionCount: 1) : .poweredOff(instructionCount: 1)
+    #expect(try run.finish() == expected)
+  }
+
+  @Test(arguments: ["apic", "pic", "nmi"])
+  func hostClockHaltDeliversAsynchronousInterruptWithoutTimer(source: String) throws {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024, clockSource: .hostMonotonic)
+    var code = [UInt8](repeating: 0x90, count: 0x109)
+    // lidt [0x80000]; lgdt [0x80006]; sti; hlt
+    code.replaceSubrange(0..<16, with: [
+      0x0F, 0x01, 0x1D, 0, 0, 8, 0, 0x0F, 0x01, 0x15, 6, 0, 8, 0, 0xFB, 0xF4,
+    ])
+    code.replaceSubrange(0x100..<0x109,
+      with: [0xB0, UInt8(ascii: "W"), 0xBA, 0xF8, 0x03, 0, 0, 0xEE, 0xF4])
+    try machine.load(kernel: makeELF(code: code), commandLine: "x")
+    try installProtectedTables(machine: machine, vector: source == "nmi" ? 2 : 0x30)
+    try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
+    if source == "pic" {
+      try machine.ioBus.write(port: 0x20, value: 0x11, width: .byte)
+      try machine.ioBus.write(port: 0x21, value: 0x30, width: .byte)
+      try machine.ioBus.write(port: 0x21, value: 0x04, width: .byte)
+      try machine.ioBus.write(port: 0x21, value: 0x01, width: .byte)
+      try machine.ioBus.write(port: 0x21, value: 0xFE, width: .byte)
+    }
+    let run = HaltedMachineRun(machine: machine, maximumInstructions: 8)
+    defer { machine.powerController.request(.powerOff) }
+    try #require(machine.waitUntilIdle(until: Date(timeIntervalSinceNow: 2)))
+    switch source {
+    case "apic": try machine.localAPIC.inject(vector: 0x30)
+    case "pic": try machine.legacyPIC.raise(irq: 0)
+    default:
+      try machine.multiprocessorController.handleInterruptCommand(
+        sourceAPICID: 0, high: 0, low: 4 << 8)
+    }
+    #expect(try run.finish() == .instructionBudget(8))
+    #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "W")])
+    #expect(machine.executionStatistics.deliveredMaskableInterrupts == (source == "nmi" ? 0 : 1))
+    #expect(machine.executionStatistics.deliveredNonMaskableInterrupts == (source == "nmi" ? 1 : 0))
+  }
+
+  @Test(arguments: [false, true])
+  func hostClockHaltProcessesStartupBeforeOrDuringWait(signalBeforeWait: Bool) throws {
+    let clock = HaltedMachineClockGate()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024, processorCount: 2,
+      clockSource: signalBeforeWait ? .hostMonotonic { clock.sample() } : .hostMonotonic)
+    try machine.load(kernel: makeELF(code: [0xF4]), commandLine: "x")
+    try machine.memory.write(at: 0x8000,
+      bytes: [0xB0, UInt8(ascii: "A"), 0xBA, 0xF8, 0x03, 0xEE, 0xF4])
+    let run = HaltedMachineRun(machine: machine, maximumInstructions: 5)
+    defer {
+      clock.proceed.signal()
+      machine.powerController.request(.powerOff)
+    }
+    if signalBeforeWait {
+      // The third host sample is in the all-halted pass, after mailbox draining but before
+      // waiting. The publisher completes its notification before allowing that pass to proceed.
+      try #require(clock.reached.wait(timeout: .now() + 2) == .success)
+    } else {
+      try #require(machine.waitUntilIdle(until: Date(timeIntervalSinceNow: 2)))
+    }
+    try machine.multiprocessorController.handleInterruptCommand(
+      sourceAPICID: 0, high: 1 << 24, low: 5 << 8)
+    try machine.multiprocessorController.handleInterruptCommand(
+      sourceAPICID: 0, high: 1 << 24, low: 6 << 8 | 8)
+    clock.proceed.signal()
+    #expect(try run.finish() == .instructionBudget(5))
+    #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "A")])
+    #expect(machine.state(forProcessor: 1)?.cs.base == 0x8000)
+  }
+
+  @Test func deterministicHaltWithMaskedPendingPICDoesNotSpinOrInventTicks() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    try machine.load(kernel: makeELF(code: [0xFB, 0xF4]), commandLine: "x")
+    try machine.legacyPIC.raise(irq: 0) // reset mask keeps this pending but undeliverable
+    #expect(try machine.runOnDedicatedStack(maximumInstructions: 8) == .halted(instructionCount: 2))
+    #expect(machine.state?.tsc == 200)
+    #expect(machine.legacyPIC.snapshot().masterRequest == 1)
+  }
+
   @Test func guestPortOutputProducesBootTimelineBeforeConsoleDrain() throws {
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
     let timeline = DoryPCBootTimeline()
@@ -1142,5 +1242,45 @@ import Testing
     for index in 0..<MemoryLayout<T>.size {
       data[offset + index] = UInt8(truncatingIfNeeded: value >> T(index * 8))
     }
+  }
+}
+
+private final class HaltedMachineRun: @unchecked Sendable {
+  private let lock = NSLock()
+  private let finished = DispatchSemaphore(value: 0)
+  private var result: Result<DoryPCMachineStop, any Error>?
+
+  init(machine: DoryPCDirectKernelMachine, maximumInstructions: UInt64) {
+    let thread = Thread { [self] in
+      let outcome = Result {
+        try machine.run(maximumInstructions: maximumInstructions, exceptionPolicy: .deliver)
+      }
+      lock.withLock { result = outcome }
+      finished.signal()
+    }
+    thread.name = "dev.dory.tests.pc-halted-wake"
+    thread.stackSize = 2 * 1024 * 1024
+    thread.start()
+  }
+
+  func finish() throws -> DoryPCMachineStop {
+    try #require(finished.wait(timeout: .now() + 2) == .success)
+    return try lock.withLock { try #require(result).get() }
+  }
+}
+
+private final class HaltedMachineClockGate: @unchecked Sendable {
+  let reached = DispatchSemaphore(value: 0)
+  let proceed = DispatchSemaphore(value: 0)
+  // sample() is called only by the dedicated serialized run thread.
+  private var samples = 0
+
+  func sample() -> UInt64 {
+    samples += 1
+    if samples == 3 {
+      reached.signal()
+      _ = proceed.wait(timeout: .now() + 2)
+    }
+    return 0
   }
 }
