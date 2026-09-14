@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import Darwin
 import Foundation
 import Metal
 import MetalKit
@@ -61,6 +62,7 @@ enum DoryGuestMetalProbe {
             nonce: nonce,
             candidateID: candidateID,
             guestOperatingSystemVersion: "\(operatingSystem.majorVersion).\(operatingSystem.minorVersion).\(operatingSystem.patchVersion)",
+            guestOperatingSystemBuild: try operatingSystemBuild(),
             guestActiveProcessorCount: process.activeProcessorCount,
             guestPhysicalMemoryBytes: process.physicalMemory,
             guestToolsBundleIdentifier: bundle.bundleIdentifier ?? "unknown",
@@ -210,6 +212,24 @@ enum DoryGuestMetalProbe {
         return value
     }
 
+    private static func operatingSystemBuild() throws -> String {
+        var byteCount = 0
+        guard sysctlbyname("kern.osversion", nil, &byteCount, nil, 0) == 0,
+              byteCount > 1,
+              byteCount <= 128 else {
+            throw DoryGuestMetalProbeError.operatingSystemBuildUnavailable
+        }
+        var bytes = [CChar](repeating: 0, count: byteCount)
+        guard sysctlbyname("kern.osversion", &bytes, &byteCount, nil, 0) == 0 else {
+            throw DoryGuestMetalProbeError.operatingSystemBuildUnavailable
+        }
+        let build = String(cString: bytes)
+        guard (try? normalizedIdentifier(build, label: "guest operating-system build")) != nil else {
+            throw DoryGuestMetalProbeError.operatingSystemBuildUnavailable
+        }
+        return build
+    }
+
     private static func digest(of data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -280,6 +300,7 @@ struct DoryGuestMetalProbeResult: Codable, Equatable {
     let nonce: String
     let candidateID: String
     let guestOperatingSystemVersion: String
+    let guestOperatingSystemBuild: String
     let guestActiveProcessorCount: Int
     let guestPhysicalMemoryBytes: UInt64
     let guestToolsBundleIdentifier: String
@@ -308,6 +329,7 @@ enum DoryGuestMetalProbeError: LocalizedError {
     case commandFailed(String)
     case computeOutputMismatch(index: Int)
     case renderOutputMismatch
+    case operatingSystemBuildUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -320,6 +342,7 @@ enum DoryGuestMetalProbeError: LocalizedError {
         case let .commandFailed(detail): "The Metal probe command buffer failed: \(detail)"
         case let .computeOutputMismatch(index): "The Metal compute output differed at element \(index)."
         case .renderOutputMismatch: "The Metal render probe did not produce the expected checkerboard pattern."
+        case .operatingSystemBuildUnavailable: "The guest operating-system build could not be determined."
         }
     }
 }

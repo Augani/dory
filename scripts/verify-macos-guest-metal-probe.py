@@ -224,6 +224,7 @@ def validate_challenge(value: dict[str, Any]) -> dict[str, str]:
 def validate_result(value: dict[str, Any], challenge: dict[str, str]) -> dict[str, Any]:
     exact_keys(value, {
         "schema", "createdAt", "nonce", "candidateID", "guestOperatingSystemVersion",
+        "guestOperatingSystemBuild",
         "guestActiveProcessorCount", "guestPhysicalMemoryBytes", "guestToolsBundleIdentifier",
         "guestToolsVersion", "guestToolsBuild", "metalDeviceName", "metalRegistryID",
         "usesUnifiedMemory", "probeShaderSHA256", "computeOutputSHA256", "renderedPatternSHA256",
@@ -241,6 +242,7 @@ def validate_result(value: dict[str, Any], challenge: dict[str, str]) -> dict[st
     utc_timestamp(value["createdAt"], "guest result createdAt")
     if not isinstance(value["guestOperatingSystemVersion"], str) or not VERSION.fullmatch(value["guestOperatingSystemVersion"]):
         raise ProbeError("guest operating-system version is invalid")
+    label(value["guestOperatingSystemBuild"], "guest operating-system build")
     if not isinstance(value["guestActiveProcessorCount"], int) or value["guestActiveProcessorCount"] < 1:
         raise ProbeError("guest active processor count is invalid")
     if not isinstance(value["guestPhysicalMemoryBytes"], int) or value["guestPhysicalMemoryBytes"] < 1:
@@ -261,6 +263,7 @@ def validate_result(value: dict[str, Any], challenge: dict[str, str]) -> dict[st
         raise ProbeError("guest probe command buffers did not both complete")
     return {
         "guestOperatingSystemVersion": value["guestOperatingSystemVersion"],
+        "guestOperatingSystemBuild": value["guestOperatingSystemBuild"],
         "guestActiveProcessorCount": value["guestActiveProcessorCount"],
         "guestPhysicalMemoryBytes": value["guestPhysicalMemoryBytes"],
         "metalDeviceName": value["metalDeviceName"],

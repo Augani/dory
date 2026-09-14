@@ -79,6 +79,7 @@ class GuestMetalProbeVerifierTests(unittest.TestCase):
             "nonce": "nonce-1",
             "candidateID": "macos-dev-1",
             "guestOperatingSystemVersion": "26.0.0",
+            "guestOperatingSystemBuild": "25A123",
             "guestActiveProcessorCount": 4,
             "guestPhysicalMemoryBytes": 8 * 1024 * 1024 * 1024,
             "guestToolsBundleIdentifier": "com.pythonxi.Dory.GuestTools",
@@ -134,6 +135,7 @@ class GuestMetalProbeVerifierTests(unittest.TestCase):
         self.assertEqual(verification["candidateID"], "macos-dev-1")
         self.assertEqual(verification["nonce"], "nonce-1")
         self.assertEqual(verification["observed"]["guestOperatingSystemVersion"], "26.0.0")
+        self.assertEqual(verification["observed"]["guestOperatingSystemBuild"], "25A123")
         self.assertEqual(verification["observed"]["guestActiveProcessorCount"], 4)
         self.assertEqual(verification["observed"]["guestPhysicalMemoryBytes"], 8 * 1024 * 1024 * 1024)
 
@@ -145,6 +147,16 @@ class GuestMetalProbeVerifierTests(unittest.TestCase):
         completed = self.invoke_verify()
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("candidate or nonce", completed.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_missing_guest_operating_system_build_is_rejected(self) -> None:
+        self.issue_challenge()
+        result = self.make_result()
+        del result["guestOperatingSystemBuild"]
+        self.write_json(self.result, result)
+        completed = self.invoke_verify()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("keys are invalid", completed.stderr)
         self.assertFalse(self.output.exists())
 
     def test_stale_retained_source_is_rejected(self) -> None:

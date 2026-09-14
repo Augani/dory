@@ -18,8 +18,8 @@ the resulting app in the macOS guest, and open **Dory Guest Tools**. In the
    qualification receipt.
 
 The JSON binds the nonce, candidate identifier, guest-tools bundle identity,
-observed guest Metal device, shader digest, verified compute output digest, and
-verified render-pattern digest. The probe rejects malformed identifiers,
+observed guest OS version/build/resources and Metal device, shader digest,
+verified compute output digest, and verified render-pattern digest. The probe rejects malformed identifiers,
 unavailable Metal, shader/pipeline failures, incomplete command buffers,
 compute mismatches, and a render target that differs from its full expected
 checkerboard pattern.
@@ -63,8 +63,9 @@ python3 scripts/verify-macos-guest-metal-probe.py verify \
   --output metal-probe-verification.json
 ```
 
-The verifier confirms the exact nonce/candidate/bundle metadata, the retained
-source inventory, command-buffer statuses, and deterministic compute digest.
+The verifier confirms the exact nonce/candidate/bundle metadata, guest OS
+version/build/resources, retained source inventory, command-buffer statuses,
+and deterministic compute digest.
 It writes only `development-observed` evidence with `releaseEligible: false`:
 manual copy does not authenticate the guest, prove the selected Dory window,
 or prevent a copied result from another machine. The issuing workflow is
