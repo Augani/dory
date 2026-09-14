@@ -328,7 +328,9 @@ public final class VirtioBlk: VirtioDeviceBackend {
     private let requestCondition = NSCondition()
     private var inFlightTransfers = 0
     private var maximumInFlightTransferCount = 0
-    private var flushActive = false
+    private final class FlushPermit: @unchecked Sendable {}
+
+    private var activeFlushPermit: FlushPermit?
     private let flushTelemetry: VirtioBlkFlushTelemetryConfiguration
     private let statisticsLock = NSLock()
     private var flushCount: UInt64 = 0
@@ -844,6 +846,18 @@ public final class VirtioBlk: VirtioDeviceBackend {
                 queueDrainStates[index].revoke(replacementTransportIdentity: nil)
             }
         }
+        // A pre-reset flush holds its permit across its host fsync outside the request
+        // condition. Revoking its queue generation is not enough: new-generation transfers
+        // wait on the same permit and would block behind the stale flush. Drop the active
+        // permit object here and wake waiters so the next lifecycle admits work
+        // immediately. Each flush owns a distinct reference-identity token, so the stale
+        // flush can only release the exact object it acquired; its late completion never
+        // matches - and never releases - a newer permit, even after counter wrap (there
+        // are no counters to wrap).
+        requestCondition.lock()
+        activeFlushPermit = nil
+        requestCondition.broadcast()
+        requestCondition.unlock()
     }
 
     public func queueStateChanged(
@@ -1251,7 +1265,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
 
     private func withTransferPermit<Result>(_ body: () -> Result) -> Result {
         requestCondition.lock()
-        while flushActive {
+        while activeFlushPermit != nil {
             requestCondition.wait()
         }
         inFlightTransfers += 1
@@ -1269,10 +1283,11 @@ public final class VirtioBlk: VirtioDeviceBackend {
 
     func flush() -> RequestStatus {
         requestCondition.lock()
-        while flushActive {
+        while activeFlushPermit != nil {
             requestCondition.wait()
         }
-        flushActive = true
+        let permit = FlushPermit()
+        activeFlushPermit = permit
         while inFlightTransfers > 0 {
             requestCondition.wait()
         }
@@ -1293,8 +1308,10 @@ public final class VirtioBlk: VirtioDeviceBackend {
         }
 
         requestCondition.lock()
-        flushActive = false
-        requestCondition.broadcast()
+        if activeFlushPermit === permit {
+            activeFlushPermit = nil
+            requestCondition.broadcast()
+        }
         requestCondition.unlock()
         return status
     }

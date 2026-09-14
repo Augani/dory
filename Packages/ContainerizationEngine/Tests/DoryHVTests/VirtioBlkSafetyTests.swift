@@ -998,6 +998,195 @@ struct VirtioBlkSafetyTests {
         #expect(statistics.queueDepth == 0)
     }
 
+    @Test
+    func resetReleasesStaleFlushPermitForNewGeneration() throws {
+        final class FlushGate: @unchecked Sendable {
+            let lock = NSLock()
+            var calls = 0
+            let entered = DispatchSemaphore(value: 0)
+            let releaseStale = DispatchSemaphore(value: 0)
+        }
+        let gate = FlushGate()
+        let harness = try makeQueueHarness(
+            asyncIO: true,
+            flushTelemetry: VirtioBlkFlushTelemetryConfiguration(
+                slowThresholdNanoseconds: 250_000_000,
+                synchronize: { _ in
+                    let call = gate.lock.withLock { () -> Int in
+                        gate.calls += 1
+                        return gate.calls
+                    }
+                    // Only the pre-reset flush blocks. New-generation flushes (if any) must
+                    // not wait behind it once reset has released the permit.
+                    if call == 1 {
+                        gate.entered.signal()
+                        _ = gate.releaseStale.wait(timeout: .now() + 5)
+                    }
+                    return 0
+                },
+                monotonicNanoseconds: { DispatchTime.now().uptimeNanoseconds }
+            )
+        )
+        defer {
+            gate.releaseStale.signal()
+            try? FileManager.default.removeItem(atPath: harness.diskPath)
+        }
+
+        // Hold a flush active outside any queue lease so the permit (flushActive) is held
+        // without pinning queue reconfiguration behind the lease mutex.
+        final class FlushResult: @unchecked Sendable {
+            let lock = NSLock()
+            var status: VirtioBlk.RequestStatus?
+        }
+        let result = FlushResult()
+        let staleFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            let status = harness.block.flush()
+            result.lock.withLock { result.status = status }
+            staleFinished.signal()
+        }
+        #expect(gate.entered.wait(timeout: .now() + 2) == .success)
+
+        // Reset must release the stale permit and revoke the old lifecycle. It returns
+        // immediately because the direct flush holds no queue lease.
+        harness.block.deviceReset(transport: harness.transport)
+        // Configure the next device generation on the same transport/queue.
+        harness.block.deviceReady(transport: harness.transport)
+
+        // A new-generation read acquires its transfer permit via withTransferPermit, which
+        // waits while flushActive is set. With the fix it proceeds without the stale
+        // fsync being released; without the fix it blocks until releaseStale.
+        let header = harness.guestBase + 0x20_000
+        let data = header + 0x100
+        let status = header + 0x400
+        try writeRequestHeader(type: 0, sector: 0, at: header, harness: harness)
+        try harness.memory.write([UInt8](repeating: 0, count: 512), at: data)
+        try harness.memory.write(UInt8(0xFF), at: status)
+        try installDescriptor(index: 0, address: header, length: 16, flags: 1, next: 1, harness: harness)
+        try installDescriptor(index: 1, address: data, length: 512, flags: 3, next: 2, harness: harness)
+        try installDescriptor(index: 2, address: status, length: 1, flags: 2, next: 0, harness: harness)
+        try publish([0], startingAt: 0, harness: harness)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+
+        #expect(waitUntil(timeout: 2) { (try? usedIndex(harness)) == 1 })
+        #expect(try harness.memory.read(UInt8.self, at: status) == VirtioBlk.RequestStatus.ok.rawValue)
+        #expect(harness.block.statistics.requestCompletions == 1)
+        // The stale flush has not been released yet, so it cannot have published a queue
+        // completion into the new lifecycle.
+        #expect(try usedIndex(harness) == 1)
+
+        // Let the stale flush finish. It returns its host result but must not publish into
+        // the new generation's used ring.
+        gate.releaseStale.signal()
+        #expect(staleFinished.wait(timeout: .now() + 2) == .success)
+        #expect(result.lock.withLock { result.status } == .ok)
+        #expect(try usedIndex(harness) == 1)
+        #expect(harness.block.statistics.requestCompletions == 1)
+        #expect(harness.block.statistics.flushes == 1)
+    }
+
+    @Test
+    func staleFlushCannotReleaseFreshFlushPermit() throws {
+        final class FlushGate: @unchecked Sendable {
+            let lock = NSLock()
+            var calls = 0
+            let enteredOld = DispatchSemaphore(value: 0)
+            let enteredNew = DispatchSemaphore(value: 0)
+            let releaseOld = DispatchSemaphore(value: 0)
+            let releaseNew = DispatchSemaphore(value: 0)
+        }
+        let gate = FlushGate()
+        let harness = try makeQueueHarness(
+            asyncIO: true,
+            flushTelemetry: VirtioBlkFlushTelemetryConfiguration(
+                slowThresholdNanoseconds: 250_000_000,
+                synchronize: { _ in
+                    let call = gate.lock.withLock { () -> Int in
+                        gate.calls += 1
+                        return gate.calls
+                    }
+                    if call == 1 {
+                        gate.enteredOld.signal()
+                        _ = gate.releaseOld.wait(timeout: .now() + 5)
+                    } else if call == 2 {
+                        gate.enteredNew.signal()
+                        _ = gate.releaseNew.wait(timeout: .now() + 5)
+                    }
+                    return 0
+                },
+                monotonicNanoseconds: { DispatchTime.now().uptimeNanoseconds }
+            )
+        )
+        defer {
+            gate.releaseOld.signal()
+            gate.releaseNew.signal()
+            try? FileManager.default.removeItem(atPath: harness.diskPath)
+        }
+        final class FlushResult: @unchecked Sendable {
+            let lock = NSLock()
+            var status: VirtioBlk.RequestStatus?
+        }
+        let oldResult = FlushResult()
+        let newResult = FlushResult()
+        let oldFinished = DispatchSemaphore(value: 0)
+        let newFinished = DispatchSemaphore(value: 0)
+
+        // Block the old-generation flush inside its host fsync.
+        DispatchQueue.global().async {
+            let status = harness.block.flush()
+            oldResult.lock.withLock { oldResult.status = status }
+            oldFinished.signal()
+        }
+        #expect(gate.enteredOld.wait(timeout: .now() + 2) == .success)
+
+        // Reset releases the stale permit and starts a new device generation.
+        harness.block.deviceReset(transport: harness.transport)
+        harness.block.deviceReady(transport: harness.transport)
+
+        // Admit and block a new-generation flush. Reaching its fsync proves the reset
+        // woke waiters and issued a fresh permit despite the old flush still pending.
+        DispatchQueue.global().async {
+            let status = harness.block.flush()
+            newResult.lock.withLock { newResult.status = status }
+            newFinished.signal()
+        }
+        #expect(gate.enteredNew.wait(timeout: .now() + 2) == .success)
+
+        // Queue a new-generation transfer behind the fresh flush permit.
+        let header = harness.guestBase + 0x20_000
+        let data = header + 0x100
+        let status = header + 0x400
+        try writeRequestHeader(type: 0, sector: 0, at: header, harness: harness)
+        try harness.memory.write([UInt8](repeating: 0, count: 512), at: data)
+        try harness.memory.write(UInt8(0xFF), at: status)
+        try installDescriptor(index: 0, address: header, length: 16, flags: 1, next: 1, harness: harness)
+        try installDescriptor(index: 1, address: data, length: 512, flags: 3, next: 2, harness: harness)
+        try installDescriptor(index: 2, address: status, length: 1, flags: 2, next: 0, harness: harness)
+        try publish([0], startingAt: 0, harness: harness)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+
+        // The transfer must remain blocked behind the new flush.
+        #expect(waitUntil(timeout: 0.2) { (try? usedIndex(harness)) == 1 } == false)
+
+        // Let the stale old flush return. It must not release the fresh permit, so the
+        // transfer stays blocked.
+        gate.releaseOld.signal()
+        #expect(oldFinished.wait(timeout: .now() + 2) == .success)
+        #expect(oldResult.lock.withLock { oldResult.status } == .ok)
+        #expect(waitUntil(timeout: 0.2) { (try? usedIndex(harness)) == 1 } == false)
+        #expect(harness.block.statistics.requestCompletions == 0)
+        #expect(harness.block.statistics.flushes == 1)
+
+        // Releasing the new-generation flush admits the waiting transfer.
+        gate.releaseNew.signal()
+        #expect(newFinished.wait(timeout: .now() + 2) == .success)
+        #expect(newResult.lock.withLock { newResult.status } == .ok)
+        #expect(waitUntil(timeout: 2) { (try? usedIndex(harness)) == 1 })
+        #expect(try harness.memory.read(UInt8.self, at: status) == VirtioBlk.RequestStatus.ok.rawValue)
+        #expect(harness.block.statistics.requestCompletions == 1)
+        #expect(harness.block.statistics.flushes == 2)
+    }
+
     private struct QueueHarness {
         let diskPath: String
         let guestBase: UInt64
@@ -1015,7 +1204,8 @@ struct VirtioBlkSafetyTests {
         discard: Bool = false,
         limits: VirtioBlkLimits = .production,
         ioOperations: VirtioBlkIOOperations = .production,
-        rangeOperations: VirtioBlkRangeOperations = .production
+        rangeOperations: VirtioBlkRangeOperations = .production,
+        flushTelemetry: VirtioBlkFlushTelemetryConfiguration = .production
     ) throws -> QueueHarness {
         let diskPath = try makeDisk(byteCount: 1 << 20)
         let guestBase: UInt64 = 0xD400_0000
@@ -1026,7 +1216,7 @@ struct VirtioBlkSafetyTests {
             asyncIO: asyncIO,
             queueCount: 1,
             discard: discard,
-            flushTelemetry: .production,
+            flushTelemetry: flushTelemetry,
             limits: limits,
             ioOperations: ioOperations,
             rangeOperations: rangeOperations
