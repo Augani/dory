@@ -43,5 +43,31 @@ local development inventories; its output is explicitly marked
 `unsigned-development` and is never release eligible.
 
 The current export path is explicit manual collection for development. It does
-not claim authenticated guest-to-host transport or release qualification; the
-final campaign still needs a candidate-bound collection and verification path.
+not claim authenticated guest-to-host transport or release qualification. Audit
+a manually copied result against a host-issued challenge, the staged-bundle
+manifest, and the retained probe sources with:
+
+```sh
+python3 scripts/verify-macos-guest-metal-probe.py issue \
+  --candidate-id macos-candidate-123 \
+  --machine-id <Dory-machine-id> \
+  --nonce <host-issued-nonce> \
+  --guest-tools-manifest guest-tools-manifest.json \
+  --output metal-probe-challenge.json
+
+python3 scripts/verify-macos-guest-metal-probe.py verify \
+  --challenge metal-probe-challenge.json \
+  --result guest-exported-metal-probe.json \
+  --guest-tools-manifest guest-tools-manifest.json \
+  --source-root . \
+  --output metal-probe-verification.json
+```
+
+The verifier confirms the exact nonce/candidate/bundle metadata, the retained
+source inventory, command-buffer statuses, and deterministic compute digest.
+It writes only `development-observed` evidence with `releaseEligible: false`:
+manual copy does not authenticate the guest, prove the selected Dory window,
+or prevent a copied result from another machine. The issuing workflow is
+responsible for nonce uniqueness and replay control. The final campaign still
+needs authenticated candidate-bound result transport plus product-bound visible
+window, lifecycle, and pacing evidence.

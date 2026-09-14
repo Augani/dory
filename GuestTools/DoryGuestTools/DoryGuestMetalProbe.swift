@@ -53,11 +53,16 @@ enum DoryGuestMetalProbe {
             pipeline: renderPipeline
         )
         let bundle = Bundle.main
+        let process = ProcessInfo.processInfo
+        let operatingSystem = process.operatingSystemVersion
         return DoryGuestMetalProbeResult(
             schema: schema,
             createdAt: ISO8601DateFormatter().string(from: Date()),
             nonce: nonce,
             candidateID: candidateID,
+            guestOperatingSystemVersion: "\(operatingSystem.majorVersion).\(operatingSystem.minorVersion).\(operatingSystem.patchVersion)",
+            guestActiveProcessorCount: process.activeProcessorCount,
+            guestPhysicalMemoryBytes: process.physicalMemory,
             guestToolsBundleIdentifier: bundle.bundleIdentifier ?? "unknown",
             guestToolsVersion: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
                 ?? "unknown",
@@ -274,6 +279,9 @@ struct DoryGuestMetalProbeResult: Codable, Equatable {
     let createdAt: String
     let nonce: String
     let candidateID: String
+    let guestOperatingSystemVersion: String
+    let guestActiveProcessorCount: Int
+    let guestPhysicalMemoryBytes: UInt64
     let guestToolsBundleIdentifier: String
     let guestToolsVersion: String
     let guestToolsBuild: String
