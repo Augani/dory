@@ -23628,6 +23628,7 @@ public final class MachineManager: @unchecked Sendable {
                             try discardRecoveredSavedStateForColdStop(machineID: id, configuration: configuration)
                         }
                         try completeRecoveredLifecycle(lease)
+                        diagnostics[id] = "interrupted stop completed from persisted target authority"
                     } else {
                         try failRecoveredLifecycle(lease, rolledBack: false)
                         diagnostics[id] = "interrupted stop authority changed; recovery failed closed"
