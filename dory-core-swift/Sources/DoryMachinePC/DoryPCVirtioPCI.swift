@@ -762,6 +762,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     var shouldNotify = false
     var shouldMarkNeedsReset = false
     var terminalEpoch: UInt64?
+    var responsePreflightRejected = false
     let failed = processingLock.withLock { () -> Bool in
       do {
         let current = try lock.withLock { () -> QueueRegisters in
@@ -798,6 +799,13 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
                 deviceWillWrite: true
               )
             } catch {
+              // A revocation after queue pop is not a malformed guest request.  It
+              // must leave every response target and the used ring untouched, but
+              // it is also recoverable: the backend can submit a new descriptor
+              // after the host has re-established the mapping.  Keep this distinct
+              // from a DMA/write failure below, which is terminal for this device
+              // lifecycle and therefore requires NEEDS_RESET.
+              responsePreflightRejected = true
               return
             }
             preflightOffset += count
@@ -835,6 +843,10 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
         return true
       }
     }
+    // `withLockedSnapshot` intentionally releases its lifecycle lease before we
+    // inspect this result.  A preflight rejection did not perform DMA or mutate
+    // queue state, so it must not be converted into a terminal device failure.
+    if responsePreflightRejected { return false }
     if shouldNotify { _ = signalQueueInterrupt(queue: index) }
     if failed || shouldMarkNeedsReset {
       if let expected = terminalEpoch {

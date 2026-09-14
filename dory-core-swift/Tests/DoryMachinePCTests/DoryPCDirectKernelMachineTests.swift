@@ -1269,7 +1269,9 @@ import DoryDBTX86
     #expect(snapshots[1].lifecycle == .running)
     #expect(snapshots[1].state?.cs.base == 0x8000)
     #expect(snapshots[2].lifecycle == .waitingForStartup)
-    #expect(snapshots[2].state?.cs.base == 0)
+    // An AP waiting for its own STARTUP remains in the architectural reset
+    // state; servicing APIC 1's mailbox must not alter it to APIC 2's vector.
+    #expect(snapshots[2].state?.cs.base == 0xFFFF_0000)
     #expect(machine.multiprocessorController.drainEvents(forAPICID: 2) == [
       .startup(apicID: 2, vector: 9)
     ])

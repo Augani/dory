@@ -648,9 +648,11 @@ import Testing
     try function.writeConfiguration(offset: 4, bytes: [2, 0])
     let bar: UInt64 = 0xD000_0000
     try configureSingleDescriptorQueue(machine, bar: bar)
-    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1, descriptorIndex: 0)
     let stalePublish = try #require(completions.removeFirst())
-    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 2)
+    // Do not reuse the still-deferred head: modern virtio queue validation
+    // rejects descriptor reuse while a completion remains outstanding.
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 2, descriptorIndex: 2)
     let staleFail = try #require(completions.removeFirst())
     #expect(try function.transport.queueSnapshot(at: 0).enabled)
     let staleEpoch = function.transport.deviceState.snapshot().lifecycleEpoch
@@ -692,7 +694,7 @@ import Testing
     #expect(try read16(machine, 0x3002) == 0)
 
     // The fresh lifecycle still publishes exactly once.
-    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 3)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 3, descriptorIndex: 4)
     let freshCompletion = try #require(completions.removeFirst())
     #expect(freshCompletion.publish([9, 8, 7, 6]))
     #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 6])
@@ -870,7 +872,7 @@ import Testing
       bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(4))
         + littleEndian(UInt16(1)) + littleEndian(UInt16(1))
         + littleEndian(UInt64(0x5000)) + littleEndian(UInt32(4))
-        + littleEndian(UInt16(2)) + littleEndian(UInt16(2))
+        + littleEndian(UInt16(3)) + littleEndian(UInt16(2))
         + littleEndian(UInt64(0x6000)) + littleEndian(UInt32(4))
         + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
     )
@@ -881,6 +883,7 @@ import Testing
     try memory.write(at: 0x2002, bytes: littleEndian(UInt16(1)))
     try function.transport.writeBAR(offset: 0x100, bytes: littleEndian(UInt16(0)))
     let failed = try #require(completions.removeFirst())
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
 
     // Revoke the later writable target only after the chain was popped. The
     // early target stays valid; only the later target is now unmapped for writes.
@@ -933,12 +936,14 @@ import Testing
     _ machine: DoryPCDirectKernelMachine,
     bar: UInt64,
     availableIndex: UInt16,
+    descriptorIndex: UInt16 = 0,
     notify: Bool = true
   ) throws {
+    let responseDescriptorIndex = descriptorIndex + 1
     try machine.physicalMemory.write(
-      at: 0x1000,
+      at: 0x1000 + UInt64(descriptorIndex) * 16,
       bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(4))
-        + littleEndian(UInt16(1)) + littleEndian(UInt16(1))
+        + littleEndian(UInt16(1)) + littleEndian(responseDescriptorIndex)
         + littleEndian(UInt64(0x5000)) + littleEndian(UInt32(4))
         + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
     )
@@ -946,7 +951,7 @@ import Testing
     try machine.physicalMemory.write(at: 0x5000, bytes: [0, 0, 0, 0])
     try machine.physicalMemory.write(
       at: 0x2004 + UInt64((availableIndex - 1) % 8) * 2,
-      bytes: littleEndian(UInt16(0))
+      bytes: littleEndian(descriptorIndex)
     )
     try machine.physicalMemory.write(at: 0x2002, bytes: littleEndian(availableIndex))
     if notify { try write16(machine, bar + 0x100, 0) }

@@ -15,9 +15,9 @@ import Testing
       .init(physicalAddress: 0x10_0000, fileOffset: 0x200, fileSize: 4, memorySize: 16)
     ])
     #expect(plan.kernelRanges == [0x10_0000..<0x10_0010])
-    // The default PVH layout places start info, command line, modules, and the memory map in the
-    // reserved handoff region; with no initrd, only those four artifacts appear.
-    #expect(plan.bootArtifactRanges.count == 4)
+    // The module-list artifact is empty without an initrd, so this layout contains
+    // only start info, command line, and the memory map.
+    #expect(plan.bootArtifactRanges.count == 3)
     #expect(plan.bootArtifactRanges.contains(DoryPCV1ABI.pvhStartInfo..<DoryPCV1ABI.pvhStartInfo + 56))
     #expect(plan.bootArtifactRanges.allSatisfy { $0.lowerBound >= DoryPCV1ABI.pvhStartInfo })
   }
