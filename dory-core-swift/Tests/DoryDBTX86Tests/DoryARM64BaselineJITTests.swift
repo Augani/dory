@@ -6755,12 +6755,89 @@ import Testing
     #endif
   }
 
+  @Test func unsignedWideAccumulatorDivideMatchesInterpreterNatively() throws {
+    #if arch(arm64)
+      struct Case {
+        let bytes: [UInt8]
+        let registers: DoryX86GeneralRegisters
+        let quotient: UInt64
+        let remainder: UInt64
+      }
+      let cases = [
+        Case( // Retained div64_wide_dividend physical-reference contract.
+          bytes: [0x48, 0xF7, 0xF3], registers: .init(rax: 0, rdx: 1, rbx: 3),
+          quotient: 0x5555_5555_5555_5555, remainder: 1),
+        Case( // RDX == 0 retains the UDIV fast path.
+          bytes: [0x48, 0xF7, 0xF3], registers: .init(rax: 100, rdx: 0, rbx: 7),
+          quotient: 14, remainder: 2),
+        Case(
+          bytes: [0x48, 0xF7, 0xF3], registers: .init(rax: .max, rdx: 0, rbx: 1),
+          quotient: .max, remainder: 0),
+        Case(
+          bytes: [0x48, 0xF7, 0xF3], registers: .init(rax: 0, rdx: 1, rbx: 2),
+          quotient: 0x8000_0000_0000_0000, remainder: 0),
+        Case( // H == divisor - 1 and the largest fitting quotient.
+          bytes: [0x48, 0xF7, 0xF3], registers: .init(rax: .max, rdx: 2, rbx: 3),
+          quotient: .max, remainder: 2),
+        Case( // The shifted remainder carries out of bit 63.
+          bytes: [0x48, 0xF7, 0xF3], registers: .init(rax: .max, rdx: .max - 1, rbx: .max),
+          quotient: .max, remainder: .max - 1),
+        Case( // Carry-driven subtraction with a zero low dividend.
+          bytes: [0x48, 0xF7, 0xF3],
+          registers: .init(rax: 0, rdx: 0x8000_0000_0000_0000, rbx: 0x8000_0000_0000_0001),
+          quotient: .max - 1, remainder: 2),
+        Case( // Capture the divisor before reusing the low accumulator.
+          bytes: [0x48, 0xF7, 0xF0], registers: .init(rax: 3, rdx: 1),
+          quotient: 0x5555_5555_5555_5556, remainder: 1),
+        Case(
+          bytes: [0x48, 0xF7, 0xF0],
+          registers: .init(rax: 0x8000_0000_0000_0001, rdx: 0x8000_0000_0000_0000),
+          quotient: .max, remainder: 2),
+      ]
+      let initialFlags: DoryX86RFLAGS = [
+        .reservedOne, .interruptEnable, .carry, .parity, .auxiliaryCarry, .zero, .sign,
+        .direction, .overflow,
+      ]
+      for testCase in cases {
+        for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+          let initial = try DoryX86ArchitecturalState(
+            registers: testCase.registers, rip: 0x1000, rflags: initialFlags)
+          var interpreted = initial
+          let decoded = try DoryX86Decoder().decode(testCase.bytes, at: initial.rip, mode: .long64)
+          #expect(DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: try DoryX86ByteArrayMemory(baseAddress: initial.rip, bytes: testCase.bytes),
+            mode: .long64
+          ) == .retired(decoded))
+          var translated = initial
+          let execution = try #require(DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024, optimization: optimization
+          ).execute(
+            bytes: testCase.bytes, at: initial.rip, mode: .long64, addressSpaceID: 0,
+            maximumInstructions: 1, state: &translated
+          ))
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(execution.exitCode == .dispatch)
+          #expect(translated.registers.rax == testCase.quotient)
+          #expect(translated.registers.rdx == testCase.remainder)
+          #expect(translated.rip == initial.rip + UInt64(testCase.bytes.count))
+          #expect(translated.rflags == initialFlags)
+          #expect(translated == interpreted)
+        }
+      }
+    #endif
+  }
+
   @Test func accumulatorDivideFallsBackBeforeUnsupportedWideDividendOrDivideError() throws {
     #if arch(arm64)
       let cases: [([UInt8], DoryX86GeneralRegisters)] = [
         ([0x48, 0xF7, 0xF1], .init(rax: 5, rcx: 0, rdx: 0)),
-        ([0x48, 0xF7, 0xF1], .init(rax: 0, rcx: 2, rdx: 1)),
+        ([0x48, 0xF7, 0xF1], .init(rax: .max, rcx: 0, rdx: .max)),
         ([0x48, 0xF7, 0xF1], .init(rax: 0, rcx: 7, rdx: 7)),
+        ([0x48, 0xF7, 0xF1], .init(rax: .max, rcx: 7, rdx: 8)),
+        ([0x48, 0xF7, 0xF1], .init(rax: 0, rcx: 0x8000_0000_0000_0000, rdx: .max)),
+        ([0x48, 0xF7, 0xF2], .init(rax: 0, rdx: 1)), // DIV RDX always overflows when nonzero.
+        ([0x48, 0xF7, 0xF2], .init(rax: .max, rdx: .max)),
         ([0xF7, 0xF1], .init(rax: 0x100, rcx: 2, rdx: 1)),
         ([0x48, 0xF7, 0xF9], .init(rax: 5, rcx: 0, rdx: 0)),
         ([0xF7, 0xF9], .init(rax: 5, rcx: 0, rdx: 0)),

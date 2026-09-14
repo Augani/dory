@@ -2182,6 +2182,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
         ? encodeLoad64(register: 9, base: 0, byteOffset: 0)
         : encodeLoad32(register: 9, base: 0, byteOffset: 0)
     )
+    var wideDividendDone: Int?
     if signed {
       // Native SDIV takes one signed word. Other RDX:RAX values still need the
       // interpreter's double-width division, before any architectural write.
@@ -2203,6 +2204,18 @@ public struct DoryARM64BaselineEmitter: Sendable {
       emitInterpreterUnless(condition: .notEqual, usesMemory: false, into: &words)
       words[nonMinimum] = encodeConditionalBranch(
         condition: .notEqual, wordOffset: words.count - nonMinimum)
+    } else if is64Bit {
+      // A nonzero divisor produces a fitting quotient exactly when RDX < divisor.
+      // Both guards precede every architectural write, including RIP and RFLAGS.
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 10, 31))
+      emitInterpreterUnless(condition: .carryClear, usesMemory: false, into: &words)
+      let narrowDividend = words.count
+      words.append(0)
+      emitUnsignedWideAccumulatorDivide(into: &words)
+      wideDividendDone = words.count
+      words.append(0)
+      words[narrowDividend] = encodeCompareBranchZero64(
+        register: 11, wordOffset: words.count - narrowDividend)
     } else {
       words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 31, 31))
       emitInterpreterUnless(condition: .equal, usesMemory: false, into: &words)
@@ -2219,9 +2232,40 @@ public struct DoryARM64BaselineEmitter: Sendable {
         minuend: 9,
         destination: 13
       ))
+    if let wideDividendDone {
+      words[wideDividendDone] = encodeUnconditionalBranch(
+        wordOffset: words.count - wideDividendDone)
+    }
     words.append(encodeStore64(register: 12, base: 0, byteOffset: 0))
     words.append(encodeStore64(register: 13, base: 0, byteOffset: 16))
     return true
+  }
+
+  private func emitUnsignedWideAccumulatorDivide(into words: inout [UInt32]) {
+    // Baseline temporaries: x10 holds the already-loaded divisor, x12 the quotient,
+    // x13 the remainder, x11 the fixed loop count, and x14...x16 trial values.
+    // Loading the divisor first preserves DIV RAX/RDX source-alias semantics.
+    words.append(encodeLogical(.or, left: 31, right: 9, destination: 12))
+    words.append(encodeLogical(.or, left: 31, right: 11, destination: 13))
+    emitImmediate(64, register: 11, into: &words)
+    let loop = words.count
+    words.append(encodeAddSubtractSetFlags(add: true, is64Bit: true, 12, 12, 12))
+    words.append(encodeAddSubtractCarrySetFlags(add: true, is64Bit: true, 13, 13, 13))
+    // ADCS shifts Q's outgoing bit into R. Save its 65th bit before SUBS replaces C.
+    words.append(encodeConditionalSet(register: 14, condition: .carrySet))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 13, 10, 15))
+    words.append(encodeConditionalSet(register: 16, condition: .carrySet))
+    words.append(encodeLogical(.or, left: 14, right: 16, destination: 14))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 14, 31, 31))
+    // Subtract if the trial carried or its low word is >= divisor. Since R < divisor
+    // at loop entry, one subtraction restores that invariant even after a carry.
+    words.append(
+      encodeConditionalSelect(
+        destination: 13, trueRegister: 15, falseRegister: 13, condition: .notEqual))
+    words.append(encodeLogical(.or, left: 12, right: 14, destination: 12))
+    words.append(encodeSubtractImmediate64(left: 11, immediate: 1, destination: 11))
+    words.append(encodeCompareBranchNonZero32(register: 11, wordOffset: loop - words.count))
+    // Only the caller's common epilogue publishes RAX/RDX; guest RFLAGS is untouched.
   }
 
   private func emitDoubleShiftRight(
