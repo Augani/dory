@@ -5374,6 +5374,123 @@ import Testing
       #expect(tlb.diagnostics.hits == 0)
     #endif
   }
+
+  @Test func tier1InlineReadTLBInvalidationExitsAtFaultingInstruction() throws {
+    // Warm a Tier1 inline-TLB hit, revoke the data translation, and re-execute the same
+    // resident block. The stale entry must miss into the recoverable callback boundary and
+    // report the guest page fault at the faulting RIP instead of returning stale data.
+    #if arch(arm64)
+      let bytes: [UInt8] = [
+        0x48, 0xFF, 0xC1,  // inc rcx
+        0x48, 0x8B, 0x03,  // mov rax,[rbx]
+      ]
+      let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)
+      for (address, value): (UInt64, UInt64) in [
+        (0x9000, 0xA007), (0xA000, 0xB007), (0xB000, 0xC007),
+        (0xC008, 0x1007), (0xC010, 0x2007), (0xC040, 0x8007),
+      ] {
+        try physical.writeScalar(at: address, value: value, byteCount: 8)
+      }
+      try physical.write(at: 0x1000, bytes: bytes)
+      try physical.writeScalar(at: 0x8000, value: 0x1234_ABCD, byteCount: 8)
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0xAAAA, rcx: 0, rbx: 0x8000),
+        rip: 0x1000,
+        cs: .init(selector: 3, attributes: 0xA0FB, limit: .max),
+        control: .init(
+          cr0: 0x8001_0011,
+          cr3: 0x9000,
+          cr4: 1 << 5,
+          efer: (1 << 10) | (1 << 11)
+        )
+      )
+      let paging = DoryX86PagingUnit()
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: initial, mode: .long64)
+      )
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: true,
+        optimization: .optimizing
+      )
+
+      var warm = initial
+      let warmExecution = try #require(executor.execute(
+        bytes: bytes,
+        at: 0x1000,
+        mode: .long64,
+        addressSpaceID: 0x9000,
+        maximumInstructions: 2,
+        state: &warm,
+        memory: translated
+      ))
+      #expect(warmExecution.block.tier == .tier1)
+      #expect(warmExecution.exitCode != .interpreter)
+      #expect(warm.rip == 0x1006)
+      #expect(warm.registers.rcx == 1)
+      #expect(warm.registers.rax == 0x1234_ABCD)
+
+      var hit = initial
+      let hitExecution = try #require(executor.execute(
+        bytes: bytes,
+        at: 0x1000,
+        mode: .long64,
+        addressSpaceID: 0x9000,
+        maximumInstructions: 2,
+        state: &hit,
+        memory: translated
+      ))
+      #expect(hitExecution.block.tier == .tier1)
+      #expect(hitExecution.exitCode != .interpreter)
+      #expect(hit.rip == 0x1006)
+      #expect(hit.registers.rcx == 1)
+      #expect(hit.registers.rax == 0x1234_ABCD)
+      #expect(executor.diagnostics.translationCacheHits > 0)
+
+      try physical.writeScalar(at: 0xC040, value: 0x8006, byteCount: 8)
+      paging.invalidateAll()
+      executor.synchronizeTranslationCache(with: paging)
+      var state = initial
+      state.registers.rax = 0xBBBB
+      translated.updateContext(.init(state: state, mode: .long64))
+      let summary = try #require(executor.executeChainedSummary(
+        byteProvider: { address, maximumCount in
+          (try? translated.instructionBytes(at: address, maximumCount: maximumCount)) ?? []
+        },
+        codeGenerationProvider: { try translated.codeGeneration(at: $0, byteCount: $1) },
+        at: state.rip,
+        mode: .long64,
+        addressSpaceID: 0x9000,
+        maximumInstructions: 2,
+        state: &state,
+        memory: translated
+      ))
+      #expect(summary.exitCode == .interpreter)
+      #expect(summary.guestInstructionCount == 1)
+      #expect(state.rip == 0x1003)
+      #expect(state.registers.rcx == 1)
+      #expect(state.registers.rax == 0xBBBB)
+
+      #expect(DoryX86Interpreter().step(
+        state: &state,
+        memory: physical,
+        mode: .long64,
+        pagingUnit: paging,
+        translatedMemory: translated
+      ) == .exception(.init(
+        kind: .pageFault,
+        vector: 14,
+        errorCode: 0x4,
+        instructionPointer: 0x1003,
+        linearAddress: 0x8000
+      )))
+      #expect(state.rip == 0x1003)
+      #expect(state.registers.rcx == 1)
+      #expect(state.registers.rax == 0xBBBB)
+    #endif
+  }
 }
 
 private final class Tier1AtomicResults: @unchecked Sendable {

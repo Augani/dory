@@ -129,8 +129,18 @@ struct DoryARM64Tier1Emitter: Sendable {
     var statementFlagsStates: [DoryARM64InstructionFlagsState] = []
     statementWordOffsets.reserveCapacity(block.statements.count + 1)
     statementFlagsStates.reserveCapacity(block.statements.count + 1)
+    var nextInstructionBoundary = 0
 
-    for statement in block.statements {
+    for (statementIndex, statement) in block.statements.enumerated() {
+      while nextInstructionBoundary < block.instructionBoundaries.count,
+        Int(block.instructionBoundaries[nextInstructionBoundary].statementStartIndex) == statementIndex
+      {
+        boundary.emitGuestRIP(
+          block.instructionBoundaries[nextInstructionBoundary].guestRIP,
+          into: &body
+        )
+        nextInstructionBoundary += 1
+      }
       statementWordOffsets.append(body.count)
       statementFlagsStates.append(nativeFlags == nil ? .context : .nativeNZCV)
       switch statement {

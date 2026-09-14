@@ -2946,9 +2946,8 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
   ) {
     let byteCount = UInt32(width.rawValue / 8)
     let destination = UInt32(destinationGuestRegister)
+    emitInlineReadFaultCheckpoint(into: &words)
     // Guest GPRs occupy x0...x15. Borrow x14/x15 as lookup scratch after checkpointing them.
-    words.append(encodeStore64(register: 14, word: .r14))
-    words.append(encodeStore64(register: 15, word: .r15))
 
     emitImmediate(0xfff, register: 17, into: &words)
     words.append(
@@ -3079,6 +3078,23 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
 
     let done = words.count
     words[hitDoneBranch] = encodeUnconditionalBranch(wordOffset: done - hitDoneBranch)
+  }
+
+  /// Publishes the complete pre-load architectural state before the inline probe borrows guest
+  /// registers. `restoreFailedMemoryCallbackPrefix` uses this context image together with the
+  /// host-PC side table to recover the faulting instruction after a host-visible direct load.
+  private static func emitInlineReadFaultCheckpoint(into words: inout [UInt32]) {
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      words.append(
+        encodeStore64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    words.append(
+      encodeStore64(
+        register: DoryARM64Tier1ABI.guestRIPRegister,
+        word: .rip))
+    DoryARM64Tier1BoundaryEmitter().emitRecoveryFlagsCheckpoint(into: &words)
   }
 
   private static func emitApplyLoadedScalar(
