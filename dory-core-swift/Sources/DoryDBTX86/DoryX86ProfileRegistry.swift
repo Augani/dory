@@ -135,6 +135,7 @@ public enum DoryX86SavedStateError: Error, Sendable, Equatable, CustomStringConv
   case profileMismatch(expected: DoryX86ProfileRegistry.Identifier, actual: DoryX86ProfileRegistry.Identifier)
   case cpuIdentityMismatch(expected: DoryX86CPUIdentity, actual: DoryX86CPUIdentity)
   case xcr0OutsideProfile(value: UInt64, allowed: UInt64)
+  case osxsaveEnabledOutsideProfile(cr4: UInt64)
 
   public var description: String {
     switch self {
@@ -148,6 +149,8 @@ public enum DoryX86SavedStateError: Error, Sendable, Equatable, CustomStringConv
       "x86 saved-state CPU identity mismatch (expected \(expected.rawValue), got \(actual.rawValue))"
     case .xcr0OutsideProfile(let value, let allowed):
       "x86 saved-state XCR0 0x\(String(value, radix: 16)) exceeds profile mask 0x\(String(allowed, radix: 16))"
+    case .osxsaveEnabledOutsideProfile(let cr4):
+      "x86 saved-state CR4.OSXSAVE is enabled outside the resolved profile (CR4 0x\(String(cr4, radix: 16)))"
     }
   }
 }
@@ -237,6 +240,10 @@ public struct DoryX86SavedStateEnvelope: Codable, Sendable, Hashable {
     guard profileFingerprint == resolved.fingerprint else {
       throw DoryX86SavedStateError.profileFingerprintMismatch(
         expected: resolved.fingerprint, actual: profileFingerprint)
+    }
+    let cr4 = architecturalState.control.cr4
+    guard cr4 & (1 << 18) == 0 || resolved.cpuProfile.supports(.xsave) else {
+      throw DoryX86SavedStateError.osxsaveEnabledOutsideProfile(cr4: cr4)
     }
     let allowedXCR0 = Self.allowedXCR0(for: resolved.cpuProfile)
     let xcr0 = architecturalState.control.xcr0

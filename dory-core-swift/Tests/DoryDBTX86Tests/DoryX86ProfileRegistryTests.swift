@@ -99,6 +99,33 @@ import Testing
     }
   }
 
+  @Test func envelopeRejectsOSXSAVEOutsideResolvedProfile() throws {
+    let profile = try DoryX86ProfileRegistry.resolve(.baselineV1)
+    var state = DoryX86ArchitecturalState.reset()
+    state.control.cr4 = 1 << 18
+    #expect(throws: DoryX86SavedStateError.osxsaveEnabledOutsideProfile(cr4: 1 << 18)) {
+      try DoryX86SavedStateEnvelope(state: state, resolvedProfile: profile)
+    }
+  }
+
+  @Test func decodeRejectsTamperedOSXSAVEOutsideResolvedProfile() throws {
+    let profile = try DoryX86ProfileRegistry.resolve(.baselineV1)
+    let envelope = try DoryX86SavedStateEnvelope(state: .reset(), resolvedProfile: profile)
+    let encoded = try JSONEncoder().encode(envelope)
+    var tampered = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    var state = try #require(tampered["architecturalState"] as? [String: Any])
+    var control = try #require(state["control"] as? [String: Any])
+    control["cr4"] = 1 << 18
+    state["control"] = control
+    tampered["architecturalState"] = state
+
+    #expect(throws: DoryX86SavedStateError.osxsaveEnabledOutsideProfile(cr4: 1 << 18)) {
+      try JSONDecoder().decode(
+        DoryX86SavedStateEnvelope.self,
+        from: JSONSerialization.data(withJSONObject: tampered))
+    }
+  }
+
   @Test func restoreRejectsDifferentFrozenCPUIdentity() throws {
     let dory = try DoryX86ProfileRegistry.resolve(.baselineV1, identity: .legacyDoryV1)
     let intel = try DoryX86ProfileRegistry.resolve(.baselineV1, identity: .intelCompatibleV1)
