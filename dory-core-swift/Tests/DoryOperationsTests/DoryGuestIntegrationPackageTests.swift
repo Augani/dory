@@ -64,6 +64,22 @@ struct DoryGuestIntegrationPackageTests {
         })
     }
 
+    @Test("macOS packages can declare the retained Metal probe without claiming runtime qualification")
+    func macOSMetalProbePackageContract() {
+        var manifest = package(
+            family: .macOS,
+            roles: [.macOSPackage],
+            signature: .appleDeveloperID
+        )
+        manifest.capabilities.append(.init(id: .metalProbe, version: 1))
+        manifest.capabilities.sort { $0.id.rawValue < $1.id.rawValue }
+
+        #expect(manifest.isValidForPersistence)
+        #expect(manifest.state == .contractOnly)
+        #expect(manifest.qualification == nil)
+        #expect(manifest.capabilities.contains(.init(id: .metalProbe, version: 1)))
+    }
+
     @Test("signature systems cannot be substituted across guest families")
     func signatureSubstitutionRejected() {
         let windowsWithAppleSignature = package(

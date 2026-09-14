@@ -24,6 +24,10 @@ public enum DoryGuestIntegrationCapabilityID: String, Codable, Sendable, CaseIte
     case telemetry
     case snapshotQuiesce = "snapshot-quiesce"
     case packageUpdate = "package-update"
+    /// A retained guest-side Metal workload. Declaring this in a package manifest does not
+    /// make it a resolved runtime feature or a qualification result; those require a bound
+    /// guest result through the separately authenticated collection path.
+    case metalProbe = "metal-probe"
 }
 
 public struct DoryGuestIntegrationCapabilityDeclaration: Codable, Sendable, Equatable, Hashable {
