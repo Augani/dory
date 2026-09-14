@@ -7,6 +7,90 @@ struct ISAEvidenceArtifact: Codable, Equatable {
   let sha256: String
 }
 
+/// An output annotation plus its authenticated origin. This is deliberately not
+/// Decodable: neither JSON nor a plain ISAQualification can mint verified proof.
+struct ISAWorkloadEvidence: Encodable {
+  fileprivate let provenance: (vector: ISAVector, parent: ISAEvidenceArtifact, run: Int,
+    child: ISAEvidenceArtifact)?
+  let qualification: ISAQualification
+  var status: String { qualification.status }
+  var evidence: [String] { qualification.evidence }
+  var scope: String { qualification.scope }
+
+  static var unmeasured: Self { Self() }
+
+  private init() {
+    provenance = nil
+    qualification = .init(
+      scope: "No verified kernel boot, userspace, or installer receipt for this exact form.")
+  }
+
+  fileprivate init(vector: ISAVector, parent: ISAEvidenceArtifact, run: Int,
+    child: ISAEvidenceArtifact, scope: String)
+  {
+    provenance = (vector, parent, run, child)
+    qualification = .init(status: "verified", evidence: [child.path], scope: scope)
+  }
+
+  func encode(to encoder: any Encoder) throws {
+    try qualification.encode(to: encoder)
+  }
+}
+
+/// Catalog-authenticated reference annotation; decoding an output qualification
+/// cannot recreate its authority.
+struct ISAIndependentReferenceEvidence: Encodable {
+  fileprivate let provenance: (vector: ISAVector, parent: ISAEvidenceArtifact, run: Int,
+    child: ISAEvidenceArtifact)?
+  let qualification: ISAQualification
+  var status: String { qualification.status }
+  var evidence: [String] { qualification.evidence }
+
+  static var unmeasured: Self { Self() }
+
+  private init() {
+    provenance = nil
+    qualification = .init(scope: "Open A08 gap: no exact-form independent-reference execution receipt.")
+  }
+
+  fileprivate init(vector: ISAVector, parent: ISAEvidenceArtifact, run: Int,
+    child: ISAEvidenceArtifact, scope: String)
+  {
+    provenance = (vector, parent, run, child)
+    qualification = .init(status: "verified", evidence: [child.path], scope: scope)
+  }
+
+  func encode(to encoder: any Encoder) throws {
+    try qualification.encode(to: encoder)
+  }
+}
+
+/// Neither caller-authored qualifications nor serialized annotations can mint
+/// this complete proof. Both opaque legs must come from the same verified run.
+/// Distinct paths and digests prevent one receipt from serving as both legs.
+struct ISAWorkloadQualifiedProof {
+  private let vector: ISAVector
+  private let parent: ISAEvidenceArtifact
+  private let run: Int
+  private let reference: ISAEvidenceArtifact
+  private let workload: ISAEvidenceArtifact
+
+  init?(reference: ISAIndependentReferenceEvidence, workload: ISAWorkloadEvidence) {
+    guard let reference = reference.provenance, let workload = workload.provenance,
+      reference.vector == workload.vector, reference.parent == workload.parent,
+      reference.run == workload.run, reference.child.path != workload.child.path,
+      reference.child.sha256 != workload.child.sha256
+    else { return nil }
+    vector = reference.vector
+    parent = reference.parent
+    run = reference.run
+    self.reference = reference.child
+    self.workload = workload.child
+  }
+
+  func authenticates(_ vector: ISAVector) -> Bool { self.vector == vector }
+}
+
 struct ISASupportTest: Codable {
   let id: String
   let method: String
@@ -39,6 +123,39 @@ struct ISASupportForm: Codable {
   let flags: ISAQualification
   let faults: ISAQualification
   let executions: [ISAExecutionCase]
+  // Selects a child of the verified parent run's workloadReceipts, never an
+  // independent authority for the child digest. Missing in historical catalogs.
+  var realWorkloadReceipt: ISAEvidenceArtifact? = nil
+  var independentReferenceReceipt: ISAEvidenceArtifact? = nil
+}
+
+/// A separate retained workload run must attest to this exact authored vector.
+/// A passing engine test or a workload name alone is not an observation.
+private struct ISAWorkloadReceipt: Decodable {
+  enum Kind: String, Decodable {
+    case kernelBoot, userspace, installer
+  }
+
+  let schemaVersion: Int
+  let vector: ISAVector
+  let workloadKind: Kind
+  let outcome: String
+  let observedExactForm: Bool
+  let scope: String
+}
+
+private struct ISAIndependentReferenceReceipt: Decodable {
+  enum Kind: String, Decodable {
+    case physicalHardware, independentEmulator
+  }
+
+  let schemaVersion: Int
+  let vector: ISAVector
+  let referenceKind: Kind
+  let outcome: String
+  let observedExactForm: Bool
+  let comparisonMatched: Bool
+  let scope: String
 }
 
 struct ISASupportSummary: Encodable {
@@ -132,8 +249,11 @@ struct ISASupportCatalog: Codable {
     let receipt = try object(receiptData)
     guard receipt["sourceCommit"] as? String == catalog.sourceCommit,
       let host = receipt["host"] as? [String: Any], host["architecture"] as? String == "arm64",
-      let runs = receipt["runs"] as? [[String: Any]],
-      let run = runs.first(where: { $0["run"] as? Int == catalog.run }),
+      let runs = receipt["runs"] as? [[String: Any]]
+    else { throw ISASupportError.invalid("passing source-bound run") }
+    // Run identity must be unique before any source binding or child is used.
+    let matchingRuns = runs.filter { $0["run"] as? Int == catalog.run }
+    guard matchingRuns.count == 1, let run = matchingRuns.first,
       run["exitCode"] as? Int == 0,
       let binding = run["sourceBinding"] as? [String: Any],
       binding["comparisonCommit"] as? String == catalog.sourceCommit,
@@ -177,6 +297,19 @@ struct ISASupportCatalog: Codable {
     // Apply only after every parent artifact has been verified. The decoder must
     // still agree with the exact catalog identity, including sizes and prefixes.
     var updated = records
+    // Clear even records outside this catalog: an omitted form or legacy field
+    // must not preserve either proof leg or state from an earlier application.
+    for index in updated.indices {
+      updated[index].independentReference = .unmeasured
+      updated[index].realWorkload = .unmeasured
+      updated[index].conformanceState = ISAConformanceStateResolver.resolve(
+        decoderSupport: updated[index].decoderSupport,
+        interpreterSemantics: updated[index].interpreterSemantics,
+        jitBaseline: updated[index].jitSupport.baseline,
+        jitOptimizing: updated[index].jitSupport.optimizing,
+        independentReference: updated[index].independentReference.qualification,
+        executedFormCount: updated[index].executedFormCount)
+    }
     for form in catalog.forms {
       guard let index = updated.firstIndex(where: { $0.vector.id == form.vector.id }) else {
         throw ISASupportError.invalid("unknown vector: \(form.vector.id)")
@@ -230,6 +363,26 @@ struct ISASupportCatalog: Codable {
       updated[index].jitSupport.optimizing = form.optimizingJIT
       updated[index].flags = form.flags
       updated[index].faults = form.faults
+      if let receipt = form.independentReferenceReceipt {
+        guard let children = run["independentReferenceReceipts"] as? [[String: Any]],
+          (1...256).contains(children.count),
+          children.filter({ $0["path"] as? String == receipt.path }).count == 1,
+          children.contains(where: { artifact($0, matches: receipt) })
+        else { throw ISASupportError.invalid("independent reference parent binding: \(form.vector.id)") }
+        updated[index].independentReference = try verifiedIndependentReference(
+          receipt, vector: form.vector, parent: catalog.receipt, run: catalog.run, load: load)
+      }
+      if let receipt = form.realWorkloadReceipt {
+        // The selected, already verified source-bound run is the sole authority
+        // for child identity. A matching digest declared only by a form fails.
+        guard let children = run["workloadReceipts"] as? [[String: Any]],
+          (1...256).contains(children.count),
+          children.filter({ $0["path"] as? String == receipt.path }).count == 1,
+          children.contains(where: { artifact($0, matches: receipt) })
+        else { throw ISASupportError.invalid("workload parent binding: \(form.vector.id)") }
+        updated[index].realWorkload = try verifiedWorkload(
+          receipt, vector: form.vector, parent: catalog.receipt, run: catalog.run, load: load)
+      }
       updated[index].executedFormCount = form.executions.contains { $0.outcome == "retired" } ? 1 : 0
       updated[index].faultAttemptFormCount = form.executions.contains { $0.outcome == "faulted" } ? 1 : 0
       // P2-04 item 2: Recompute the conformance state from the applied evidence.
@@ -239,8 +392,11 @@ struct ISASupportCatalog: Codable {
         interpreterSemantics: updated[index].interpreterSemantics,
         jitBaseline: updated[index].jitSupport.baseline,
         jitOptimizing: updated[index].jitSupport.optimizing,
-        independentReference: updated[index].independentReference,
-        executedFormCount: updated[index].executedFormCount)
+        independentReference: updated[index].independentReference.qualification,
+        executedFormCount: updated[index].executedFormCount,
+        vector: updated[index].vector,
+        authenticatedProof: ISAWorkloadQualifiedProof(
+          reference: updated[index].independentReference, workload: updated[index].realWorkload))
     }
     records = updated
     return .init(
@@ -252,6 +408,33 @@ struct ISASupportCatalog: Codable {
   private static func artifact(_ object: Any?, matches expected: ISAEvidenceArtifact) -> Bool {
     guard let value = object as? [String: Any] else { return false }
     return value["path"] as? String == expected.path && value["sha256"] as? String == expected.sha256
+  }
+
+  private static func verifiedWorkload(
+    _ artifact: ISAEvidenceArtifact, vector: ISAVector, parent: ISAEvidenceArtifact,
+    run: Int, load: (String) throws -> Data
+  ) throws -> ISAWorkloadEvidence {
+    let receipt = try JSONDecoder().decode(ISAWorkloadReceipt.self, from: verified(artifact, load: load))
+    guard receipt.schemaVersion == 1, receipt.vector == vector,
+      receipt.outcome == "passed", receipt.observedExactForm,
+      !receipt.scope.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      receipt.scope.utf8.count <= 2048
+    else { throw ISASupportError.invalid("workload receipt: \(vector.id)") }
+    return .init(vector: vector, parent: parent, run: run, child: artifact, scope: receipt.scope)
+  }
+
+  private static func verifiedIndependentReference(
+    _ artifact: ISAEvidenceArtifact, vector: ISAVector, parent: ISAEvidenceArtifact,
+    run: Int, load: (String) throws -> Data
+  ) throws -> ISAIndependentReferenceEvidence {
+    let receipt = try JSONDecoder().decode(
+      ISAIndependentReferenceReceipt.self, from: verified(artifact, load: load))
+    guard receipt.schemaVersion == 1, receipt.vector == vector,
+      receipt.outcome == "passed", receipt.observedExactForm, receipt.comparisonMatched,
+      !receipt.scope.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      receipt.scope.utf8.count <= 2048
+    else { throw ISASupportError.invalid("independent reference receipt: \(vector.id)") }
+    return .init(vector: vector, parent: parent, run: run, child: artifact, scope: receipt.scope)
   }
 
   private static func object(_ data: Data) throws -> [String: Any] {

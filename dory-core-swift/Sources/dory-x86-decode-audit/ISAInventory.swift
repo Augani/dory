@@ -69,12 +69,14 @@ struct ISAInventoryRecord: Encodable {
     scope: "Open A03/A05/A07 gap: no complete feature/control/XSTATE dependency evidence for this exact form.")
   let memoryOrdering = ISAQualification(
     scope: "Open A08 gap: no independent ordering evidence or reviewed non-memory applicability for this exact form.")
-  let independentReference = ISAQualification(
-    scope: "Open A08 gap: no exact-form independent-reference execution receipt.")
+  var independentReference = ISAIndependentReferenceEvidence.unmeasured
+  // Verified values can only originate from the source-bound catalog loader.
+  var realWorkload = ISAWorkloadEvidence.unmeasured
   let qualificationStatus = "unqualified"
   // P2-04 item 2: The conformance state tracks the highest independently
   // reached state for this exact vector form. See ISAConformanceState.
   var conformanceState: ISAConformanceState
+  // Dory engine activity only; neither counter establishes workload evidence.
   var executedFormCount = 0
   var faultAttemptFormCount = 0
 }

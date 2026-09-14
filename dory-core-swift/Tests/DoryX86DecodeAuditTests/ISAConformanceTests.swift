@@ -27,7 +27,8 @@ import Testing
       jitBaseline: .init(),
       jitOptimizing: .init(),
       independentReference: .init(),
-      executedFormCount: 0)
+      executedFormCount: 0,
+      realWorkload: nil)
     #expect(state == .rejected)
   }
 
@@ -38,7 +39,8 @@ import Testing
       jitBaseline: .init(),
       jitOptimizing: .init(),
       independentReference: .init(),
-      executedFormCount: 0)
+      executedFormCount: 0,
+      realWorkload: nil)
     #expect(state == .recognized)
   }
 
@@ -49,7 +51,8 @@ import Testing
       jitBaseline: .init(),
       jitOptimizing: .init(),
       independentReference: .init(),
-      executedFormCount: 0)
+      executedFormCount: 0,
+      realWorkload: nil)
     #expect(state == .interpreted)
   }
 
@@ -60,7 +63,8 @@ import Testing
       jitBaseline: .init(status: "supported", evidence: ["test-2"]),
       jitOptimizing: .init(),
       independentReference: .init(),
-      executedFormCount: 0)
+      executedFormCount: 0,
+      realWorkload: nil)
     #expect(state == .loweredTier1)
   }
 
@@ -71,7 +75,8 @@ import Testing
       jitBaseline: .init(status: "supported", evidence: ["test-2"]),
       jitOptimizing: .init(status: "supported", evidence: ["test-3"]),
       independentReference: .init(),
-      executedFormCount: 0)
+      executedFormCount: 0,
+      realWorkload: nil)
     #expect(state == .loweredTier2)
   }
 
@@ -82,19 +87,72 @@ import Testing
       jitBaseline: .init(status: "supported", evidence: ["test-2"]),
       jitOptimizing: .init(status: "supported", evidence: ["test-3"]),
       independentReference: .init(status: "verified", evidence: ["hw-1"]),
-      executedFormCount: 0)
+      executedFormCount: 0,
+      realWorkload: nil)
     #expect(state == .independentlyVerified)
   }
 
-  @Test func resolverReturnsWorkloadQualifiedWhenReferenceVerifiedAndWorkloadObserved() {
+  @Test func callerConstructedVerifiedQualificationCannotProveWorkload() {
     let state = ISAConformanceStateResolver.resolve(
       decoderSupport: "recognized",
       interpreterSemantics: .init(status: "supported", evidence: ["test-1"]),
       jitBaseline: .init(status: "supported", evidence: ["test-2"]),
       jitOptimizing: .init(),
       independentReference: .init(status: "verified", evidence: ["hw-1"]),
-      executedFormCount: 42)
-    #expect(state == .workloadQualified)
+      executedFormCount: 0,
+      realWorkload: .init(status: "verified", evidence: ["workload-receipt.json"],
+        scope: "Verified exact-form userspace observation."))
+    #expect(state == .independentlyVerified)
+  }
+
+  @Test func engineRetirementWithIndependentReferenceIsNotWorkloadEvidence() {
+    let state = ISAConformanceStateResolver.resolve(
+      decoderSupport: "recognized",
+      interpreterSemantics: .init(status: "supported", evidence: ["test-1"]),
+      jitBaseline: .init(),
+      jitOptimizing: .init(),
+      independentReference: .init(status: "verified", evidence: ["hw-1"]),
+      executedFormCount: 42,
+      realWorkload: nil)
+    #expect(state == .independentlyVerified)
+  }
+
+  @Test func workloadEvidenceWithoutIndependentReferencePreservesEngineState() {
+    let state = ISAConformanceStateResolver.resolve(
+      decoderSupport: "recognized",
+      interpreterSemantics: .init(status: "supported", evidence: ["test-1"]),
+      jitBaseline: .init(status: "supported", evidence: ["test-2"]),
+      jitOptimizing: .init(),
+      independentReference: .init(),
+      executedFormCount: 42,
+      realWorkload: .init(status: "verified", evidence: ["workload-receipt.json"],
+        scope: "Verified exact-form userspace observation."))
+    #expect(state == .loweredTier1)
+  }
+
+  @Test(arguments: ["unmeasured", "unsupported", "supported", "unknown", "verified"])
+  func callerAuthoredWorkloadStatusNeverQualifies(status: String) {
+    let state = ISAConformanceStateResolver.resolve(
+      decoderSupport: "recognized",
+      interpreterSemantics: .init(),
+      jitBaseline: .init(),
+      jitOptimizing: .init(),
+      independentReference: .init(status: "verified", evidence: ["hw-1"]),
+      executedFormCount: 42,
+      realWorkload: .init(status: status, evidence: ["workload-receipt.json"]))
+    #expect(state == .independentlyVerified)
+  }
+
+  @Test func rejectedFormCannotBePromotedByReferenceAndWorkloadEvidence() {
+    let state = ISAConformanceStateResolver.resolve(
+      decoderSupport: "rejected",
+      interpreterSemantics: .init(status: "supported", evidence: ["test-1"]),
+      jitBaseline: .init(status: "supported", evidence: ["test-2"]),
+      jitOptimizing: .init(status: "supported", evidence: ["test-3"]),
+      independentReference: .init(status: "verified", evidence: ["hw-1"]),
+      executedFormCount: 42,
+      realWorkload: .init(status: "verified", evidence: ["workload-receipt.json"]))
+    #expect(state == .rejected)
   }
 
   @Test func resolverReturnsIndependentlyVerifiedWithoutWorkloadObservation() {
@@ -104,12 +162,13 @@ import Testing
       jitBaseline: .init(status: "supported", evidence: ["test-2"]),
       jitOptimizing: .init(status: "supported", evidence: ["test-3"]),
       independentReference: .init(status: "verified", evidence: ["hw-1"]),
-      executedFormCount: 0)
+      executedFormCount: 0,
+      realWorkload: nil)
     #expect(state == .independentlyVerified)
   }
 
   // P2-04: Dory-only execution (interpreter/Tier1/Tier2) shares the decoder
-  // and fault model with the independent oracle. A positive executedFormCount
+  // and fault model with each other. A positive executedFormCount
   // without a measured independent reference must not resolve as
   // workloadQualified or independentlyVerified; it must fall through to the
   // strongest actual engine tier.
@@ -120,7 +179,8 @@ import Testing
       jitBaseline: .init(status: "supported", evidence: ["test-2"]),
       jitOptimizing: .init(),
       independentReference: .init(),
-      executedFormCount: 42)
+      executedFormCount: 42,
+      realWorkload: nil)
     #expect(state == .loweredTier1)
   }
 
@@ -131,7 +191,8 @@ import Testing
       jitBaseline: .init(status: "supported", evidence: ["test-2"]),
       jitOptimizing: .init(status: "supported", evidence: ["test-3"]),
       independentReference: .init(),
-      executedFormCount: 42)
+      executedFormCount: 42,
+      realWorkload: nil)
     #expect(state == .loweredTier2)
   }
 
@@ -142,7 +203,8 @@ import Testing
       jitBaseline: .init(),
       jitOptimizing: .init(),
       independentReference: .init(),
-      executedFormCount: 42)
+      executedFormCount: 42,
+      realWorkload: nil)
     #expect(state == .interpreted)
   }
 

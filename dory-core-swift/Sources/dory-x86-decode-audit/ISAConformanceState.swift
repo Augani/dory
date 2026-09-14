@@ -211,22 +211,38 @@ public enum ISAConformanceStateResolver {
     jitBaseline: ISAQualification,
     jitOptimizing: ISAQualification,
     independentReference: ISAQualification,
-    executedFormCount: Int
+    executedFormCount _: Int,
+    realWorkload _: ISAQualification? = nil
   ) -> ISAConformanceState {
     if decoderSupport == "rejected" { return .rejected }
-    // P2-04: workloadQualified requires BOTH an exact-form independently
-    // verified reference and a qualifying workload observation. A Dory-only
-    // execution (interpreter/Tier1/Tier2) shares the decoder/fault model with
-    // the independent oracle, so a positive executedFormCount alone must not
-    // resolve as workloadQualified or independentlyVerified. Without a measured
-    // independent reference, fall through to the strongest actual engine tier.
-    if independentReference.status == "verified" && executedFormCount > 0 {
-      return .workloadQualified
-    }
+    // Counts and caller-authored annotations cannot authenticate a workload.
+    // Retain these parameters for source compatibility, without promotion power.
     if independentReference.status == "verified" { return .independentlyVerified }
     if jitOptimizing.status == "supported" { return .loweredTier2 }
     if jitBaseline.status == "supported" { return .loweredTier1 }
     if interpreterSemantics.status == "supported" { return .interpreted }
     return .recognized
+  }
+
+  // Top-tier authority comes entirely from the opaque, catalog-derived two-leg
+  // proof. A plain reference annotation can affect only the lower-tier fallback.
+  static func resolve(
+    decoderSupport: String,
+    interpreterSemantics: ISAQualification,
+    jitBaseline: ISAQualification,
+    jitOptimizing: ISAQualification,
+    independentReference: ISAQualification,
+    executedFormCount: Int,
+    vector: ISAVector,
+    authenticatedProof: ISAWorkloadQualifiedProof?
+  ) -> ISAConformanceState {
+    let state = resolve(
+      decoderSupport: decoderSupport, interpreterSemantics: interpreterSemantics,
+      jitBaseline: jitBaseline, jitOptimizing: jitOptimizing,
+      independentReference: independentReference, executedFormCount: executedFormCount)
+    if state != .rejected && authenticatedProof?.authenticates(vector) == true {
+      return .workloadQualified
+    }
+    return state
   }
 }
