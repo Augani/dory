@@ -8342,6 +8342,12 @@ public final class MachineManager: @unchecked Sendable {
             // replace the admission or launch plan of a running/paused machine.
             return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
         }
+        // Structural EFI ejection preflight runs before any durable lifecycle, checkpoint,
+        // NVRAM, configuration, or attachment mutation in both update policies. The helper
+        // is a no-op for non-EFI/non-ejection updates.
+        if installerParent == nil {
+            try confirmInstalledEFIBootabilityIfNeeded(from: current, to: updated)
+        }
         if launchPolicy == .perWorkspaceAuthority {
             let lifecycle: MachineLifecycleJournalContext?
             let updateJournal: DoryMachineConfigurationUpdateJournal?
@@ -8396,10 +8402,6 @@ public final class MachineManager: @unchecked Sendable {
                     try captureInstallerFirmwareCheckpoint(installerParent, machine: current)
                 }
                 if let lifecycle { try advanceLifecycle(lifecycle) }
-                try confirmInstalledDoryPCBootabilityIfNeeded(
-                    from: current,
-                    to: updated
-                )
                 try resetInstallerFirmwareVariableStoreForRecoveryIfNeeded(
                     from: current,
                     to: updated
@@ -8520,10 +8522,6 @@ public final class MachineManager: @unchecked Sendable {
         }
         var promotedInstallerFirmwareStore = false
         do {
-            try confirmInstalledDoryPCBootabilityIfNeeded(
-                from: current,
-                to: updated
-            )
             try resetInstallerFirmwareVariableStoreForRecoveryIfNeeded(
                 from: current,
                 to: updated
@@ -9181,6 +9179,18 @@ public final class MachineManager: @unchecked Sendable {
         let preparation = try prepareMachineConfigurationUpdate(
             id: id, request: request, permitsPaused: true, allowsFirmwareRecovery: false
         )
+        guard preparation.changesDefinition else {
+            return status(id: id) ?? DoryMachineStatus(id: id, state: originalState)
+        }
+        // The production transition creates its parent lifecycle journal below. Validate an
+        // ejected EFI disk first; its recursive update observes that parent and skips its
+        // duplicate check.
+        if launchPolicy == .perWorkspaceAuthority {
+            try confirmInstalledEFIBootabilityIfNeeded(
+                from: preparation.source,
+                to: preparation.target
+            )
+        }
         // Keep the same cross-process fence from live-source validation through publication,
         // planning and rollback. A production workspace must already own its lock; imported
         // compatibility fixtures may initialize that lock on their first valid mutation.
@@ -17932,26 +17942,27 @@ public final class MachineManager: @unchecked Sendable {
         return true
     }
 
-    /// The removable-media transaction may switch DoryPC to disk-first boot only after the
-    /// stopped system disk contains a structurally valid EFI system partition. The immediately
-    /// following first boot remains the executable proof and retains the existing rollback path.
-    private func confirmInstalledDoryPCBootabilityIfNeeded(
+    /// The removable-media transaction may switch an EFI machine to disk-first boot only
+    /// after the stopped system disk contains a structurally valid EFI system partition.
+    /// This preflight runs on every guest ISA before any variable-store promotion,
+    /// persistence, or attachment mutation. The immediately following first boot remains
+    /// the executable proof and retains the existing rollback path.
+    private func confirmInstalledEFIBootabilityIfNeeded(
         from current: DoryMachineConfiguration,
         to updated: DoryMachineConfiguration
     ) throws {
         guard current.bootMode == .efi,
               current.installerISOPath != nil,
-              updated.installerISOPath == nil,
-              try effectiveGuestArchitecture(for: current) == .x86_64 else {
+              updated.installerISOPath == nil else {
             return
         }
         do {
-            _ = try DoryLinuxInstalledDiskInspector.efiSystemPartition(
+            _ = try DoryLinuxInstalledDiskInspector.installedEFIReceipt(
                 atPath: current.rootfsPath
             )
         } catch {
             throw MachineManagerError.persistence(
-                "DoryPC installer ejection requires an EFI-bootable installed system disk; "
+                "EFI installer ejection requires an EFI-bootable installed system disk; "
                     + "keep the ISO attached and finish installation before retrying: \(error.localizedDescription)"
             )
         }

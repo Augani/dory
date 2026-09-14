@@ -30,7 +30,7 @@ final class MachineManagerTests: XCTestCase {
         try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(
             to: URL(fileURLWithPath: installer)
         )
-        try Data("disk".utf8).write(to: URL(fileURLWithPath: disk))
+        try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
         let state = "\(base)/machines"
         let configuration = MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
@@ -3523,6 +3523,9 @@ final class MachineManagerTests: XCTestCase {
 
         let reloaded = MachineManager(diagnosticConfiguration: configuration)
         XCTAssertEqual(reloaded.list().map(\.id), ["ubuntu"])
+        try installedX86GPTImage().write(
+            to: URL(fileURLWithPath: "\(state)/ubuntu/rootfs.ext4")
+        )
         try Data("installed-efi-variables".utf8).write(
             to: URL(fileURLWithPath: "\(state)/ubuntu/NVRAM.installer")
         )
@@ -3567,7 +3570,7 @@ final class MachineManagerTests: XCTestCase {
         try Data("EFI/BOOT/BOOTAA64.EFI\nno-supported-direct-kernel-layout".utf8).write(
             to: URL(fileURLWithPath: installer)
         )
-        try Data("installed-efi-system".utf8).write(to: URL(fileURLWithPath: disk))
+        try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
         let state = base + "/machines"
         let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: vzHelper,
@@ -3656,7 +3659,7 @@ final class MachineManagerTests: XCTestCase {
         let installer = "\(base)/installer.iso"
         let disk = "\(base)/installed-disk.raw"
         try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
-        try Data("installed system".utf8).write(to: URL(fileURLWithPath: disk))
+        try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
         let starter = RecordingProcessStarter(failingAttempts: [2])
         let state = "\(base)/machines"
         let manager = MachineManager(
@@ -3821,6 +3824,106 @@ final class MachineManagerTests: XCTestCase {
             "DoryPC must retain its descriptor-backed store instead of creating a legacy NVRAM file"
         )
         XCTAssertEqual(try variableStore.load().snapshot.platform, .pcV1)
+    }
+
+    func testARMEFIInstallerEjectionRejectsNonGPTDiskBeforePromotion() throws {
+        let base = "/tmp/dory-machine-arm-efi-eject-rejection-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = base + "/ubuntu-arm64.iso"
+        let disk = base + "/disk.raw"
+        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try Data("arbitrary-non-gpt-destination".utf8).write(to: URL(fileURLWithPath: disk))
+        let state = base + "/machines"
+        let lifecycleJournalHome = base + "/lifecycle-journal"
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            lifecycleJournalHome: lifecycleJournalHome,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false,
+            guestArchitecture: "arm64"
+        ))
+        defer { try? manager.delete(id: "linux") }
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
+            id: "linux",
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        let machineDirectory = state + "/linux"
+        let installerNVRAM = machineDirectory + "/NVRAM.installer"
+        let installedNVRAM = machineDirectory + "/NVRAM"
+        let installerState = Data("installer-recorded-efi-boot-state".utf8)
+        try installerState.write(to: URL(fileURLWithPath: installerNVRAM))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: installerNVRAM
+        )
+        let before = try manager.start(id: "linux")
+        let beforePID = try XCTUnwrap(before.pid)
+        XCTAssertEqual(before.state, .running)
+        let configurationPath = machineDirectory + "/machine.json"
+        let configurationBefore = try Data(contentsOf: URL(fileURLWithPath: configurationPath))
+        let lifecycleEntriesBefore = try FileManager.default.contentsOfDirectory(
+            atPath: lifecycleJournalHome
+        ).sorted()
+
+        XCTAssertThrowsError(
+            try manager.update(id: "linux", installerMediaAttached: false)
+        ) { error in
+            guard case let MachineManagerError.persistence(message) = error else {
+                return XCTFail("expected a persistence rejection, got \(error)")
+            }
+            XCTAssertTrue(
+                message.contains("EFI installer ejection requires"),
+                "rejection must be ISA-neutral: \(message)"
+            )
+            XCTAssertTrue(
+                message.contains("EFI-bootable installed system disk"),
+                "rejection must cite the structural GPT/ESP preflight: \(message)"
+            )
+            XCTAssertFalse(
+                message.contains("DoryPC"),
+                "ARM64 rejection must not use x86-only wording: \(message)"
+            )
+        }
+
+        let after = try XCTUnwrap(manager.status(id: "linux"))
+        XCTAssertEqual(after.state, .running)
+        XCTAssertEqual(after.pid, beforePID)
+        XCTAssertTrue(after.installerMediaAttached)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: configurationPath)),
+            configurationBefore,
+            "a failed structural preflight must not persist the detached installer configuration"
+        )
+        let stored = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: configurationBefore
+        )
+        XCTAssertNotNil(stored.installerISOPath)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: installedNVRAM),
+            "a failed structural preflight must not promote installer NVRAM"
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: installerNVRAM)),
+            installerState
+        )
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: lifecycleJournalHome).sorted(),
+            lifecycleEntriesBefore,
+            "a failed structural preflight must not create a lifecycle journal or firmware checkpoint"
+        )
+
+        let untouched = try manager.update(id: "linux", memoryMB: 4096)
+        XCTAssertTrue(untouched.installerMediaAttached)
     }
 
     func testDoryPCQualificationBootstrapLaunchesExactSoftwareUEFIEnvelope() throws {
@@ -4399,7 +4502,7 @@ final class MachineManagerTests: XCTestCase {
         try Data("EFI/BOOT/BOOTAA64.EFI\narm64 installer".utf8).write(
             to: URL(fileURLWithPath: installer)
         )
-        try Data("installed system".utf8).write(to: URL(fileURLWithPath: disk))
+        try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
         let state = "\(base)/machines"
         let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",

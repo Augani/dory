@@ -112,6 +112,57 @@ final class DoryInstallerISOTests: XCTestCase {
         }
     }
 
+    func testInstalledEFIReceiptIdentifiesESPAndPreservesParserErrors() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-installed-efi-receipt-\(UUID().uuidString).raw")
+        defer { try? FileManager.default.removeItem(at: path) }
+        try installedGPTImage().write(to: path)
+
+        let receipt = try DoryLinuxInstalledDiskInspector.installedEFIReceipt(
+            atPath: path.path
+        )
+        XCTAssertEqual(receipt.diskPath, path.path)
+        XCTAssertEqual(receipt.efiSystemPartitionIndex, 1)
+        XCTAssertEqual(
+            receipt.efiSystemPartitionIndex,
+            try DoryLinuxInstalledDiskInspector.efiSystemPartition(atPath: path.path),
+            "the receipt must deterministically identify the parsed ESP"
+        )
+
+        var withoutESP = installedGPTImage()
+        withoutESP.replaceSubrange(2 * 512..<(2 * 512 + 16), with: Data(repeating: 0, count: 16))
+        try withoutESP.write(to: path)
+        XCTAssertThrowsError(
+            try DoryLinuxInstalledDiskInspector.installedEFIReceipt(atPath: path.path)
+        ) { error in
+            XCTAssertEqual(
+                error as? DoryLinuxInstalledDiskInspectionError,
+                .efiSystemPartitionNotFound(path.path)
+            )
+        }
+
+        try Data("arbitrary-non-gpt-destination".utf8).write(to: path)
+        var expectedMalformed: DoryLinuxInstalledDiskInspectionError?
+        do {
+            _ = try DoryLinuxInstalledDiskInspector.efiSystemPartition(atPath: path.path)
+        } catch let error as DoryLinuxInstalledDiskInspectionError {
+            expectedMalformed = error
+        }
+        let expected = try XCTUnwrap(
+            expectedMalformed,
+            "arbitrary destination bytes must fail the bounded GPT parser"
+        )
+        XCTAssertThrowsError(
+            try DoryLinuxInstalledDiskInspector.installedEFIReceipt(atPath: path.path)
+        ) { error in
+            XCTAssertEqual(
+                error as? DoryLinuxInstalledDiskInspectionError,
+                expected,
+                "the receipt must preserve the parser's malformed-disk error category"
+            )
+        }
+    }
+
     func testExtractsBootAssetsFromOptInRealInstallerISO() throws {
         guard let path = ProcessInfo.processInfo.environment["DORY_TEST_INSTALLER_ISO"],
               !path.isEmpty else {

@@ -5,6 +5,21 @@ import Foundation
 /// Virtualization presents this image as NVMe during installation; Dory's accelerated runtime
 /// presents the same bytes as VirtIO block, so partition 2 becomes `/dev/vda2` without rewriting
 /// the guest disk.
+/// Structural proof that a whole-disk image contains a bounded, valid EFI System
+/// Partition. This is media evidence only: the subsequent first boot from the detached
+/// disk remains the authoritative proof that the installed loader and OS can execute.
+public struct DoryLinuxInstalledEFIReceipt: Sendable, Equatable {
+    /// Filesystem path of the inspected disk image.
+    public var diskPath: String
+    /// One-based GPT index identifying the parsed EFI System Partition.
+    public var efiSystemPartitionIndex: Int
+
+    public init(diskPath: String, efiSystemPartitionIndex: Int) {
+        self.diskPath = diskPath
+        self.efiSystemPartitionIndex = efiSystemPartitionIndex
+    }
+}
+
 public enum DoryLinuxInstalledDiskInspector {
     private static let sectorSize: UInt64 = 512
     private static let maximumPartitionTableBytes = 8 * 1024 * 1024
@@ -55,6 +70,14 @@ public enum DoryLinuxInstalledDiskInspector {
             throw DoryLinuxInstalledDiskInspectionError.rootPartitionNotFound(diskPath)
         }
         return "\(devicePrefix)\(root.index)"
+    }
+
+    /// Returns a structural receipt identifying the parsed EFI System Partition by its
+    /// one-based GPT index. This is a bounded pre-eject check: the subsequent disk-first
+    /// boot remains the authoritative proof that the installed loader and OS can execute.
+    public static func installedEFIReceipt(atPath diskPath: String) throws -> DoryLinuxInstalledEFIReceipt {
+        let index = try efiSystemPartition(atPath: diskPath)
+        return DoryLinuxInstalledEFIReceipt(diskPath: diskPath, efiSystemPartitionIndex: index)
     }
 
     /// Returns the one-based GPT index of a structurally valid EFI system partition. This is a
