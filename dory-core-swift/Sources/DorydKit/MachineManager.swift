@@ -8330,6 +8330,18 @@ public final class MachineManager: @unchecked Sendable {
         let updated = preparation.target
         let wasRunning = preparation.wasActive
         let nativeRecord = preparation.nativeRecord
+        guard preparation.changesDefinition else {
+            // An unchanged request has no publication to own. In particular it must not
+            // replace the admission or launch plan of a running/paused machine.
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
+        }
+        // A parent exists only for the recursive half of a production installer transition;
+        // transitionInstallerMedia already completed the same preflight before creating it.
+        // Every root update therefore rejects an unbootable EFI eject before it can create a
+        // lifecycle journal, checkpoint firmware, promote NVRAM, or publish configuration.
+        if activeLifecycleOperation(machineID: id) == nil {
+            try confirmInstalledEFIBootabilityIfNeeded(from: current, to: updated)
+        }
         let installerParent = try activeInstallerUpdateParent(
             id: id, operationID: operationID, request: request, preparation: preparation
         )
@@ -8337,17 +8349,6 @@ public final class MachineManager: @unchecked Sendable {
             preparation.nativeDefinition = try DoryMachineConfigurationUpdateJournal.read(from: installerParent.lease).targetNativeDefinition
         }
         let nativeDefinition = preparation.nativeDefinition
-        guard preparation.changesDefinition else {
-            // An unchanged request has no publication to own. In particular it must not
-            // replace the admission or launch plan of a running/paused machine.
-            return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
-        }
-        // Structural EFI ejection preflight runs before any durable lifecycle, checkpoint,
-        // NVRAM, configuration, or attachment mutation in both update policies. The helper
-        // is a no-op for non-EFI/non-ejection updates.
-        if installerParent == nil {
-            try confirmInstalledEFIBootabilityIfNeeded(from: current, to: updated)
-        }
         if launchPolicy == .perWorkspaceAuthority {
             let lifecycle: MachineLifecycleJournalContext?
             let updateJournal: DoryMachineConfigurationUpdateJournal?

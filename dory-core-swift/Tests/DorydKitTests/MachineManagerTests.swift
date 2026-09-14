@@ -7,6 +7,36 @@ import DoryOperations
 import XCTest
 
 final class MachineManagerTests: XCTestCase {
+    private final class UnusedInstallerPlanningController:
+        DoryDaemonVirtualMachineProductionPlanningControlling, @unchecked Sendable
+    {
+        private let lock = NSLock()
+        private var publicationCount = 0
+
+        var publishedPlanCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return publicationCount
+        }
+
+        func authorityRevision(for reference: DoryVMResolverReference) throws -> UInt64? {
+            _ = reference
+            return nil
+        }
+
+        func publishResolvedPlan(
+            _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
+            artifacts: [DoryDaemonVirtualMachinePlanningArtifactPublication]
+        ) throws {
+            _ = request
+            _ = artifacts
+            lock.lock()
+            publicationCount += 1
+            lock.unlock()
+            throw MachineManagerError.persistence("EFI preflight should reject before planning")
+        }
+    }
+
     private static func agentCapabilities(_ ids: String...) -> [DoryAgentCapability] {
         ids.sorted().map { DoryAgentCapability(id: $0, version: 1) }
     }
@@ -3836,18 +3866,22 @@ final class MachineManagerTests: XCTestCase {
         try Data("arbitrary-non-gpt-destination".utf8).write(to: URL(fileURLWithPath: disk))
         let state = base + "/machines"
         let lifecycleJournalHome = base + "/lifecycle-journal"
-        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
-            vmmExecutablePath: "/bin/sleep",
-            stateDirectory: state,
-            lifecycleJournalHome: lifecycleJournalHome,
-            baseArguments: ["30"],
-            passMachineArguments: false,
-            requiresReadyHandoff: false,
-            guestArchitecture: "arm64"
-        ))
+        let manager = MachineManager(
+            diagnosticConfiguration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                lifecycleJournalHome: lifecycleJournalHome,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false,
+                guestArchitecture: "arm64"
+            ),
+            launchPolicy: .perWorkspaceAuthority
+        )
         defer { try? manager.delete(id: "linux") }
         _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "linux",
+            guestArchitecture: .arm64,
             kernelPath: "",
             rootfsPath: disk,
             bootMode: .efi,
@@ -3859,15 +3893,17 @@ final class MachineManagerTests: XCTestCase {
         let machineDirectory = state + "/linux"
         let installerNVRAM = machineDirectory + "/NVRAM.installer"
         let installedNVRAM = machineDirectory + "/NVRAM"
+        let promotionMarker = machineDirectory + "/.dory-nvram-promotion-pending-v1"
         let installerState = Data("installer-recorded-efi-boot-state".utf8)
         try installerState.write(to: URL(fileURLWithPath: installerNVRAM))
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
             ofItemAtPath: installerNVRAM
         )
-        let before = try manager.start(id: "linux")
-        let beforePID = try XCTUnwrap(before.pid)
-        XCTAssertEqual(before.state, .running)
+        let planningController = UnusedInstallerPlanningController()
+        let before = try XCTUnwrap(manager.status(id: "linux"))
+        XCTAssertEqual(before.guestArchitecture, .arm64, "fixture must execute the ARM64 path")
+        XCTAssertEqual(before.state, .created)
         let configurationPath = machineDirectory + "/machine.json"
         let configurationBefore = try Data(contentsOf: URL(fileURLWithPath: configurationPath))
         let lifecycleEntriesBefore = try FileManager.default.contentsOfDirectory(
@@ -3875,7 +3911,11 @@ final class MachineManagerTests: XCTestCase {
         ).sorted()
 
         XCTAssertThrowsError(
-            try manager.update(id: "linux", installerMediaAttached: false)
+            try manager.transitionInstallerMedia(
+                id: "linux",
+                attached: false,
+                productionPlanningController: planningController
+            )
         ) { error in
             guard case let MachineManagerError.persistence(message) = error else {
                 return XCTFail("expected a persistence rejection, got \(error)")
@@ -3895,8 +3935,8 @@ final class MachineManagerTests: XCTestCase {
         }
 
         let after = try XCTUnwrap(manager.status(id: "linux"))
-        XCTAssertEqual(after.state, .running)
-        XCTAssertEqual(after.pid, beforePID)
+        XCTAssertEqual(after.guestArchitecture, .arm64)
+        XCTAssertEqual(after.state, .created)
         XCTAssertTrue(after.installerMediaAttached)
         XCTAssertEqual(
             try Data(contentsOf: URL(fileURLWithPath: configurationPath)),
@@ -3912,6 +3952,10 @@ final class MachineManagerTests: XCTestCase {
             FileManager.default.fileExists(atPath: installedNVRAM),
             "a failed structural preflight must not promote installer NVRAM"
         )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: promotionMarker),
+            "a failed structural preflight must not create the NVRAM promotion checkpoint"
+        )
         XCTAssertEqual(
             try Data(contentsOf: URL(fileURLWithPath: installerNVRAM)),
             installerState
@@ -3921,9 +3965,11 @@ final class MachineManagerTests: XCTestCase {
             lifecycleEntriesBefore,
             "a failed structural preflight must not create a lifecycle journal or firmware checkpoint"
         )
-
-        let untouched = try manager.update(id: "linux", memoryMB: 4096)
-        XCTAssertTrue(untouched.installerMediaAttached)
+        XCTAssertEqual(
+            planningController.publishedPlanCount,
+            0,
+            "a failed structural preflight must not publish a production plan"
+        )
     }
 
     func testDoryPCQualificationBootstrapLaunchesExactSoftwareUEFIEnvelope() throws {
