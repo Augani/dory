@@ -558,7 +558,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   // A worker exclusively borrows its processor's state during a job. The coordinator may
   // access it only after completion (including clock/interrupt delivery and lifecycle setup).
-  // The same rendezvous protects translator/TLB/JIT access and collection mutations.
+  // The same rendezvous protects shared translation metadata and collection mutations.
+  // A parallel native job borrows only its own executor, with no guest-memory authority.
   private final class ProcessorState: @unchecked Sendable {
     var value: DoryX86ArchitecturalState
 
@@ -1361,8 +1362,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         }
         // A batch reserves at most one instruction per vCPU from the global budget. All
         // fetch/admission work finishes before any instruction overlaps; all completions are
-        // collected before clocks, device delivery, lifecycle mutations, or JIT work resume.
-        if clockSource.monotonicNanoseconds != nil, executionTier == .interpreter {
+        // collected before clocks, device delivery, lifecycle mutations, or serial execution resume.
+        if clockSource.monotonicNanoseconds != nil {
           let sample = hostTimeSample()
           let plans = try prepareParallelInstructions(
             startingAt: processor, maximumCount: maximumInstructions - completed, workers: workers)
@@ -1371,20 +1372,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
               workers[plan.processor].submit { [self] in
                 observer?(.executing(plan.processor, concurrent: true))
                 defer { observer?(.executed(plan.processor, concurrent: true)) }
-                let memory = DoryPCFrozenInstructionMemory(
-                  address: plan.memory.address, bytes: plan.memory.bytes,
-                  onFirstFetch: { observer?(.frozenInstructionFetch(plan.processor)) })
-                let result = interpreters[plan.processor].step(
-                  state: &plan.state.value, memory: memory, mode: plan.mode)
-                // Admission ran the identical pure instruction against a private state copy.
-                // Neither the frozen bytes nor this exclusively owned state can change meanwhile.
-                guard case .retired = result else { throw WorkerError.inconsistentFrozenInstruction }
+                return try executeParallelInstruction(plan, observer: observer)
               }
             }
-            for completion in completions { try completion.wait() }
+            // Collect every result before publishing state-dependent machine accounting.
+            let executions = try completions.map { try $0.wait() }
             recordHostTime(.processorExecution, since: sample)
-            completed += UInt64(plans.count)
-            interpreterInstructionCount &+= UInt64(plans.count)
+            for execution in executions {
+              completed += execution.instructionCount
+              recordExecution(execution)
+            }
             roundRobinCursor = (plans.last!.processor + 1) % processorCount
             let clockSample = hostTimeSample()
             synchronizeHostClock()
@@ -1431,17 +1428,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           pendingWorkWake.setDispatchThread(Thread.current)
         }
         completed += execution.instructionCount
-        switch execution.jitTier {
-        case .baseline, .tier1:
-          baselineJITInstructionCount &+= execution.jitInstructionCount
-          baselineJITBlockCount &+= execution.jitBlockCount
-        case .optimizing:
-          optimizingJITInstructionCount &+= execution.jitInstructionCount
-          optimizingJITBlockCount &+= execution.jitBlockCount
-        case .interpreterFallback, nil:
-          break
-        }
-        interpreterInstructionCount &+= execution.interpreterInstructionCount
+        recordExecution(execution)
         if instrumentationEnabled {
           let sample = hostTimeSample()
           if clockSource.monotonicNanoseconds != nil {
@@ -1534,6 +1521,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     case executing(Int, concurrent: Bool)
     case executed(Int, concurrent: Bool)
     case frozenInstructionFetch(Int)
+    case nativeInstructionFetch(Int)
+    case nativeInstructionExit(Int, retired: UInt64)
     case stopped(Int)
   }
 
@@ -1543,13 +1532,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     lock.withLock { workerObserver = observer }
   }
 
-  private enum WorkerError: Error { case inconsistentFrozenInstruction }
+  private enum WorkerError: Error { case inconsistentFrozenInstruction, inconsistentNativeInstruction }
 
   private struct ParallelInstruction: Sendable {
     let processor: Int
     let state: ProcessorState
     let mode: DoryX86ExecutionMode
     let memory: DoryPCFrozenInstructionMemory
+    let jit: DoryARM64BaselineExecutor?
   }
 
   private func prepareParallelInstructions(
@@ -1566,8 +1556,20 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       let plan = try workers[processor].perform { [self] () -> ParallelInstruction? in
         guard let frozen = frozenParallelInstruction(state: state.value, processor: processor)
         else { return nil }
+        let mode = executionMode(state.value)
+        var jit: DoryARM64BaselineExecutor?
+        if executionTier != .interpreter {
+          // No paging, non-flat CS, hidden execution guards, or shared memory callbacks.
+          // Selection mutates machine hotness, so it must finish before jobs overlap.
+          guard mode == .protected32, state.value.cs.base == 0, state.value.cs.limit == .max,
+            !state.value.rflags.contains(.virtual8086), !state.value.rflags.contains(.resume),
+            !state.value.rflags.contains(.alignmentCheck),
+            let selected = selectedJIT(forProcessor: processor, state: state.value, mode: mode)
+          else { return nil }
+          jit = selected
+        }
         return .init(processor: processor, state: state,
-          mode: executionMode(state.value), memory: frozen)
+          mode: mode, memory: frozen, jit: jit)
       }
       // Preserve runnable order across a sensitive instruction instead of skipping ahead.
       guard let plan else { break }
@@ -1608,13 +1610,81 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         Array(bytes.prefix(maximumFetchByteCount)), at: state.rip, mode: mode)
     else { return nil }
     // Deliberately small, prefix-free whitelist: NOP and MOV immediate to a GPR.
-    // Paging, branches, memory operands, system state, IO and JIT always rendezvous.
+    // Paging, branches, memory operands, system state and IO always rendezvous.
     let frozen = DoryPCFrozenInstructionMemory(address: address, bytes: instruction.bytes)
     var candidate = state
     guard case .retired = interpreters[processor].step(
       state: &candidate, memory: frozen, mode: mode)
     else { return nil }
     return frozen
+  }
+
+  private func executeParallelInstruction(
+    _ plan: ParallelInstruction, observer: (@Sendable (WorkerEvent) -> Void)?
+  ) throws -> ProcessorExecution {
+    if let jit = plan.jit {
+      // Each executor owns its region, context, TLB, predictors and cache. Frozen fetches and
+      // nil memory prevent compilation/execution from touching shared RAM or device metadata.
+      // No generation provider means resident bytes must be validated and traces cannot replay.
+      // One instruction also bounds old direct links: no budget remains for a second block.
+      var observedFetch = false
+      let execution = try jit.executeChainedSummary(
+        byteProvider: { address, count in
+          if !observedFetch {
+            observedFetch = true
+            observer?(.nativeInstructionFetch(plan.processor))
+          }
+          guard address == plan.memory.address else { return [] }
+          return Array(plan.memory.bytes.prefix(count))
+        },
+        at: plan.state.value.rip, mode: plan.mode,
+        addressSpaceID: plan.state.value.control.cr3, maximumInstructions: 1,
+        state: &plan.state.value
+      )
+      if let execution {
+        guard execution.exitCode == .dispatch || execution.exitCode == .pendingWork,
+          execution.guestInstructionCount <= 1
+        else { throw WorkerError.inconsistentNativeInstruction }
+        // The sole block polls before its instruction. Legacy executors without chain
+        // accounting report the resident size on this exit, even though nothing retired.
+        let count = execution.exitCode == .pendingWork ? 0 : UInt64(execution.guestInstructionCount)
+        observer?(.nativeInstructionExit(plan.processor, retired: count))
+        return .init(result: execution.exitCode == .pendingWork ? .yielded : .retired,
+          instructionCount: count, jitTier: execution.tier, jitInstructionCount: count,
+          interpreterInstructionCount: 0, jitBlockCount: count)
+      }
+      if jit.hasPendingWork {
+        observer?(.nativeInstructionExit(plan.processor, retired: 0))
+        return .init(result: .yielded, instructionCount: 0, jitTier: nil,
+          jitInstructionCount: 0, interpreterInstructionCount: 0, jitBlockCount: 0)
+      }
+      // A resident larger than this budget or a compiler decline still has the identical
+      // preflighted, register-only interpreter step available; it cannot access shared memory.
+    }
+    let onFirstFetch: @Sendable () -> Void = {
+      if plan.jit == nil { observer?(.frozenInstructionFetch(plan.processor)) }
+    }
+    let memory = DoryPCFrozenInstructionMemory(
+      address: plan.memory.address, bytes: plan.memory.bytes, onFirstFetch: onFirstFetch)
+    let result = interpreters[plan.processor].step(
+      state: &plan.state.value, memory: memory, mode: plan.mode)
+    guard case .retired = result else { throw WorkerError.inconsistentFrozenInstruction }
+    return .init(result: .retired, instructionCount: 1, jitTier: nil,
+      jitInstructionCount: 0, interpreterInstructionCount: 1, jitBlockCount: 0)
+  }
+
+  private func recordExecution(_ execution: ProcessorExecution) {
+    switch execution.jitTier {
+    case .baseline, .tier1:
+      baselineJITInstructionCount &+= execution.jitInstructionCount
+      baselineJITBlockCount &+= execution.jitBlockCount
+    case .optimizing:
+      optimizingJITInstructionCount &+= execution.jitInstructionCount
+      optimizingJITBlockCount &+= execution.jitBlockCount
+    case .interpreterFallback, nil:
+      break
+    }
+    interpreterInstructionCount &+= execution.interpreterInstructionCount
   }
 
   private func publishExecutionStatistics() {

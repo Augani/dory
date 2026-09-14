@@ -89,6 +89,7 @@ import DoryDBTX86
   @Test func parallelWorkersAdvanceOneHostEpochAtRendezvous() throws {
     let clock = WorkerSampleClock()
     let machine = try workerMachine(clock: .hostMonotonic { clock.sample() })
+    try machine.physicalMemory.writeScalar(at: 0xFED0_0010, value: 1, byteCount: 8)
     #expect(try machine.run(maximumInstructions: 2) == .instructionBudget(2))
     #expect(clock.samples == 2)
     #expect(machine.hpet.snapshot().mainCounter == 1)
@@ -218,7 +219,7 @@ import DoryDBTX86
   }
 
   @Test(arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT])
-  func nativeTiersUseTheirOwningWorkersWithoutOverlap(tier: DoryPCExecutionTier) throws {
+  func nativeTiersKeepRealModeApplicationProcessorSerial(tier: DoryPCExecutionTier) throws {
     #if arch(arm64)
       let machine = try workerMachine(clock: .hostMonotonic { 0 }, tier: tier)
       let probe = HostWorkerProbe()
@@ -227,6 +228,227 @@ import DoryDBTX86
       #expect(probe.snapshot().maximumActive == 1)
       #expect(probe.snapshot().stopped == Set([0, 1]))
     #endif
+  }
+
+  @Test(arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT], [UInt64(2), 3, 5])
+  func nativeWorkersOverlapFrozenRegistersAndJoin(tier: DoryPCExecutionTier, budget: UInt64) throws {
+    #if arch(arm64)
+      let machine = try nativeWorkerMachine(tier: tier)
+      let before = machine.executionStatistics
+      let probe = HostWorkerProbe()
+      machine.observeWorkers { probe.observe($0) }
+      #expect(try machine.run(maximumInstructions: budget) == .instructionBudget(budget))
+      let result = probe.snapshot()
+      #expect(result.distinctThreads == 2)
+      #expect(result.maximumActive == 2)
+      #expect(!result.timedOut)
+      #expect(result.active == 0)
+      #expect(result.stopped == Set([0, 1]))
+      #expect(result.nativeRetirements[0]?.first == 1)
+      #expect(result.nativeRetirements[1]?.first == 1)
+      #expect(machine.state(forProcessor: 0)?.registers.rax == 1)
+      #expect(machine.state(forProcessor: 1)?.registers.rax == 2)
+      let after = machine.executionStatistics
+      #expect(after.interpreterInstructions == before.interpreterInstructions)
+      #expect(after.baselineJITInstructions + after.optimizingJITInstructions
+        - before.baselineJITInstructions - before.optimizingJITInstructions == budget)
+      if tier == .optimizingJIT {
+        #expect(after.optimizingJITInstructions - before.optimizingJITInstructions == budget)
+      }
+    #endif
+  }
+
+  @Test(arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT])
+  func nativeWorkersShareHostEpochAtRendezvous(tier: DoryPCExecutionTier) throws {
+    #if arch(arm64)
+      let clock = WorkerSampleClock()
+      let machine = try nativeWorkerMachine(tier: tier, clock: .hostMonotonic { clock.sample() })
+      try machine.physicalMemory.writeScalar(at: 0xFED0_0010, value: 1, byteCount: 8)
+      let samples = clock.samples
+      let counter = machine.hpet.snapshot().mainCounter
+      let tsc = try #require(machine.state?.tsc)
+      #expect(try machine.run(maximumInstructions: 2) == .instructionBudget(2))
+      #expect(clock.samples - samples == 2)
+      #expect(machine.hpet.snapshot().mainCounter - counter == 2)
+      #expect(machine.state(forProcessor: 0)?.tsc == tsc + 200)
+      #expect(machine.state(forProcessor: 1)?.tsc == tsc + 200)
+    #endif
+  }
+
+  @Test(arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT], ["pending", "timer", "ipi", "startup"])
+  func nativeOverlapExitsForTargetedWorkAndResumes(tier: DoryPCExecutionTier, source: String) throws {
+    #if arch(arm64)
+      let machine = try nativeWorkerMachine(tier: tier)
+      let entries = (machine.baselineJITDiagnostics?.nativeDispatcherEntries ?? 0)
+        + (machine.optimizingJITDiagnostics?.nativeDispatcherEntries ?? 0)
+      try machine.memory.write(at: 0xA000, bytes: [0xB8, 3, 0])
+      let probe = HostWorkerProbe(hold: true)
+      machine.observeWorkers { probe.observe($0) }
+      try machine.localAPICs[1].configureSpuriousVector(0xFF, softwareEnabled: true)
+      let run = HaltedMachineRun(machine: machine, maximumInstructions: 2)
+      defer { probe.release(); machine.powerController.request(.powerOff) }
+      try #require(probe.arrived.wait(timeout: .now() + 2) == .success)
+      // Both owning executors have passed their Swift pending check and are fetching frozen
+      // bytes. Publish to AP's atomic pending byte before its generated entry poll executes.
+      switch source {
+      case "pending": try machine.localAPICs[1].inject(vector: 0x30)
+      case "timer":
+        try machine.localAPICs[1].configureTimer(
+          vector: 0x30, masked: false, mode: .oneShot, initialCount: 1)
+        machine.localAPICs[1].advanceTimer(by: 1)
+      case "startup":
+        try machine.multiprocessorController.handleInterruptCommand(
+          sourceAPICID: 0, high: 1 << 24, low: 5 << 8)
+        try machine.multiprocessorController.handleInterruptCommand(
+          sourceAPICID: 0, high: 1 << 24, low: 6 << 8 | 0xA)
+      default:
+        try machine.multiprocessorController.handleInterruptCommand(
+          sourceAPICID: 0, high: 1 << 24, low: 0x30)
+      }
+      probe.release()
+      #expect(try run.finish() == .instructionBudget(2))
+      let result = probe.snapshot()
+      #expect(result.maximumActive == 2)
+      #expect(result.nativeRetirements[0]?.first == 1)
+      #expect(result.nativeRetirements[1]?.first == 0)
+      #expect(result.active == 0)
+      #expect(result.stopped == Set([0, 1]))
+      #expect(!result.timedOut)
+      // IF is clear: the request remains pending, and BSP consumes the remaining budget.
+      if source == "startup" {
+        #expect(machine.state(forProcessor: 1)?.cs.base == 0xA000)
+        #expect(machine.state(forProcessor: 1)?.rip == 0)
+      } else {
+        #expect(machine.state(forProcessor: 1)?.rip == 0x9000)
+        #expect(machine.localAPICs[1].snapshot().interruptRequest.contains(0x30))
+      }
+      let finalEntries = (machine.baselineJITDiagnostics?.nativeDispatcherEntries ?? 0)
+        + (machine.optimizingJITDiagnostics?.nativeDispatcherEntries ?? 0)
+      // Two native entries for the overlapping pair, then one serial BSP instruction.
+      #expect(finalEntries - entries == 3)
+      #expect(machine.multiprocessorController.snapshot().pendingEvents.isEmpty)
+      if source == "timer" { #expect(machine.timerInterruptDiagnostics.localAPICRequests[1] == 1) }
+      // A new run must reacquire ownership and retire the interrupted AP instruction.
+      #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+      #expect(machine.state(forProcessor: 1)?.registers.rax == (source == "startup" ? 3 : 2))
+    #endif
+  }
+
+  @Test(arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT])
+  func nativeOverlapUsesFrozenBytesDuringRAMMutation(tier: DoryPCExecutionTier) throws {
+    #if arch(arm64)
+      let machine = try nativeWorkerMachine(tier: tier)
+      let probe = HostWorkerProbe(hold: true)
+      machine.observeWorkers { probe.observe($0) }
+      let run = HaltedMachineRun(machine: machine, maximumInstructions: 2)
+      defer { probe.release(); machine.powerController.request(.powerOff) }
+      try #require(probe.arrived.wait(timeout: .now() + 2) == .success)
+      try machine.memory.write(at: 0x10_0000, bytes: [0x0F, 0x0B])
+      try machine.memory.write(at: 0x9000, bytes: [0x0F, 0x0B])
+      probe.release()
+      #expect(try run.finish() == .instructionBudget(2))
+      #expect(machine.state(forProcessor: 0)?.registers.rax == 1)
+      #expect(machine.state(forProcessor: 1)?.registers.rax == 2)
+      #expect(probe.snapshot().nativeRetirements[0] == [1])
+      #expect(probe.snapshot().nativeRetirements[1] == [1])
+      #expect(probe.snapshot().stopped == Set([0, 1]))
+      #expect(!probe.snapshot().timedOut)
+    #endif
+  }
+
+  @Test(arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT],
+    [DoryPCPowerAction.powerOff, .reset])
+  func nativeOverlapPowerExitJoinsWithoutRetiringFrozenWork(
+    tier: DoryPCExecutionTier, action: DoryPCPowerAction
+  ) throws {
+    #if arch(arm64)
+      for _ in 0..<3 {
+        let machine = try nativeWorkerMachine(tier: tier)
+        let before = machine.executionStatistics
+        let probe = HostWorkerProbe(hold: true)
+        machine.observeWorkers { probe.observe($0) }
+        let run = HaltedMachineRun(machine: machine, maximumInstructions: 20)
+        defer { probe.release(); machine.powerController.request(.powerOff) }
+        try #require(probe.arrived.wait(timeout: .now() + 2) == .success)
+        machine.powerController.request(action)
+        probe.release()
+        #expect(try run.finish() == (action == .reset
+          ? .reset(instructionCount: 0) : .poweredOff(instructionCount: 0)))
+        let result = probe.snapshot()
+        #expect(result.nativeRetirements[0] == [0])
+        #expect(result.nativeRetirements[1] == [0])
+        #expect(result.maximumActive == 2)
+        #expect(result.active == 0)
+        #expect(result.stopped == Set([0, 1]))
+        #expect(!result.timedOut)
+        #expect(machine.state(forProcessor: 0)?.rip == 0x10_0000)
+        #expect(machine.state(forProcessor: 1)?.rip == 0x9000)
+        #expect(machine.executionStatistics == before)
+      }
+    #endif
+  }
+
+  @Test(arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT],
+    ["memory", "branch", "exception", "deterministic"])
+  func nativeDangerousShapesStaySerial(tier: DoryPCExecutionTier, shape: String) throws {
+    #if arch(arm64)
+      let machine = try nativeWorkerMachine(tier: tier,
+        clock: shape == "deterministic" ? .deterministic : .hostMonotonic { 0 })
+      switch shape {
+      case "memory": try machine.memory.write(at: 0x10_0000, bytes: [0xA1, 1, 0x90, 0, 0])
+      case "branch": try machine.memory.write(at: 0x10_0000, bytes: [0xEB, 0xFE])
+      case "exception": try machine.memory.write(at: 0x10_0000, bytes: [0x0F, 0x0B])
+      default: break
+      }
+      let probe = HostWorkerProbe()
+      machine.observeWorkers { probe.observe($0) }
+      let stop = try machine.run(maximumInstructions: 2)
+      if shape == "exception" {
+        guard case .exception(_, let count) = stop else {
+          Issue.record("Expected serial invalid opcode, got \(stop)")
+          return
+        }
+        #expect(count == 0)
+        #expect(machine.state(forProcessor: 1)?.rip == 0x9000)
+      } else { #expect(stop == .instructionBudget(2)) }
+      #expect(probe.snapshot().maximumActive == 1)
+      #expect(probe.snapshot().nativeRetirements.isEmpty)
+      #expect(probe.snapshot().active == 0)
+      #expect(probe.snapshot().stopped == Set([0, 1]))
+    #endif
+  }
+
+  private func nativeWorkerMachine(
+    tier: DoryPCExecutionTier, clock: DoryPCClockSource = .hostMonotonic { 0 }
+  ) throws -> DoryPCDirectKernelMachine {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024, processorCount: 2, executionTier: tier,
+      baselineJITMaximumCodeBytes: 16 * 1024, optimizingJITWarmupDispatches: 0,
+      clockSource: clock, instrumentationEnabled: true)
+    try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+    try machine.memory.write(at: 0x6006, bytes: [0x0F, 0, 0, 0x62, 0, 0])
+    try machine.memory.write(at: 0x6200, bytes: [
+      0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0, 0, 0, 0x9B, 0xCF, 0,
+    ])
+    try machine.memory.write(at: 0x8000, bytes: [
+      0x66, 0x0F, 0x01, 0x16, 6, 0x60, // lgdt [0x6006]
+      0x66, 0x0F, 0x20, 0xC0, // mov eax,cr0
+      0x66, 0x83, 0xC8, 1, // or eax,1
+      0x66, 0x0F, 0x22, 0xC0, // mov cr0,eax
+      0x66, 0xEA, 0, 0x90, 0, 0, 8, 0, // jmp 8:0x9000 (flat protected32)
+    ])
+    try machine.multiprocessorController.handleInterruptCommand(
+      sourceAPICID: 0, high: 1 << 24, low: 6 << 8 | 8)
+    for step in 0..<10 {
+      let stop = try machine.run(maximumInstructions: 1)
+      try #require(stop == .instructionBudget(1), "AP setup step \(step)")
+    }
+    try #require(machine.state(forProcessor: 1)?.rip == 0x9000)
+    try #require(machine.state(forProcessor: 1)?.cs.base == 0)
+    try #require(machine.state(forProcessor: 1)?.cs.limit == .max)
+    try machine.memory.write(at: 0x10_0000, bytes: [0xB8, 1, 0, 0, 0, 0x90, 0x90, 0x90])
+    try machine.memory.write(at: 0x9000, bytes: [0xB8, 2, 0, 0, 0, 0x90, 0x90, 0x90])
+    return machine
   }
 
   @Test func memoryOperandRetiresSeriallyBeforeTheNextProcessor() throws {
@@ -1577,6 +1799,7 @@ private final class HostWorkerProbe: @unchecked Sendable {
     let executions: Int
     let order: [Int]
     let timedOut: Bool
+    let nativeRetirements: [Int: [UInt64]]
   }
 
   let arrived = DispatchSemaphore(value: 0)
@@ -1590,6 +1813,7 @@ private final class HostWorkerProbe: @unchecked Sendable {
   private var stopped: Set<Int> = []
   private var order: [Int] = []
   private var timedOut = false
+  private var nativeRetirements: [Int: [UInt64]] = [:]
 
   init(hold: Bool = false) { self.hold = hold }
 
@@ -1602,13 +1826,15 @@ private final class HostWorkerProbe: @unchecked Sendable {
       order.append(processor)
       active += 1
       maximumActive = max(maximumActive, active)
-    case .frozenInstructionFetch:
+    case .frozenInstructionFetch, .nativeInstructionFetch:
       parallelEntries += 1
       if parallelEntries == 2 { arrived.signal(); condition.broadcast() }
       let deadline = Date(timeIntervalSinceNow: 2)
       while parallelEntries < 2 || (hold && !released) {
         if !condition.wait(until: deadline) { timedOut = true; break }
       }
+    case .nativeInstructionExit(let processor, let retired):
+      nativeRetirements[processor, default: []].append(retired)
     case .executed:
       active -= 1
     case .stopped(let processor):
@@ -1627,7 +1853,8 @@ private final class HostWorkerProbe: @unchecked Sendable {
     condition.lock()
     defer { condition.unlock() }
     return .init(distinctThreads: Set(threads.values).count, maximumActive: maximumActive,
-      active: active, stopped: stopped, executions: order.count, order: order, timedOut: timedOut)
+      active: active, stopped: stopped, executions: order.count, order: order, timedOut: timedOut,
+      nativeRetirements: nativeRetirements)
   }
 }
 
