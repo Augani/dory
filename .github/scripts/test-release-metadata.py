@@ -81,6 +81,7 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.sbom = self.build / "Dory-9.8.7.cdx.json"
         self.sbom.write_bytes(b'{"bomFormat":"CycloneDX"}\n')
         self.sbom_digest = hashlib.sha256(self.sbom.read_bytes()).hexdigest()
+        self.recipe_digest = "b" * 64
         self.catalog_path = self.components / "catalog.json"
         self.digest_path = self.components / "catalog.json.sha256"
         self.signature_path = self.components / "catalog.json.sig"
@@ -189,6 +190,89 @@ class ReleaseCatalogTests(unittest.TestCase):
                 check=True,
             )
 
+    def write_candidate_inventory(
+        self,
+        *,
+        recipe_digest: str | None = None,
+        source_commit: str | None = None,
+    ) -> None:
+        inventory = {
+            "kind": "dev.dory.component-candidate-inventory",
+            "schemaVersion": 1,
+            "releaseVersion": "9.8.7",
+            "minimumAppVersion": "9.8.7",
+            "architecture": "arm64",
+            "sourceCommit": source_commit or "a" * 40,
+            "recipeDigest": recipe_digest or self.recipe_digest,
+        }
+        path = self.components / VALIDATOR.CANDIDATE_INVENTORY_NAME
+        payload = json.dumps(inventory, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        path.write_bytes(payload)
+        (self.components / VALIDATOR.CANDIDATE_INVENTORY_DIGEST_NAME).write_text(
+            hashlib.sha256(payload).hexdigest() + "\n", encoding="ascii"
+        )
+
+    def write_release_manifest(self) -> None:
+        required = {
+            "Dory-9.8.7-arm64.zip",
+            "Dory-9.8.7.zip",
+            "Dory-9.8.7-arm64.dmg",
+            "Dory-9.8.7.dmg",
+            "Dory-9.8.7-app-update.zip",
+            "dory-engine-9.8.7-arm64.tar.gz",
+            "Dory-9.8.7.cdx.json",
+            "appcast.xml",
+            "catalog.json",
+            "catalog.json.sha256",
+            "catalog.json.sig",
+            VALIDATOR.CANDIDATE_INVENTORY_NAME,
+            VALIDATOR.CANDIDATE_INVENTORY_DIGEST_NAME,
+            self.asset_name,
+        }
+        for name in required:
+            if name.startswith("catalog.json") or name in {
+                VALIDATOR.CANDIDATE_INVENTORY_NAME,
+                VALIDATOR.CANDIDATE_INVENTORY_DIGEST_NAME,
+                self.asset_name,
+            }:
+                path = self.components / name
+            else:
+                path = self.build / name
+            if not path.exists():
+                path.write_bytes(b"fixture\n")
+        records = []
+        for name in sorted(required):
+            component = (
+                name.startswith("catalog.json")
+                or name in {
+                    VALIDATOR.CANDIDATE_INVENTORY_NAME,
+                    VALIDATOR.CANDIDATE_INVENTORY_DIGEST_NAME,
+                    self.asset_name,
+                }
+            )
+            path = self.components / name if component else self.build / name
+            records.append({
+                "name": name,
+                "path": f"components/arm64/{name}" if component else name,
+                "kind": "cyclonedx-json" if name.endswith(".cdx.json") else "fixture",
+                "bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            })
+        (self.build / "release-manifest.json").write_text(
+            json.dumps({
+                "schemaVersion": 2,
+                "version": "9.8.7",
+                "build": "42",
+                "sourceCommit": "a" * 40,
+                "publicRelease": True,
+                "bundleEngine": True,
+                "notarized": True,
+                "variants": "arm64",
+                "artifacts": records,
+            }, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+
     def validate(self) -> set[str]:
         return VALIDATOR.validate_catalog(
             self.build,
@@ -196,6 +280,7 @@ class ReleaseCatalogTests(unittest.TestCase):
             "a" * 40,
             public_key=self.public_key,
             sbom_digest=self.sbom_digest,
+            candidate_recipe_digest=self.recipe_digest,
         )
 
     def test_signed_schema_two_catalog_is_accepted(self) -> None:
@@ -204,6 +289,25 @@ class ReleaseCatalogTests(unittest.TestCase):
             self.validate(),
             {"Dory-9.8.7-component-linux-desktop-arm64-virtual-machine-qualification.json"},
         )
+
+    def test_retained_candidate_inventory_is_digest_and_source_bound(self) -> None:
+        self.write_candidate_inventory()
+        self.assertEqual(
+            VALIDATOR.load_candidate_recipe_digest(self.build, "9.8.7", "a" * 40),
+            self.recipe_digest,
+        )
+        self.write_candidate_inventory(source_commit="e" * 40)
+        with self.assertRaisesRegex(ValueError, "source commit"):
+            VALIDATOR.load_candidate_recipe_digest(self.build, "9.8.7", "a" * 40)
+
+    def test_final_release_manifest_retains_candidate_inventory_assets(self) -> None:
+        self.publish()
+        self.write_candidate_inventory()
+        self.write_release_manifest()
+        _, source_commit = VALIDATOR.validate_manifest(
+            self.build, "9.8.7", "42", public_key=self.public_key
+        )
+        self.assertEqual(source_commit, "a" * 40)
 
     def test_schema_one_is_rejected_even_when_correctly_signed(self) -> None:
         self.catalog["schemaVersion"] = 1
@@ -247,6 +351,12 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.catalog["components"][0]["provenance"]["sbomDigest"] = "e" * 64
         self.publish()
         with self.assertRaisesRegex(ValueError, "does not bind the staged release SBOM"):
+            self.validate()
+
+    def test_signed_catalog_recipe_digest_must_match_the_retained_candidate(self) -> None:
+        self.catalog["components"][0]["provenance"]["recipeDigest"] = "e" * 64
+        self.publish()
+        with self.assertRaisesRegex(ValueError, "does not bind the retained candidate inventory"):
             self.validate()
 
     def test_signed_asset_size_must_match_delivered_bytes(self) -> None:

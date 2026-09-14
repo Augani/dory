@@ -75,6 +75,8 @@ QUALIFICATION_KEYS = {
     "manifestFormatVersion",
     "signingKeyID",
 }
+CANDIDATE_INVENTORY_NAME = "component-candidate-inventory.json"
+CANDIDATE_INVENTORY_DIGEST_NAME = CANDIDATE_INVENTORY_NAME + ".sha256"
 
 
 def require(condition: bool, message: str) -> None:
@@ -138,6 +140,49 @@ def verify_catalog_signature(
     require(completed.returncode == 0, "component catalog signature is invalid")
 
 
+def load_candidate_recipe_digest(
+    build_dir: pathlib.Path,
+    version: str,
+    source_commit: str,
+) -> str:
+    component_dir = build_dir / "components" / "arm64"
+    inventory_path = component_dir / CANDIDATE_INVENTORY_NAME
+    digest_path = component_dir / CANDIDATE_INVENTORY_DIGEST_NAME
+    for path in (inventory_path, digest_path):
+        require(
+            path.is_file() and not path.is_symlink(),
+            f"component candidate inventory input is missing or indirect: {path.name}",
+        )
+    payload = inventory_path.read_bytes()
+    require(
+        0 < len(payload) <= 8 * 1_024 * 1_024,
+        "component candidate inventory size is invalid",
+    )
+    require(
+        digest_path.read_text(encoding="ascii") == hashlib.sha256(payload).hexdigest() + "\n",
+        "component candidate inventory digest does not authenticate its inventory",
+    )
+    inventory = json.loads(payload, object_pairs_hook=unique_json_object)
+    require(isinstance(inventory, dict), "component candidate inventory is not an object")
+    require(
+        inventory.get("kind") == "dev.dory.component-candidate-inventory"
+        and inventory.get("schemaVersion") == 1,
+        "component candidate inventory kind or schema is invalid",
+    )
+    require(
+        inventory.get("releaseVersion") == version
+        and inventory.get("minimumAppVersion") == version
+        and inventory.get("architecture") == "arm64",
+        "component candidate inventory release binding is invalid",
+    )
+    require(
+        inventory.get("sourceCommit") == source_commit,
+        "component candidate inventory source commit does not match the release",
+    )
+    recipe_digest = inventory.get("recipeDigest")
+    return digest_value(recipe_digest, "component candidate inventory recipe digest")
+
+
 def validate_catalog(
     build_dir: pathlib.Path,
     version: str,
@@ -145,6 +190,7 @@ def validate_catalog(
     *,
     public_key: str = CATALOG_PUBLIC_KEY,
     sbom_digest: str | None = None,
+    candidate_recipe_digest: str | None = None,
 ) -> set[str]:
     component_dir = build_dir / "components" / "arm64"
     catalog_path = component_dir / "catalog.json"
@@ -235,6 +281,11 @@ def validate_catalog(
             require(
                 provenance["sbomDigest"] == sbom_digest,
                 f"component {component_id} SBOM digest does not bind the staged release SBOM",
+            )
+        if candidate_recipe_digest is not None:
+            require(
+                provenance["recipeDigest"] == candidate_recipe_digest,
+                f"component {component_id} recipe digest does not bind the retained candidate inventory",
             )
         assets = component["assets"]
         require(isinstance(assets, list), f"component {component_id} assets are invalid")
@@ -331,7 +382,13 @@ def validate_catalog(
     return artifact_names
 
 
-def validate_manifest(build_dir: pathlib.Path, version: str, build: str) -> tuple[dict, str]:
+def validate_manifest(
+    build_dir: pathlib.Path,
+    version: str,
+    build: str,
+    *,
+    public_key: str = CATALOG_PUBLIC_KEY,
+) -> tuple[dict, str]:
     path = build_dir / "release-manifest.json"
     require(path.is_file() and not path.is_symlink(), "release manifest is missing or indirect")
     manifest = json.loads(
@@ -365,17 +422,24 @@ def validate_manifest(build_dir: pathlib.Path, version: str, build: str) -> tupl
         "catalog.json",
         "catalog.json.sha256",
         "catalog.json.sig",
+        CANDIDATE_INVENTORY_NAME,
+        CANDIDATE_INVENTORY_DIGEST_NAME,
     }
     sbom_path = build_dir / f"Dory-{version}.cdx.json"
     require(
         sbom_path.is_file() and not sbom_path.is_symlink(),
         "release SBOM is missing or indirect",
     )
+    candidate_recipe_digest = load_candidate_recipe_digest(
+        build_dir, version, source_commit
+    )
     required.update(validate_catalog(
         build_dir,
         version,
         source_commit,
+        public_key=public_key,
         sbom_digest=sha256_file(sbom_path),
+        candidate_recipe_digest=candidate_recipe_digest,
     ))
     records = manifest["artifacts"]
     require(isinstance(records, list) and records, "manifest has no artifacts")
@@ -387,8 +451,11 @@ def validate_manifest(build_dir: pathlib.Path, version: str, build: str) -> tupl
     require(len(by_name) == len(records), "manifest contains duplicate artifact names")
     require(set(by_name) == required, f"manifest artifact set mismatch: {sorted(set(by_name) ^ required)}")
     for name, record in by_name.items():
-        expected_path = f"components/arm64/{name}" if name.startswith("catalog.json") or \
-            name.startswith(f"Dory-{version}-component-") else name
+        expected_path = f"components/arm64/{name}" if (
+            name.startswith("catalog.json")
+            or name in {CANDIDATE_INVENTORY_NAME, CANDIDATE_INVENTORY_DIGEST_NAME}
+            or name.startswith(f"Dory-{version}-component-")
+        ) else name
         require(record["path"] == expected_path, f"manifest path is not portable: {name}")
         require(isinstance(record["kind"], str) and record["kind"], f"manifest kind is invalid: {name}")
         artifact = build_dir / record["path"]
