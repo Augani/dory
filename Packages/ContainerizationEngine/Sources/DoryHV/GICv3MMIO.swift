@@ -58,29 +58,66 @@ public final class GICRedistributorMMIO: MMIODevice {
     public let baseAddress: UInt64
     public let size: UInt64
     public let stride: UInt64
+    // This lock leases the mapped handle for the entire MMIO operation, including fallback
+    // read-modify-write. Removal acquires it to drain access before the owner destroys its VCPU.
+    private let accessLock = NSLock()
     private var vcpuHandles: [hv_vcpu_t?] = []
+    private let registerAccess: RegisterAccess
 
-    public init(baseAddress: UInt64, size: UInt64, stride: UInt64) {
+    /// Internal, redistributor-only seam for testing without creating a Hypervisor VM.
+    /// Callbacks run under accessLock and must not reenter this device or acquire teamCondition.
+    struct RegisterAccess: Sendable {
+        let read: @Sendable (hv_vcpu_t, hv_gic_redistributor_reg_t, inout UInt64) -> hv_return_t
+        let write: @Sendable (hv_vcpu_t, hv_gic_redistributor_reg_t, UInt64) -> hv_return_t
+        let removalLockAcquired: @Sendable () -> Void
+
+        fileprivate static let hypervisor = RegisterAccess(
+            read: { hv_gic_get_redistributor_reg($0, $1, &$2) },
+            write: { hv_gic_set_redistributor_reg($0, $1, $2) },
+            removalLockAcquired: {}
+        )
+    }
+
+    public convenience init(baseAddress: UInt64, size: UInt64, stride: UInt64) {
+        self.init(baseAddress: baseAddress, size: size, stride: stride, registerAccess: .hypervisor)
+    }
+
+    init(baseAddress: UInt64, size: UInt64, stride: UInt64, registerAccess: RegisterAccess) {
         self.baseAddress = baseAddress
         self.size = size
         self.stride = stride
+        self.registerAccess = registerAccess
     }
 
-    /// Registration completes before the boot CPU starts, so MMIO reads never race these writes.
     public func setHandle(_ handle: hv_vcpu_t, at frameIndex: Int) {
+        accessLock.lock()
+        defer { accessLock.unlock() }
         while vcpuHandles.count <= frameIndex { vcpuHandles.append(nil) }
         vcpuHandles[frameIndex] = handle
     }
 
+    /// Drains in-flight MMIO and retires only this lifetime's registration at its assigned frame.
+    /// The caller must keep the owning VCPU alive until this returns.
+    func removeHandle(_ expectedHandle: hv_vcpu_t, at frameIndex: Int) {
+        accessLock.lock()
+        defer { accessLock.unlock() }
+        registerAccess.removalLockAcquired()
+        guard vcpuHandles.indices.contains(frameIndex),
+              vcpuHandles[frameIndex] == expectedHandle else { return }
+        vcpuHandles[frameIndex] = nil
+    }
+
     public func read(offset: UInt64, width: Int) -> UInt64 {
+        accessLock.lock()
+        defer { accessLock.unlock() }
         guard let (vcpu, registerOffset) = resolve(offset) else { return 0 }
         var value: UInt64 = 0
-        if hv_gic_get_redistributor_reg(vcpu, hv_gic_redistributor_reg_t(UInt32(registerOffset)), &value) == HV_SUCCESS {
+        if registerAccess.read(vcpu, hv_gic_redistributor_reg_t(UInt32(registerOffset)), &value) == HV_SUCCESS {
             return value
         }
         if registerOffset & 0x4 != 0 {
             var aligned: UInt64 = 0
-            if hv_gic_get_redistributor_reg(vcpu, hv_gic_redistributor_reg_t(UInt32(registerOffset - 4)), &aligned) == HV_SUCCESS {
+            if registerAccess.read(vcpu, hv_gic_redistributor_reg_t(UInt32(registerOffset - 4)), &aligned) == HV_SUCCESS {
                 return aligned >> 32
             }
         }
@@ -88,19 +125,22 @@ public final class GICRedistributorMMIO: MMIODevice {
     }
 
     public func write(offset: UInt64, value: UInt64, width: Int) {
+        accessLock.lock()
+        defer { accessLock.unlock() }
         guard let (vcpu, registerOffset) = resolve(offset) else { return }
         let register = hv_gic_redistributor_reg_t(UInt32(registerOffset))
-        if hv_gic_set_redistributor_reg(vcpu, register, value) == HV_SUCCESS { return }
+        if registerAccess.write(vcpu, register, value) == HV_SUCCESS { return }
         if registerOffset & 0x4 != 0, width == 4 {
             let alignedRegister = hv_gic_redistributor_reg_t(UInt32(registerOffset - 4))
             var current: UInt64 = 0
-            if hv_gic_get_redistributor_reg(vcpu, alignedRegister, &current) == HV_SUCCESS {
+            if registerAccess.read(vcpu, alignedRegister, &current) == HV_SUCCESS {
                 let merged = (current & 0xFFFF_FFFF) | (value << 32)
-                _ = hv_gic_set_redistributor_reg(vcpu, alignedRegister, merged)
+                _ = registerAccess.write(vcpu, alignedRegister, merged)
             }
         }
     }
 
+    /// Requires accessLock; the resolved handle must never outlive that critical section.
     private func resolve(_ offset: UInt64) -> (hv_vcpu_t, UInt64)? {
         let index = Int(offset / stride)
         guard index < vcpuHandles.count, let handle = vcpuHandles[index] else { return nil }

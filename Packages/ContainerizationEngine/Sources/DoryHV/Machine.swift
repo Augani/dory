@@ -826,13 +826,16 @@ enum VirtioMMIODeviceTree {
       do {
         let vcpu = try VCPU()
         try vcpu.writeSystem(HV_SYS_REG_MPIDR_EL1, 0x8000_0000 | UInt64(index))
-        register(vcpu: vcpu, index: index)
+        let redistributorFrameIndex = register(vcpu: vcpu, index: index)
         defer {
-          // Pin the VCPU through removal of its handle. Exit requests hold the same lock, so
-          // neither pause nor stop can target a handle after its owning thread destroys it.
-          teamCondition.withLock {
-            teamHandles[index] = nil
-            pauseExitRequests.remove(vcpu.handle)
+          // Pin the owner until both exit requests and redistributor MMIO have drained.
+          withExtendedLifetime(vcpu) {
+            teamCondition.withLock {
+              teamHandles[index] = nil
+              pauseExitRequests.remove(vcpu.handle)
+            }
+            // Never hold teamCondition while waiting for the redistributor access lock.
+            redistributorMMIO.removeHandle(vcpu.handle, at: redistributorFrameIndex)
           }
         }
 
@@ -860,7 +863,7 @@ enum VirtioMMIODeviceTree {
       }
     }
 
-    private func register(vcpu: VCPU, index: Int) {
+    private func register(vcpu: VCPU, index: Int) -> Int {
       // Map this vCPU to its redistributor frame by the base the GIC actually assigned it,
       // rather than assuming creation order.
       var redistributorBase: hv_ipa_t = 0
@@ -871,12 +874,14 @@ enum VirtioMMIODeviceTree {
         frameIndex = Int(
           (redistributorBase - GuestLayout.gicRedistributorBase) / redistributorMMIO.stride)
       }
+      // Publish the frame before announcing readiness, without nesting the two locks.
+      redistributorMMIO.setHandle(vcpu.handle, at: frameIndex)
       teamCondition.lock()
       teamHandles[index] = vcpu.handle
-      redistributorMMIO.setHandle(vcpu.handle, at: frameIndex)
       if index != 0 { registeredCPUs += 1 }
       teamCondition.broadcast()
       teamCondition.unlock()
+      return frameIndex
     }
 
     private func parkUntilStarted(index: Int) -> (entry: UInt64, context: UInt64)? {
