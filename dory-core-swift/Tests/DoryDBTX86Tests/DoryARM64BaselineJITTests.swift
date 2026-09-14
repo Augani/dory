@@ -10085,8 +10085,186 @@ import Testing
       state.rip = 0x6000
       _ = try #require(try execute())
 
-      #expect(requestedCounts == [15, program.count])
+      // The initial compilation confirms the exact decoded bytes before publishing. A warm
+      // no-generation lookup performs its established exact-byte cache validation.
+      #expect(requestedCounts == [15, program.count, program.count])
       #expect(executor.residentBlockCount == 1)
+    #endif
+  }
+
+  @Test func publicationValidationRejectsLateMutationAfterCodeCacheRotation() throws {
+    #if arch(arm64)
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          optimization: optimization
+        )
+        var program: [UInt8] = [0xB8, 1, 0, 0, 0]  // mov eax,1
+        var generation: UInt64 = 1
+        var lateMutationApplied = false
+        var rejectedAddress: UInt64?
+        var rejectedState: DoryX86ArchitecturalState?
+
+        // A fetch for exactly one `mov eax, imm32` is the final confirmation fetch. The
+        // condition becomes true only after this compilation has rotated the code cache. With
+        // the confirmation in its required final position, this changes both source authorities
+        // after rotation but before publication; an earlier confirmation would publish stale
+        // code and leave `lateMutationApplied` false.
+        for index in 0..<1_000 where executor.diagnostics.codeCacheWraps == 0 {
+          let address = UInt64(0x6A00 + index * 0x10)
+          var state = try DoryX86ArchitecturalState(rip: address)
+          let compiledBefore = executor.diagnostics.compiledBlocks
+          let residentBefore = executor.residentBlockCount
+          let execution = try executor.execute(
+            byteProvider: { count in
+              if count == program.count,
+                !lateMutationApplied,
+                executor.diagnostics.codeCacheWraps == 1
+              {
+                lateMutationApplied = true
+                program[1] = 2
+                generation = 2
+              }
+              return Array(program.prefix(count))
+            },
+            codeGenerationProvider: { _ in generation },
+            at: address,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &state
+          )
+          if lateMutationApplied {
+            rejectedAddress = address
+            rejectedState = state
+            #expect(execution == nil)
+            #expect(executor.diagnostics.compiledBlocks == compiledBefore)
+            #expect(executor.residentBlockCount <= residentBefore)
+          }
+        }
+
+        #expect(lateMutationApplied)
+        #expect(executor.diagnostics.codeCacheWraps == 1)
+        let address = try #require(rejectedAddress)
+        var state = try #require(rejectedState)
+        #expect(state.registers.rax == 0)
+        #expect(state.rip == address)
+
+        let stable = try #require(
+          executor.execute(
+            byteProvider: { count in Array(program.prefix(count)) },
+            codeGenerationProvider: { _ in generation },
+            at: address,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &state
+          ))
+        #expect(stable.block.tier == (optimization == .optimizing ? .optimizing : .baseline))
+        #expect(state.registers.rax == 2)
+        #expect(executor.residentBlockCount == 1)
+      }
+    #endif
+  }
+
+  @Test func publicationValidationRejectsGenerationOnlyChangeBeforePublication() throws {
+    #if arch(arm64)
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          optimization: optimization
+        )
+        let program: [UInt8] = [0xB8, 1, 0, 0, 0]  // mov eax,1
+        let address: UInt64 = 0x6B00
+        var generation: UInt64 = 1
+        var generationReads = 0
+        var confirmationFetches = 0
+        var state = try DoryX86ArchitecturalState(rip: address)
+        let compiledBefore = executor.diagnostics.compiledBlocks
+
+        // The byte provider returns the exact original instruction bytes for both compilation
+        // and the final confirmation. Only the second generation observation changes, so this
+        // cannot take the byte-mismatch exit before exercising generation-before/after equality.
+        let rejected = try executor.execute(
+          byteProvider: { count in
+            if count == program.count { confirmationFetches += 1 }
+            return Array(program.prefix(count))
+          },
+          codeGenerationProvider: { _ in
+            generationReads += 1
+            if generationReads == 2 { generation = 2 }
+            return generation
+          },
+          at: address,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state
+        )
+
+        #expect(rejected == nil)
+        #expect(confirmationFetches == 1)
+        #expect(generationReads == 2)
+        #expect(state.registers.rax == 0)
+        #expect(state.rip == address)
+        #expect(executor.diagnostics.compiledBlocks == compiledBefore)
+        #expect(executor.residentBlockCount == 0)
+
+        let stable = try #require(
+          executor.execute(
+            byteProvider: { count in Array(program.prefix(count)) },
+            codeGenerationProvider: { _ in generation },
+            at: address,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &state
+          ))
+        #expect(stable.block.tier == (optimization == .optimizing ? .optimizing : .baseline))
+        #expect(state.registers.rax == 1)
+        #expect(executor.diagnostics.compiledBlocks == compiledBefore + 1)
+        #expect(executor.residentBlockCount == 1)
+      }
+    #endif
+  }
+
+  @Test func publicationValidationUsesExactBytesWithoutGenerationAuthority() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var program: [UInt8] = [0xB8, 1, 0, 0, 0]  // mov eax,1
+      var validationFetches = 0
+      var state = try DoryX86ArchitecturalState(rip: 0x6B00)
+      func execute() throws -> DoryARM64BaselineExecution? {
+        try executor.execute(
+          byteProvider: { count in
+            if count == program.count, validationFetches == 0 {
+              validationFetches += 1
+              program[1] = 2
+            }
+            return Array(program.prefix(count))
+          },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state
+        )
+      }
+
+      #expect(try execute() == nil)
+      #expect(state.registers.rax == 0)
+      #expect(executor.residentBlockCount == 0)
+
+      _ = try #require(try execute())
+      #expect(state.registers.rax == 2)
+      #expect(executor.residentBlockCount == 1)
+
+      state.rip = 0x6B00
+      _ = try #require(try execute())
+      #expect(state.registers.rax == 2)
+      #expect(executor.residentBlockCount == 1)
+      #expect(executor.diagnostics.compiledBlocks == 1)
+      #expect(executor.diagnostics.byteValidationHits == 1)
     #endif
   }
 
