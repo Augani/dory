@@ -6466,11 +6466,11 @@ public struct DoryX86Interpreter: Sendable {
       invalidate = !noFlush
     case 4:
       // Engineering mechanisms remain independently testable. The selected
-      // profiles advertise the now-qualified PSE/PAE/PGE subset; PCID remains
+      // profiles advertise the now-qualified PSE/PAE/PGE subset; PCID and SMAP remain
       // unavailable until a qualified feature and CPUID contract exist.
       var implementedMask: UInt64 =
         (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8)
-        | (1 << 9) | (1 << 10) | (1 << 20) | (1 << 21)
+        | (1 << 9) | (1 << 10) | (1 << 20)
       if profile.supports(.xsave) { implementedMask |= 1 << 18 }
       guard value & ~implementedMask == 0 else { return false }
       if value & (1 << 17) != 0 {

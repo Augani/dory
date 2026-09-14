@@ -67,6 +67,32 @@ import Testing
     try rejectControl(4, value: state.control.cr4 | (1 << 17), state: &state, mode: .long64)
   }
 
+  @Test func baselineSMAPFaultsAtomicallyWithoutChangingSupervisorUserPageAccess() throws {
+    let leaf = DoryX86CPUProfile.compatibleV1.cpuid(leaf: 7, subleaf: 0)
+    #expect(leaf.ebx & (1 << 20) == 0)
+
+    var state = try makeState(activeLong: true, mode: .long64)
+    #expect(!state.rflags.contains(.alignmentCheck))
+    // A supervisor data read of a user page would fault if SMAP were enabled
+    // with AC clear. Use fresh walkers so a cached translation cannot hide it.
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x8000)
+    try memory.writeScalar(at: 0x2000, value: 0x3007, byteCount: 8)
+    try memory.writeScalar(at: 0x3000, value: 0x4007, byteCount: 8)
+    try memory.writeScalar(at: 0x4000, value: 0x5007, byteCount: 8)
+    try memory.writeScalar(at: 0x5030, value: 0x6007, byteCount: 8)
+    let before = try DoryX86PagingUnit().translate(linearAddress: 0x6000, access: .read,
+      context: .init(state: state, mode: .long64), physicalMemory: memory)
+    #expect(before.physicalAddress == 0x6000)
+
+    // Executes MOV CR4,RAX and checks #GP(0), full architectural state (including
+    // RIP and CR4), memory, and warmed translations before returning.
+    try rejectControl(4, value: state.control.cr4 | (1 << 21), state: &state, mode: .long64)
+    #expect(state.control.cr4 & (1 << 21) == 0)
+    let after = try DoryX86PagingUnit().translate(linearAddress: 0x6000, access: .read,
+      context: .init(state: state, mode: .long64), physicalMemory: memory)
+    #expect(after == before)
+  }
+
   @Test func leavingIA32eRequiresCompatibilityCodeAndDisabledPCID() throws {
     var long = try makeState(activeLong: true, mode: .long64)
     try rejectControl(0, value: 0x11, state: &long, mode: .long64)
@@ -144,7 +170,7 @@ import Testing
 
   @Test func cr4ReservedBitsAndOSXSAVEPolicyFaultBeforePublishing() throws {
     let mechanisms: UInt64 = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6)
-      | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 20) | (1 << 21)
+      | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 20)
     for bit in 0..<64 where mechanisms & (UInt64(1) << bit) == 0 {
       var state = try makeState(activeLong: true, mode: .long64)
       try rejectControl(4, value: state.control.cr4 | (UInt64(1) << bit),
