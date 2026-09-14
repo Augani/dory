@@ -1486,6 +1486,8 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
           destination: 16, source: destination, is64Bit: isNarrow || is64Bit))
     case .stagedMemory:
       fragment.append(Self.encodeLoad64(register: 16, word: .rip))
+    case .inlineReadScratch:
+      fragment.append(Self.encodeMove(destination: 16, source: 26, is64Bit: true))
     case .immediate:
       return nil
     }

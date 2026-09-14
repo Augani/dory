@@ -10425,13 +10425,19 @@ import Testing
           maximumCodeBytes: 4096,
           optimization: optimization
         )
-        let program: [UInt8] = [0xB8, 1, 0, 0, 0]  // mov eax,1
+        let program: [UInt8] = [
+          0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0,  // mov rax,1
+          0x48, 0x89, 0xC3,  // mov rbx,rax
+          0x48, 0x89, 0xC9,  // mov rcx,rcx
+          0xF4,
+        ]
         let address: UInt64 = 0x6B00
         var generation: UInt64 = 1
         var generationReads = 0
         var confirmationFetches = 0
         var state = try DoryX86ArchitecturalState(rip: address)
         let compiledBefore = executor.diagnostics.compiledBlocks
+        let effectsBefore = executor.diagnostics
 
         // The byte provider returns the exact original instruction bytes for both compilation
         // and the final confirmation. Only the second generation observation changes, so this
@@ -10449,7 +10455,7 @@ import Testing
           at: address,
           mode: .long64,
           addressSpaceID: 0,
-          maximumInstructions: 1,
+          maximumInstructions: 4,
           state: &state
         )
 
@@ -10460,6 +10466,24 @@ import Testing
         #expect(state.rip == address)
         #expect(executor.diagnostics.compiledBlocks == compiledBefore)
         #expect(executor.residentBlockCount == 0)
+        if optimization == .optimizing {
+          let effectsAfter = executor.diagnostics
+          #expect(
+            effectsAfter.optimizingCompilationAttempts
+              == effectsBefore.optimizingCompilationAttempts + 1)
+          #expect(
+            effectsAfter.lookupVisibleOptimizedBlocks
+              == effectsBefore.lookupVisibleOptimizedBlocks)
+          #expect(
+            effectsAfter.lookupVisibleChangedOptimizedBlocks
+              == effectsBefore.lookupVisibleChangedOptimizedBlocks)
+          #expect(
+            effectsAfter.publishedPropagatedConstants
+              == effectsBefore.publishedPropagatedConstants)
+          #expect(
+            effectsAfter.publishedEliminatedStatements
+              == effectsBefore.publishedEliminatedStatements)
+        }
 
         let stable = try #require(
           executor.execute(
@@ -10468,13 +10492,26 @@ import Testing
             at: address,
             mode: .long64,
             addressSpaceID: 0,
-            maximumInstructions: 1,
+            maximumInstructions: 4,
             state: &state
           ))
         #expect(stable.block.tier == (optimization == .optimizing ? .optimizing : .baseline))
         #expect(state.registers.rax == 1)
+        #expect(state.registers.rbx == 1)
         #expect(executor.diagnostics.compiledBlocks == compiledBefore + 1)
         #expect(executor.residentBlockCount == 1)
+        if optimization == .optimizing {
+          let effectsAfterPublication = executor.diagnostics
+          #expect(
+            effectsAfterPublication.lookupVisibleChangedOptimizedBlocks
+              == effectsBefore.lookupVisibleChangedOptimizedBlocks + 1)
+          #expect(
+            effectsAfterPublication.publishedPropagatedConstants
+              == effectsBefore.publishedPropagatedConstants + 1)
+          #expect(
+            effectsAfterPublication.publishedEliminatedStatements
+              == effectsBefore.publishedEliminatedStatements + 1)
+        }
       }
     #endif
   }
@@ -10661,6 +10698,47 @@ import Testing
       #expect(execution.block.tier == .optimizing)
       #expect(execution.exitCode == .halt)
       #expect(state.registers.rax == 3)
+      let diagnostics = executor.diagnostics
+      #expect(diagnostics.optimizingCompilationAttempts == 1)
+      #expect(diagnostics.lookupVisibleOptimizedBlocks == 1)
+      #expect(diagnostics.lookupVisibleChangedOptimizedBlocks == 0)
+      #expect(diagnostics.publishedPropagatedConstants == 0)
+      #expect(diagnostics.publishedEliminatedStatements == 0)
+    #endif
+  }
+
+  @Test func optimizingExecutorAttributesTransformsOnlyAfterResidentPublication() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        optimization: .optimizing
+      )
+      var state = try DoryX86ArchitecturalState(rip: 0x7200)
+      let execution = try #require(
+        executor.execute(
+          bytes: [
+            0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0,  // mov rax,1
+            0x48, 0x89, 0xC3,  // mov rbx,rax
+            0x48, 0x89, 0xC9,  // mov rcx,rcx
+            0xF4,
+          ],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 9,
+          maximumInstructions: 4,
+          state: &state
+        )
+      )
+
+      #expect(execution.block.tier == .optimizing)
+      #expect(state.registers.rax == 1)
+      #expect(state.registers.rbx == 1)
+      let diagnostics = executor.diagnostics
+      #expect(diagnostics.optimizingCompilationAttempts == 1)
+      #expect(diagnostics.lookupVisibleOptimizedBlocks == 1)
+      #expect(diagnostics.lookupVisibleChangedOptimizedBlocks == 1)
+      #expect(diagnostics.publishedPropagatedConstants == 1)
+      #expect(diagnostics.publishedEliminatedStatements == 1)
     #endif
   }
 

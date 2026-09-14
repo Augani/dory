@@ -330,11 +330,11 @@ import Testing
       state.floatingPoint.ymm[0] = try .init(
         bytes: Array(repeating: 0xD3, count: 32), expectedByteCount: 32)
       state.rip = 0x1010
-      try memory.write(at: 0x2000 + offset, bytes: [value])
+      try memory.write(at: 0x2000 + UInt64(offset), bytes: [value])
       let before = state
       #expect(interpreter.step(state: &state, memory: memory, mode: .long64) == gp(at: 0x1010))
       #expect(state == before)
-      try memory.write(at: 0x2000 + offset, bytes: [0])
+      try memory.write(at: 0x2000 + UInt64(offset), bytes: [0])
     }
   }
 

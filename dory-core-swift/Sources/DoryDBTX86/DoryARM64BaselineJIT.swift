@@ -5822,6 +5822,16 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let byteValidationHits: UInt64
   public let sharedCodeHits: UInt64
   public let compiledBlocks: UInt64
+  /// Optimizer invocations for optimizing-tier candidates after architectural preflight.
+  public let optimizingCompilationAttempts: UInt64
+  /// Optimized blocks that completed validation, code protection, and resident publication.
+  public let lookupVisibleOptimizedBlocks: UInt64
+  /// Lookup-visible optimized blocks whose optimizer metrics recorded a transformation.
+  public let lookupVisibleChangedOptimizedBlocks: UInt64
+  /// Constants propagated by changed optimized blocks only after they became lookup-visible.
+  public let publishedPropagatedConstants: UInt64
+  /// Statements eliminated by changed optimized blocks only after they became lookup-visible.
+  public let publishedEliminatedStatements: UInt64
   /// Blocks submitted to the tier-one emitter after architectural preflight succeeds.
   public let tier1CompilationAttempts: UInt64
   /// Tier-one attempts that declined and continued through the legacy baseline emitter.
@@ -6236,6 +6246,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var byteValidationHitCount: UInt64 = 0
   private var sharedCodeHitCount: UInt64 = 0
   private var compiledBlockCount: UInt64 = 0
+  private var optimizingCompilationAttemptCount: UInt64 = 0
+  private var lookupVisibleOptimizedBlockCount: UInt64 = 0
+  private var lookupVisibleChangedOptimizedBlockCount: UInt64 = 0
+  private var publishedPropagatedConstantCount: UInt64 = 0
+  private var publishedEliminatedStatementCount: UInt64 = 0
   private var tier1CompilationAttemptCount: UInt64 = 0
   private var tier1CompilationDeclineCount: UInt64 = 0
   private var tier1CompiledBlockCount: UInt64 = 0
@@ -6390,6 +6405,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         byteValidationHits: byteValidationHitCount,
         sharedCodeHits: sharedCodeHitCount,
         compiledBlocks: compiledBlockCount,
+        optimizingCompilationAttempts: optimizingCompilationAttemptCount,
+        lookupVisibleOptimizedBlocks: lookupVisibleOptimizedBlockCount,
+        lookupVisibleChangedOptimizedBlocks: lookupVisibleChangedOptimizedBlockCount,
+        publishedPropagatedConstants: publishedPropagatedConstantCount,
+        publishedEliminatedStatements: publishedEliminatedStatementCount,
         tier1CompilationAttempts: tier1CompilationAttemptCount,
         tier1CompilationDeclines: tier1CompilationDeclineCount,
         tier1CompiledBlocks: tier1CompiledBlockCount,
@@ -7370,6 +7390,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     else { return nil }
     do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) } catch
     { return nil }
+    // Direct executor clients do not pass through DoryPCDirectKernelMachine, which normally
+    // imports architectural INVLPG events before dispatch. Keep the native direct-mapped TLB
+    // coherent for those clients too; repeated synchronization is a no-op when no event arrived.
+    if let translatedMemory = memory as? DoryX86TranslatedMemory {
+      synchronizeTranslationCache(with: translatedMemory.translationUnit)
+    }
     return try lock.withLock { () -> ResidentExecution? in
       synchronizeCodeProtection(for: memory)
       guard
@@ -7689,7 +7715,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
       }
     }
-    let block = optimization == .optimizing ? optimizer.optimize(translated).block : translated
+    let optimizationResult: DoryIROptimizationResult?
+    if optimization == .optimizing {
+      optimizingCompilationAttemptCount &+= 1
+      optimizationResult = optimizer.optimize(translated)
+    } else {
+      optimizationResult = nil
+    }
+    let block = optimizationResult?.block ?? translated
     if mode == .long64,
       block.statements.contains(where: {
         switch $0 {
@@ -7820,6 +7853,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     )
     try publish(resident, for: key)
     compiledBlockCount &+= 1
+    if let metrics = optimizationResult?.metrics {
+      lookupVisibleOptimizedBlockCount &+= 1
+      if metrics.propagatedConstants != 0 || metrics.eliminatedStatements != 0 {
+        lookupVisibleChangedOptimizedBlockCount &+= 1
+        publishedPropagatedConstantCount &+= UInt64(metrics.propagatedConstants)
+        publishedEliminatedStatementCount &+= UInt64(metrics.eliminatedStatements)
+      }
+    }
     if compiled.tier == .tier1 { tier1CompiledBlockCount &+= 1 }
     return .init(resident: resident, emitterDeclineByteCount: nil, declineReason: nil)
   }

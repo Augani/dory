@@ -447,7 +447,10 @@ import Testing
     var diagnostics = DoryARM64BaselineExecutorDiagnostics(
       recentLookupHits: 0, blockCacheLookupHits: 0, dictionaryLookupHits: 0,
       lookupMisses: 0, memoryGenerationHits: 0, byteValidationHits: 0,
-      sharedCodeHits: 0, compiledBlocks: 0, tier1CompilationAttempts: 100,
+      sharedCodeHits: 0, compiledBlocks: 0,
+      optimizingCompilationAttempts: 0, lookupVisibleOptimizedBlocks: 0,
+      lookupVisibleChangedOptimizedBlocks: 0, publishedPropagatedConstants: 0,
+      publishedEliminatedStatements: 0, tier1CompilationAttempts: 100,
       tier1CompilationDeclines: 10, tier1CompiledBlocks: 90,
       lazyFlagMaterializations: 0, declinedCompilations: 10,
       negativeCacheHits: 80, negativeCacheMisses: 20,

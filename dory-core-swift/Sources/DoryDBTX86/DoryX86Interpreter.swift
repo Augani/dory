@@ -1362,7 +1362,7 @@ public struct DoryX86Interpreter: Sendable {
         }
         if saved & 4 != 0 {
           try executionMemory.write(
-            at: address + extendedStateYMMHi128Offset,
+            at: address + UInt64(extendedStateYMMHi128Offset),
             bytes: ymmHi128SaveArea(state.floatingPoint, mode: mode)
           )
         }

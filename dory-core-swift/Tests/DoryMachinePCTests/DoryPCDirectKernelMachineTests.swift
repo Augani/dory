@@ -1044,6 +1044,12 @@ import DoryDBTX86
       #expect(machine.executionStatistics.baselineJITInstructions == 2)
       #expect(machine.executionStatistics.optimizingJITInstructions == 1)
       #expect(machine.executionStatistics.interpreterInstructions == 0)
+      let diagnostics = try #require(machine.optimizingJITDiagnostics)
+      #expect(diagnostics.optimizingCompilationAttempts == 1)
+      #expect(diagnostics.lookupVisibleOptimizedBlocks == 1)
+      #expect(diagnostics.lookupVisibleChangedOptimizedBlocks == 0)
+      #expect(diagnostics.publishedPropagatedConstants == 0)
+      #expect(diagnostics.publishedEliminatedStatements == 0)
     #endif
   }
 
