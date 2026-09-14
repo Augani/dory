@@ -385,13 +385,15 @@ private final class VirtioGPUMetalScanoutHostSubmission: @unchecked Sendable {
         self.completion = completion
     }
 
-    func resolve(accepted: Bool) {
+    @discardableResult
+    func resolve(accepted: Bool) -> Bool {
         let callback = lock.withLock { () -> (@Sendable (Bool) -> Void)? in
             let callback = completion
             completion = nil
             return callback
         }
         callback?(accepted)
+        return callback != nil
     }
 
     deinit {
@@ -412,6 +414,7 @@ public struct VirtioGPUMetalScanoutUpdate: Sendable, Equatable {
     public let sourceRect: VirtioGPURect
     public let dirtyRect: VirtioGPURect
     private let hostSubmission: VirtioGPUMetalScanoutHostSubmission
+    private let recordHostSubmission: (@Sendable (Bool) -> Void)?
 
     fileprivate init(
         scanoutID: UInt32,
@@ -421,7 +424,8 @@ public struct VirtioGPUMetalScanoutUpdate: Sendable, Equatable {
         presentation: VirtioGPUMetalScanoutPresentation,
         sourceRect: VirtioGPURect,
         dirtyRect: VirtioGPURect,
-        hostSubmission: VirtioGPUMetalScanoutHostSubmission
+        hostSubmission: VirtioGPUMetalScanoutHostSubmission,
+        recordHostSubmission: (@Sendable (Bool) -> Void)? = nil
     ) {
         self.scanoutID = scanoutID
         self.resourceID = resourceID
@@ -431,18 +435,23 @@ public struct VirtioGPUMetalScanoutUpdate: Sendable, Equatable {
         self.sourceRect = sourceRect
         self.dirtyRect = dirtyRect
         self.hostSubmission = hostSubmission
+        self.recordHostSubmission = recordHostSubmission
     }
 
     /// Completes the guest flush only after the display consumer has imported the lease and
     /// committed a Metal command buffer that retains it.
     public func acceptHostSubmission() {
-        hostSubmission.resolve(accepted: true)
+        if hostSubmission.resolve(accepted: true) {
+            recordHostSubmission?(true)
+        }
     }
 
     /// Fails the guest flush when the display consumer cannot commit the worker frame. The caller
     /// must also retire `presentation` after all local references have been destroyed.
     public func rejectHostSubmission() {
-        hostSubmission.resolve(accepted: false)
+        if hostSubmission.resolve(accepted: false) {
+            recordHostSubmission?(false)
+        }
     }
 
     public static func == (lhs: Self, rhs: Self) -> Bool {
@@ -1745,6 +1754,14 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private var commandFailureCounts: [UInt32: Int] = [:]
     private let traceResourceLifecycle: Bool
     private var resourceTraceSequence: UInt64 = 0
+    /// The structured trace is intentionally opt-in. Normal rendering keeps its existing bounded
+    /// diagnostics, while a qualification run can attach daemon-owned machine/operation identity
+    /// without leaking that authority into guest commands or worker RPCs.
+    private let graphicsTraceContext: VirtioGPUGraphicsTraceContext?
+    private let onGraphicsTrace: (@Sendable (VirtioGPUGraphicsTraceEvent) -> Void)?
+    private let graphicsTraceLock = NSLock()
+    private var graphicsTraceSequence: UInt64 = 0
+    private var graphicsFrameSequence: UInt64 = 0
     /// The cursor virtqueue reads resources created and retired on the control virtqueue. VCPU
     /// kicks may arrive concurrently, so serialize command interpretation while leaving descriptor
     /// dequeue/completion and renderer fence delivery on their existing independent locks.
@@ -2184,6 +2201,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         rendererWorkerCandidate: DoryRendererWorkerVirtioCommandLane? = nil,
         hostVisibleMemory: VirtioGPUHostVisibleMemory? = nil,
         traceResourceLifecycle: Bool = false,
+        graphicsTraceContext: VirtioGPUGraphicsTraceContext? = nil,
+        onGraphicsTrace: (@Sendable (VirtioGPUGraphicsTraceEvent) -> Void)? = nil,
         fenceTimeoutNanoseconds: UInt64 = 10_000_000_000,
         maximumTrackedResources: Int = 4_096,
         maximumControlRequestBytes: Int = 16 * 1_024 * 1_024,
@@ -2249,6 +2268,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             )
         }
         self.traceResourceLifecycle = traceResourceLifecycle
+        self.graphicsTraceContext = graphicsTraceContext
+        self.onGraphicsTrace = onGraphicsTrace
         self.fenceTimeoutNanoseconds = fenceTimeoutNanoseconds
         self.maximumTrackedResources = max(1, maximumTrackedResources)
         // The split-ring parser has a separate 64 MiB absolute chain ceiling. GPU commands are
@@ -6378,10 +6399,28 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         transport: VirtioMMIOTransport
     ) {
         let generation = claim.generation
+        let frameSequence = nextGraphicsFrameSequence()
         logRendererWorkerScanoutProgress(
             resourceID: admission.resourceID,
             stage: "publication-begin"
         )
+        if let surface = admission.surface {
+            recordGraphicsTrace(
+                stage: .scanoutPublished,
+                resourceID: admission.resourceID,
+                displayResourceGeneration: admission.displayResourceGeneration,
+                rendererResourceGeneration: admission.workerResourceGeneration,
+                deviceGeneration: generation,
+                contextID: admission.fence?.contextID,
+                frameSequence: frameSequence,
+                fenceID: admission.fence?.fenceID,
+                width: surface.width,
+                height: surface.height,
+                stride: surface.stride,
+                format: surface.format,
+                detail: "targets=\(admission.targets.count)"
+            )
+        }
         let updates = commandLock.withLock { () -> [VirtioGPUMetalScanoutUpdate]? in
             let isCurrentGeneration = fenceLock.withLock {
                 lifecycleEpoch == generation
@@ -6446,6 +6485,23 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     dirtyRect: target.dirtyRect,
                     hostSubmission: VirtioGPUMetalScanoutHostSubmission { accepted in
                         submissionGroup.resolve(accepted: accepted)
+                    },
+                    recordHostSubmission: { [weak self] accepted in
+                        self?.recordGraphicsTrace(
+                            stage: accepted ? .hostSubmissionAccepted : .hostSubmissionRejected,
+                            resourceID: admission.resourceID,
+                            displayResourceGeneration: admission.displayResourceGeneration,
+                            rendererResourceGeneration: admission.workerResourceGeneration,
+                            deviceGeneration: generation,
+                            contextID: admission.fence?.contextID,
+                            frameSequence: frameSequence,
+                            fenceID: admission.fence?.fenceID,
+                            scanoutID: target.scanoutID,
+                            width: admission.surface?.width,
+                            height: admission.surface?.height,
+                            stride: admission.surface?.stride,
+                            format: admission.surface?.format
+                        )
                     }
                 ))
             }
@@ -8495,6 +8551,11 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         stage: String,
         detail: String = ""
     ) {
+        recordGraphicsTrace(
+            stage: .scanoutFailure,
+            resourceID: resourceID,
+            detail: detail.isEmpty ? stage : "\(stage): \(detail)"
+        )
         let key = "\(resourceID):\(stage)"
         let firstOccurrence = rendererWorkerScanoutDiagnosticLock.withLock {
             rendererWorkerScanoutDiagnosticStages.insert(key).inserted
@@ -8513,6 +8574,11 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         resourceID: UInt32,
         stage: String
     ) {
+        recordGraphicsTrace(
+            stage: .scanoutProgress,
+            resourceID: resourceID,
+            detail: stage
+        )
         let key = "progress:\(resourceID):\(stage)"
         let firstOccurrence = rendererWorkerScanoutDiagnosticLock.withLock {
             rendererWorkerScanoutDiagnosticStages.insert(key).inserted
@@ -8521,6 +8587,56 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         FileHandle.standardError.write(Data(
             "dory-gpu: worker scanout progress resource=\(resourceID) stage=\(stage)\n".utf8
         ))
+    }
+
+    private func nextGraphicsFrameSequence() -> UInt64? {
+        guard graphicsTraceContext != nil, onGraphicsTrace != nil else { return nil }
+        return graphicsTraceLock.withLock {
+            graphicsFrameSequence &+= 1
+            return graphicsFrameSequence
+        }
+    }
+
+    private func recordGraphicsTrace(
+        stage: VirtioGPUGraphicsTraceEvent.Stage,
+        resourceID: UInt32? = nil,
+        displayResourceGeneration: UInt64? = nil,
+        rendererResourceGeneration: UInt64? = nil,
+        deviceGeneration: UInt64? = nil,
+        contextID: UInt32? = nil,
+        frameSequence: UInt64? = nil,
+        fenceID: UInt64? = nil,
+        scanoutID: UInt32? = nil,
+        width: UInt32? = nil,
+        height: UInt32? = nil,
+        stride: UInt32? = nil,
+        format: UInt32? = nil,
+        detail: String = ""
+    ) {
+        guard let graphicsTraceContext, let onGraphicsTrace else { return }
+        let event = graphicsTraceLock.withLock { () -> VirtioGPUGraphicsTraceEvent in
+            graphicsTraceSequence &+= 1
+            return VirtioGPUGraphicsTraceEvent(
+                sequence: graphicsTraceSequence,
+                monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                context: graphicsTraceContext,
+                stage: stage,
+                resourceID: resourceID,
+                displayResourceGeneration: displayResourceGeneration,
+                rendererResourceGeneration: rendererResourceGeneration,
+                deviceGeneration: deviceGeneration,
+                contextID: contextID,
+                frameSequence: frameSequence,
+                fenceID: fenceID,
+                scanoutID: scanoutID,
+                width: width,
+                height: height,
+                stride: stride,
+                format: format,
+                detail: detail
+            )
+        }
+        onGraphicsTrace(event)
     }
 
     private func traceResourceEvent(

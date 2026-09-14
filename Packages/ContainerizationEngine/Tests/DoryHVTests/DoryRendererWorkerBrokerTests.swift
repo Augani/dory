@@ -3804,10 +3804,17 @@ import Testing
         )
         let softwareFrames = RendererSoftwareScanoutRecorder()
         let metalFrames = RendererMetalScanoutRecorder()
+        let graphicsTrace = RendererGraphicsTraceRecorder()
         let queue = try RendererWorkerGPUQueueFixture(
             lane: lane,
             guestBase: 0xA_0000_0000,
             scanoutCount: 1,
+            graphicsTraceContext: VirtioGPUGraphicsTraceContext(
+                machineID: "trace-machine",
+                operationID: "trace-operation",
+                workerGeneration: fixture.bootstrap.generation.rawValue
+            ),
+            onGraphicsTrace: { graphicsTrace.record($0) },
             onScanoutFrame: { softwareFrames.record($0) },
             onMetalScanout: { metalFrames.record($0) }
         )
@@ -3930,6 +3937,31 @@ import Testing
         #expect(update.sourceRect == VirtioGPURect(x: 0, y: 0, width: 64, height: 64))
         #expect(update.dirtyRect == VirtioGPURect(x: 0, y: 0, width: 64, height: 64))
         update.acceptHostSubmission()
+        #expect(await rendererEventually {
+            graphicsTrace.values.contains { $0.stage == .hostSubmissionAccepted }
+        })
+        let published = try #require(graphicsTrace.values.first {
+            $0.stage == .scanoutPublished
+        })
+        let accepted = try #require(graphicsTrace.values.first {
+            $0.stage == .hostSubmissionAccepted
+        })
+        #expect(published.context.machineID == "trace-machine")
+        #expect(published.context.operationID == "trace-operation")
+        #expect(published.context.workerGeneration == fixture.bootstrap.generation.rawValue)
+        #expect(published.resourceID == 47)
+        #expect(published.displayResourceGeneration == 1)
+        #expect(published.rendererResourceGeneration == 31)
+        #expect(published.deviceGeneration == 1)
+        #expect(published.frameSequence != nil)
+        #expect(published.width == 64)
+        #expect(published.height == 64)
+        #expect(published.stride == 256)
+        #expect(published.format == 1)
+        #expect(accepted.frameSequence == published.frameSequence)
+        #expect(accepted.scanoutID == 0)
+        #expect(accepted.sequence > published.sequence)
+        #expect(accepted.monotonicNanoseconds >= published.monotonicNanoseconds)
         #expect(await rendererEventually { (try? queue.usedIndex()) == 5 })
         #expect(try queue.responseType() == 0x1100)
         update.presentation.discardWithoutPresentation()
@@ -4376,6 +4408,8 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
         guestBase: UInt64,
         scanoutCount: UInt32 = 0,
         fenceTimeoutNanoseconds: UInt64 = 10_000_000_000,
+        graphicsTraceContext: VirtioGPUGraphicsTraceContext? = nil,
+        onGraphicsTrace: (@Sendable (VirtioGPUGraphicsTraceEvent) -> Void)? = nil,
         onScanoutFrame: (@Sendable (VirtioGPUScanoutFrame) -> Void)? = nil,
         onMetalScanout: (@Sendable (VirtioGPUMetalScanoutUpdate) -> Void)? = nil,
         onScanoutDisabled: (@Sendable (UInt32) -> Void)? = nil
@@ -4396,6 +4430,8 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
             hostMemoryBase: guestBase + 0x1_0000_0000,
             scanoutCount: scanoutCount,
             rendererWorkerCandidate: lane,
+            graphicsTraceContext: graphicsTraceContext,
+            onGraphicsTrace: onGraphicsTrace,
             fenceTimeoutNanoseconds: fenceTimeoutNanoseconds,
             onScanoutFrame: onScanoutFrame,
             onMetalScanout: onMetalScanout,
@@ -5252,6 +5288,17 @@ private struct RendererLaneFenceEvent: Equatable {
     let contextID: UInt32
     let ringIndex: UInt32
     let fenceID: UInt64
+}
+
+private final class RendererGraphicsTraceRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = [VirtioGPUGraphicsTraceEvent]()
+
+    var values: [VirtioGPUGraphicsTraceEvent] { lock.withLock { storage } }
+
+    func record(_ event: VirtioGPUGraphicsTraceEvent) {
+        lock.withLock { storage.append(event) }
+    }
 }
 
 private final class DoryPCVirGLFenceCompletionRecorder: @unchecked Sendable {
