@@ -44,7 +44,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   @unchecked Sendable
 {
   private struct Slot {
-    struct Endpoint {
+    struct Endpoint: Equatable {
       enum State: UInt32 {
         case disabled = 0
         case running = 1
@@ -212,15 +212,48 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     let result = try lock.withLock {
       let index = try portIndex(port)
       let device = devices.removeValue(forKey: index)
+      var endpoints: [(slotID: UInt8, dci: UInt8, endpoint: Slot.Endpoint)] = []
+      for slotID in slots.keys.sorted() {
+        guard var slot = slots[slotID], slot.addressed, slot.rootPort == UInt8(port) else {
+          continue
+        }
+        for dci in slot.endpoints.keys.sorted() {
+          guard var endpoint = slot.endpoints[dci],
+            endpoint.state != .halted, endpoint.state != .error
+          else { continue }
+          endpoint.state = .error
+          slot.endpoints[dci] = endpoint
+          endpoints.append((slotID, dci, endpoint))
+        }
+        slots[slotID] = slot
+      }
       let old = ports[index]
       var value = old & Self.portChangeMask
       value |= Self.portPower | Self.portConnectChange
       if old & Self.portEnabled != 0 { value |= Self.portEnableChange }
       ports[index] = value
-      return (old & Self.portConnectStatus != 0, device)
+      return (old & Self.portConnectStatus != 0, device, endpoints, guestMemory)
     }
     (result.1 as? any DoryPCUSBTransferReadyNotifying)?.setTransferReadyHandler(nil)
     result.1?.cancelAll()
+    for endpoint in result.2 {
+      if let memory = result.3 {
+        _ = updateEndpointContext(
+          slotID: endpoint.slotID,
+          dci: endpoint.dci,
+          endpoint: endpoint.endpoint,
+          expectedEndpoint: endpoint.endpoint,
+          memory: memory
+        )
+      }
+      postTransferEvent(
+        trbAddress: endpoint.endpoint.dequeueAddress,
+        completionCode: 22,
+        residualBytes: 0,
+        slotID: endpoint.slotID,
+        dci: endpoint.dci
+      )
+    }
     if result.0 { postPortStatusChange(port: port) }
   }
 
@@ -540,19 +573,33 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         let bytes = try? memory.read(at: endpoint.dequeueAddress, byteCount: 16), bytes.count == 16
       else { return }
       if endpoint.state == .stopped {
+        let expectedEndpoint = endpoint
         endpoint.state = .running
-        guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
+        guard updateEndpointContext(
+          slotID: slotID,
+          dci: dci,
+          endpoint: endpoint,
+          expectedEndpoint: expectedEndpoint,
+          memory: memory
+        )
         else { return }
       }
       let control = uint32(Array(bytes[12..<16]))
       guard control & 1 == (endpoint.cycle ? 1 : 0) else { return }
       let trbType = UInt8((control >> 10) & 0x3F)
       if trbType == 6 {
+        let expectedEndpoint = endpoint
         let target = uint64(Array(bytes[0..<8])) & ~UInt64(0xF)
         guard target != 0 else { return }
         endpoint.dequeueAddress = target
         if control & 2 != 0 { endpoint.cycle.toggle() }
-        lock.withLock { slots[slotID]?.endpoints[dci] = endpoint }
+        guard updateEndpointContext(
+          slotID: slotID,
+          dci: dci,
+          endpoint: endpoint,
+          expectedEndpoint: expectedEndpoint,
+          memory: memory
+        ) else { return }
         continue
       }
       if endpoint.type == .control {
@@ -593,9 +640,16 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         return
       }
       if descriptor.segments.isEmpty {
+        let expectedEndpoint = endpoint
         endpoint.dequeueAddress = descriptor.nextDequeueAddress
         endpoint.cycle = descriptor.nextCycle
-        guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
+        guard updateEndpointContext(
+          slotID: slotID,
+          dci: dci,
+          endpoint: endpoint,
+          expectedEndpoint: expectedEndpoint,
+          memory: memory
+        )
         else { return }
         if descriptor.interruptOnCompletion {
           postTransferEvent(
@@ -634,6 +688,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
           maximumResponseBytes: endpoint.direction == .in ? requestedBytes : 0
         )
       else { return }
+      let expectedEndpoint = endpoint
       let result = device.perform(transfer)
       if result.status == .notReady { return }
       let response = Array(result.payload.prefix(requestedBytes))
@@ -668,7 +723,13 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         endpoint.dequeueAddress = descriptor.nextDequeueAddress
         endpoint.cycle = descriptor.nextCycle
       }
-      guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
+      guard updateEndpointContext(
+        slotID: slotID,
+        dci: dci,
+        endpoint: endpoint,
+        expectedEndpoint: expectedEndpoint,
+        memory: memory
+      )
       else { return }
       let shortResponse = endpoint.direction == .in && response.count < requestedBytes
       guard
@@ -787,7 +848,13 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     } else {
       updated.dequeueAddress = nextAddress + 16
     }
-    guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: updated, memory: memory)
+    guard updateEndpointContext(
+      slotID: slotID,
+      dci: dci,
+      endpoint: updated,
+      expectedEndpoint: endpoint,
+      memory: memory
+    )
     else { return }
     guard halted || nextControl & (1 << 5) != 0 else { return }
     let residual = setup.direction == .in ? requestedBytes - response.count : 0
@@ -1285,10 +1352,41 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     slotID: UInt8,
     dci: UInt8,
     endpoint: Slot.Endpoint,
+    expectedEndpoint: Slot.Endpoint? = nil,
     memory: any DoryVirtioGuestMemory
   ) -> Bool {
     guard let slot = lock.withLock({ slots[slotID] }) else { return false }
     let address = slot.outputContextAddress + UInt64(dci) * 32
+    guard writeEndpointContext(endpoint, at: address, memory: memory) else { return false }
+    let committed = lock.withLock {
+      guard var currentSlot = slots[slotID], let current = currentSlot.endpoints[dci],
+        current.state != .error || endpoint.state == .error,
+        expectedEndpoint.map({ current == $0 }) ?? true
+      else { return false }
+      currentSlot.endpoints[dci] = endpoint
+      slots[slotID] = currentSlot
+      return true
+    }
+    guard !committed else { return true }
+
+    // A terminal disconnect may have raced the guest-memory write above. Restore its current
+    // error context so a stale worker cannot leave the guest observing a revived endpoint.
+    if let terminal = lock.withLock({ () -> (Slot.Endpoint, UInt64)? in
+      guard let currentSlot = slots[slotID], let current = currentSlot.endpoints[dci],
+        current.state == .error
+      else { return nil }
+      return (current, currentSlot.outputContextAddress + UInt64(dci) * 32)
+    }) {
+      _ = writeEndpointContext(terminal.0, at: terminal.1, memory: memory)
+    }
+    return false
+  }
+
+  private func writeEndpointContext(
+    _ endpoint: Slot.Endpoint,
+    at address: UInt64,
+    memory: any DoryVirtioGuestMemory
+  ) -> Bool {
     do {
       let existing = try memory.read(at: address, byteCount: 32)
       guard existing.count == 32 else { return false }
@@ -1296,11 +1394,10 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       try memory.validate(at: address, byteCount: 32, deviceWillWrite: true)
       try memory.write(at: address, bytes: bytes)
       memory.synchronize()
+      return true
     } catch {
       return false
     }
-    lock.withLock { slots[slotID]?.endpoints[dci] = endpoint }
-    return true
   }
 
   private func endpointContextBytes(_ endpoint: Slot.Endpoint, existing: [UInt8]?) -> [UInt8] {

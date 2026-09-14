@@ -356,6 +356,191 @@ import Testing
     #expect(try read32(machine, 0x20C8) >> 24 == 1)
   }
 
+  @Test func disconnectTerminatesActiveEndpointsOnlyOnce() throws {
+    let xhci = try DoryPCXHCIController()
+    let disconnectedDevice = DoryPCUSBRecordingDevice(speed: .high)
+    let unaffectedDevice = DoryPCUSBRecordingDevice(speed: .high)
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [xhci]
+    )
+    let bar = DoryPCV1ABI.xhciBARAddress
+    try xhci.writeConfiguration(offset: 4, bytes: [2, 0])
+    try machine.physicalMemory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x2000)) + littleEndian(UInt32(16)) + [0, 0, 0, 0]
+    )
+    try machine.physicalMemory.write(at: 0x4008, bytes: littleEndian(UInt64(0x6000)))
+    try machine.physicalMemory.write(at: 0x4010, bytes: littleEndian(UInt64(0xC000)))
+
+    func addressInput(rootPort: UInt8, endpoint0Ring: UInt64) -> [UInt8] {
+      var input = [UInt8](repeating: 0, count: 96)
+      input.replaceSubrange(4..<8, with: littleEndian(UInt32(3)))
+      input.replaceSubrange(32..<36, with: littleEndian(UInt32(1 << 27 | 3 << 20)))
+      input.replaceSubrange(36..<40, with: littleEndian(UInt32(rootPort) << 16))
+      input.replaceSubrange(68..<72, with: littleEndian(UInt32(64 << 16 | 4 << 3)))
+      input.replaceSubrange(72..<80, with: littleEndian(endpoint0Ring | 1))
+      return input
+    }
+
+    try machine.physicalMemory.write(at: 0x5000, bytes: addressInput(rootPort: 1, endpoint0Ring: 0x9000))
+    try machine.physicalMemory.write(at: 0x7000, bytes: addressInput(rootPort: 2, endpoint0Ring: 0xA000))
+    var configureInput = [UInt8](repeating: 0, count: 1_056)
+    configureInput.replaceSubrange(4..<8, with: littleEndian(UInt32(1 << 3)))
+    configureInput.replaceSubrange(132..<136, with: littleEndian(UInt32(512 << 16 | 6 << 3)))
+    configureInput.replaceSubrange(136..<144, with: littleEndian(UInt64(0xB001)))
+    try machine.physicalMemory.write(at: 0x8000, bytes: configureInput)
+
+    func command(parameter: UInt64 = 0, control: UInt32) -> [UInt8] {
+      littleEndian(parameter) + [UInt8](repeating: 0, count: 4) + littleEndian(control)
+    }
+    let commands =
+      command(control: 9 << 10 | 1)
+      + command(parameter: 0x5000, control: 1 << 24 | 11 << 10 | 1)
+      + command(parameter: 0x8000, control: 1 << 24 | 12 << 10 | 1)
+      + command(control: 9 << 10 | 1)
+      + command(parameter: 0x7000, control: 2 << 24 | 11 << 10 | 1)
+      + command(control: 9 << 10 | 1)
+    try machine.physicalMemory.write(at: 0x3000, bytes: commands)
+
+    try write32(machine, bar + 0x1028, 1)
+    try write64(machine, bar + 0x1030, 0x1000)
+    try write64(machine, bar + 0x1038, 0x2000)
+    try write64(machine, bar + 0x58, 0x3001)
+    try write64(machine, bar + 0x70, 0x4000)
+    try write32(machine, bar + 0x78, 8)
+    try write32(machine, bar + 0x40, 1)
+    try xhci.connect(port: 1, device: disconnectedDevice)
+    try xhci.connect(port: 2, device: unaffectedDevice)
+    try write32(machine, bar + 0x2000, 0)
+
+    #expect(xhci.slotStates == [
+      .init(slotID: 1, addressed: true),
+      .init(slotID: 2, addressed: true),
+      .init(slotID: 3, addressed: false),
+    ])
+    #expect(try read32(machine, 0x6020) & 0x7 == 1)
+    #expect(try read32(machine, 0x6060) & 0x7 == 1)
+    #expect(try read32(machine, 0xC020) & 0x7 == 1)
+
+    try xhci.disconnect(port: 1)
+
+    #expect(disconnectedDevice.cancellationCount == 1)
+    #expect(unaffectedDevice.cancellationCount == 0)
+    #expect(try read64(machine, 0x2080) == 0x9000)
+    #expect(try read32(machine, 0x2088) >> 24 == 22)
+    #expect(try read32(machine, 0x208C) >> 24 == 1)
+    #expect((try read32(machine, 0x208C) >> 16) & 0x1F == 1)
+    #expect(try read64(machine, 0x2090) == 0xB000)
+    #expect(try read32(machine, 0x2098) >> 24 == 22)
+    #expect(try read32(machine, 0x209C) >> 24 == 1)
+    #expect((try read32(machine, 0x209C) >> 16) & 0x1F == 3)
+    #expect((try read32(machine, 0x20AC) >> 10) & 0x3F == 34)
+    #expect(try read32(machine, 0x6020) & 0x7 == 4)
+    #expect(try read32(machine, 0x6060) & 0x7 == 4)
+    #expect(try read32(machine, 0xC020) & 0x7 == 1)
+    #expect(try xhci.portState(2).connected)
+
+    try xhci.disconnect(port: 1)
+
+    #expect(disconnectedDevice.cancellationCount == 1)
+    #expect(try machine.physicalMemory.read(at: 0x20B0, byteCount: 16) == [UInt8](repeating: 0, count: 16))
+  }
+
+  @Test func disconnectRejectsInFlightTransferContextWriteback() throws {
+    let xhci = try DoryPCXHCIController()
+    let device = BlockingUSBDevice()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [xhci]
+    )
+    let bar = DoryPCV1ABI.xhciBARAddress
+    try xhci.writeConfiguration(offset: 4, bytes: [2, 0])
+    try machine.physicalMemory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x2000)) + littleEndian(UInt32(32)) + [0, 0, 0, 0]
+    )
+    try machine.physicalMemory.write(at: 0x4008, bytes: littleEndian(UInt64(0x6000)))
+
+    var addressInput = [UInt8](repeating: 0, count: 96)
+    addressInput.replaceSubrange(4..<8, with: littleEndian(UInt32(3)))
+    addressInput.replaceSubrange(32..<36, with: littleEndian(UInt32(1 << 27 | 3 << 20)))
+    addressInput.replaceSubrange(36..<40, with: littleEndian(UInt32(1 << 16)))
+    addressInput.replaceSubrange(68..<72, with: littleEndian(UInt32(64 << 16 | 4 << 3)))
+    addressInput.replaceSubrange(72..<80, with: littleEndian(UInt64(0x9001)))
+    try machine.physicalMemory.write(at: 0x5000, bytes: addressInput)
+
+    var configureInput = [UInt8](repeating: 0, count: 1_056)
+    configureInput.replaceSubrange(4..<8, with: littleEndian(UInt32(1 << 3)))
+    configureInput.replaceSubrange(132..<136, with: littleEndian(UInt32(512 << 16 | 6 << 3)))
+    configureInput.replaceSubrange(136..<144, with: littleEndian(UInt64(0xB001)))
+    try machine.physicalMemory.write(at: 0x8000, bytes: configureInput)
+
+    func command(parameter: UInt64 = 0, control: UInt32) -> [UInt8] {
+      littleEndian(parameter) + [UInt8](repeating: 0, count: 4) + littleEndian(control)
+    }
+    try machine.physicalMemory.write(
+      at: 0x3000,
+      bytes: command(control: 9 << 10 | 1)
+        + command(parameter: 0x5000, control: 1 << 24 | 11 << 10 | 1)
+        + command(parameter: 0x8000, control: 1 << 24 | 12 << 10 | 1)
+    )
+    try machine.physicalMemory.write(
+      at: 0xB000,
+      bytes: littleEndian(UInt64(0xD000)) + littleEndian(UInt32(0))
+        + littleEndian(UInt32(1 << 10 | 1 << 5 | 1))
+    )
+
+    try write32(machine, bar + 0x1028, 1)
+    try write64(machine, bar + 0x1030, 0x1000)
+    try write64(machine, bar + 0x1038, 0x2000)
+    try write64(machine, bar + 0x58, 0x3001)
+    try write64(machine, bar + 0x70, 0x4000)
+    try write32(machine, bar + 0x78, 8)
+    try write32(machine, bar + 0x40, 1)
+    try xhci.connect(port: 1, device: device)
+    try write32(machine, bar + 0x2000, 0)
+    #expect(try read32(machine, 0x6060) & 0x7 == 1)
+
+    let transferDone = DispatchSemaphore(value: 0)
+    let transferResult = LockedTransferResult()
+    DispatchQueue.global().async {
+      do {
+        try write32(machine, bar + 0x2004, 3)
+        transferResult.set(.success(()))
+      } catch {
+        transferResult.set(.failure(error))
+      }
+      transferDone.signal()
+    }
+    #expect(device.waitForTransferStart())
+
+    try xhci.disconnect(port: 1)
+    device.resumeTransfer()
+    #expect(transferDone.wait(timeout: .now() + .seconds(2)) == .success)
+    if case .failure(let error) = try #require(transferResult.value) { throw error }
+
+    func transferCompletionCodes() throws -> [UInt32] {
+      try (0..<16).compactMap { index in
+        let address = UInt64(0x2000 + index * 16)
+        let control = try read32(machine, address + 12)
+        guard (control >> 10) & 0x3F == 32,
+          control >> 24 == 1,
+          (control >> 16) & 0x1F == 3
+        else { return nil }
+        return try read32(machine, address + 8) >> 24
+      }
+    }
+
+    #expect(device.cancellationCount == 1)
+    #expect(try read32(machine, 0x6060) & 0x7 == 4)
+    #expect(try transferCompletionCodes() == [22])
+
+    try xhci.disconnect(port: 1)
+    #expect(device.cancellationCount == 1)
+    #expect(try transferCompletionCodes() == [22])
+  }
+
   @Test func authorizedDeviceCapabilityFollowsPortResetDetachAndControllerReset() throws {
     let xhci = try DoryPCXHCIController()
     let device = DoryPCUSBRecordingDevice(speed: .high)
@@ -407,6 +592,39 @@ private final class ReadyNotifyingUSBDevice: DoryPCUSBDevice, DoryPCUSBTransferR
     lock.withLock { self.handler = handler }
   }
   func signalReady() { lock.withLock { handler }?() }
+}
+
+private final class BlockingUSBDevice: DoryPCUSBDevice, @unchecked Sendable {
+  let speed: DoryPCXHCIPortSpeed = .high
+  private let started = DispatchSemaphore(value: 0)
+  private let resume = DispatchSemaphore(value: 0)
+  private let lock = NSLock()
+  private var cancellations = 0
+
+  var cancellationCount: Int { lock.withLock { cancellations } }
+
+  func waitForTransferStart() -> Bool {
+    started.wait(timeout: .now() + .seconds(2)) == .success
+  }
+
+  func resumeTransfer() { resume.signal() }
+
+  func perform(_ transfer: DoryPCUSBTransfer) -> DoryPCUSBTransferResult {
+    started.signal()
+    resume.wait()
+    return try! .init(status: .success)
+  }
+
+  func reset() {}
+  func cancelAll() { lock.withLock { cancellations += 1 } }
+}
+
+private final class LockedTransferResult: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage: Result<Void, Error>?
+
+  var value: Result<Void, Error>? { lock.withLock { storage } }
+  func set(_ value: Result<Void, Error>) { lock.withLock { storage = value } }
 }
 
 private func read8(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) throws -> UInt8 {
