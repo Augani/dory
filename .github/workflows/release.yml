@@ -964,6 +964,8 @@ jobs:
             release-build/*.zip
             release-build/*.dmg
             release-build/*.tar.gz
+            release-build/*.pkg
+            release-build/*.pkg.json
             release-build/*.cdx.json
             release-build/appcast.xml
             release-build/release-manifest.json
@@ -1929,6 +1931,7 @@ jobs:
           | `Dory-@VERSION@-arm64.dmg` / `.zip` | Full app optimized for Apple silicon |
           | `Dory-@VERSION@.dmg` / `.zip` | Compatibility alias for the arm64 build |
           | `dory-engine-@VERSION@-arm64.tar.gz` | Headless engine runtime, no GUI — `./dory-engine start`, then `docker context use dory-engine` |
+          | `DoryGuestTools-@VERSION@-arm64.pkg` | Signed Guest Tools installer for a supported macOS guest; includes the retained in-guest Metal probe |
           | `Dory-@VERSION@.cdx.json` | CycloneDX 1.6 SBOM for the exact shipped app tree |
           | `Dory-@VERSION@-container-engine-performance-evidence.zip` | Raw isolated/interleaved container-engine benchmark data, provenance, correctness evidence, and generated summaries; not Linux VM qualification |
           | `Dory-@VERSION@-reliability-evidence.zip` | Candidate-bound eight-hour resource/file/API and 25-hour unchanged-connection qualification records |
@@ -1978,6 +1981,8 @@ jobs:
             release-build/Dory-${{ needs.release_candidate.outputs.version }}.dmg \
             release-build/Dory-${{ needs.release_candidate.outputs.version }}-app-update.zip \
             release-build/dory-engine-${{ needs.release_candidate.outputs.version }}-arm64.tar.gz \
+            release-build/DoryGuestTools-${{ needs.release_candidate.outputs.version }}-arm64.pkg \
+            release-build/DoryGuestTools-${{ needs.release_candidate.outputs.version }}-arm64.pkg.json \
             release-build/Dory-${{ needs.release_candidate.outputs.version }}.cdx.json \
             release-build/release-manifest.json \
             release-build/appcast.xml \
@@ -2046,6 +2051,8 @@ jobs:
               root / f"Dory-{version}.dmg",
               root / f"Dory-{version}-app-update.zip",
               root / f"dory-engine-{version}-arm64.tar.gz",
+              root / f"DoryGuestTools-{version}-arm64.pkg",
+              root / f"DoryGuestTools-{version}-arm64.pkg.json",
               root / f"Dory-{version}.cdx.json",
               root / "release-manifest.json",
               root / "appcast.xml",

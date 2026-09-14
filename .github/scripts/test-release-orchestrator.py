@@ -13,6 +13,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 RELEASE = ROOT / "scripts" / "release.sh"
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 
 
 class ReleaseOrchestratorTests(unittest.TestCase):
@@ -81,6 +82,18 @@ class ReleaseOrchestratorTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("package candidate ID", result.stdout)
+
+    def test_guest_tools_installer_is_retained_and_published(self) -> None:
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        for contract in (
+            "release-build/*.pkg",
+            "release-build/*.pkg.json",
+            "release-build/DoryGuestTools-${{ needs.release_candidate.outputs.version }}-arm64.pkg",
+            "release-build/DoryGuestTools-${{ needs.release_candidate.outputs.version }}-arm64.pkg.json",
+            'root / f"DoryGuestTools-{version}-arm64.pkg"',
+            'root / f"DoryGuestTools-{version}-arm64.pkg.json"',
+        ):
+            self.assertIn(contract, workflow)
 
     def test_missing_metadata_fails_before_release_mutation(self) -> None:
         result = subprocess.run(
