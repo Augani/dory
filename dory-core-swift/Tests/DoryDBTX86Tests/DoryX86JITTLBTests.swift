@@ -256,6 +256,56 @@ import Testing
     #expect(tlb.diagnostics.fallbacks == 2)
   }
 
+  @Test func cCachedHitValidatesFullSpanAtPartialReservationEnd() throws {
+    for access in DoryX86JITTLBAccess.allCases {
+      let physical = try DoryX86MmapMemory(validatingByteCount: 0x2_124)
+      let paging = DoryX86PagingUnit()
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: .reset(), mode: .real16)
+      )
+      let tlb = try DoryX86JITTLB(entryCount: 16)
+      let lastByte: UInt64 = 0x2_123
+      let lastHostByte = physical.hostAddressSpaceBase + lastByte
+
+      func resolve(_ address: UInt64, byteCount: Int) throws -> DoryX86JITTLBResolution {
+        try tlb.resolve(
+          linearAddress: address,
+          byteCount: byteCount,
+          addressSpaceGeneration: 1,
+          access: access,
+          memory: translated
+        )
+      }
+
+      #expect(try resolve(lastByte, byteCount: 1) == .filled(hostAddress: lastHostByte))
+      #expect(try resolve(lastByte, byteCount: 1) == .hit(hostAddress: lastHostByte))
+      #expect(paging.diagnostics.translationRequests == 1)
+
+      // Both bytes lie in the cached guest page, but only the first is in the reservation.
+      #expect(try resolve(lastByte, byteCount: 2) == .fallback)
+      #expect(paging.diagnostics.translationRequests == 2)
+      #expect(tlb.diagnostics.hits == 1)
+      #expect(tlb.diagnostics.misses == 2)
+      #expect(tlb.diagnostics.fills == 1)
+      #expect(tlb.diagnostics.fallbacks == 1)
+
+      // A complete span ending exactly at the reservation boundary still uses the entry.
+      #expect(try resolve(lastByte - 1, byteCount: 2) == .hit(hostAddress: lastHostByte - 1))
+      #expect(paging.diagnostics.translationRequests == 2)
+      #expect(tlb.diagnostics.hits == 2)
+
+      // The same oversized span is also rejected without a cached entry.
+      tlb.invalidateAll()
+      #expect(try resolve(lastByte, byteCount: 2) == .fallback)
+      #expect(paging.diagnostics.translationRequests == 3)
+      #expect(tlb.diagnostics.misses == 3)
+      #expect(tlb.diagnostics.fills == 1)
+      #expect(tlb.diagnostics.fallbacks == 2)
+    }
+  }
+
   @Test func cSlowPathUsesSparseHostOffsetRatherThanCompactPhysicalOffset() throws {
     let page = Int(getpagesize())
     let physical = try DoryX86MmapMemory(

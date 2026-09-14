@@ -775,10 +775,12 @@ int dory_jit_tlb_resolve(
     if (lookup == 0) {
         // A stale entry whose tag survived an invalidation, or a corrupted entry with a
         // matching tag but wrong delta, must not reach a direct access. Validate the host
-        // address lies within the host address space before accepting the hit; otherwise
+        // span lies within the host address space before accepting the hit; otherwise
         // fall through to the translation walk and refill with a validated address.
         if (host_address >= host_address_space_base &&
-            host_address - host_address_space_base < host_address_space_byte_count) {
+            host_address - host_address_space_base <= host_address_space_byte_count &&
+            (uint64_t)byte_count <= host_address_space_byte_count -
+                (host_address - host_address_space_base)) {
             tlb->inline_hit_counts[access]++;
             resolution_out->host_address = host_address;
             resolution_out->status = DORY_JIT_TLB_RESOLUTION_HIT;
