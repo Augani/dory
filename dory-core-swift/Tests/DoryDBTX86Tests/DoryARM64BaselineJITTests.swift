@@ -536,6 +536,119 @@ import Testing
     #endif
   }
 
+  @Test(arguments: [2, 4, 8])
+  func generatedReadTLBValidatesFullHostSpan(byteCount: Int) throws {
+    try checkGeneratedTLBHostSpan(byteCount: byteCount, isWrite: false)
+  }
+
+  @Test(arguments: [2, 4, 8])
+  func generatedWriteTLBValidatesFullHostSpan(byteCount: Int) throws {
+    try checkGeneratedTLBHostSpan(byteCount: byteCount, isWrite: true)
+  }
+
+  private func checkGeneratedTLBHostSpan(byteCount: Int, isWrite: Bool) throws {
+    #if arch(arm64)
+      let physical = try BoundedDirectSpanMemory()
+      let paging = DoryX86PagingUnit()
+      let guestRIP: UInt64 = 0x3200
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rcx: 0xCAFE, rbx: isWrite ? 0x1122_3344_5566_7788 : 0),
+        rip: guestRIP,
+        rflags: [.reservedOne, .carry, .zero, .overflow]
+      )
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: initial, mode: .long64),
+        jitWriteCoherencePolicy: .protectedHostPages
+      )
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4_096,
+        tier1Enabled: false
+      )
+      let prefix: [UInt8] = byteCount == 2 ? [0x66] : byteCount == 8 ? [0x48] : []
+      let bytes = prefix + [UInt8(isWrite ? 0x89 : 0x8B), 0x18]  // mov [rax],rbx / rbx,[rax]
+      let end = UInt64(physical.hostAddressSpaceByteCount)
+      let exactAddress = end - UInt64(byteCount)
+      // Both addresses are inside one guest page: only the host-span guard can reject this.
+      let partialAddress = exactAddress + 1
+      let directValue = (0..<byteCount).reduce(UInt64(0)) { $0 | (0xA5 << ($1 * 8)) }
+      let callbackValue = (0..<byteCount).reduce(UInt64(0)) { $0 | (0x5A << ($1 * 8)) }
+
+      func run(at address: UInt64, fallback: Bool) throws {
+        var state = initial
+        state.registers.rax = address
+        var expected = state
+        expected.rip += UInt64(bytes.count)
+        if !isWrite { expected.registers.rbx = fallback ? callbackValue : directValue }
+        translated.updateContext(.init(state: state, mode: .long64))
+        let callbacksBefore = physical.scalarReads + physical.scalarWrites
+        let directBefore = try physical.direct.read(at: 0xE0, byteCount: 0x40)
+        let execution = try #require(executor.execute(
+          bytes: bytes,
+          at: guestRIP,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+        #expect(execution.block.tier == .baseline)
+        #expect(execution.exitCode == .dispatch)
+        #expect(state == expected)
+        #expect(physical.scalarReads + physical.scalarWrites == callbacksBefore + (fallback ? 1 : 0))
+        if fallback {
+          // An unsafe generated store would change this backing instead of the callback memory.
+          #expect(try physical.direct.read(at: 0xE0, byteCount: 0x40) == directBefore)
+        }
+        if isWrite {
+          let destination: any DoryX86ScalarMemory = fallback ? physical.callbacks : physical.direct
+          let mask = UInt64.max >> (64 - byteCount * 8)
+          #expect(try destination.readScalar(at: address, byteCount: byteCount)
+            == initial.registers.rbx & mask)
+        }
+      }
+
+      // A cold partial span must take the resolver and callback without filling a TLB entry.
+      try run(at: partialAddress, fallback: true)
+      let tlb = try #require(executor.translationTLBForTesting)
+      #expect(physical.directRequests == 1)
+      #expect(tlb.diagnostics.misses == 1)
+      #expect(tlb.diagnostics.fallbacks == 1)
+      #expect(tlb.diagnostics.fills == 0)
+
+      // Cold exact-end access fills; repeating it must execute the generated hit with no walk.
+      try run(at: exactAddress, fallback: false)
+      #expect(physical.directRequests == 2)
+      #expect(tlb.diagnostics.fills == 1)
+      let hitsBefore = tlb.diagnostics.hits
+      try run(at: exactAddress, fallback: false)
+      #expect(physical.directRequests == 2)
+      #expect(tlb.diagnostics.hits == hitsBefore + 1)
+
+      // Reuse that page-wide entry one byte later. The start is in range but the end is not.
+      try run(at: partialAddress, fallback: true)
+      #expect(physical.directRequests == 3)
+      #expect(tlb.diagnostics.misses == 3)
+      #expect(tlb.diagnostics.fallbacks == 2)
+      #expect(tlb.diagnostics.fills == 1)
+
+      // Targeted paging invalidation must discard the matching entry before another access.
+      let invalidationsBefore = executor.diagnostics.translationCacheInvalidations
+      paging.invalidate(linearAddress: exactAddress)
+      let hitsBeforeInvalidation = tlb.diagnostics.hits
+      try run(at: partialAddress, fallback: true)
+      #expect(executor.diagnostics.translationCacheInvalidations == invalidationsBefore + 1)
+      #expect(tlb.diagnostics.hits == hitsBeforeInvalidation)
+      #expect(tlb.diagnostics.fallbacks == 3)
+      #expect(tlb.diagnostics.fills == 1)
+      #expect(physical.directRequests == 4)
+      try run(at: exactAddress, fallback: false)
+      #expect(physical.directRequests == 5)
+      #expect(tlb.diagnostics.fills == 2)
+    #endif
+  }
+
   @Test func negativeCacheCollisionReplacementDiscardsTheReplacedHitCount() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x0F, 0xA2]
@@ -11202,6 +11315,60 @@ private final class FaultingBulkMemory: DoryX86BulkMemory, @unchecked Sendable {
       byteCount: elementByteCount * maximumElementCount,
       access: .read
     )
+  }
+}
+
+/// Advertises a bounded direct window ending inside a guest page. The larger allocation keeps
+/// regressions observable without a host fault; callback data is separate so accidental direct
+/// reads and writes cannot masquerade as a successful fallback.
+private final class BoundedDirectSpanMemory: DoryX86ScalarMemory,
+  DoryX86DirectHostAddressSpaceMemory, @unchecked Sendable
+{
+  let direct: DoryX86MmapMemory
+  let callbacks: DoryX86ByteArrayMemory
+  let hostAddressSpaceByteCount = 0x100
+  var hostAddressSpaceBase: UInt64 { direct.hostAddressSpaceBase }
+  private(set) var directRequests = 0
+  private(set) var scalarReads = 0
+  private(set) var scalarWrites = 0
+
+  init() throws {
+    direct = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+    callbacks = try DoryX86ByteArrayMemory(byteCount: 0x200)
+    try direct.write(at: 0, bytes: Array(repeating: 0xA5, count: 0x200))
+    try callbacks.write(at: 0, bytes: Array(repeating: 0x5A, count: 0x200))
+  }
+
+  func hostAddressSpaceOffset(
+    at address: UInt64, byteCount: Int, access: DoryX86MemoryAccessKind
+  ) -> UInt64? {
+    directRequests += 1
+    guard byteCount > 0, address <= UInt64(hostAddressSpaceByteCount),
+      UInt64(byteCount) <= UInt64(hostAddressSpaceByteCount) - address
+    else { return nil }
+    return address
+  }
+
+  func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    try callbacks.instructionBytes(at: address, maximumCount: maximumCount)
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    try callbacks.read(at: address, byteCount: byteCount)
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    try callbacks.write(at: address, bytes: bytes)
+  }
+
+  func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
+    scalarReads += 1
+    return try callbacks.readScalar(at: address, byteCount: byteCount)
+  }
+
+  func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
+    scalarWrites += 1
+    try callbacks.writeScalar(at: address, value: value, byteCount: byteCount)
   }
 }
 

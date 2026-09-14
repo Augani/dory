@@ -2937,15 +2937,19 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeAddImmediate64(left: 14, immediate: 1, destination: 14))
     words.append(encodeStore64(register: 14, base: 16, byteOffset: 0))
     words.append(encodeAdd(is64Bit: true, left: addressRegister, right: 17, destination: 13))
-    // Validate the computed host address lies within the host address space (see emitMemoryWrite).
+    // Validate the complete host span using checked subtractions (see emitMemoryWrite).
     words.append(encodeLoad64(register: 9, base: 19, byteOffset: Self.hostAddressSpaceBaseOffset))
     words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 13, 9, 9))
     let readHostBoundsLowBranch = words.count
     words.append(0)
     words.append(
       encodeLoad64(register: 16, base: 19, byteOffset: Self.hostAddressSpaceByteCountOffset))
-    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 9, 16, 31))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 9, 16))
     let readHostBoundsHighBranch = words.count
+    words.append(0)
+    emitImmediate(UInt64(byteCount), register: 9, into: &words)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 9, 31))
+    let readHostSpanBranch = words.count
     words.append(0)
     words.append(encodeDirectLoad(width: width, register: resultRegister, base: 13))
     let hitDoneBranch = words.count
@@ -2961,8 +2965,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
       wordOffset: missStart - readHostBoundsLowBranch
     )
     words[readHostBoundsHighBranch] = encodeConditionalBranch(
-      condition: .carrySet,
+      condition: .carryClear,
       wordOffset: missStart - readHostBoundsHighBranch
+    )
+    words[readHostSpanBranch] = encodeConditionalBranch(
+      condition: .carryClear,
+      wordOffset: missStart - readHostSpanBranch
     )
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
     words.append(encodeLogical(.or, left: 31, right: 20, destination: 1))
@@ -3113,18 +3121,22 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeAddImmediate64(left: 14, immediate: 1, destination: 14))
     words.append(encodeStore64(register: 14, base: 16, byteOffset: 0))
     words.append(encodeAdd(is64Bit: true, left: addressRegister, right: 17, destination: 13))
-    // Validate the computed host address lies within the host address space. A stale TLB
-    // entry whose tag survived an invalidation, or a corrupted entry with a matching tag
-    // but wrong delta, must not reach a direct store. Fall through to the C resolver, which
-    // re-walks the page tables and re-validates the host offset before refilling.
+    // Validate host >= base, offset <= reservation size, and byteCount <= size - offset.
+    // Each subtraction is checked before using its result; never form host + byteCount.
+    // A matching tag with a stale delta must not reach adjacent host memory. On failure,
+    // the C resolver re-walks and validates the full span before refilling.
     words.append(encodeLoad64(register: 9, base: 19, byteOffset: Self.hostAddressSpaceBaseOffset))
     words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 13, 9, 9))
     let writeHostBoundsLowBranch = words.count
     words.append(0)
     words.append(
       encodeLoad64(register: 16, base: 19, byteOffset: Self.hostAddressSpaceByteCountOffset))
-    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 9, 16, 31))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 9, 16))
     let writeHostBoundsHighBranch = words.count
+    words.append(0)
+    emitImmediate(UInt64(byteCount), register: 9, into: &words)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 9, 31))
+    let writeHostSpanBranch = words.count
     words.append(0)
     words.append(encodeLoad64(register: 14, base: 31, byteOffset: 96))
     emitDirectStoreWithTSOBarrier(width: width, register: 14, base: 13, words: &words)
@@ -3141,8 +3153,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
       wordOffset: missStart - writeHostBoundsLowBranch
     )
     words[writeHostBoundsHighBranch] = encodeConditionalBranch(
-      condition: .carrySet,
+      condition: .carryClear,
       wordOffset: missStart - writeHostBoundsHighBranch
+    )
+    words[writeHostSpanBranch] = encodeConditionalBranch(
+      condition: .carryClear,
+      wordOffset: missStart - writeHostSpanBranch
     )
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
     words.append(encodeLogical(.or, left: 31, right: 20, destination: 1))
