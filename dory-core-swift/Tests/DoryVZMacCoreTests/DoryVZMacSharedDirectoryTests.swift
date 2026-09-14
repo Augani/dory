@@ -80,6 +80,9 @@ final class DoryVZMacSharedDirectoryTests: XCTestCase {
         XCTAssertEqual(report.audioOutputStreamCount, 1)
         XCTAssertEqual(report.directorySharingDeviceCount, 1)
         XCTAssertEqual(report.sharedDirectoryCount, 1)
+        XCTAssertEqual(report.sharedDirectories, [
+            DoryVZMacEffectiveSharedDirectory(name: "Dory Guest Tools", readOnly: true),
+        ])
         XCTAssertEqual(report.consoleDeviceCount, 1)
         XCTAssertTrue(report.spiceClipboardEnabled)
     }
@@ -106,6 +109,7 @@ final class DoryVZMacSharedDirectoryTests: XCTestCase {
         XCTAssertFalse(report.hasAudioInput)
         XCTAssertFalse(report.hasAudioOutput)
         XCTAssertFalse(report.hasDirectorySharing)
+        XCTAssertTrue(report.sharedDirectories.isEmpty)
         XCTAssertFalse(report.hasClipboard)
     }
 

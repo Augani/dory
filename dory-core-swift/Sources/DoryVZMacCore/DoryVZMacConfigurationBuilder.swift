@@ -78,6 +78,18 @@ public struct DoryVZMacDevicePolicy: Codable, Sendable, Equatable {
     public static let legacyDefault = DoryVZMacDevicePolicy()
 }
 
+public struct DoryVZMacEffectiveSharedDirectory: Sendable, Equatable, Hashable {
+    /// VZ's guest-visible multiple-directory-share name. Host paths deliberately do not appear
+    /// in the report because callers may persist or expose it as ordinary diagnostics.
+    public var name: String
+    public var readOnly: Bool
+
+    public init(name: String, readOnly: Bool) {
+        self.name = name
+        self.readOnly = readOnly
+    }
+}
+
 public struct DoryVZMacEffectiveDeviceReport: Sendable, Equatable {
     public var networkDeviceCount: Int
     public var usesNATNetworkAttachment: Bool
@@ -86,6 +98,8 @@ public struct DoryVZMacEffectiveDeviceReport: Sendable, Equatable {
     public var audioOutputStreamCount: Int
     public var directorySharingDeviceCount: Int
     public var sharedDirectoryCount: Int
+    /// Exact guest-visible share names and access modes, sorted by name.
+    public var sharedDirectories: [DoryVZMacEffectiveSharedDirectory]
     public var consoleDeviceCount: Int
     public var spiceClipboardEnabled: Bool
 
@@ -363,10 +377,13 @@ public enum DoryVZMacConfigurationBuilder {
             .flatMap(\.streams)
         let fileSystems = configuration.directorySharingDevices
             .compactMap { $0 as? VZVirtioFileSystemDeviceConfiguration }
-        let sharedDirectoryCount = fileSystems.reduce(0) { count, fileSystem in
-            guard let share = fileSystem.share as? VZMultipleDirectoryShare else { return count }
-            return count + share.directories.count
-        }
+        let sharedDirectories: [DoryVZMacEffectiveSharedDirectory] = fileSystems.flatMap {
+            fileSystem -> [DoryVZMacEffectiveSharedDirectory] in
+            guard let share = fileSystem.share as? VZMultipleDirectoryShare else { return [] }
+            return share.directories.map { name, directory in
+                DoryVZMacEffectiveSharedDirectory(name: name, readOnly: directory.isReadOnly)
+            }
+        }.sorted(by: { $0.name < $1.name })
         var spiceClipboard = false
         for consoleDevice in configuration.consoleDevices {
             guard let console = consoleDevice as? VZVirtioConsoleDeviceConfiguration else {
@@ -392,7 +409,8 @@ public enum DoryVZMacConfigurationBuilder {
                 .filter { $0 is VZVirtioSoundDeviceOutputStreamConfiguration }
                 .count,
             directorySharingDeviceCount: fileSystems.count,
-            sharedDirectoryCount: sharedDirectoryCount,
+            sharedDirectoryCount: sharedDirectories.count,
+            sharedDirectories: sharedDirectories,
             consoleDeviceCount: configuration.consoleDevices.count,
             spiceClipboardEnabled: spiceClipboard
         )
