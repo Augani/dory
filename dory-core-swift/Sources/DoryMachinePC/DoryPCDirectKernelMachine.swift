@@ -254,8 +254,8 @@ public struct DoryPCHostTimeBreakdown: Sendable, Hashable {
   }
 }
 
-/// Opt-in host timing for the serialized machine run loop. Wall time supports boot reconciliation;
-/// per-thread CPU time distinguishes guest work from scheduler sleep and host descheduling.
+/// Opt-in host timing for the coordinated machine run loop. Wall time measures elapsed time;
+/// threadCPU aggregates coordinator and worker CPU time and can exceed wall time during overlap.
 public struct DoryPCHostExecutionDiagnostics: Sendable, Hashable {
   public let enabled: Bool
   public let runCalls: UInt64
@@ -556,6 +556,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
+  // A worker exclusively borrows its processor's state during a job. The coordinator may
+  // access it only after completion (including clock/interrupt delivery and lifecycle setup).
+  // The same rendezvous protects translator/TLB/JIT access and collection mutations.
   private final class ProcessorState: @unchecked Sendable {
     var value: DoryX86ArchitecturalState
 
@@ -598,9 +601,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let executionTier: DoryPCExecutionTier
   public let jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy
 
-  private let lock = NSLock()
+  private let lock = DoryPCExecutionGate()
   private let pendingWorkWake = DoryPCPendingWorkWake()
-  // `run` intentionally owns `lock` for a deterministic execution quantum. Observability must not
+  // `run` reserves the execution gate while transferring ownership to dedicated workers.
+  // No mutex remains held during guest execution. Observability must not
   // contend for that lock: a lifecycle telemetry request is served on another queue while the VM
   // is executing and would otherwise wait until the full quantum retired (or deadlock its socket
   // deadline). Publish an immutable snapshot after every quantum under a dedicated short lock.
@@ -1277,8 +1281,24 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           physicalAddressBits: interpreter.profile.physicalAddressBits
         )
       }
+      let observer = workerObserver
+      let workers = (0..<processorCount).map { processor in
+        DoryPCHostWorker(processor: processor, instrumentationEnabled: instrumentationEnabled) {
+          observer?(.stopped(processor))
+        }
+      }
       let runTimeSample = hostTimeSample()
       defer {
+        // Every return and throw joins every worker before publishing or releasing the gate.
+        // A sticky stop wakes an empty mailbox as well as a worker finishing bounded work.
+        workers.forEach { $0.requestStop() }
+        workers.forEach { $0.stopAndJoin() }
+        for worker in workers {
+          saturatingAdd(worker.executionCPUNanoseconds, to: &hostThreadCPUTime.totalNanoseconds)
+          saturatingAdd(worker.eventCPUNanoseconds, to: &hostThreadCPUTime.totalNanoseconds)
+          saturatingAdd(worker.executionCPUNanoseconds, to: &hostThreadCPUTime.processorExecutionNanoseconds)
+          saturatingAdd(worker.eventCPUNanoseconds, to: &hostThreadCPUTime.processorEventNanoseconds)
+        }
         recordTotalHostTime(since: runTimeSample)
         physicalMemories.forEach { $0.publishDiagnostics() }
         publishExecutionStatistics()
@@ -1290,10 +1310,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         if let stop = powerStop(instructionCount: completed) { return stop }
         if instrumentationEnabled {
           let sample = hostTimeSample()
-          applyProcessorEvents()
+          try applyProcessorEvents(on: workers)
           recordHostTime(.processorEvent, since: sample)
         } else {
-          applyProcessorEvents()
+          try applyProcessorEvents(on: workers)
         }
         if instrumentationEnabled {
           let sample = hostTimeSample()
@@ -1339,6 +1359,41 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           if pendingWorkWake.snapshot() != pendingWorkGeneration { continue }
           return .halted(instructionCount: completed)
         }
+        // A batch reserves at most one instruction per vCPU from the global budget. All
+        // fetch/admission work finishes before any instruction overlaps; all completions are
+        // collected before clocks, device delivery, lifecycle mutations, or JIT work resume.
+        if clockSource.monotonicNanoseconds != nil, executionTier == .interpreter {
+          let sample = hostTimeSample()
+          let plans = try prepareParallelInstructions(
+            startingAt: processor, maximumCount: maximumInstructions - completed, workers: workers)
+          if plans.count > 1 {
+            let completions = plans.map { plan in
+              workers[plan.processor].submit { [self] in
+                observer?(.executing(plan.processor, concurrent: true))
+                defer { observer?(.executed(plan.processor, concurrent: true)) }
+                let memory = DoryPCFrozenInstructionMemory(
+                  address: plan.memory.address, bytes: plan.memory.bytes,
+                  onFirstFetch: { observer?(.frozenInstructionFetch(plan.processor)) })
+                let result = interpreters[plan.processor].step(
+                  state: &plan.state.value, memory: memory, mode: plan.mode)
+                // Admission ran the identical pure instruction against a private state copy.
+                // Neither the frozen bytes nor this exclusively owned state can change meanwhile.
+                guard case .retired = result else { throw WorkerError.inconsistentFrozenInstruction }
+              }
+            }
+            for completion in completions { try completion.wait() }
+            recordHostTime(.processorExecution, since: sample)
+            completed += UInt64(plans.count)
+            interpreterInstructionCount &+= UInt64(plans.count)
+            roundRobinCursor = (plans.last!.processor + 1) % processorCount
+            let clockSample = hostTimeSample()
+            synchronizeHostClock()
+            recordHostTime(.clockAdvancement, since: clockSample)
+            if let stop = powerStop(instructionCount: completed) { return stop }
+            continue
+          }
+          recordHostTime(.processorExecution, since: sample)
+        }
         guard let processorState = loadedStates[processor] else { continue }
         let remaining = maximumInstructions - completed
         let jitInstructionBudget =
@@ -1346,20 +1401,34 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         let execution: ProcessorExecution
         if instrumentationEnabled {
           let sample = hostTimeSample()
-          execution = try execute(
-            processor: processor,
-            state: &processorState.value,
-            maximumInstructions: remaining,
-            jitInstructionBudget: jitInstructionBudget
-          )
+          execution = try workers[processor].perform { [self] in
+            pendingWorkWake.setDispatchThread(Thread.current)
+            defer { pendingWorkWake.setDispatchThread(nil) }
+            observer?(.executing(processor, concurrent: false))
+            defer { observer?(.executed(processor, concurrent: false)) }
+            return try execute(
+              processor: processor,
+              state: &processorState.value,
+              maximumInstructions: remaining,
+              jitInstructionBudget: jitInstructionBudget
+            )
+          }
+          pendingWorkWake.setDispatchThread(Thread.current)
           recordHostTime(.processorExecution, since: sample)
         } else {
-          execution = try execute(
-            processor: processor,
-            state: &processorState.value,
-            maximumInstructions: remaining,
-            jitInstructionBudget: jitInstructionBudget
-          )
+          execution = try workers[processor].perform { [self] in
+            pendingWorkWake.setDispatchThread(Thread.current)
+            defer { pendingWorkWake.setDispatchThread(nil) }
+            observer?(.executing(processor, concurrent: false))
+            defer { observer?(.executed(processor, concurrent: false)) }
+            return try execute(
+              processor: processor,
+              state: &processorState.value,
+              maximumInstructions: remaining,
+              jitInstructionBudget: jitInstructionBudget
+            )
+          }
+          pendingWorkWake.setDispatchThread(Thread.current)
         }
         completed += execution.instructionCount
         switch execution.jitTier {
@@ -1459,6 +1528,95 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
+  // Test observation is installed only while quiescent and copied before workers start.
+  // Callbacks must not reenter gate-protected public machine operations.
+  enum WorkerEvent: Sendable {
+    case executing(Int, concurrent: Bool)
+    case executed(Int, concurrent: Bool)
+    case frozenInstructionFetch(Int)
+    case stopped(Int)
+  }
+
+  private var workerObserver: (@Sendable (WorkerEvent) -> Void)?
+
+  func observeWorkers(_ observer: @escaping @Sendable (WorkerEvent) -> Void) {
+    lock.withLock { workerObserver = observer }
+  }
+
+  private enum WorkerError: Error { case inconsistentFrozenInstruction }
+
+  private struct ParallelInstruction: Sendable {
+    let processor: Int
+    let state: ProcessorState
+    let mode: DoryX86ExecutionMode
+    let memory: DoryPCFrozenInstructionMemory
+  }
+
+  private func prepareParallelInstructions(
+    startingAt first: Int, maximumCount: UInt64, workers: [DoryPCHostWorker]
+  ) throws -> [ParallelInstruction] {
+    guard processorCount > 1, maximumCount > 1 else { return [] }
+    var plans: [ParallelInstruction] = []
+    for displacement in 0..<processorCount {
+      let processor = (first + displacement) % processorCount
+      guard plans.count < Int(min(maximumCount, UInt64(processorCount))) else { break }
+      guard let state = loadedStates[processor], !haltedProcessors[processor],
+        processorLifecycles[processor] == .running
+      else { continue }
+      let plan = try workers[processor].perform { [self] () -> ParallelInstruction? in
+        guard let frozen = frozenParallelInstruction(state: state.value, processor: processor)
+        else { return nil }
+        return .init(processor: processor, state: state,
+          mode: executionMode(state.value), memory: frozen)
+      }
+      // Preserve runnable order across a sensitive instruction instead of skipping ahead.
+      guard let plan else { break }
+      plans.append(plan)
+    }
+    return plans
+  }
+
+  // Called only while quiescent or by the owning worker during serial admission.
+  // Internal so tests can exercise invalid hidden CS caches without a public state mutator.
+  func frozenParallelInstruction(
+    state: DoryX86ArchitecturalState, processor: Int
+  ) -> DoryPCFrozenInstructionMemory? {
+    guard state.control.cr0 & (1 << 31) == 0,
+      !state.rflags.contains(.trap), state.interruptShadow == nil
+    else { return nil }
+    let mode = executionMode(state)
+    let mask: UInt64 = mode == .real16 ? 0xffff : (mode == .long64 ? .max : 0xffff_ffff)
+    let offset = state.rip & mask
+    let maximumFetchByteCount: Int
+    // Match the interpreter's instructionFetchByteCount contract before raw RAM decoding.
+    // Declining leaves fault selection and publication to ordinary serial execution.
+    if mode == .long64 {
+      guard DoryX86ArchitecturalState.isCanonical(state.rip) else { return nil }
+      maximumFetchByteCount = 15
+    } else {
+      if mode == .protected16 || mode == .protected32 {
+        let access = UInt8(truncatingIfNeeded: state.cs.attributes)
+        guard access & 0x80 != 0, access & 0x10 != 0, access & 8 != 0 else { return nil }
+      }
+      guard offset <= UInt64(state.cs.limit) else { return nil }
+      maximumFetchByteCount = Int(min(15, UInt64(state.cs.limit) - offset + 1))
+    }
+    let address = mode == .long64 ? state.rip : state.cs.base &+ offset
+    guard let bytes = physicalMemories[processor].frozenRAMInstructionBytes(at: address),
+      let opcode = bytes.first, opcode == 0x90 || (0xB8...0xBF).contains(opcode),
+      let instruction = try? interpreters[processor].decoder.decode(
+        Array(bytes.prefix(maximumFetchByteCount)), at: state.rip, mode: mode)
+    else { return nil }
+    // Deliberately small, prefix-free whitelist: NOP and MOV immediate to a GPR.
+    // Paging, branches, memory operands, system state, IO and JIT always rendezvous.
+    let frozen = DoryPCFrozenInstructionMemory(address: address, bytes: instruction.bytes)
+    var candidate = state
+    guard case .retired = interpreters[processor].step(
+      state: &candidate, memory: frozen, mode: mode)
+    else { return nil }
+    return frozen
+  }
+
   private func publishExecutionStatistics() {
     let snapshot = DoryPCExecutionStatistics(
       interpreterInstructions: interpreterInstructionCount,
@@ -1552,14 +1710,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     value = overflow ? .max : sum
   }
 
-  private enum ProcessorResult {
+  private enum ProcessorResult: Sendable {
     case retired
     case yielded
     case halted
     case exception(DoryX86Exception)
   }
 
-  private struct ProcessorExecution {
+  private struct ProcessorExecution: Sendable {
     let result: ProcessorResult
     let instructionCount: UInt64
     let jitTier: DoryARM64CompilationTier?
@@ -1965,17 +2123,19 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
-  private func applyProcessorEvents() {
-    // Serial dispatch services every vCPU in a stable order. The per-processor helper is kept
-    // target-specific so a future vCPU worker can never drain another APIC's control mailbox.
+  private func applyProcessorEvents(on workers: [DoryPCHostWorker]) throws {
+    // A lifecycle transition can read the BSP epoch and mutate collection storage. Transfer
+    // ownership one worker at a time; the selected worker drains only its destination mailbox.
     for processor in 0..<processorCount {
-      applyProcessorEvents(forProcessor: processor)
+      try workers[processor].perform(kind: .processorEvent) { [self] in
+        applyProcessorEvents(forProcessor: processor)
+      }
     }
   }
 
   /// Applies only the control events owned by the selected processor's APIC.
   ///
-  /// The caller holds the machine execution lock during normal dispatch.
+  /// The caller owns the execution gate and has rendezvoused all other workers.
   func applyProcessorEvents(forProcessor processor: Int) {
     guard localAPICs.indices.contains(processor) else { return }
     let apicID = localAPICs[processor].apicID

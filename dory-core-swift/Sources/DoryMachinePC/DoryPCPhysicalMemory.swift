@@ -207,11 +207,12 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     diagnosticsLock.withLock { publishedDiagnostics }
   }
 
-  /// Publishes a race-free snapshot after the owning execution thread reaches a quiescent point.
-  /// The hot counters are deliberately thread-confined so instrumentation does not place an
-  /// atomic read-modify-write on every CPU memory helper call.
+  /// CPU helpers, DMA and diagnostic callers may share a bus. The diagnostics leaf lock
+  /// protects both hot counters and publication, and is never held across memory/device work.
   public func publishDiagnostics() {
     guard diagnosticsEnabled else { return }
+    diagnosticsLock.lock()
+    defer { diagnosticsLock.unlock() }
     let snapshot = DoryPCPhysicalMemoryDiagnostics(
       instructionFetchHelperCalls: diagnosticValue(.instructionFetchHelperCalls),
       readHelperCalls: diagnosticValue(.readHelperCalls),
@@ -225,7 +226,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       mmioReadExits: diagnosticValue(.mmioReadExits),
       mmioWriteExits: diagnosticValue(.mmioWriteExits)
     )
-    diagnosticsLock.withLock { publishedDiagnostics = snapshot }
+    publishedDiagnostics = snapshot
   }
 
   public func attach(_ device: any DoryPCMMIODevice) throws {
@@ -270,6 +271,15 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       // translated RAM access.
       dory_atomic_u8_store_release(hasPublishedSealedMappings, 1)
     }
+  }
+
+  /// Speculative worker admission must never fetch a device. Decline overlays and unsealed
+  /// mappings entirely; the normal serialized fetch retains all existing fault/device behavior.
+  func frozenRAMInstructionBytes(at address: UInt64) -> [UInt8]? {
+    guard let route = try? directRAMRoute(address: address, byteCount: 1) else { return nil }
+    incrementDiagnostic(.instructionFetchHelperCalls)
+    return try? ram.instructionBytes(
+      at: route.backingAddress, maximumCount: min(15, route.availableByteCount))
   }
 
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
@@ -724,6 +734,8 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   @inline(__always)
   private func incrementDiagnostic(_ counter: DiagnosticCounter) {
     guard diagnosticsEnabled else { return }
+    diagnosticsLock.lock()
+    defer { diagnosticsLock.unlock() }
     let value = diagnosticCounters.advanced(by: counter.rawValue)
     if value.pointee != .max { value.pointee += 1 }
   }

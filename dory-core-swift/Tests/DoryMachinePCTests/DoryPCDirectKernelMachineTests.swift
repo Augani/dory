@@ -1,9 +1,292 @@
 import Foundation
 import Testing
+import DoryDBTX86
 
 @testable import DoryMachinePC
 
 @Suite struct DoryPCDirectKernelMachineTests {
+  @Test(arguments: [UInt64(2), 3, 5])
+  func hostWorkersOverlapOnFrozenRegistersAndJoinAtGlobalBudget(budget: UInt64) throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+    #expect(try machine.run(maximumInstructions: budget) == .instructionBudget(budget))
+    let result = probe.snapshot()
+    #expect(result.distinctThreads == 2)
+    #expect(result.maximumActive == 2)
+    #expect(!result.timedOut)
+    #expect(result.active == 0)
+    #expect(result.stopped == Set([0, 1]))
+    #expect(result.executions == Int(budget))
+    #expect(machine.state(forProcessor: 0)?.registers.rax == 1)
+    #expect(machine.state(forProcessor: 1)?.registers.rax == 2)
+    #expect(machine.executionStatistics.interpreterInstructions == budget)
+  }
+
+  @Test func deterministicWorkersKeepSerialOrderAndSingleBudget() throws {
+    let machine = try workerMachine(clock: .deterministic)
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+    #expect(try machine.run(maximumInstructions: 3) == .instructionBudget(3))
+    #expect(probe.snapshot().order == [0, 1, 0])
+    #expect(probe.snapshot().maximumActive == 1)
+    #expect(probe.snapshot().distinctThreads == 2)
+    #expect(probe.snapshot().stopped == Set([0, 1]))
+    #expect(machine.state(forProcessor: 0)?.tsc == 300)
+    #expect(machine.state(forProcessor: 1)?.tsc == 300)
+    #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+    #expect(machine.executionStatistics.interpreterInstructions == 4)
+  }
+
+  @Test(arguments: [DoryPCPowerAction.powerOff, .reset])
+  func powerStopsOverlappingWorkersAndFrozenFetchSurvivesRAMChange(action: DoryPCPowerAction) throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    let probe = HostWorkerProbe(hold: true)
+    machine.observeWorkers { probe.observe($0) }
+    let run = HaltedMachineRun(machine: machine, maximumInstructions: 20)
+    defer { probe.release(); machine.powerController.request(.powerOff) }
+    try #require(probe.arrived.wait(timeout: .now() + 2) == .success)
+    // Both vCPUs have fetched and parked inside their concurrent execution boundaries.
+    // Their memory adapters are frozen, so these writes cannot change either admitted MOV.
+    try machine.memory.write(at: 0x10_0000, bytes: [0x0F, 0x0B])
+    try machine.memory.write(at: 0x8000, bytes: [0x0F, 0x0B])
+    machine.powerController.request(action)
+    probe.release()
+    #expect(try run.finish() == (action == .reset
+      ? .reset(instructionCount: 2) : .poweredOff(instructionCount: 2)))
+    #expect(machine.state(forProcessor: 0)?.registers.rax == 1)
+    #expect(machine.state(forProcessor: 1)?.registers.rax == 2)
+    #expect(probe.snapshot().active == 0)
+    #expect(probe.snapshot().stopped == Set([0, 1]))
+    #expect(!probe.snapshot().timedOut)
+  }
+
+  @Test func targetedStartupDuringOverlapWaitsForItsOwningWorker() throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    try machine.memory.write(at: 0x9000, bytes: [0xB8, 3, 0])
+    let probe = HostWorkerProbe(hold: true)
+    machine.observeWorkers { probe.observe($0) }
+    let run = HaltedMachineRun(machine: machine, maximumInstructions: 4)
+    defer { probe.release(); machine.powerController.request(.powerOff) }
+    try #require(probe.arrived.wait(timeout: .now() + 2) == .success)
+    try machine.multiprocessorController.handleInterruptCommand(
+      sourceAPICID: 0, high: 1 << 24, low: 5 << 8)
+    try machine.multiprocessorController.handleInterruptCommand(
+      sourceAPICID: 0, high: 1 << 24, low: 6 << 8 | 9)
+    #expect(machine.multiprocessorController.drainEvents(forAPICID: 0).isEmpty)
+    #expect(machine.multiprocessorController.snapshot().pendingEvents == [
+      .initialize(apicID: 1), .startup(apicID: 1, vector: 9),
+    ])
+    probe.release()
+    #expect(try run.finish() == .instructionBudget(4))
+    #expect(machine.state(forProcessor: 0)?.registers.rax == 1)
+    #expect(machine.state(forProcessor: 1)?.registers.rax == 3)
+    #expect(machine.state(forProcessor: 1)?.cs.base == 0x9000)
+    #expect(machine.multiprocessorController.snapshot().pendingEvents.isEmpty)
+    #expect(probe.snapshot().stopped == Set([0, 1]))
+  }
+
+  @Test func parallelWorkersAdvanceOneHostEpochAtRendezvous() throws {
+    let clock = WorkerSampleClock()
+    let machine = try workerMachine(clock: .hostMonotonic { clock.sample() })
+    #expect(try machine.run(maximumInstructions: 2) == .instructionBudget(2))
+    #expect(clock.samples == 2)
+    #expect(machine.hpet.snapshot().mainCounter == 1)
+    #expect(machine.state(forProcessor: 0)?.tsc == 100)
+    #expect(machine.state(forProcessor: 1)?.tsc == 100)
+  }
+
+  @Test func sensitiveInstructionAndExceptionStaySerializedAndJoin() throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    // UD2 must stop before AP execution; speculative admission cannot retire later work.
+    try machine.memory.write(at: 0x10_0000, bytes: [0x0F, 0x0B])
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+    let stop = try machine.run(maximumInstructions: 4)
+    guard case .exception(_, let count) = stop else {
+      Issue.record("Expected invalid opcode, got \(stop)")
+      return
+    }
+    #expect(count == 0)
+    #expect(probe.snapshot().order == [0])
+    #expect(probe.snapshot().stopped == Set([0, 1]))
+    #expect(machine.state(forProcessor: 1)?.rip == 0)
+  }
+
+  @Test(arguments: [false, true], [false, true])
+  func parallelAdmissionDeclinesInvalidProtectedFetch(is32Bit: Bool, isMove: Bool) throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    let mode: DoryX86ExecutionMode = is32Bit ? .protected32 : .protected16
+    let code: [UInt8] = isMove ? (is32Bit ? [0xB8, 1, 2, 3, 4] : [0xB8, 1, 2]) : [0x90]
+    var initial = try #require(machine.state)
+    initial.rip = 0x10100 // Protected16 also uses the interpreter's 32-bit fetch offset mask.
+    initial.registers.rax = 0x1234
+    initial.cs.base = 0x17_0000
+    initial.cs.attributes = is32Bit ? 0xC09B : 0x009B
+    initial.cs.limit = UInt32(initial.rip) + UInt32(code.count) - 1
+    try machine.memory.write(at: initial.cs.base + initial.rip, bytes: code)
+    #expect(initial.control.cr0 & (1 << 31) == 0)
+    #expect(initial.control.cr0 & 1 != 0)
+
+    // The exact same candidate is valid when its final byte lies on CS.limit.
+    let admitted = try #require(machine.frozenParallelInstruction(state: initial, processor: 0))
+    #expect(admitted.bytes == code)
+    var valid = initial
+    guard case .retired = DoryX86Interpreter().step(state: &valid, memory: admitted, mode: mode)
+    else {
+      Issue.record("Expected valid boundary instruction to retire")
+      return
+    }
+    #expect(valid.rip == initial.rip + UInt64(code.count))
+
+    for invalidity in ["notPresent", "systemSegment", "notExecutable", "offsetBeyondLimit", "spanBeyondLimit"] {
+      var invalid = initial
+      switch invalidity {
+      case "notPresent": invalid.cs.attributes &= ~UInt16(0x80)
+      case "systemSegment": invalid.cs.attributes &= ~UInt16(0x10)
+      case "notExecutable": invalid.cs.attributes &= ~UInt16(8)
+      case "offsetBeyondLimit": invalid.cs.limit = UInt32(invalid.rip) - 1
+      default: invalid.cs.limit -= 1
+      }
+      #expect(machine.frozenParallelInstruction(state: invalid, processor: 0) == nil)
+      // A declined candidate stays with the serial interpreter's architectural fault path.
+      let original = invalid
+      let result = DoryX86Interpreter().step(
+        state: &invalid, memory: machine.physicalMemory, mode: mode)
+      guard case .exception(let exception) = result else {
+        Issue.record("Expected fetch fault for \(invalidity), got \(result)")
+        continue
+      }
+      #expect(exception.kind == .generalProtection)
+      #expect(exception.vector == 13)
+      #expect(exception.errorCode == 0)
+      #expect(exception.instructionPointer == original.rip)
+      #expect(invalid.rip == original.rip)
+      #expect(invalid.registers == original.registers)
+    }
+  }
+
+  @Test(arguments: [false, true])
+  func protectedFetchLimitFaultStaysSerialAndJoins(isMove: Bool) throws {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024, processorCount: 2,
+      clockSource: .hostMonotonic { 0 })
+    // Load a byte-granular code descriptor, then jump to its base at 0x180000.
+    try machine.load(kernel: makeELF(code: [
+      0x0F, 0x01, 0x15, 0x00, 0x00, 0x08, 0x00, // lgdt [0x80000]
+      0xEA, 0, 0, 0, 0, 8, 0, // jmp 8:0
+    ]), commandLine: "x")
+    try machine.memory.write(at: 0x80000, bytes: [0x0F, 0, 0, 0x20, 8, 0])
+    try machine.memory.write(at: 0x82000, bytes: [
+      0, 0, 0, 0, 0, 0, 0, 0,
+      isMove ? 1 : 0, 0, 0, 0, 0x18, 0x9B, 0x40, 0,
+    ])
+    try machine.memory.write(at: 0x180000,
+      bytes: isMove ? [0xB8, 1, 2, 3, 4] : [0x90, 0x90])
+    // For NOP, retire the byte at the limit so the next fetch starts beyond it.
+    let setupBudget: UInt64 = isMove ? 2 : 3
+    #expect(try machine.run(maximumInstructions: setupBudget) == .instructionBudget(setupBudget))
+    let before = try #require(machine.state)
+    #expect(before.cs.base == 0x180000)
+    #expect(before.cs.limit == (isMove ? 1 : 0))
+    #expect(before.rip == (isMove ? 0 : 1))
+    try machine.memory.write(at: 0x8000, bytes: [0x90, 0xB8, 2, 0])
+    try machine.multiprocessorController.handleInterruptCommand(
+      sourceAPICID: 0, high: 1 << 24, low: 6 << 8 | 8)
+    // Consume the AP's next round-robin slot, leaving BSP first and AP's MOV still pending.
+    #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+    #expect(machine.state(forProcessor: 1)?.rip == 1)
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+    let stop = try machine.run(maximumInstructions: 2)
+    guard case .exception(let exception, let count) = stop else {
+      Issue.record("Expected serial fetch fault, got \(stop)")
+      return
+    }
+    #expect(exception.kind == .generalProtection)
+    #expect(exception.errorCode == 0)
+    #expect(exception.instructionPointer == before.rip)
+    #expect(count == 0)
+    #expect(machine.state?.rip == before.rip)
+    #expect(machine.state?.registers == before.registers)
+    #expect(machine.state(forProcessor: 1)?.rip == 1)
+    #expect(probe.snapshot().order == [0])
+    #expect(probe.snapshot().maximumActive == 1)
+    #expect(probe.snapshot().active == 0)
+    #expect(probe.snapshot().stopped == Set([0, 1]))
+    #expect(!probe.snapshot().timedOut)
+  }
+
+  @Test(arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT])
+  func nativeTiersUseTheirOwningWorkersWithoutOverlap(tier: DoryPCExecutionTier) throws {
+    #if arch(arm64)
+      let machine = try workerMachine(clock: .hostMonotonic { 0 }, tier: tier)
+      let probe = HostWorkerProbe()
+      machine.observeWorkers { probe.observe($0) }
+      #expect(try machine.run(maximumInstructions: 2) == .instructionBudget(2))
+      #expect(probe.snapshot().maximumActive == 1)
+      #expect(probe.snapshot().stopped == Set([0, 1]))
+    #endif
+  }
+
+  @Test func memoryOperandRetiresSeriallyBeforeTheNextProcessor() throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    // mov eax,[0x8001] is deliberately outside the register-only admission boundary.
+    try machine.memory.write(at: 0x10_0000, bytes: [0xA1, 1, 0x80, 0, 0])
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+    #expect(try machine.run(maximumInstructions: 2) == .instructionBudget(2))
+    #expect(probe.snapshot().order == [0, 1])
+    #expect(probe.snapshot().maximumActive == 1)
+    #expect(machine.state(forProcessor: 0)?.registers.rax == 0x9090_0002)
+    #expect(machine.state(forProcessor: 1)?.registers.rax == 2)
+  }
+
+  @Test func physicalDiagnosticsPublishDuringConcurrentReads() throws {
+    let machine = try workerMachine(clock: .deterministic)
+    let bus = machine.physicalMemory
+    bus.publishDiagnostics()
+    let initial = bus.diagnostics.readHelperCalls
+    DispatchQueue.concurrentPerform(iterations: 4) { _ in
+      for _ in 0..<100 {
+        _ = try? bus.read(at: 0x8000, byteCount: 1)
+        bus.publishDiagnostics()
+        _ = bus.diagnostics
+      }
+    }
+    bus.publishDiagnostics()
+    #expect(bus.diagnostics.readHelperCalls == initial + 400)
+  }
+
+  @Test func workerFailureStillCompletesAndJoins() throws {
+    enum Failure: Error { case expected }
+    let probe = HostWorkerProbe()
+    let worker = DoryPCHostWorker(processor: 0) { probe.observe(.stopped(0)) }
+    defer { worker.stopAndJoin() }
+    do {
+      try worker.perform { () throws -> Void in throw Failure.expected }
+      Issue.record("Expected worker failure")
+    } catch Failure.expected {}
+    worker.stopAndJoin()
+    #expect(probe.snapshot().stopped == Set([0]))
+    // Joining is idempotent, including the already-exited path.
+    worker.stopAndJoin()
+  }
+
+  private func workerMachine(
+    clock: DoryPCClockSource, tier: DoryPCExecutionTier = .interpreter
+  ) throws -> DoryPCDirectKernelMachine {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024, processorCount: 2,
+      executionTier: tier, baselineJITMaximumCodeBytes: 16 * 1024,
+      clockSource: clock, instrumentationEnabled: true)
+    try machine.load(kernel: makeELF(code: [0xB8, 1, 0, 0, 0, 0x90, 0x90, 0x90]), commandLine: "x")
+    try machine.memory.write(at: 0x8000, bytes: [0xB8, 2, 0, 0x90, 0x90, 0x90])
+    try machine.multiprocessorController.handleInterruptCommand(
+      sourceAPICID: 0, high: 1 << 24, low: 6 << 8 | 8)
+    return machine
+  }
+
   @Test(arguments: ["hostPowerOff", "hostReset", "pmPowerOff", "resetPort"])
   func hostClockHaltWakesForAsynchronousPowerWithoutTimer(source: String) throws {
     let machine = try DoryPCDirectKernelMachine(
@@ -1282,5 +1565,81 @@ private final class HaltedMachineClockGate: @unchecked Sendable {
       _ = proceed.wait(timeout: .now() + 2)
     }
     return 0
+  }
+}
+
+private final class HostWorkerProbe: @unchecked Sendable {
+  struct Snapshot {
+    let distinctThreads: Int
+    let maximumActive: Int
+    let active: Int
+    let stopped: Set<Int>
+    let executions: Int
+    let order: [Int]
+    let timedOut: Bool
+  }
+
+  let arrived = DispatchSemaphore(value: 0)
+  private let condition = NSCondition()
+  private let hold: Bool
+  private var released = false
+  private var threads: [Int: ObjectIdentifier] = [:]
+  private var active = 0
+  private var maximumActive = 0
+  private var parallelEntries = 0
+  private var stopped: Set<Int> = []
+  private var order: [Int] = []
+  private var timedOut = false
+
+  init(hold: Bool = false) { self.hold = hold }
+
+  func observe(_ event: DoryPCDirectKernelMachine.WorkerEvent) {
+    condition.lock()
+    defer { condition.unlock() }
+    switch event {
+    case .executing(let processor, _):
+      threads[processor] = ObjectIdentifier(Thread.current)
+      order.append(processor)
+      active += 1
+      maximumActive = max(maximumActive, active)
+    case .frozenInstructionFetch:
+      parallelEntries += 1
+      if parallelEntries == 2 { arrived.signal(); condition.broadcast() }
+      let deadline = Date(timeIntervalSinceNow: 2)
+      while parallelEntries < 2 || (hold && !released) {
+        if !condition.wait(until: deadline) { timedOut = true; break }
+      }
+    case .executed:
+      active -= 1
+    case .stopped(let processor):
+      stopped.insert(processor)
+    }
+  }
+
+  func release() {
+    condition.lock()
+    released = true
+    condition.broadcast()
+    condition.unlock()
+  }
+
+  func snapshot() -> Snapshot {
+    condition.lock()
+    defer { condition.unlock() }
+    return .init(distinctThreads: Set(threads.values).count, maximumActive: maximumActive,
+      active: active, stopped: stopped, executions: order.count, order: order, timedOut: timedOut)
+  }
+}
+
+private final class WorkerSampleClock: @unchecked Sendable {
+  private let lock = NSLock()
+  private var count: UInt64 = 0
+  var samples: UInt64 { lock.withLock { count } }
+
+  func sample() -> UInt64 {
+    lock.withLock {
+      count += 1
+      return count * 100
+    }
   }
 }

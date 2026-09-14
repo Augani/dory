@@ -1,5 +1,7 @@
-import DoryMachinePC
+import Foundation
 import Testing
+
+@testable import DoryMachinePC
 
 @Suite struct DoryPCMultiprocessorTests {
   @Test(arguments: [false, true])
