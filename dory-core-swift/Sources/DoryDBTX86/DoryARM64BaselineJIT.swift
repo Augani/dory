@@ -6107,6 +6107,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var activeCodeCacheGeneration = 0
   private var codeCacheGenerationNextOffsets: [Int] = []
   private var currentTLBAddressSpaceID: UInt64?
+  private var currentTLBPrivilegeLevel: UInt8?
   private var translationTLBGeneration: UInt64 = 1
   private var translationTLBInvalidationCount: UInt64 = 0
   private var pagingInvalidationSequences: [ObjectIdentifier: UInt64] = [:]
@@ -6358,11 +6359,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }
   }
 
-  /// Selects one exact address-space generation for the context about to enter generated code.
-  /// A vCPU-local table can retain stale entries across CR3 switches because the generation is
-  /// part of every tag. The only wrap point performs a full flush before generation one is reused.
-  private func selectTLBAddressSpace(_ addressSpaceID: UInt64) -> UInt64 {
-    guard currentTLBAddressSpaceID != addressSpaceID else { return translationTLBGeneration }
+  /// Selects one exact paging identity for the context about to enter generated code.
+  /// A vCPU-local table can retain stale entries across CR3 or paging-privilege changes because
+  /// the native tag contains only the address-space generation. The only wrap point performs a
+  /// full flush before generation one is reused.
+  private func selectTLBAddressSpace(
+    _ addressSpaceID: UInt64,
+    privilegeLevel: UInt8
+  ) -> UInt64 {
+    let pagingPrivilegeLevel = privilegeLevel & 3
+    guard currentTLBAddressSpaceID != addressSpaceID
+      || currentTLBPrivilegeLevel != pagingPrivilegeLevel
+    else { return translationTLBGeneration }
     if currentTLBAddressSpaceID != nil {
       if translationTLBGeneration == DoryX86JITTLB.maximumAddressSpaceGeneration {
         translationTLB.invalidateAll()
@@ -6373,7 +6381,19 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       }
     }
     currentTLBAddressSpaceID = addressSpaceID
+    currentTLBPrivilegeLevel = pagingPrivilegeLevel
     return translationTLBGeneration
+  }
+
+  private func pagingPrivilegeLevel(
+    for state: DoryX86ArchitecturalState,
+    mode: DoryX86ExecutionMode,
+    memory: (any DoryX86Memory)?
+  ) -> UInt8 {
+    if let translatedMemory = memory as? DoryX86TranslatedMemory {
+      return translatedMemory.jitPagingPrivilegeLevel
+    }
+    return DoryX86PagingContext(state: state, mode: mode, profile: profile).currentPrivilegeLevel
   }
 
   private func invalidateTranslations(in guestRange: Range<UInt64>) {
@@ -6396,6 +6416,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       translationTLBGeneration == DoryX86JITTLB.maximumAddressSpaceGeneration
       ? 1 : translationTLBGeneration + 1
     currentTLBAddressSpaceID = nil
+    currentTLBPrivilegeLevel = nil
   }
 
   public func execute(
@@ -6613,7 +6634,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           of: UInt64.self,
           capacity: DoryJITExecutableRegion.contextWordCount
         ) { checkpoint in
-          let translationGeneration = selectTLBAddressSpace(addressSpaceID)
+          let translationGeneration = selectTLBAddressSpace(
+            addressSpaceID,
+            privilegeLevel: pagingPrivilegeLevel(for: state, mode: mode, memory: memory)
+          )
           Self.populateExecutionContext(
             context,
             from: state,
@@ -7161,7 +7185,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       else { return nil }
 
       return try executionContextStorage.withBuffer { context in
-        let translationGeneration = selectTLBAddressSpace(addressSpaceID)
+        let translationGeneration = selectTLBAddressSpace(
+          addressSpaceID,
+          privilegeLevel: pagingPrivilegeLevel(for: state, mode: mode, memory: memory)
+        )
         Self.populateExecutionContext(
           context,
           from: state,

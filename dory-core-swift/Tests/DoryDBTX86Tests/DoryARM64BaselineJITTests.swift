@@ -1601,6 +1601,85 @@ import Testing
     #endif
   }
 
+  @Test func nativeReadTLBDoesNotReuseSupervisorFillAtCPL3() throws {
+    #if arch(arm64)
+      let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)
+      let paging = DoryX86PagingUnit()
+      let linearAddress: UInt64 = 0x0040_0000
+      // Install a four-level mapping whose leaf is supervisor-only. The non-leaf entries are
+      // user-accessible so the denial is specifically the leaf permission observed by the JIT
+      // resolver, not an unrelated missing mapping.
+      try physical.writeScalar(at: 0x1000, value: 0x2000 | 0x7, byteCount: 8)
+      try physical.writeScalar(at: 0x2000, value: 0x3000 | 0x7, byteCount: 8)
+      try physical.writeScalar(at: 0x3000 + 2 * 8, value: 0x4000 | 0x7, byteCount: 8)
+      try physical.writeScalar(at: 0x4000, value: 0x8000 | 0x3, byteCount: 8)
+      try physical.writeScalar(at: 0x8000, value: 0x1122_3344_5566_7788, byteCount: 8)
+
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: linearAddress),
+        rip: 0x6000,
+        cs: .init(selector: 0, attributes: 0xA09B, limit: .max),
+        control: .init(
+          cr0: 0x8001_0011,
+          cr3: 0x1000,
+          cr4: 1 << 5,
+          efer: (1 << 10) | (1 << 11)
+        )
+      )
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: state, mode: .long64)
+      )
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+      let bytes: [UInt8] = [0x48, 0x8B, 0x18]  // mov rbx, [rax]
+
+      _ = try #require(
+        executor.execute(
+          bytes: bytes,
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: state.control.cr3,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        )
+      )
+      #expect(state.registers.rbx == 0x1122_3344_5566_7788)
+      #expect(executor.diagnostics.translationCacheFills == 1)
+      #expect(executor.diagnostics.translationCacheAddressSpaceGeneration == 1)
+
+      state.cs = .init(selector: 3, attributes: 0xA0FB, limit: .max)
+      state.rip = 0x6000
+      state.registers.rax = linearAddress
+      state.registers.rbx = 0xDEAD_BEEF
+      let userInitial = state
+      translated.updateContext(.init(state: state, mode: .long64))
+      let denied = try #require(
+        executor.execute(
+          bytes: bytes,
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: state.control.cr3,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        )
+      )
+
+      #expect(denied.exitCode == .interpreter)
+      #expect(denied.guestInstructionCount == 0)
+      #expect(state == userInitial)
+      #expect(executor.diagnostics.translationCacheAddressSpaceGeneration == 2)
+      #expect(executor.diagnostics.translationCacheHits == 0)
+      #expect(executor.diagnostics.translationCacheMisses == 2)
+      #expect(executor.diagnostics.translationCacheFills == 1)
+      #expect(executor.diagnostics.translationCachePageFaults == 1)
+      #expect(paging.diagnostics.translationRequests == 2)
+      #expect(paging.diagnostics.pageWalkFailures == 1)
+    #endif
+  }
+
   @Test func executorFillsThenHitsInlineWriteTLBWithoutAnotherSwiftWalk() throws {
     #if arch(arm64)
       let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))

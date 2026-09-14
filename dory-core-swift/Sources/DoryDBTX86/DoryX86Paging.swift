@@ -831,6 +831,13 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
     self.context = context
   }
 
+  /// The paging privilege which will authorize the next JIT translation miss.
+  /// Native translation tags delegate this identity to their executor generation, so the
+  /// executor must select it from this exact context rather than infer it from a guest selector.
+  var jitPagingPrivilegeLevel: UInt8 {
+    context.currentPrivilegeLevel
+  }
+
   var hasPendingPageTableWrite: Bool {
     (physicalMemory as? any DoryX86PageTableWriteTrackingMemory)?
       .hasPendingPageTableWrite ?? false
