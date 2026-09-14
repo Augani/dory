@@ -204,8 +204,28 @@ public struct DoryGuestIntegrationPackageManifest: Codable, Sendable, Equatable 
             add(.invalidVersion, "packageVersion")
         }
         if protocolVersion == 0 { add(.invalidVersion, "protocolVersion") }
-        if guest.family != .linux, guest.architecture != .arm64 {
-            add(.unsupportedPlatform, "guest.architecture")
+        switch guest.family {
+        case .linux:
+            // Dory ships distinct Linux tools packages for the native ARM64 and translated
+            // x86_64 guest paths. The package identity and artifact digest keep those payloads
+            // distinct; rejecting x86_64 here would make the documented x86 guest journey
+            // impossible before a resolver has a chance to verify it.
+            guard guest.architecture == .arm64 || guest.architecture == .x86_64 else {
+                add(.unsupportedPlatform, "guest.architecture")
+                break
+            }
+        case .macOS:
+            guard guest.architecture == .arm64 else {
+                add(.unsupportedPlatform, "guest.architecture")
+                break
+            }
+        case .windows:
+            // Windows is a retained contract-only package family. Keep its existing ARM64
+            // boundary explicit until an x86_64 guest/service delivery path is implemented.
+            guard guest.architecture == .arm64 else {
+                add(.unsupportedPlatform, "guest.architecture")
+                break
+            }
         }
 
         let capabilityOrder = capabilities.map { $0.id.rawValue }

@@ -23,6 +23,19 @@ struct DoryGuestIntegrationPackageTests {
         #expect(decoded == manifest)
     }
 
+    @Test("Linux tools support independent ARM64 and x86_64 guest payloads")
+    func linuxX8664ToolsPackage() {
+        let manifest = package(
+            family: .linux,
+            architecture: .x86_64,
+            roles: [.linuxToolsArchive],
+            signature: .doryEd25519
+        )
+
+        #expect(manifest.isValidForPersistence)
+        #expect(manifest.guest == .init(family: .linux, architecture: .x86_64))
+    }
+
     @Test("Windows contract requires an Authenticode service and driver without claiming support")
     func windowsServiceAndDriverContract() {
         let complete = package(
@@ -35,11 +48,16 @@ struct DoryGuestIntegrationPackageTests {
             roles: [.windowsService],
             signature: .microsoftAuthenticode
         )
+        var unsupportedArchitecture = complete
+        unsupportedArchitecture.guest.architecture = .x86_64
 
         #expect(complete.isValidForPersistence)
         #expect(complete.state == .contractOnly)
         #expect(missingDriver.validationIssues().contains {
             $0.code == .incompleteWindowsPackage
+        })
+        #expect(unsupportedArchitecture.validationIssues().contains {
+            $0.code == .unsupportedPlatform
         })
     }
 
@@ -136,6 +154,7 @@ struct DoryGuestIntegrationPackageTests {
 
     private func package(
         family: DoryGuestFamily,
+        architecture: DoryGuestArchitecture = .arm64,
         roles: [DoryGuestIntegrationArtifactRole],
         signature: DoryGuestIntegrationSignatureKind
     ) -> DoryGuestIntegrationPackageManifest {
@@ -149,7 +168,7 @@ struct DoryGuestIntegrationPackageTests {
                 role: role,
                 artifact: .init(
                     namespace: "guest-tools",
-                    identifier: "\(family.rawValue)-arm64-\(index)"
+                    identifier: "\(family.rawValue)-\(architecture.rawValue)-\(index)"
                 ),
                 sha256: digest,
                 byteCount: 1024,
@@ -161,9 +180,9 @@ struct DoryGuestIntegrationPackageTests {
             )
         }.sorted { $0.id < $1.id }
         return DoryGuestIntegrationPackageManifest(
-            manifestIdentity: "dory-tools-\(family.rawValue)-arm64-v1",
+            manifestIdentity: "dory-tools-\(family.rawValue)-\(architecture.rawValue)-v1",
             packageVersion: "1.0.0",
-            guest: .init(family: family, architecture: .arm64),
+            guest: .init(family: family, architecture: architecture),
             protocolVersion: 1,
             state: .contractOnly,
             capabilities: capabilities,
