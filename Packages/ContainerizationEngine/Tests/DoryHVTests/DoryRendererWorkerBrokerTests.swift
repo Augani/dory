@@ -495,13 +495,20 @@ import Testing
             deviceGeneration: 11
         )
         let scanoutRecorder = DoryPCVirGLScanoutRecorder()
+        let graphicsTrace = RendererGraphicsTraceRecorder()
         let authority = try DoryPCVirGLRendererAuthority(
             lane: lane,
             deviceGeneration: 11,
             scanoutSink: {
                 guard $0.flush.scanoutID == 0 else { return false }
                 return scanoutRecorder.accept($0)
-            }
+            },
+            graphicsTraceContext: VirtioGPUGraphicsTraceContext(
+                machineID: "pc-trace-machine",
+                operationID: "pc-trace-operation",
+                workerGeneration: fixture.bootstrap.generation.rawValue
+            ),
+            onGraphicsTrace: { graphicsTrace.record($0) }
         )
 
         #expect(authority.capabilities.features == [
@@ -798,6 +805,32 @@ import Testing
             #expect(await rendererEventually { lane.snapshot().liveScanoutLeases == 1 })
         } else {
             try await present.value
+        }
+        let published = graphicsTrace.values.filter { $0.stage == .scanoutPublished }
+        let accepted = graphicsTrace.values.filter { $0.stage == .hostSubmissionAccepted }
+        let rejected = graphicsTrace.values.filter { $0.stage == .hostSubmissionRejected }
+        #expect(published.count == (rejectSecondScanout ? 2 : 1))
+        #expect(accepted.count == 1)
+        #expect(rejected.count == (rejectSecondScanout ? 1 : 0))
+        let firstPublished = try #require(published.first)
+        let firstAccepted = try #require(accepted.first)
+        #expect(firstPublished.context.machineID == "pc-trace-machine")
+        #expect(firstPublished.context.operationID == "pc-trace-operation")
+        #expect(firstPublished.context.workerGeneration == fixture.bootstrap.generation.rawValue)
+        #expect(firstPublished.resourceID == 29)
+        #expect(firstPublished.displayResourceGeneration == 41)
+        #expect(firstPublished.rendererResourceGeneration == 41)
+        #expect(firstPublished.deviceGeneration == 11)
+        #expect(firstPublished.scanoutID == 0)
+        #expect(firstPublished.width == 4)
+        #expect(firstPublished.height == 2)
+        #expect(firstPublished.stride == 16)
+        #expect(firstPublished.format == 1)
+        #expect(firstPublished.frameSequence == firstAccepted.frameSequence)
+        #expect(firstPublished.sequence < firstAccepted.sequence)
+        if let rejected = rejected.first {
+            #expect(rejected.scanoutID == 1)
+            #expect(rejected.frameSequence == published[1].frameSequence)
         }
         let update = try #require(scanoutRecorder.update)
         #expect(update.flush == flush)

@@ -26,11 +26,13 @@ public final class DoryPCVirGLScanoutUpdate: @unchecked Sendable {
     private let lock = NSLock()
     private var scanout: DoryRendererWorkerScanoutAuthority?
     private var release: (@Sendable (DoryRendererWorkerScanoutAuthority) -> Void)?
+    private let recordHostSubmission: (@Sendable (Bool) -> Void)?
 
     fileprivate init(
         flush: DoryVirtioGPUAcceleratedScanoutFlush,
         scanout: DoryRendererWorkerScanoutAuthority,
-        release: @escaping @Sendable (DoryRendererWorkerScanoutAuthority) -> Void
+        release: @escaping @Sendable (DoryRendererWorkerScanoutAuthority) -> Void,
+        recordHostSubmission: (@Sendable (Bool) -> Void)? = nil
     ) {
         self.flush = flush
         self.workerGeneration = scanout.workerGeneration
@@ -48,6 +50,7 @@ public final class DoryPCVirGLScanoutUpdate: @unchecked Sendable {
         }
         self.scanout = scanout
         self.release = release
+        self.recordHostSubmission = recordHostSubmission
     }
 
     deinit { retire() }
@@ -87,6 +90,10 @@ public final class DoryPCVirGLScanoutUpdate: @unchecked Sendable {
         }
         if let authority { authority.1(authority.0) }
     }
+
+    fileprivate func didResolveHostSubmission(accepted: Bool) {
+        recordHostSubmission?(accepted)
+    }
 }
 
 /// DoryPC adapter for the already-qualified signed renderer worker.
@@ -109,6 +116,11 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
 
     private var lane: DoryRendererWorkerVirtioCommandLane
     private let scanoutSink: (@Sendable (DoryPCVirGLScanoutUpdate) -> Bool)?
+    private let graphicsTraceContext: VirtioGPUGraphicsTraceContext?
+    private let onGraphicsTrace: (@Sendable (VirtioGPUGraphicsTraceEvent) -> Void)?
+    private let graphicsTraceLock = NSLock()
+    private var graphicsTraceSequence: UInt64 = 0
+    private var graphicsFrameSequence: UInt64 = 0
     private struct PendingFenceKey: Hashable {
         let deviceGeneration: UInt64
         let hostFenceID: UInt64
@@ -133,7 +145,9 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         lane: DoryRendererWorkerVirtioCommandLane,
         deviceGeneration: UInt64,
         commandTimeout: TimeInterval = 6,
-        scanoutSink: (@Sendable (DoryPCVirGLScanoutUpdate) -> Bool)? = nil
+        scanoutSink: (@Sendable (DoryPCVirGLScanoutUpdate) -> Bool)? = nil,
+        graphicsTraceContext: VirtioGPUGraphicsTraceContext? = nil,
+        onGraphicsTrace: (@Sendable (VirtioGPUGraphicsTraceEvent) -> Void)? = nil
     ) throws {
         guard deviceGeneration != 0, commandTimeout > 0 else {
             throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
@@ -152,6 +166,8 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         self.deviceGeneration = deviceGeneration
         self.commandTimeout = commandTimeout
         self.scanoutSink = scanoutSink
+        self.graphicsTraceContext = graphicsTraceContext
+        self.onGraphicsTrace = onGraphicsTrace
         installCallbacks(on: lane)
     }
 
@@ -569,22 +585,52 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
                         completion: completion
                     )
                 }
-                updates.append(
-                    DoryPCVirGLScanoutUpdate(
-                        flush: flush,
-                        scanout: scanout,
-                        release: { [weak self] scanout in
-                            guard let self else {
-                                scanout.discardTransport()
-                                return
-                            }
-                            self.releaseScanout(scanout, admitted: admitted)
+                let frameSequence = nextGraphicsFrameSequence()
+                let update = DoryPCVirGLScanoutUpdate(
+                    flush: flush,
+                    scanout: scanout,
+                    release: { [weak self] scanout in
+                        guard let self else {
+                            scanout.discardTransport()
+                            return
                         }
-                    )
+                        self.releaseScanout(scanout, admitted: admitted)
+                    },
+                    recordHostSubmission: { [weak self] accepted in
+                        self?.recordGraphicsTrace(
+                            stage: accepted ? .hostSubmissionAccepted : .hostSubmissionRejected,
+                            resourceID: flush.resourceID,
+                            displayResourceGeneration: resourceGeneration,
+                            rendererResourceGeneration: scanout.resourceGeneration,
+                            deviceGeneration: admitted.deviceGeneration,
+                            frameSequence: frameSequence,
+                            scanoutID: flush.scanoutID,
+                            width: flush.resourceWidth,
+                            height: flush.resourceHeight,
+                            stride: stride,
+                            format: flush.virglFormat
+                        )
+                    }
                 )
+                recordGraphicsTrace(
+                    stage: .scanoutPublished,
+                    resourceID: flush.resourceID,
+                    displayResourceGeneration: resourceGeneration,
+                    rendererResourceGeneration: scanout.resourceGeneration,
+                    deviceGeneration: admitted.deviceGeneration,
+                    frameSequence: frameSequence,
+                    scanoutID: flush.scanoutID,
+                    width: flush.resourceWidth,
+                    height: flush.resourceHeight,
+                    stride: stride,
+                    format: flush.virglFormat
+                )
+                updates.append(update)
             }
             for update in updates {
-                guard scanoutSink(update) else {
+                let accepted = scanoutSink(update)
+                update.didResolveHostSubmission(accepted: accepted)
+                guard accepted else {
                     throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
                 }
                 acceptedCount += 1
@@ -745,6 +791,50 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         let matches = pendingFences.filter { $0.key.deviceGeneration == deviceGeneration }
         for key in matches.keys { pendingFences.removeValue(forKey: key) }
         return Array(matches.values)
+    }
+
+    private func nextGraphicsFrameSequence() -> UInt64? {
+        guard graphicsTraceContext != nil, onGraphicsTrace != nil else { return nil }
+        return graphicsTraceLock.withLock {
+            graphicsFrameSequence &+= 1
+            return graphicsFrameSequence
+        }
+    }
+
+    private func recordGraphicsTrace(
+        stage: VirtioGPUGraphicsTraceEvent.Stage,
+        resourceID: UInt32? = nil,
+        displayResourceGeneration: UInt64? = nil,
+        rendererResourceGeneration: UInt64? = nil,
+        deviceGeneration: UInt64? = nil,
+        frameSequence: UInt64? = nil,
+        scanoutID: UInt32? = nil,
+        width: UInt32? = nil,
+        height: UInt32? = nil,
+        stride: UInt32? = nil,
+        format: UInt32? = nil
+    ) {
+        guard let graphicsTraceContext, let onGraphicsTrace else { return }
+        let event = graphicsTraceLock.withLock { () -> VirtioGPUGraphicsTraceEvent in
+            graphicsTraceSequence &+= 1
+            return VirtioGPUGraphicsTraceEvent(
+                sequence: graphicsTraceSequence,
+                monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                context: graphicsTraceContext,
+                stage: stage,
+                resourceID: resourceID,
+                displayResourceGeneration: displayResourceGeneration,
+                rendererResourceGeneration: rendererResourceGeneration,
+                deviceGeneration: deviceGeneration,
+                frameSequence: frameSequence,
+                scanoutID: scanoutID,
+                width: width,
+                height: height,
+                stride: stride,
+                format: format
+            )
+        }
+        onGraphicsTrace(event)
     }
 
     private func wait<T: Sendable>(
