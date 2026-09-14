@@ -341,13 +341,23 @@ public struct ISAEngineProfileReceipt: Codable, Sendable, Hashable {
   public var isCompleted: Bool { outcome == .completed }
 
   /// True only when the observed execution tier matches the declared
-  /// profile tier and all run counters remained monotonic. Cost reports
-  /// require this in addition to ``isCompleted``; a counter regression is
-  /// retained for diagnosis but cannot become comparable evidence.
+  /// profile tier, both snapshots match the receipt's configuration and
+  /// workload identity, and all run counters remained monotonic. Cost
+  /// reports require this in addition to ``isCompleted``; identity drift
+  /// or a counter regression cannot become comparable evidence.
   public var isProvenanceVerified: Bool {
-    guard counterRegressions.isEmpty else { return false }
+    guard isIdentityConsistent, counterRegressions.isEmpty else { return false }
     if case .verified = observedTierEvidence { return true }
     return false
+  }
+
+  private var isIdentityConsistent: Bool {
+    startSample.configuration == configuration
+      && endSample.configuration == configuration
+      && startSample.workloadName == workloadName
+      && endSample.workloadName == workloadName
+      && startSample.workloadRevision == workloadRevision
+      && endSample.workloadRevision == workloadRevision
   }
 
   /// Monotonic counters that regressed between the start and end

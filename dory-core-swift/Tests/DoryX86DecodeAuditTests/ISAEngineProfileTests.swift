@@ -742,12 +742,50 @@ import Testing
       observedTierEvidence: tierEvidence)
   }
 
-  @Test func completedReceiptProducesCostReport() {
-    let receipt = makeReceipt(outcome: .completed)
+  @Test func completedReceiptProducesCostReport() throws {
+    let original = makeReceipt(outcome: .completed)
+    let receipt = try JSONDecoder().decode(
+      ISAEngineProfileReceipt.self, from: JSONEncoder().encode(original))
+    #expect(receipt == original)
+    #expect(receipt.isCompleted)
+    #expect(receipt.isProvenanceVerified)
     let report = ISAEngineCostReportGenerator.generate(from: receipt)
     #expect(report != nil)
     #expect(report?.retiredGuestInstructions == 1_000_000)
     #expect(report?.wallTimeNanoseconds == 1_000_000_000)
+  }
+
+  @Test(arguments: ["startSample", "endSample"], [
+    "tier", "cpuProfile", "schedulingMode", "firmwareVersion", "kernelInitrdDiskHash",
+    "workloadName", "workloadRevision",
+  ])
+  func snapshotIdentityDriftProducesNoCostReport(snapshotKey: String, field: String) throws {
+    let original = makeReceipt(outcome: .completed)
+    #expect(original.isProvenanceVerified)
+    #expect(ISAEngineCostReportGenerator.generate(from: original) != nil)
+
+    // Change exactly one serialized identity field, retaining completed,
+    // tier-verified evidence with monotonic counters and valid timing.
+    var payload = try #require(JSONSerialization.jsonObject(
+      with: JSONEncoder().encode(original)) as? [String: Any])
+    var snapshot = try #require(payload[snapshotKey] as? [String: Any])
+    if field == "workloadName" || field == "workloadRevision" {
+      snapshot[field] = try #require(snapshot[field] as? String) + "-drift"
+    } else {
+      var configuration = try #require(snapshot["configuration"] as? [String: Any])
+      configuration[field] = try #require(configuration[field] as? String) + "-drift"
+      snapshot["configuration"] = configuration
+    }
+    payload[snapshotKey] = snapshot
+    let forged = try JSONDecoder().decode(ISAEngineProfileReceipt.self,
+      from: JSONSerialization.data(withJSONObject: payload))
+
+    #expect(forged.isCompleted)
+    #expect(forged.counterRegressions.isEmpty)
+    #expect(forged.observedTierEvidence == original.observedTierEvidence)
+    #expect(forged.hostTiming == original.hostTiming)
+    #expect(!forged.isProvenanceVerified)
+    #expect(ISAEngineCostReportGenerator.generate(from: forged) == nil)
   }
 
   @Test func timeoutReceiptProducesNoCostReport() {
