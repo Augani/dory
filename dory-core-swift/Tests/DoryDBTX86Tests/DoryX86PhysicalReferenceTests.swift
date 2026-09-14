@@ -21,7 +21,7 @@ import Testing
       #expect(masks[4] == expectedMask)
       #expect(expected[4] & ~masks[4] == 0)
       let actual = try execute(vector)
-      try expectMasked(actual, equals: vector.expected, masks: vector.masks)
+      try expectMasked(actual, equals: vector.expected, masks: vector.masks, context: "\(vector.id) interpreter")
     }
   }
 
@@ -132,16 +132,31 @@ import Testing
     for vector in receipt.cases {
       let actual = try execute(vector)
       let observed = try #require(vector.observed)
-      try expectMasked(actual, equals: observed, masks: vector.masks)
+      try expectMasked(actual, equals: observed, masks: vector.masks, context: "\(vector.id) interpreter vs physical")
+      #if arch(arm64)
+        let baseline = try executeBaseline(vector)
+        try expectMasked(baseline, equals: observed, masks: vector.masks, context: "\(vector.id) Tier 1 vs physical")
+      #else
+        // Native Tier 1 requires ARM64; other hosts verify only interpreter vs physical.
+      #endif
     }
   }
 
-  private func execute(_ vector: ReferenceVector) throws -> ReferenceRegisters {
+  private func executionInput(_ vector: ReferenceVector) throws -> (
+    state: DoryX86ArchitecturalState, memory: DoryX86ByteArrayMemory
+  ) {
     let initial = try vector.initial.values()
     let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: vector.bytes)
-    var state = try DoryX86ArchitecturalState(
+    let state = try DoryX86ArchitecturalState(
       registers: .init(rax: initial[0], rcx: initial[2], rdx: initial[3], rbx: initial[1]), rip: 0x1000,
       rflags: .init(rawValue: initial[4]))
+    return (state, memory)
+  }
+
+  private func execute(_ vector: ReferenceVector) throws -> ReferenceRegisters {
+    let input = try executionInput(vector)
+    var state = input.state
+    let memory = input.memory
     let before = state
     guard case .retired = DoryX86Interpreter().step(state: &state, memory: memory, mode: .long64)
     else { throw ReferenceError.invalid("\(vector.id) unexpectedly faulted") }
@@ -151,7 +166,37 @@ import Testing
     #expect(state.registers.rsp == before.registers.rsp)
     #expect(state.control == before.control)
     #expect(state.floatingPoint == before.floatingPoint)
-    return .init(rax: hex(state.registers.rax), rbx: hex(state.registers.rbx), rcx: hex(state.registers.rcx),
+    return referenceRegisters(from: state)
+  }
+
+  #if arch(arm64)
+    private func executeBaseline(_ vector: ReferenceVector) throws -> ReferenceRegisters {
+      let input = try executionInput(vector)
+      let result: DoryX86DifferentialResult
+      do {
+        // The harness creates independent interpreter and native byte-array memory copies.
+        result = try DoryX86DifferentialHarness().compare(
+          bytes: vector.bytes, initialState: input.state, memory: input.memory, mode: .long64)
+      } catch let error as DoryX86DifferentialError {
+        throw ReferenceError.invalid("\(vector.id) Tier 1 differential execution failed: \(error)")
+      }
+      let diagnostics = "\(vector.id): tier=\(result.compiled.tier), exit=\(result.jitExit), "
+        + "interpreter=\(String(describing: result.interpreterResult)), "
+        + "retired=\(result.interpreterRetiredInstructionCount)/\(result.block.guestInstructionCount), "
+        + "interpreterFault=\(String(describing: result.interpreterMemoryFault)), "
+        + "jitFault=\(String(describing: result.jitMemoryFault)), "
+        + "firstDivergence=\(String(describing: result.firstDivergence))"
+      #expect(result.compiled.tier == .baseline, "\(diagnostics)")
+      #expect(result.jitExit == .dispatch, "\(diagnostics)")
+      #expect(result.agrees, "\(diagnostics)")
+      #expect(result.firstDivergence == nil, "\(diagnostics)")
+      return referenceRegisters(from: result.jitState)
+    }
+  #endif
+
+  private func referenceRegisters(from state: DoryX86ArchitecturalState) -> ReferenceRegisters {
+    // Only these fields were measured by the physical reference harness.
+    .init(rax: hex(state.registers.rax), rbx: hex(state.registers.rbx), rcx: hex(state.registers.rcx),
       rdx: hex(state.registers.rdx), rflags: hex(state.rflags.rawValue))
   }
 
@@ -172,9 +217,11 @@ import Testing
   }
 
   private func expectMasked(_ actual: ReferenceRegisters, equals expected: ReferenceRegisters,
-    masks: ReferenceRegisters) throws {
-    for (value, pair) in zip(try actual.values(), zip(try expected.values(), try masks.values())) {
-      #expect(value & pair.1 == pair.0 & pair.1)
+    masks: ReferenceRegisters, context: String) throws {
+    let fields = ["RAX", "RBX", "RCX", "RDX", "RFLAGS"]
+    for (index, values) in zip(try actual.values(), zip(try expected.values(), try masks.values())).enumerated() {
+      let (value, pair) = values
+      #expect(value & pair.1 == pair.0 & pair.1, "\(context) \(fields[index]), mask=\(hex(pair.1))")
     }
   }
 }
