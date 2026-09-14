@@ -31,7 +31,9 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
   private let apicsByID: [UInt32: DoryPCLocalAPIC]
   private let onPendingWork: (@Sendable (UInt32) -> Void)?
   private var lifecycles: [UInt32: DoryPCProcessorLifecycle]
-  private var pendingEvents: [DoryPCProcessorEvent] = []
+  // Control events are owned by their destination APIC. A vCPU may therefore drain only its own
+  // mailbox without observing or consuming another processor's lifecycle work.
+  private var pendingEventsByAPICID: [UInt32: [DoryPCProcessorEvent]]
 
   public init(
     localAPICs: [DoryPCLocalAPIC],
@@ -52,6 +54,9 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
         ($0.apicID, $0.apicID == localAPICs[0].apicID ? .running : .waitingForStartup)
       }
     )
+    pendingEventsByAPICID = Dictionary(
+      uniqueKeysWithValues: localAPICs.map { ($0.apicID, []) }
+    )
   }
 
   public func handleInterruptCommand(sourceAPICID: UInt32, high: UInt32, low: UInt32) throws {
@@ -69,7 +74,7 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
       let notifiedTargets = lock.withLock {
         var admittedTargets: [UInt32] = []
         for target in targets where lifecycles[target.apicID] == .running {
-          pendingEvents.append(.nonMaskableInterrupt(apicID: target.apicID))
+          enqueue(.nonMaskableInterrupt(apicID: target.apicID), forAPICID: target.apicID)
           admittedTargets.append(target.apicID)
         }
         return admittedTargets
@@ -82,7 +87,7 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
         var admittedTargets: [UInt32] = []
         for target in targets {
           lifecycles[target.apicID] = .waitingForStartup
-          pendingEvents.append(.initialize(apicID: target.apicID))
+          enqueue(.initialize(apicID: target.apicID), forAPICID: target.apicID)
           admittedTargets.append(target.apicID)
         }
         return admittedTargets
@@ -93,7 +98,7 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
         var admittedTargets: [UInt32] = []
         for target in targets where lifecycles[target.apicID] == .waitingForStartup {
           lifecycles[target.apicID] = .running
-          pendingEvents.append(.startup(apicID: target.apicID, vector: vector))
+          enqueue(.startup(apicID: target.apicID, vector: vector), forAPICID: target.apicID)
           admittedTargets.append(target.apicID)
         }
         return admittedTargets
@@ -104,15 +109,26 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
     }
   }
 
-  public func drainEvents() -> [DoryPCProcessorEvent] {
+  /// Drains control events owned by `apicID`, preserving FIFO order within that APIC's mailbox.
+  public func drainEvents(forAPICID apicID: UInt32) -> [DoryPCProcessorEvent] {
     lock.withLock {
-      defer { pendingEvents.removeAll(keepingCapacity: true) }
-      return pendingEvents
+      let events = pendingEventsByAPICID[apicID] ?? []
+      pendingEventsByAPICID[apicID]?.removeAll(keepingCapacity: true)
+      return events
     }
   }
 
   public func snapshot() -> DoryPCProcessorTopologySnapshot {
-    lock.withLock { .init(lifecycles: lifecycles, pendingEvents: pendingEvents) }
+    lock.withLock {
+      .init(
+        lifecycles: lifecycles,
+        pendingEvents: localAPICs.flatMap { pendingEventsByAPICID[$0.apicID] ?? [] }
+      )
+    }
+  }
+
+  private func enqueue(_ event: DoryPCProcessorEvent, forAPICID apicID: UInt32) {
+    pendingEventsByAPICID[apicID, default: []].append(event)
   }
 
   private func resolvedTargets(

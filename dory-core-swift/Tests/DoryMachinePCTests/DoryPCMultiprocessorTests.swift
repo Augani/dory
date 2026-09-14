@@ -74,7 +74,7 @@ import Testing
     )
 
     #expect(
-      controller.drainEvents() == [
+      controller.drainEvents(forAPICID: 2) == [
         .initialize(apicID: 2),
         .startup(apicID: 2, vector: 9),
       ])
@@ -131,7 +131,7 @@ import Testing
     try controller.handleInterruptCommand(sourceAPICID: 0, high: 1 << 24, low: 5 << 8 | 1 << 15)
 
     #expect(probe.notifiedAPICIDs.isEmpty)
-    #expect(controller.drainEvents() == [
+    #expect(controller.drainEvents(forAPICID: 1) == [
       .initialize(apicID: 1),
       .startup(apicID: 1, vector: 8),
     ])
@@ -201,7 +201,41 @@ import Testing
 
     #expect(read32(try mmio.read(offset: 0x310, byteCount: 4)) == 1 << 24)
     #expect(read32(try mmio.read(offset: 0x300, byteCount: 4)) == 6 << 8 | 8)
-    #expect(controller.drainEvents() == [.startup(apicID: 1, vector: 8)])
+    #expect(controller.drainEvents(forAPICID: 1) == [.startup(apicID: 1, vector: 8)])
+  }
+
+  @Test func drainingOneAPICMailboxCannotConsumeAnotherAPICsEvents() throws {
+    let apics = (0..<3).map { DoryPCLocalAPIC(apicID: UInt32($0)) }
+    let controller = try DoryPCMultiprocessorController(localAPICs: apics)
+
+    for apicID: UInt32 in [1, 2] {
+      try controller.handleInterruptCommand(
+        sourceAPICID: 0,
+        high: apicID << 24,
+        low: 5 << 8 | 1 << 14 | 1 << 15
+      )
+    }
+
+    #expect(controller.drainEvents(forAPICID: 1) == [.initialize(apicID: 1)])
+    #expect(controller.drainEvents(forAPICID: 1).isEmpty)
+    #expect(controller.drainEvents(forAPICID: 2) == [.initialize(apicID: 2)])
+  }
+
+  @Test func oneAPICMailboxRetainsInitThenStartupFIFOOrder() throws {
+    let apics = (0..<2).map { DoryPCLocalAPIC(apicID: UInt32($0)) }
+    let controller = try DoryPCMultiprocessorController(localAPICs: apics)
+
+    try controller.handleInterruptCommand(
+      sourceAPICID: 0,
+      high: 1 << 24,
+      low: 5 << 8 | 1 << 14 | 1 << 15
+    )
+    try controller.handleInterruptCommand(sourceAPICID: 0, high: 1 << 24, low: 6 << 8 | 9)
+
+    #expect(controller.drainEvents(forAPICID: 1) == [
+      .initialize(apicID: 1),
+      .startup(apicID: 1, vector: 9),
+    ])
   }
 }
 

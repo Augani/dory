@@ -637,6 +637,33 @@ import Testing
     #expect(snapshots[0].state?.tsc == snapshots[1].state?.tsc)
   }
 
+  @Test func servicingOneProcessorMailboxDoesNotApplyAnotherProcessorsStartup() throws {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 3
+    )
+    try machine.load(kernel: makeELF(code: [0xF4]), commandLine: "x")
+
+    for (apicID, vector) in [(UInt32(1), UInt32(8)), (UInt32(2), UInt32(9))] {
+      try machine.multiprocessorController.handleInterruptCommand(
+        sourceAPICID: 0,
+        high: apicID << 24,
+        low: 6 << 8 | vector
+      )
+    }
+
+    machine.applyProcessorEvents(forProcessor: 1)
+
+    let snapshots = machine.processorExecutionSnapshots
+    #expect(snapshots[1].lifecycle == .running)
+    #expect(snapshots[1].state?.cs.base == 0x8000)
+    #expect(snapshots[2].lifecycle == .waitingForStartup)
+    #expect(snapshots[2].state?.cs.base == 0)
+    #expect(machine.multiprocessorController.drainEvents(forAPICID: 2) == [
+      .startup(apicID: 2, vector: 9)
+    ])
+  }
+
   @Test func pitClockScalesIdenticallyAcrossExecutionTiers() throws {
     #if arch(arm64)
       let tiers: [DoryPCExecutionTier] = [.interpreter, .baselineJIT, .optimizingJIT]

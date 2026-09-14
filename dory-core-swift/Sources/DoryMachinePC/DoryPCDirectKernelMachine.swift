@@ -1875,22 +1875,35 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   }
 
   private func applyProcessorEvents() {
-    for event in multiprocessorController.drainEvents() {
+    // Serial dispatch services every vCPU in a stable order. The per-processor helper is kept
+    // target-specific so a future vCPU worker can never drain another APIC's control mailbox.
+    for processor in 0..<processorCount {
+      applyProcessorEvents(forProcessor: processor)
+    }
+  }
+
+  /// Applies only the control events owned by the selected processor's APIC.
+  ///
+  /// The caller holds the machine execution lock during normal dispatch.
+  func applyProcessorEvents(forProcessor processor: Int) {
+    guard localAPICs.indices.contains(processor) else { return }
+    let apicID = localAPICs[processor].apicID
+    for event in multiprocessorController.drainEvents(forAPICID: apicID) {
       switch event {
-      case .initialize(let apicID):
-        guard let index = processorIndex(apicID) else { continue }
-        let coherentTSC = loadedStates[0]?.value.tsc ?? loadedStates[index]?.value.tsc ?? 0
-        processorLifecycles[index] = .waitingForStartup
+      case .initialize(let targetAPICID):
+        guard targetAPICID == apicID else { continue }
+        let coherentTSC = loadedStates[0]?.value.tsc ?? loadedStates[processor]?.value.tsc ?? 0
+        processorLifecycles[processor] = .waitingForStartup
         var state = applicationProcessorResetState()
         state.tsc = coherentTSC
-        loadedStates[index] = ProcessorState(state)
-        haltedProcessors[index] = true
-        pendingNMIs.remove(index)
-      case .startup(let apicID, let vector):
-        guard let index = processorIndex(apicID) else { continue }
-        processorLifecycles[index] = .running
+        loadedStates[processor] = ProcessorState(state)
+        haltedProcessors[processor] = true
+        pendingNMIs.remove(processor)
+      case .startup(let targetAPICID, let vector):
+        guard targetAPICID == apicID else { continue }
+        processorLifecycles[processor] = .running
         var state = applicationProcessorResetState()
-        state.tsc = loadedStates[0]?.value.tsc ?? loadedStates[index]?.value.tsc ?? 0
+        state.tsc = loadedStates[0]?.value.tsc ?? loadedStates[processor]?.value.tsc ?? 0
         state.rip = 0
         state.cs = .init(
           selector: UInt16(vector) << 8,
@@ -1898,10 +1911,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           limit: 0xFFFF,
           base: UInt64(vector) << 12
         )
-        loadedStates[index] = ProcessorState(state)
-        haltedProcessors[index] = false
-      case .nonMaskableInterrupt(let apicID):
-        if let index = processorIndex(apicID) { pendingNMIs.insert(index) }
+        loadedStates[processor] = ProcessorState(state)
+        haltedProcessors[processor] = false
+      case .nonMaskableInterrupt(let targetAPICID):
+        guard targetAPICID == apicID else { continue }
+        pendingNMIs.insert(processor)
       }
     }
   }
