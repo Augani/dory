@@ -326,10 +326,29 @@ public final class DoryVirtioSoundDevice: @unchecked Sendable {
     }
   }
 
+  /// Reconciles live backend streams before forgetting guest lifecycle state.
+  /// Captures the pre-reset lifecycles and returns the engine to unconfigured
+  /// under the state lock, then performs backend cleanup without holding the
+  /// lock: a running stream is stopped first, then every non-unconfigured
+  /// stream is released. Backend errors are ignored so one failing stream
+  /// cannot prevent engine reset or cleanup of the remaining stream. Callers
+  /// already holding control-path serialization get stop-before-release
+  /// ordering for the snapshot; concurrent control operations may interleave
+  /// with the out-of-lock backend calls and this method promises no new
+  /// cross-thread guarantee beyond the snapshot.
   public func reset() {
-    lock.withLock {
+    let previous: [Lifecycle] = lock.withLock {
+      let snapshot = lifecycles
       lifecycles = [.unconfigured, .unconfigured]
       pendingEvents.removeAll(keepingCapacity: true)
+      return snapshot
+    }
+    for streamID in previous.indices {
+      guard previous[streamID].parameters != nil else { continue }
+      if case .running = previous[streamID] {
+        try? backend.stop(streamID: UInt32(streamID))
+      }
+      try? backend.release(streamID: UInt32(streamID))
     }
   }
 

@@ -197,6 +197,156 @@ import Testing
     #expect(try memory.read(at: 0x6000, byteCount: 4) == [0, 0, 0, 0])
   }
 
+  @Test func resetStopsRunningStreamReleasesBackendAndRequiresReconfiguration() throws {
+    let backend = RecordingSoundBackend()
+    let device = DoryVirtioSoundDevice(backend: backend)
+    let memory = SoundGuestMemory(byteCount: 0x8000)
+    #expect(
+      read32(try control(device, request: parameters(streamID: 0), memory: memory), 0) == 0x8000)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0102, streamID: 0), memory: memory), 0)
+        == 0x8000)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0104, streamID: 0), memory: memory), 0)
+        == 0x8000)
+
+    device.reset()
+    #expect(backend.stopCount == 1)
+    #expect(backend.releaseCount == 1)
+
+    // Post-reset lifecycles are unconfigured: control transitions are rejected.
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0105, streamID: 0), memory: memory), 0)
+        == 0x8001)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0102, streamID: 0), memory: memory), 0)
+        == 0x8001)
+
+    // Post-reset playback is rejected until the stream is configured again.
+    let pcm = [UInt8](repeating: 0x5A, count: 16)
+    memory.put(littleEndian(UInt32(0)) + pcm, at: 0x1000)
+    let chain = DoryVirtioDescriptorChain(
+      headIndex: 0,
+      descriptors: [
+        .init(address: 0x1000, length: 20, flags: 0, next: 1),
+        .init(address: 0x2000, length: 8, flags: 2, next: 0),
+      ],
+      readableByteCount: 20,
+      writableByteCount: 8
+    )
+    #expect(try device.processTransmit(chain, memory: memory) == 8)
+    #expect(read32(try memory.read(at: 0x2000, byteCount: 8), 0) == 0x8003)
+    #expect(backend.playCount == 0)
+
+    // Reconfiguration restores the lifecycle.
+    #expect(
+      read32(try control(device, request: parameters(streamID: 0), memory: memory), 0) == 0x8000)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0102, streamID: 0), memory: memory), 0)
+        == 0x8000)
+  }
+
+  @Test func resetReleasesPreparedStreamWithoutStop() throws {
+    let backend = RecordingSoundBackend()
+    let device = DoryVirtioSoundDevice(backend: backend)
+    let memory = SoundGuestMemory(byteCount: 0x8000)
+    #expect(
+      read32(try control(device, request: parameters(streamID: 0), memory: memory), 0) == 0x8000)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0102, streamID: 0), memory: memory), 0)
+        == 0x8000)
+
+    device.reset()
+    #expect(backend.stopCount == 0)
+    #expect(backend.releaseCount == 1)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0104, streamID: 0), memory: memory), 0)
+        == 0x8001)
+  }
+
+  @Test func resetReleasesConfiguredStreamWithoutStop() throws {
+    let backend = RecordingSoundBackend()
+    let device = DoryVirtioSoundDevice(backend: backend)
+    let memory = SoundGuestMemory(byteCount: 0x8000)
+    #expect(
+      read32(try control(device, request: parameters(streamID: 0), memory: memory), 0) == 0x8000)
+
+    device.reset()
+    #expect(backend.stopCount == 0)
+    #expect(backend.releaseCount == 1)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0102, streamID: 0), memory: memory), 0)
+        == 0x8001)
+  }
+
+  @Test func resetReleasesStoppedStreamWithoutAdditionalStop() throws {
+    let backend = RecordingSoundBackend()
+    let device = DoryVirtioSoundDevice(backend: backend)
+    let memory = SoundGuestMemory(byteCount: 0x8000)
+    #expect(
+      read32(try control(device, request: parameters(streamID: 0), memory: memory), 0) == 0x8000)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0102, streamID: 0), memory: memory), 0)
+        == 0x8000)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0104, streamID: 0), memory: memory), 0)
+        == 0x8000)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0105, streamID: 0), memory: memory), 0)
+        == 0x8000)
+    #expect(backend.stopCount == 1)
+
+    device.reset()
+    #expect(backend.stopCount == 1)
+    #expect(backend.releaseCount == 1)
+  }
+
+  @Test func resetReturnsUnconfiguredWhenBackendCleanupThrows() throws {
+    let backend = ThrowingCleanupSoundBackend()
+    let device = DoryVirtioSoundDevice(backend: backend)
+    let memory = SoundGuestMemory(byteCount: 0x8000)
+    #expect(
+      read32(try control(device, request: parameters(streamID: 0), memory: memory), 0) == 0x8000)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0102, streamID: 0), memory: memory), 0)
+        == 0x8000)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0104, streamID: 0), memory: memory), 0)
+        == 0x8000)
+
+    device.reset()
+    #expect(backend.stopAttempts == 1)
+    #expect(backend.releaseAttempts == 1)
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0105, streamID: 0), memory: memory), 0)
+        == 0x8001)
+  }
+
+  @Test func resetContinuesOtherLiveStreamCleanupAfterStreamFailure() throws {
+    let backend = OrderedThrowingCleanupSoundBackend()
+    let device = DoryVirtioSoundDevice(backend: backend)
+    let memory = SoundGuestMemory(byteCount: 0x8000)
+    for streamID: UInt32 in 0...1 {
+      #expect(
+        read32(try control(device, request: parameters(streamID: streamID), memory: memory), 0)
+          == 0x8000)
+      #expect(
+        read32(
+          try control(device, request: pcmCommand(0x0102, streamID: streamID), memory: memory), 0
+        ) == 0x8000)
+      #expect(
+        read32(
+          try control(device, request: pcmCommand(0x0104, streamID: streamID), memory: memory), 0
+        ) == 0x8000)
+    }
+
+    device.reset()
+    #expect(backend.cleanupOperations == [.stop(0), .release(0), .stop(1), .release(1)])
+    #expect(
+      read32(try control(device, request: pcmCommand(0x0105, streamID: 1), memory: memory), 0)
+        == 0x8001)
+  }
+
   private func control(
     _ device: DoryVirtioSoundDevice,
     request: [UInt8],
@@ -275,6 +425,61 @@ private final class RecordingSoundBackend: DoryVirtioSoundBackend, @unchecked Se
     let result = Array(captureBytes.prefix(count))
     captureBytes.removeFirst(count)
     return result + [UInt8](repeating: 0, count: byteCount - count)
+  }
+}
+
+private final class ThrowingCleanupSoundBackend: DoryVirtioSoundBackend, @unchecked Sendable {
+  struct CleanupFailure: Error {}
+  var stopAttempts = 0
+  var releaseAttempts = 0
+
+  func configure(
+    streamID: UInt32,
+    direction: DoryVirtioSoundDirection,
+    parameters: DoryVirtioSoundPCMParameters
+  ) throws {}
+  func prepare(streamID: UInt32) throws {}
+  func start(streamID: UInt32) throws {}
+  func stop(streamID: UInt32) throws {
+    stopAttempts += 1
+    throw CleanupFailure()
+  }
+  func release(streamID: UInt32) throws {
+    releaseAttempts += 1
+    throw CleanupFailure()
+  }
+  func play(streamID: UInt32, pcmBytes: [UInt8]) throws {}
+  func capture(streamID: UInt32, byteCount: Int) throws -> [UInt8] {
+    [UInt8](repeating: 0, count: byteCount)
+  }
+}
+
+private final class OrderedThrowingCleanupSoundBackend: DoryVirtioSoundBackend, @unchecked Sendable {
+  enum CleanupOperation: Equatable {
+    case stop(UInt32)
+    case release(UInt32)
+  }
+
+  private(set) var cleanupOperations: [CleanupOperation] = []
+
+  func configure(
+    streamID: UInt32,
+    direction: DoryVirtioSoundDirection,
+    parameters: DoryVirtioSoundPCMParameters
+  ) throws {}
+  func prepare(streamID: UInt32) throws {}
+  func start(streamID: UInt32) throws {}
+  func stop(streamID: UInt32) throws {
+    cleanupOperations.append(.stop(streamID))
+    if streamID == 0 { throw ThrowingCleanupSoundBackend.CleanupFailure() }
+  }
+  func release(streamID: UInt32) throws {
+    cleanupOperations.append(.release(streamID))
+    if streamID == 0 { throw ThrowingCleanupSoundBackend.CleanupFailure() }
+  }
+  func play(streamID: UInt32, pcmBytes: [UInt8]) throws {}
+  func capture(streamID: UInt32, byteCount: Int) throws -> [UInt8] {
+    [UInt8](repeating: 0, count: byteCount)
   }
 }
 
