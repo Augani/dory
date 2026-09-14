@@ -218,17 +218,26 @@ import Testing
     #expect(queueState.size == 0)
   }
 
-  @Test func deviceNeedsResetPreventsNotifyFromConsumingNewQueueWork() throws {
+  @Test(arguments: [false, true])
+  func deviceNeedsResetPreventsNotifyFromConsumingNewQueueWork(deferred: Bool) throws {
     let function = try makeFunction()
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: 2 * 1024 * 1024,
       pciFunctions: [function]
     )
+    let memory = TrackingVirtioGuestMemory(machine.physicalMemory)
     let processorCalls = LockedValue(0)
-    function.transport.connectQueueProcessor(memory: machine.physicalMemory) { _, chain, memory in
-      processorCalls.value += 1
-      try memory.write(at: chain.descriptors[1].address, bytes: [9, 8, 7, 6])
-      return 4
+    if deferred {
+      function.transport.connectDeferredQueueProcessor(memory: memory) { _, _, _, completion in
+        processorCalls.value += 1
+        completion.publish([9, 8, 7, 6])
+      }
+    } else {
+      function.transport.connectQueueProcessor(memory: memory) { _, chain, memory in
+        processorCalls.value += 1
+        try memory.write(at: chain.descriptors[1].address, bytes: [9, 8, 7, 6])
+        return 4
+      }
     }
     try function.writeConfiguration(offset: 4, bytes: [2, 0])
     let bar: UInt64 = 0xD000_0000
@@ -238,11 +247,21 @@ import Testing
     #expect(function.transport.deviceState.snapshot().status.contains(.driverOK))
     #expect(function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
     try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1, notify: false)
+    let usedRing = try machine.physicalMemory.read(at: 0x3000, byteCount: 70)
+    let accesses = memory.accessCount
+    try write16(machine, bar + 0x100, 0)
+    function.transport.processQueue(0)
+
+    // Reasserting readiness and queue enable cannot clear the device-owned error bit.
+    try write8(machine, bar + 0x14, 0x0F)
+    try write16(machine, bar + 0x1C, 1)
     try write16(machine, bar + 0x100, 0)
 
+    #expect(memory.accessCount == accesses)
     #expect(processorCalls.value == 0)
+    #expect(function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
     #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
-    #expect(try read16(machine, 0x3002) == 0)
+    #expect(try machine.physicalMemory.read(at: 0x3000, byteCount: 70) == usedRing)
   }
 
   @Test func deviceNeedsResetRejectsCapturedDeferredCompletionBeforeGuestWrites() throws {
@@ -251,8 +270,9 @@ import Testing
       memoryBytes: 2 * 1024 * 1024,
       pciFunctions: [function]
     )
+    let memory = TrackingVirtioGuestMemory(machine.physicalMemory)
     let completions = DeferredCompletionRecorder()
-    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+    function.transport.connectDeferredQueueProcessor(memory: memory) {
       _, _, _, completion in
       completions.append(completion)
     }
@@ -263,9 +283,14 @@ import Testing
     let completion = try #require(completions.removeFirst())
 
     function.transport.deviceState.markDeviceNeedsReset()
+    #expect(function.transport.deviceState.snapshot().status.contains(.driverOK))
+    #expect(function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    let usedRing = try machine.physicalMemory.read(at: 0x3000, byteCount: 70)
+    let accesses = memory.accessCount
     #expect(!completion.publish([9, 8, 7, 6]))
+    #expect(memory.accessCount == accesses)
     #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
-    #expect(try read16(machine, 0x3002) == 0)
+    #expect(try machine.physicalMemory.read(at: 0x3000, byteCount: 70) == usedRing)
   }
 
   @Test func resetAndReconfigurationAllowOneDeferredCompletionInFreshGeneration() throws {
@@ -282,14 +307,29 @@ import Testing
     try function.writeConfiguration(offset: 4, bytes: [2, 0])
     let bar: UInt64 = 0xD000_0000
     try configureSingleDescriptorQueue(machine, bar: bar)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    let staleCompletion = try #require(completions.removeFirst())
     function.transport.deviceState.markDeviceNeedsReset()
 
     try write8(machine, bar + 0x14, 0)
+    #expect(function.transport.deviceState.snapshot().status.isEmpty)
+    #expect(!(try function.transport.queueSnapshot(at: 0).enabled))
+    try write16(machine, bar + 0x100, 0)
+    #expect(completions.removeFirst() == nil)
     try configureSingleDescriptorQueue(machine, bar: bar)
+    #expect(function.transport.deviceState.snapshot().status.contains(.driverOK))
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
     try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
     let completion = try #require(completions.removeFirst())
 
+    #expect(!staleCompletion.publish([5, 5, 5, 5]))
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try read16(machine, 0x3002) == 0)
     #expect(completion.publish([9, 8, 7, 6]))
+    #expect(!completion.publish([5, 5, 5, 5]))
+    try write16(machine, bar + 0x100, 0)
+    function.transport.processQueue(0)
+    #expect(completions.removeFirst() == nil)
     #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 6])
     #expect(try read16(machine, 0x3002) == 1)
   }
@@ -1015,6 +1055,37 @@ private final class LockedValue<Value>: @unchecked Sendable {
   var value: Value {
     get { lock.withLock { storage } }
     set { lock.withLock { storage = newValue } }
+  }
+}
+
+/// Counts transport accesses while fixture setup and assertions use the backing memory directly.
+private final class TrackingVirtioGuestMemory: DoryVirtioGuestMemory, @unchecked Sendable {
+  private let backing: any DoryVirtioGuestMemory
+  private let lock = NSLock()
+  private var accesses = 0
+
+  init(_ backing: any DoryVirtioGuestMemory) { self.backing = backing }
+
+  var accessCount: Int { lock.withLock { accesses } }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    lock.withLock { accesses += 1 }
+    return try backing.read(at: address, byteCount: byteCount)
+  }
+
+  func validate(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
+    lock.withLock { accesses += 1 }
+    try backing.validate(at: address, byteCount: byteCount, deviceWillWrite: deviceWillWrite)
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    lock.withLock { accesses += 1 }
+    try backing.write(at: address, bytes: bytes)
+  }
+
+  func synchronize() {
+    lock.withLock { accesses += 1 }
+    backing.synchronize()
   }
 }
 

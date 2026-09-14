@@ -621,7 +621,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       }
     case (0x14, 1):
       let status = DoryVirtioDeviceStatus(rawValue: bytes[0])
-      let wasReady = deviceState.snapshot().status.contains(.driverOK)
+      let wasReady = Self.isOperational(deviceState.snapshot())
       deviceState.writeStatus(status)
       if status.isEmpty {
         for processingLock in processingLocks { processingLock.lock() }
@@ -638,7 +638,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
             queues[index].queue.reset()
           }
         }
-      } else if !wasReady, deviceState.snapshot().status.contains(.driverOK) {
+      } else if !wasReady, Self.isOperational(deviceState.snapshot()) {
         let enabledQueues = lock.withLock {
           queues.indices.filter { queues[$0].enabled }.map { UInt16($0) }
         }
@@ -892,6 +892,9 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     return eligibleToFail && transitioned
   }
 
+  /// DRIVER_OK survives DEVICE_NEEDS_RESET. Every DMA admission must use both bits,
+  /// under the lifecycle lease, including notification arming and deferred publication.
+  /// Readiness transitions also use this predicate; they do not replace the DMA lease.
   private static func isOperational(_ snapshot: DoryVirtioDeviceSnapshot) -> Bool {
     snapshot.status.contains(.driverOK) && !snapshot.status.contains(.deviceNeedsReset)
   }
