@@ -56,30 +56,15 @@ import Testing
     }
   }
 
-  @Test func existingPCIDCanBeRewrittenAndNoFlushCR3DoesNotStoreBit63() throws {
-    for mode: DoryX86ExecutionMode in [.protected32, .long64] {
-      var state = try makeState(activeLong: true, mode: mode)
-      try writeControl(4, value: state.control.cr4 | (1 << 17), state: &state, mode: mode)
-      #expect(state.control.cr4 & (1 << 17) != 0)
-      state.rip = 0x1000
-      state.control.cr3 |= 0xABC
-      try writeControl(4, value: state.control.cr4, state: &state, mode: mode)
-      #expect(state.control.cr3 == 0x2ABC)
-      state.rip = 0x1000
-      try writeControl(4, value: state.control.cr4 & ~(1 << 17), state: &state, mode: mode)
-      #expect(state.control.cr3 == 0x2ABC)
-    }
+  @Test func baselinePCIDEFaultsAtomicallyInActiveIA32eMode() throws {
+    let leaf = DoryX86CPUProfile.compatibleV1.cpuid(leaf: 1)
+    #expect(leaf.ecx & (1 << 17) == 0)
+
+    // CR3 is a correctly aligned IA-32e root, so PCIDE admission is the only
+    // reason MOV CR4,RAX faults. rejectControl also verifies #GP(0), unchanged
+    // RIP and architectural state, and preservation of warmed translations.
     var state = try makeState(activeLong: true, mode: .long64)
-    state.control.cr4 |= 1 << 17
-    try writeControl(3, value: (1 << 63) | 0x2123, state: &state,
-      mode: .long64, expectInvalidation: false)
-    #expect(state.control.cr3 == 0x2123)
-    state.rip = 0x1000
-    try writeControl(3, value: 0x2456, state: &state, mode: .long64)
-    #expect(state.control.cr3 == 0x2456)
-    state.rip = 0x1000
-    state.control.cr4 &= ~(1 << 17)
-    try rejectControl(3, value: (1 << 63) | 0x2000, state: &state, mode: .long64)
+    try rejectControl(4, value: state.control.cr4 | (1 << 17), state: &state, mode: .long64)
   }
 
   @Test func leavingIA32eRequiresCompatibilityCodeAndDisabledPCID() throws {
@@ -159,7 +144,7 @@ import Testing
 
   @Test func cr4ReservedBitsAndOSXSAVEPolicyFaultBeforePublishing() throws {
     let mechanisms: UInt64 = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6)
-      | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 17) | (1 << 20) | (1 << 21)
+      | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 20) | (1 << 21)
     for bit in 0..<64 where mechanisms & (UInt64(1) << bit) == 0 {
       var state = try makeState(activeLong: true, mode: .long64)
       try rejectControl(4, value: state.control.cr4 | (UInt64(1) << bit),
