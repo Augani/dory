@@ -2141,7 +2141,9 @@ final class DockerTierTests: XCTestCase {
     }
 
     func testManagedGuestReadinessAndCapacityUseTheSameExactDiskIdentity() throws {
-        let base = "/tmp/dory-tier-guest-identity-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let base = try DoryDataDrive.canonicalPath(
+            "/tmp/dory-tier-guest-identity-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        )
         defer { try? FileManager.default.removeItem(atPath: base) }
         let client = GuestResourceProbeAgentClient(records: [
             .success(guestResourceRecord()),
@@ -2181,7 +2183,9 @@ final class DockerTierTests: XCTestCase {
     }
 
     func testPromotionAfterFailedGuestProbeReconnectsAgentForReplacementGeneration() throws {
-        let base = "/tmp/dory-tier-agent-retry-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let base = try DoryDataDrive.canonicalPath(
+            "/tmp/dory-tier-agent-retry-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        )
         defer { try? FileManager.default.removeItem(atPath: base) }
 
         let failedClient = GuestResourceProbeAgentClient(records: [
@@ -2629,7 +2633,9 @@ final class DockerTierTests: XCTestCase {
     }
 
     func testManagedGuestRejectsAClonedUUIDFromTheWrongConfiguredHostDrive() throws {
-        let base = "/tmp/dory-tier-cloned-uuid-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let base = try DoryDataDrive.canonicalPath(
+            "/tmp/dory-tier-cloned-uuid-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        )
         let selectedRoot = base + "/selected.dorydrive"
         let cloneRoot = base + "/clone.dorydrive"
         let selectedImage = selectedRoot + "/engine/docker-data.ext4"
@@ -2747,7 +2753,9 @@ final class DockerTierTests: XCTestCase {
     }
 
     func testManagedGuestReadinessRejectsRootfsFallbackBeforePublishingTheEngine() throws {
-        let base = "/tmp/dory-tier-guest-rootfs-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let base = try DoryDataDrive.canonicalPath(
+            "/tmp/dory-tier-guest-rootfs-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        )
         defer { try? FileManager.default.removeItem(atPath: base) }
         let rootfsRecord = String(decoding: guestResourceRecord(), as: UTF8.self)
             .replacingOccurrences(
