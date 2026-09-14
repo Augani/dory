@@ -427,7 +427,14 @@ public struct DoryUpgradeTransactionStore: Sendable {
         to state: DoryUpgradeState,
         error: String? = nil
     ) throws -> DoryUpgradeTransactionRecord {
-        try update(id) { record in
+        // Reaching the install-ready boundary is security-sensitive: the candidate archive must
+        // have been cryptographically verified in addition to collecting every rollback input.
+        // Keep this in the state transition as well as the public validator so a caller cannot
+        // accidentally treat the checklist as advisory.
+        if state == .readyToInstall {
+            try validateReadyToInstall(id)
+        }
+        return try update(id) { record in
             guard Self.transitionAllowed(from: record.state, to: state) else {
                 throw DoryUpgradeError.invalidState("cannot move \(record.state.rawValue) -> \(state.rawValue)")
             }
@@ -506,7 +513,13 @@ public struct DoryUpgradeTransactionStore: Sendable {
 
     @discardableResult
     public func markArchiveValidated(_ id: UUID) throws -> DoryUpgradeTransactionRecord {
-        try update(id) { $0.candidate.archiveSignatureValidated = true }
+        let record = try load(id)
+        guard record.state == .snapshotting else {
+            throw DoryUpgradeError.invalidState(
+                "archive validation is only accepted while the upgrade is snapshotting"
+            )
+        }
+        return try update(id) { $0.candidate.archiveSignatureValidated = true }
     }
 
     @discardableResult
@@ -522,11 +535,14 @@ public struct DoryUpgradeTransactionStore: Sendable {
 
     public func validateReadyToInstall(_ id: UUID) throws {
         let record = try load(id)
-        guard record.appSnapshot != nil,
+        guard record.candidate.archiveSignatureValidated,
+              record.appSnapshot != nil,
               !record.configurationSnapshots.isEmpty,
               record.dataSnapshot != nil,
               record.markerVolume != nil else {
-            throw DoryUpgradeError.invalidState("last-good app, config, data and volume-marker snapshots are all required")
+            throw DoryUpgradeError.invalidState(
+                "validated archive plus last-good app, config, data and volume-marker snapshots are all required"
+            )
         }
     }
 

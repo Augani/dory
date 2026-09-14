@@ -55,9 +55,15 @@ final class DoryUpgradeTransactionTests: XCTestCase {
             kubernetesExpected: true
         )
 
+        XCTAssertThrowsError(try fixture.store.validateReadyToInstall(record.id)) { error in
+            XCTAssertTrue("\(error)".contains("validated archive"))
+        }
+        XCTAssertThrowsError(try fixture.store.advance(record.id, to: .readyToInstall)) { error in
+            XCTAssertTrue("\(error)".contains("validated archive"))
+        }
+        record = try fixture.store.markArchiveValidated(record.id)
         try fixture.store.validateReadyToInstall(record.id)
         record = try fixture.store.advance(record.id, to: .readyToInstall)
-        record = try fixture.store.markArchiveValidated(record.id)
         record = try fixture.store.advance(record.id, to: .installing)
         XCTAssertTrue(record.candidate.archiveSignatureValidated)
         XCTAssertEqual(record.baselinePorts, [8080, 8443])
