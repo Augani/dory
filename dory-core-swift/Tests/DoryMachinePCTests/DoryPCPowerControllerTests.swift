@@ -82,6 +82,9 @@ import Testing
       value: UInt32(DoryPCPowerController.resetValue),
       width: .byte
     )
+    #expect(controller.snapshot().resetPortWriteCount == 2)
+    #expect(controller.snapshot().acceptedResetCount == 1)
+    #expect(controller.snapshot().lastResetPortValue == DoryPCPowerController.resetValue)
     #expect(controller.snapshot().lastRequestSource == .resetControlPort)
     #expect(controller.consumeRequestedAction() == .reset)
   }

@@ -905,6 +905,10 @@ private func powerControllerDiagnostics(_ controller: DoryPCPowerController) -> 
     "pendingAction": snapshot.pendingAction.map(action) ?? NSNull(),
     "lastRequestedAction": snapshot.lastRequestedAction.map(action) ?? NSNull(),
     "lastRequestSource": snapshot.lastRequestSource?.rawValue ?? NSNull(),
+    "resetPortWriteCount": snapshot.resetPortWriteCount,
+    "acceptedResetCount": snapshot.acceptedResetCount,
+    "lastResetPortValue": snapshot.lastResetPortValue.map { String(format: "0x%02x", $0) }
+      ?? NSNull(),
   ]
 }
 

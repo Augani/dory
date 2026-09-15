@@ -19,6 +19,12 @@ public struct DoryPCPowerControllerSnapshot: Sendable, Hashable {
   /// distinguish a guest reset-control write from a host lifecycle request.
   public let lastRequestedAction: DoryPCPowerAction?
   public let lastRequestSource: DoryPCPowerRequestSource?
+  /// Every byte write reaching the FADT RESET_REG port, including values that do not request a
+  /// reset. Keeping the rejected writes makes a firmware or guest compatibility receipt
+  /// distinguish a bad reset value from an unrelated lifecycle stop.
+  public let resetPortWriteCount: UInt64
+  public let acceptedResetCount: UInt64
+  public let lastResetPortValue: UInt8?
 }
 
 public final class DoryPCPowerController: @unchecked Sendable {
@@ -39,6 +45,9 @@ public final class DoryPCPowerController: @unchecked Sendable {
   private var pendingAction: DoryPCPowerAction?
   private var lastRequestedAction: DoryPCPowerAction?
   private var lastRequestSource: DoryPCPowerRequestSource?
+  private var resetPortWriteCount: UInt64 = 0
+  private var acceptedResetCount: UInt64 = 0
+  private var lastResetPortValue: UInt8?
   private var pmTimerCounter: UInt32 = 0
 
   public init(onPendingWork: (@Sendable () -> Void)? = nil) {
@@ -51,7 +60,10 @@ public final class DoryPCPowerController: @unchecked Sendable {
         pm1Control: pm1Control,
         pendingAction: pendingAction,
         lastRequestedAction: lastRequestedAction,
-        lastRequestSource: lastRequestSource
+        lastRequestSource: lastRequestSource,
+        resetPortWriteCount: resetPortWriteCount,
+        acceptedResetCount: acceptedResetCount,
+        lastResetPortValue: lastResetPortValue
       )
     }
   }
@@ -120,8 +132,17 @@ public final class DoryPCPowerController: @unchecked Sendable {
   }
 
   fileprivate func writeReset(_ value: UInt8) {
-    guard value == Self.resetValue else { return }
-    latch(.reset, source: .resetControlPort)
+    let requested = lock.withLock {
+      resetPortWriteCount &+= 1
+      lastResetPortValue = value
+      guard value == Self.resetValue else { return false }
+      acceptedResetCount &+= 1
+      pendingAction = .reset
+      lastRequestedAction = .reset
+      lastRequestSource = .resetControlPort
+      return true
+    }
+    if requested { onPendingWork?() }
   }
 }
 
