@@ -131,6 +131,7 @@ private struct Arguments {
   let displayCaptureOutput: URL?
   let keyboardScript: [String]
   let keyboardEvents: [DoryVirtioInputEvent]
+  let usbKeyboardReports: [[UInt8]]
   let exceptionPolicy: DoryPCExceptionPolicy
   let executionTier: DoryPCExecutionTier
   let baselineJITTier1Enabled: Bool
@@ -305,6 +306,7 @@ private struct Arguments {
     displayCaptureOutput = try options["--display-capture-output"].map { try Self.absoluteURL($0) }
     keyboardScript = try Self.keyboardScript(options["--keyboard-script"])
     keyboardEvents = Self.keyboardEvents(for: keyboardScript)
+    usbKeyboardReports = Self.usbKeyboardReports(for: keyboardScript)
   }
 
   private static func absoluteURL(_ path: String, isDirectory: Bool = false) throws -> URL {
@@ -314,12 +316,17 @@ private struct Arguments {
     return URL(fileURLWithPath: path, isDirectory: isDirectory).standardizedFileURL
   }
 
-  /// The smoke runner deliberately accepts navigation keys only. It is a bounded way to exercise
-  /// firmware and installer interaction; it is not a general unattended-install language.
+  /// The smoke runner deliberately accepts navigation keys only. They are queued for both the
+  /// VirtIO and USB-HID keyboards so firmware and installer paths can be distinguished without
+  /// becoming a general unattended-install language.
   private static func keyboardScript(_ value: String?) throws -> [String] {
     guard let value else { return [] }
     let tokens = value.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
-    guard !tokens.isEmpty, tokens.allSatisfy({ keyCodes[$0] != nil }) else {
+    guard
+      !tokens.isEmpty,
+      tokens.count <= 512,
+      tokens.allSatisfy({ keyCodes[$0] != nil && usbHIDKeyCodes[$0] != nil })
+    else {
       throw SmokeError.usage(
         "--keyboard-script must be a comma-separated list of: "
           + keyCodes.keys.sorted().joined(separator: ",")
@@ -339,6 +346,17 @@ private struct Arguments {
     "space": 57,
   ]
 
+  private static let usbHIDKeyCodes: [String: UInt8] = [
+    "enter": 0x28,
+    "esc": 0x29,
+    "up": 0x52,
+    "down": 0x51,
+    "left": 0x50,
+    "right": 0x4F,
+    "tab": 0x2B,
+    "space": 0x2C,
+  ]
+
   private static func keyboardEvents(for script: [String]) -> [DoryVirtioInputEvent] {
     script.flatMap { key -> [DoryVirtioInputEvent] in
       guard let code = keyCodes[key] else { return [] }
@@ -347,6 +365,16 @@ private struct Arguments {
         .synchronize,
         .init(type: 1, code: code, value: 0),
         .synchronize,
+      ]
+    }
+  }
+
+  private static func usbKeyboardReports(for script: [String]) -> [[UInt8]] {
+    script.flatMap { key -> [[UInt8]] in
+      guard let code = usbHIDKeyCodes[key] else { return [] }
+      return [
+        [0, 0, code, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
       ]
     }
   }
@@ -1057,6 +1085,9 @@ private func run() throws {
   guard composed.keyboardDevice.enqueueSynchronized(arguments.keyboardEvents) else {
     throw SmokeError.keyboardQueueFull
   }
+  for report in arguments.usbKeyboardReports {
+    try composed.usbKeyboardDevice.enqueue(report: report)
+  }
   defer { bootTimeline?.finish(reason: "execution-error") }
   let deadline = SmokeDeadline(machine: composed.machine, seconds: arguments.timeoutSeconds)
   defer { deadline.finish() }
@@ -1236,6 +1267,8 @@ private func run() throws {
     "keyboardScript": arguments.keyboardScript,
     "keyboardEventCount": arguments.keyboardEvents.count,
     "keyboardEventsPending": composed.keyboardDevice.inputDevice.hasPendingEvent,
+    "usbKeyboardReportCount": arguments.usbKeyboardReports.count,
+    "usbKeyboardReportsPending": composed.usbKeyboardDevice.hasPendingReport,
     "interruptControllers": interruptControllerDiagnostics(composed.machine),
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
     "rbx": state.map { hexadecimal($0.registers.rbx) } ?? "unavailable",

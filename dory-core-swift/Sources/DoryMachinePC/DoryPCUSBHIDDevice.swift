@@ -33,6 +33,10 @@ public final class DoryPCUSBHIDDevice: DoryPCUSBDevice, DoryPCUSBTransferReadyNo
 
   public var reportByteCount: Int { profile == .keyboard ? 8 : 4 }
 
+  /// Lets a qualification harness distinguish an accepted host report from one consumed by the
+  /// guest's interrupt endpoint. It exposes no report contents or host-input authority.
+  public var hasPendingReport: Bool { lock.withLock { !reports.isEmpty } }
+
   public func enqueue(report: [UInt8]) throws {
     guard report.count == reportByteCount else {
       throw DoryPCUSBHIDError.invalidReportLength(

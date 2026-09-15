@@ -39,6 +39,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
   public let tabletDevice: DoryPCVirtioInputPCIDevice
   public let soundDevice: DoryPCVirtioSoundPCIDevice
   public let xhciController: DoryPCXHCIController
+  public let usbKeyboardDevice: DoryPCUSBHIDDevice
   public let networkDevice: DoryPCVirtioNetworkPCIDevice
   public let entropyDevice: DoryPCVirtioEntropyPCIDevice
   public let additionalPCIFunctions: [any DoryPCPCIFunction]
@@ -156,6 +157,11 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
       backend: soundBackend
     )
     let xhciController = try DoryPCXHCIController()
+    // Firmware has no reason to carry a VirtIO-input driver. Attach the same boot-protocol HID
+    // keyboard that stock UEFI and Linux xHCI paths enumerate, rather than making installer
+    // interaction depend on an operating-system-specific input driver.
+    let usbKeyboardDevice = DoryPCUSBHIDDevice(profile: .keyboard)
+    try xhciController.connect(port: 1, device: usbKeyboardDevice)
     let networkDevice = try DoryPCVirtioNetworkPCIDevice(
       address: DoryPCV1ABI.networkPCIAddress,
       initialBARAddress: DoryPCV1ABI.networkBARAddress,
@@ -217,6 +223,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     self.tabletDevice = tabletDevice
     self.soundDevice = soundDevice
     self.xhciController = xhciController
+    self.usbKeyboardDevice = usbKeyboardDevice
     self.networkDevice = networkDevice
     self.entropyDevice = entropyDevice
     self.additionalPCIFunctions = additionalPCIFunctions

@@ -31,12 +31,15 @@ import Testing
       maximumResponseBytes: 4
     )
     #expect(mouse.perform(transfer).status == .notReady)
+    #expect(!mouse.hasPendingReport)
     try mouse.enqueue(report: [1, 2, 3, 4])
     #expect(readiness.value == 1)
+    #expect(mouse.hasPendingReport)
     #expect(throws: DoryPCUSBHIDError.queueFull(maximum: 1)) {
       try mouse.enqueue(report: [0, 0, 0, 0])
     }
     #expect(mouse.perform(transfer).payload == [1, 2, 3, 4])
+    #expect(!mouse.hasPendingReport)
     #expect(mouse.perform(transfer).status == .notReady)
   }
 }
