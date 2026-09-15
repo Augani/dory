@@ -123,15 +123,14 @@ final class DoryVZMacSharedDirectoryTests: XCTestCase {
         )
         let policy = DoryVZMacDevicePolicy(directorySharingEnabled: false)
 
-        XCTAssertThrowsError(try DoryVZMacConfigurationBuilder.fingerprint(
+        // §4.3: The admission rejection is removed. Shares are now accepted even
+        // when directorySharingEnabled is false — the flag only controls whether
+        // the device is created when no shares are provided.
+        let fingerprint = try DoryVZMacConfigurationBuilder.fingerprint(
             sharedDirectories: [share],
             devicePolicy: policy
-        )) { error in
-            XCTAssertEqual(
-                String(describing: error),
-                DoryVZMacConfigurationError.integrationDisabled("directory sharing").description
-            )
-        }
+        )
+        XCTAssertFalse(fingerprint.isEmpty)
     }
 
     func testDevicePolicyFingerprintBindsDisabledIntegrations() throws {

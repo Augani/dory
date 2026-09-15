@@ -345,7 +345,10 @@ public enum DoryVZMacConfigurationBuilder {
 
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
-        if devicePolicy.directorySharingEnabled, !sharedDirectories.isEmpty {
+        // Auto-enable directory sharing when shares are provided. The
+        // directorySharingEnabled flag only controls whether the device is created
+        // when no shares are provided — providing shares implicitly enables it.
+        if !sharedDirectories.isEmpty {
             var directories = [String: VZSharedDirectory]()
             for share in sharedDirectories {
                 guard directories[share.name] == nil else {
@@ -427,9 +430,10 @@ public enum DoryVZMacConfigurationBuilder {
         _ devicePolicy: DoryVZMacDevicePolicy,
         sharedDirectories: [DoryVZMacSharedDirectory]
     ) throws {
-        if !devicePolicy.directorySharingEnabled, !sharedDirectories.isEmpty {
-            throw DoryVZMacConfigurationError.integrationDisabled("directory sharing")
-        }
+        // §4.3: The admission rejection is removed. When shares are provided via
+        // --share, directory sharing is auto-enabled (see applyDevicePolicy). The
+        // directorySharingEnabled flag now only controls whether the sharing device
+        // is created when no shares are provided — it no longer rejects shares.
     }
 }
 
