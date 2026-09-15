@@ -16,6 +16,7 @@
 #include <Protocol/DevicePath.h>
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleTextIn.h>
+#include <Protocol/SimpleTextInEx.h>
 #include <Protocol/PciIo.h>
 
 #define DP_NODE_LEN(Type)  { (UINT8)sizeof (Type), (UINT8)(sizeof (Type) >> 8) }
@@ -289,6 +290,50 @@ DoryReportConsoleInputKey (
 }
 
 STATIC
+VOID
+DoryReportConsoleInputExKey (
+  VOID
+  )
+{
+  EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL  *TextInEx;
+  EFI_KEY_DATA                       KeyData;
+  EFI_STATUS                         Status;
+
+  TextInEx = NULL;
+  Status   = gBS->HandleProtocol (
+                    gST->ConsoleInHandle,
+                    &gEfiSimpleTextInputExProtocolGuid,
+                    (VOID **)&TextInEx
+                    );
+  DorySerialWriteString ("DORY-PC-UEFI-CONINEX status=");
+  DorySerialWriteHex64 (Status);
+  if (EFI_ERROR (Status) || (TextInEx == NULL) || (TextInEx->ReadKeyStrokeEx == NULL) ||
+      (TextInEx->WaitForKeyEx == NULL))
+  {
+    DorySerialWriteString ("\r\n");
+    return;
+  }
+
+  DorySerialWriteString (" wait=");
+  Status = gBS->CheckEvent (TextInEx->WaitForKeyEx);
+  DorySerialWriteHex64 (Status);
+  DorySerialWriteString (" retry=");
+  Status = gBS->CheckEvent (TextInEx->WaitForKeyEx);
+  DorySerialWriteHex64 (Status);
+  DorySerialWriteString (" read=");
+  Status = TextInEx->ReadKeyStrokeEx (TextInEx, &KeyData);
+  DorySerialWriteHex64 (Status);
+  if (!EFI_ERROR (Status)) {
+    DorySerialWriteString (" scan=");
+    DorySerialWriteHex64 (KeyData.Key.ScanCode);
+    DorySerialWriteString (" unicode=");
+    DorySerialWriteHex64 (KeyData.Key.UnicodeChar);
+  }
+
+  DorySerialWriteString ("\r\n");
+}
+
+STATIC
 BOOLEAN
 DoryBootProbeRequested (
   VOID
@@ -321,6 +366,7 @@ DoryRunBootProbe (
   }
 
   DoryReportConsoleInputAttachments ();
+  DoryReportConsoleInputExKey ();
   DoryReportConsoleInputKey ();
   DoryReportRuntimePointers ();
   DorySerialWriteString (Marker);
