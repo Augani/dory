@@ -695,13 +695,50 @@ struct PVHJITCacheSnapshot: Codable, Sendable {
 }
 
 struct PVHJITDiagnosticSample: Codable, Sendable {
+  static let observationScopeValue =
+    "Last completed coarse sample, or normal terminal slice. Timeout/error may retain an older sample. Counters are executor-lifetime totals; negativeEntryCount and the capped hot sites describe only live entries. Site instructionBytes are the decoder-confirmed live instruction bytes captured when the entry was published. Site reasons and hit counts are not cumulative reason totals."
   let sampleInstructionCount: UInt64
   let sampleElapsedNanoseconds: UInt64
   let sampleIntervalInstructions: UInt64
-  let observationScope =
-    "Last completed coarse sample, or normal terminal slice. Timeout/error may retain an older sample. Counters are executor-lifetime totals; negativeEntryCount and the capped hot sites describe only live entries. Site instructionBytes are the decoder-confirmed live instruction bytes captured when the entry was published. Site reasons and hit counts are not cumulative reason totals."
+  let observationScope: String
   let baseline: PVHJITCacheSnapshot?
   let optimizing: PVHJITCacheSnapshot?
+
+  init(
+    sampleInstructionCount: UInt64,
+    sampleElapsedNanoseconds: UInt64,
+    sampleIntervalInstructions: UInt64,
+    baseline: PVHJITCacheSnapshot?,
+    optimizing: PVHJITCacheSnapshot?
+  ) {
+    self.sampleInstructionCount = sampleInstructionCount
+    self.sampleElapsedNanoseconds = sampleElapsedNanoseconds
+    self.sampleIntervalInstructions = sampleIntervalInstructions
+    observationScope = Self.observationScopeValue
+    self.baseline = baseline
+    self.optimizing = optimizing
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case sampleInstructionCount, sampleElapsedNanoseconds, sampleIntervalInstructions
+    case observationScope, baseline, optimizing
+  }
+
+  init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let decodedScope = try container.decode(String.self, forKey: .observationScope)
+    guard decodedScope == Self.observationScopeValue else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .observationScope, in: container,
+        debugDescription: "PVH JIT diagnostic observation scope is not the declared schema value")
+    }
+    sampleInstructionCount = try container.decode(UInt64.self, forKey: .sampleInstructionCount)
+    sampleElapsedNanoseconds = try container.decode(UInt64.self, forKey: .sampleElapsedNanoseconds)
+    sampleIntervalInstructions = try container.decode(UInt64.self, forKey: .sampleIntervalInstructions)
+    observationScope = decodedScope
+    baseline = try container.decodeIfPresent(PVHJITCacheSnapshot.self, forKey: .baseline)
+    optimizing = try container.decodeIfPresent(PVHJITCacheSnapshot.self, forKey: .optimizing)
+  }
 }
 
 /// Providers can scan a bounded cache, so they must never run on every dispatch quantum or on
@@ -733,14 +770,19 @@ struct PVHJITDiagnosticsSampler {
 }
 
 struct PVHDiagnosticRecord: Codable, Sendable {
-  let schemaVersion = 1
-  let kind = "dev.dory.pvh-boot-diagnostic"
-  let releaseQualified = false
-  let configuration: PVHRunnerConfiguration
-  let hostOS = ProcessInfo.processInfo.operatingSystemVersionString
-  let guestClock = "deterministic"
-  let observationScope =
+  static let schemaVersionValue = 1
+  static let kindValue = "dev.dory.pvh-boot-diagnostic"
+  static let guestClockValue = "deterministic"
+  static let observationScopeValue =
     "Last runner slice exits; guest-handled exceptions are not sampled. Timeout state is the last completed slice."
+
+  let schemaVersion: Int
+  let kind: String
+  let releaseQualified: Bool
+  let configuration: PVHRunnerConfiguration
+  let hostOS: String
+  let guestClock: String
+  let observationScope: String
   var stage = "verifying-inputs"
   var kernel: PVHArtifactIdentity?
   var initrd: PVHArtifactIdentity?
@@ -758,4 +800,77 @@ struct PVHDiagnosticRecord: Codable, Sendable {
   var guestReceipt: PVHGuestReceipt?
   var outcome: PVHRunOutcome?
   var error: String?
+
+  init(configuration: PVHRunnerConfiguration) {
+    schemaVersion = Self.schemaVersionValue
+    kind = Self.kindValue
+    releaseQualified = false
+    self.configuration = configuration
+    hostOS = ProcessInfo.processInfo.operatingSystemVersionString
+    guestClock = Self.guestClockValue
+    observationScope = Self.observationScopeValue
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case schemaVersion, kind, releaseQualified, configuration, hostOS, guestClock, observationScope
+    case stage, kernel, initrd, symbols, retiredInstructions, elapsedNanoseconds, lastExits, state
+    case executionStatistics, jitDiagnostics, stressIO, timerInterruptState, consoleTail, consoleBytes
+    case guestReceipt, outcome, error
+  }
+
+  init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let decodedSchemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+    guard decodedSchemaVersion == Self.schemaVersionValue else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .schemaVersion, in: container,
+        debugDescription: "unsupported PVH diagnostic schema version")
+    }
+    let decodedKind = try container.decode(String.self, forKey: .kind)
+    guard decodedKind == Self.kindValue else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .kind, in: container, debugDescription: "invalid PVH diagnostic kind")
+    }
+    let decodedReleaseQualified = try container.decode(Bool.self, forKey: .releaseQualified)
+    guard !decodedReleaseQualified else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .releaseQualified, in: container,
+        debugDescription: "PVH diagnostic receipts cannot claim release qualification")
+    }
+    let decodedGuestClock = try container.decode(String.self, forKey: .guestClock)
+    guard decodedGuestClock == Self.guestClockValue else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .guestClock, in: container, debugDescription: "invalid PVH guest clock")
+    }
+    let decodedObservationScope = try container.decode(String.self, forKey: .observationScope)
+    guard decodedObservationScope == Self.observationScopeValue else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .observationScope, in: container,
+        debugDescription: "invalid PVH diagnostic observation scope")
+    }
+    schemaVersion = decodedSchemaVersion
+    kind = decodedKind
+    releaseQualified = decodedReleaseQualified
+    configuration = try container.decode(PVHRunnerConfiguration.self, forKey: .configuration)
+    hostOS = try container.decode(String.self, forKey: .hostOS)
+    guestClock = decodedGuestClock
+    observationScope = decodedObservationScope
+    stage = try container.decode(String.self, forKey: .stage)
+    kernel = try container.decodeIfPresent(PVHArtifactIdentity.self, forKey: .kernel)
+    initrd = try container.decodeIfPresent(PVHArtifactIdentity.self, forKey: .initrd)
+    symbols = try container.decodeIfPresent(PVHArtifactIdentity.self, forKey: .symbols)
+    retiredInstructions = try container.decode(UInt64.self, forKey: .retiredInstructions)
+    elapsedNanoseconds = try container.decode(UInt64.self, forKey: .elapsedNanoseconds)
+    lastExits = try container.decode([PVHStopSnapshot].self, forKey: .lastExits)
+    state = try container.decodeIfPresent(DoryX86ArchitecturalState.self, forKey: .state)
+    executionStatistics = try container.decodeIfPresent(DoryPCExecutionStatistics.self, forKey: .executionStatistics)
+    jitDiagnostics = try container.decodeIfPresent(PVHJITDiagnosticSample.self, forKey: .jitDiagnostics)
+    stressIO = try container.decodeIfPresent(PVHStressIOSnapshot.self, forKey: .stressIO)
+    timerInterruptState = try container.decodeIfPresent(PVHTimerInterruptSnapshot.self, forKey: .timerInterruptState)
+    consoleTail = try container.decode(String.self, forKey: .consoleTail)
+    consoleBytes = try container.decode(UInt64.self, forKey: .consoleBytes)
+    guestReceipt = try container.decodeIfPresent(PVHGuestReceipt.self, forKey: .guestReceipt)
+    outcome = try container.decodeIfPresent(PVHRunOutcome.self, forKey: .outcome)
+    error = try container.decodeIfPresent(String.self, forKey: .error)
+  }
 }

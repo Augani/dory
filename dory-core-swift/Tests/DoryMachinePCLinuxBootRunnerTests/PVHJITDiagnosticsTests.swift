@@ -177,6 +177,45 @@ import Testing
     #expect(decoded.jitDiagnostics?.observationScope.contains("older sample") == true)
   }
 
+  @Test func diagnosticReceiptsRejectTamperedDeclaredScopeAndIdentity() throws {
+    let configuration = try PVHRunnerConfiguration(arguments: [
+      "--kernel", "/kernel", "--kernel-sha256", String(repeating: "a", count: 64),
+      "--initrd", "/initrd", "--initrd-sha256", String(repeating: "b", count: 64),
+      "--command-line", "console=ttyS0 rdinit=/init", "--tier", "baseline-jit",
+      "--memory-mib", "512", "--max-instructions", "3000000", "--wall-seconds", "10",
+      "--run-id", "fe154770-27f1-4d31-93b5-790932bdf83c", "--workload", "file-io",
+      "--diagnostics", "/receipt.json",
+    ])
+    let record = PVHDiagnosticRecord(configuration: configuration)
+    let recordData = try JSONEncoder().encode(record)
+    for (key, value) in [
+      ("schemaVersion", 2 as Any),
+      ("kind", "dev.dory.other-diagnostic" as Any),
+      ("releaseQualified", true as Any),
+      ("guestClock", "host-monotonic" as Any),
+      ("observationScope", "unbounded live metrics" as Any),
+    ] {
+      var object = try #require(JSONSerialization.jsonObject(with: recordData) as? [String: Any])
+      object[key] = value
+      let tampered = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+      #expect(throws: DecodingError.self) {
+        try JSONDecoder().decode(PVHDiagnosticRecord.self, from: tampered)
+      }
+    }
+
+    let sample = PVHJITDiagnosticSample(
+      sampleInstructionCount: 1, sampleElapsedNanoseconds: 1,
+      sampleIntervalInstructions: PVHJITDiagnosticsSampler.intervalInstructions,
+      baseline: nil, optimizing: nil)
+    var sampleObject = try #require(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(sample)) as? [String: Any])
+    sampleObject["observationScope"] = "cumulative data from every cache incarnation"
+    let tamperedSample = try JSONSerialization.data(withJSONObject: sampleObject, options: [.sortedKeys])
+    #expect(throws: DecodingError.self) {
+      try JSONDecoder().decode(PVHJITDiagnosticSample.self, from: tamperedSample)
+    }
+  }
+
   private func snapshot(counter: UInt64) -> PVHJITCacheSnapshot {
     .init(
       cumulativeCounters: ["compiledBlocks": counter], negativeEntryCount: 0,
