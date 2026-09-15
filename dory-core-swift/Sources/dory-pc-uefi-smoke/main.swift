@@ -408,6 +408,10 @@ private struct Arguments {
       "home": .init(linuxCode: 102, usbUsage: 0x4A, serialBytes: [27, 91, 72], requiresShift: false),
       "end": .init(linuxCode: 107, usbUsage: 0x4D, serialBytes: [27, 91, 70], requiresShift: false),
       "backspace": .init(linuxCode: 14, usbUsage: 0x2A, serialBytes: [127], requiresShift: false),
+      // GRUB accepts the xterm F10 sequence as an alternative to Ctrl-X when booting an edited
+      // entry. Keep the serial form explicit rather than treating host key labels as terminal
+      // bytes.
+      "f10": .init(linuxCode: 68, usbUsage: 0x43, serialBytes: [27, 91, 50, 49, 126], requiresShift: false),
       "tab": .init(linuxCode: 15, usbUsage: 0x2B, serialBytes: [9], requiresShift: false),
       "space": .init(linuxCode: 57, usbUsage: 0x2C, serialBytes: [32], requiresShift: false),
       "minus": .init(linuxCode: 12, usbUsage: 0x2D, serialBytes: [45], requiresShift: false),
