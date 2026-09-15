@@ -3,7 +3,9 @@ import Foundation
 
 /// Minimal AT-compatible i8042 keyboard controller. It deliberately models only the first PS/2
 /// port used by firmware and ordinary boot loaders: status, command byte, keyboard ACK/reset and
-/// bounded set-1 scan-code delivery. Mouse and controller self-test extensions remain absent.
+/// bounded scan-code delivery. When the guest enables the standard i8042 translation bit, physical
+/// set-2 input is translated into the set-1 stream consumed by the UEFI keyboard driver. Mouse and
+/// controller self-test extensions remain absent.
 public final class DoryPCPS2KeyboardController: @unchecked Sendable {
   public struct Snapshot: Sendable, Equatable {
     public let bytesPending: Int
@@ -21,8 +23,8 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
   private var commandByte: UInt8 = 0x01
   private var expectingCommandByte = false
   private var expectingKeyboardArgument: KeyboardCommand?
-  // DoryPC's UEFI keyboard driver uses the IBM-compatible scan-code-set-1 contract. It can
-  // negotiate another set explicitly, and the host must encode subsequent input accordingly.
+  // The physical keyboard defaults to scan-code set 1. The UEFI driver may select set 2 while
+  // enabling the controller's translation bit; in that case the guest-visible bytes remain set 1.
   private var keyboardScanCodeSet: UInt8 = 1
   private var interruptSink: (@Sendable (Bool) -> Void)?
   private var lastInterruptLevel = false
@@ -54,8 +56,9 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
   @discardableResult
   public func enqueueScanCodes(_ bytes: [UInt8]) -> Bool {
     let result = lock.withLock { () -> (Bool, (@Sendable (Bool) -> Void, Bool)?) in
-      guard bytes.count <= maximumQueuedBytes - output.count else { return (false, nil) }
-      output.append(contentsOf: bytes)
+      let translated = translateKeyboardScanCodesLocked(bytes)
+      guard translated.count <= maximumQueuedBytes - output.count else { return (false, nil) }
+      output.append(contentsOf: translated)
       return (true, interruptNotificationLocked())
     }
     notify(result.1)
@@ -135,6 +138,43 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
     case scanCodeSet
     case leds
     case typematic
+  }
+
+  private func translateKeyboardScanCodesLocked(_ bytes: [UInt8]) -> [UInt8] {
+    // IBM PC-compatible controller command-byte bit 6 enables set-2-to-set-1 translation.
+    // Do not transform explicit set-1 sources or configurations where the guest disabled it.
+    guard keyboardScanCodeSet == 2, commandByte & 0x40 != 0 else { return bytes }
+    let set2ToSet1: [UInt8: UInt8] = [
+      0x5A: 0x1C, 0x29: 0x39, 0x24: 0x12, 0x21: 0x2E, 0x44: 0x18,
+      0x31: 0x31, 0x1B: 0x1F, 0x4B: 0x26, 0x55: 0x0D, 0x2C: 0x14,
+      0x35: 0x15, 0x12: 0x2A, 0x45: 0x0B, 0x41: 0x33, 0x16: 0x02,
+      0x1E: 0x03, 0x2E: 0x06, 0x14: 0x1D, 0x22: 0x2D, 0x69: 0x4F,
+    ]
+    var translated: [UInt8] = []
+    var extended = false
+    var breakCode = false
+    for byte in bytes {
+      switch byte {
+      case 0xE0:
+        extended = true
+      case 0xF0:
+        breakCode = true
+      default:
+        guard let code = set2ToSet1[byte] else {
+          // Preserve unmodelled input rather than corrupting it. Callers can still diagnose the
+          // raw value, and translation coverage expands only with a verified mapping.
+          translated.append(byte)
+          extended = false
+          breakCode = false
+          continue
+        }
+        if extended { translated.append(0xE0) }
+        translated.append(breakCode ? code | 0x80 : code)
+        extended = false
+        breakCode = false
+      }
+    }
+    return translated
   }
 
   fileprivate func writeCommand(_ value: UInt8) {

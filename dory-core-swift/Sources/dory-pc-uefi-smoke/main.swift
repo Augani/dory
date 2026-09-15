@@ -148,6 +148,7 @@ private struct Arguments {
   let keyboardRoute: KeyboardRoute
   let keyboardAfterInstructions: UInt64?
   let keyboardAfterMilestone: DoryPCBootTimeline.Milestone?
+  let keyboardAfterMilestoneDelayInstructions: UInt64
   let secondKeyboardAfterInstructions: UInt64?
   let exceptionPolicy: DoryPCExceptionPolicy
   let executionTier: DoryPCExecutionTier
@@ -177,7 +178,7 @@ private struct Arguments {
           "--processor-count",
           "--system-disk", "--installer-media", "--variable-store-directory", "--display-capture-output",
           "--keyboard-script", "--keyboard-route", "--keyboard-after-instructions",
-          "--keyboard-after-milestone",
+          "--keyboard-after-milestone", "--keyboard-after-milestone-delay-instructions",
           "--keyboard-second-script", "--keyboard-second-after-instructions",
           "--exception-policy", "--execution-tier", "--progress-instructions",
           "--baseline-tier1",
@@ -203,6 +204,7 @@ private struct Arguments {
           + "[--keyboard-route all|virtio|usb-hid|serial|ps2] "
           + "[--keyboard-after-instructions count] "
           + "[--keyboard-after-milestone grub|kernel|rootMounted|initStarted] "
+          + "[--keyboard-after-milestone-delay-instructions count] "
           + "[--keyboard-second-script named-key,...] "
           + "[--keyboard-second-after-instructions count] "
           + "[--processor-count count] [--exception-policy stop|deliver] "
@@ -340,9 +342,16 @@ private struct Arguments {
       throw SmokeError.usage("--keyboard-route must be all, virtio, usb-hid, or serial")
     }
     self.keyboardRoute = keyboardRoute
+    let keyboardMilestoneDelayText = options["--keyboard-after-milestone-delay-instructions"] ?? "0"
+    guard let keyboardAfterMilestoneDelayInstructions = UInt64(keyboardMilestoneDelayText) else {
+      throw SmokeError.invalidNumber(keyboardMilestoneDelayText)
+    }
     if let text = options["--keyboard-after-instructions"] {
       guard options["--keyboard-after-milestone"] == nil else {
         throw SmokeError.usage("choose either --keyboard-after-instructions or --keyboard-after-milestone")
+      }
+      guard options["--keyboard-after-milestone-delay-instructions"] == nil else {
+        throw SmokeError.usage("--keyboard-after-milestone-delay-instructions requires --keyboard-after-milestone")
       }
       guard let value = UInt64(text) else { throw SmokeError.invalidNumber(text) }
       guard !keyboardScript.isEmpty else {
@@ -350,6 +359,7 @@ private struct Arguments {
       }
       keyboardAfterInstructions = value
       keyboardAfterMilestone = nil
+      self.keyboardAfterMilestoneDelayInstructions = 0
     } else if let text = options["--keyboard-after-milestone"] {
       guard let milestone = DoryPCBootTimeline.Milestone(rawValue: text), milestone != .executionStarted else {
         throw SmokeError.usage("unknown keyboard milestone: \(text)")
@@ -359,9 +369,14 @@ private struct Arguments {
       }
       keyboardAfterInstructions = nil
       keyboardAfterMilestone = milestone
+      self.keyboardAfterMilestoneDelayInstructions = keyboardAfterMilestoneDelayInstructions
     } else {
+      guard options["--keyboard-after-milestone-delay-instructions"] == nil else {
+        throw SmokeError.usage("--keyboard-after-milestone-delay-instructions requires --keyboard-after-milestone")
+      }
       keyboardAfterInstructions = keyboardScript.isEmpty ? nil : 0
       keyboardAfterMilestone = nil
+      self.keyboardAfterMilestoneDelayInstructions = 0
     }
     if let text = options["--keyboard-second-after-instructions"] {
       guard let value = UInt64(text) else { throw SmokeError.invalidNumber(text) }
@@ -1373,6 +1388,7 @@ private func run() throws {
   defer { deadline.finish() }
   let executionStarted = DispatchTime.now().uptimeNanoseconds
   var keyboardInjectionAtInstructions: UInt64?
+  var keyboardMilestoneObservedAtInstructions: UInt64?
   var secondKeyboardInjectionAtInstructions: UInt64?
   let execution = try runWithProgress(
     machine: composed.machine,
@@ -1392,9 +1408,16 @@ private func run() throws {
       let requestedMilestoneReached = arguments.keyboardAfterMilestone.map { milestone in
         bootTimeline?.snapshot().events.contains(where: { $0.milestone == milestone }) ?? false
       } ?? false
+      if requestedMilestoneReached, keyboardMilestoneObservedAtInstructions == nil {
+        keyboardMilestoneObservedAtInstructions = completed
+      }
+      let requestedMilestoneDelayElapsed = keyboardMilestoneObservedAtInstructions.map {
+        completed - $0 >= arguments.keyboardAfterMilestoneDelayInstructions
+      } ?? false
       if
         keyboardInjectionAtInstructions == nil,
-        ((arguments.keyboardAfterInstructions.map { completed >= $0 } ?? false) || requestedMilestoneReached)
+        ((arguments.keyboardAfterInstructions.map { completed >= $0 } ?? false)
+          || (requestedMilestoneReached && requestedMilestoneDelayElapsed))
       {
         try enqueueKeyboardInput(
           on: composed,
@@ -1592,6 +1615,12 @@ private func run() throws {
     } ?? NSNull(),
     "keyboardInjectionRequestedAfterMilestone": arguments.keyboardAfterMilestone.map {
       $0.rawValue as Any
+    } ?? NSNull(),
+    "keyboardInjectionRequestedAfterMilestoneDelayInstructions": arguments.keyboardAfterMilestone.map { _ in
+      arguments.keyboardAfterMilestoneDelayInstructions as Any
+    } ?? NSNull(),
+    "keyboardInjectionMilestoneObservedAtInstructions": keyboardMilestoneObservedAtInstructions.map {
+      $0 as Any
     } ?? NSNull(),
     "keyboardInjectionAtInstructions": keyboardInjectionAtInstructions.map { $0 as Any } ?? NSNull(),
     "keyboardSecondScript": arguments.secondKeyboardScript,

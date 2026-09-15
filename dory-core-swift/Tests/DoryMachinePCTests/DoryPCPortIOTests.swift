@@ -142,6 +142,23 @@ import Testing
     #expect(try data.read(portOffset: 0, width: .byte) == 0xAA)
     #expect(controller.snapshot().keyboardScanCodeSet == 1)
   }
+
+  @Test func ps2KeyboardTranslatesSet2InputWhenControllerTranslationIsEnabled() throws {
+    let controller = DoryPCPS2KeyboardController()
+    let data = DoryPCPS2KeyboardDataPort(controller: controller)
+    let status = DoryPCPS2KeyboardStatusPort(controller: controller)
+
+    try status.write(portOffset: 0, value: 0x60, width: .byte)
+    try data.write(portOffset: 0, value: 0x67, width: .byte)
+    try data.write(portOffset: 0, value: 0xF0, width: .byte)
+    #expect(try data.read(portOffset: 0, width: .byte) == 0xFA)
+    try data.write(portOffset: 0, value: 0x02, width: .byte)
+    #expect(try data.read(portOffset: 0, width: .byte) == 0xFA)
+
+    #expect(controller.enqueueScanCodes([0x5A, 0xF0, 0x5A]))
+    #expect(try data.read(portOffset: 0, width: .byte) == 0x1C)
+    #expect(try data.read(portOffset: 0, width: .byte) == 0x9C)
+  }
 }
 
 private final class LockedLevels: @unchecked Sendable {
