@@ -892,6 +892,22 @@ private func queueIndex(memory: any DoryX86Memory, address: UInt64) -> String? {
   return String(value)
 }
 
+private func powerControllerDiagnostics(_ controller: DoryPCPowerController) -> [String: Any] {
+  let snapshot = controller.snapshot()
+  let action: (DoryPCPowerAction) -> String = {
+    switch $0 {
+    case .powerOff: "power-off"
+    case .reset: "reset"
+    }
+  }
+  return [
+    "pm1Control": String(format: "0x%04x", snapshot.pm1Control),
+    "pendingAction": snapshot.pendingAction.map(action) ?? NSNull(),
+    "lastRequestedAction": snapshot.lastRequestedAction.map(action) ?? NSNull(),
+    "lastRequestSource": snapshot.lastRequestSource?.rawValue ?? NSNull(),
+  ]
+}
+
 private func runWithProgress(
   machine: DoryPCDirectKernelMachine,
   blockDevices: [DoryPCVirtioBlockPCIDevice],
@@ -1332,6 +1348,7 @@ private func run() throws {
     "serialInputByteCount": arguments.serialInputBytes.count,
     "serialInputBytesPending": composed.machine.serial.hasPendingReceivedBytes,
     "interruptControllers": interruptControllerDiagnostics(composed.machine),
+    "powerController": powerControllerDiagnostics(composed.machine.powerController),
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
     "rbx": state.map { hexadecimal($0.registers.rbx) } ?? "unavailable",
     "rcx": state.map { hexadecimal($0.registers.rcx) } ?? "unavailable",

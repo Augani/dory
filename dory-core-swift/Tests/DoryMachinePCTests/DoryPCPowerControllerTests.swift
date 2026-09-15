@@ -48,7 +48,10 @@ import Testing
     let controller = DoryPCPowerController()
     controller.request(.powerOff)
     #expect(controller.snapshot().pendingAction == .powerOff)
+    #expect(controller.snapshot().lastRequestedAction == .powerOff)
+    #expect(controller.snapshot().lastRequestSource == .host)
     #expect(controller.consumeRequestedAction() == .powerOff)
+    #expect(controller.snapshot().lastRequestSource == .host)
     #expect(controller.consumeRequestedAction() == nil)
   }
 
@@ -64,6 +67,7 @@ import Testing
       width: .word
     )
 
+    #expect(controller.snapshot().lastRequestSource == .acpiPMControl)
     #expect(controller.consumeRequestedAction() == .powerOff)
     #expect(try port.read(portOffset: 0, width: .word) & (1 << 13) == 0)
   }
@@ -78,6 +82,7 @@ import Testing
       value: UInt32(DoryPCPowerController.resetValue),
       width: .byte
     )
+    #expect(controller.snapshot().lastRequestSource == .resetControlPort)
     #expect(controller.consumeRequestedAction() == .reset)
   }
 

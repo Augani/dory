@@ -6,9 +6,19 @@ public enum DoryPCPowerAction: Sendable, Hashable {
   case reset
 }
 
+public enum DoryPCPowerRequestSource: String, Sendable, Hashable {
+  case host
+  case acpiPMControl
+  case resetControlPort
+}
+
 public struct DoryPCPowerControllerSnapshot: Sendable, Hashable {
   public let pm1Control: UInt16
   public let pendingAction: DoryPCPowerAction?
+  /// Retained after the single-consumer action latch is drained so an execution receipt can
+  /// distinguish a guest reset-control write from a host lifecycle request.
+  public let lastRequestedAction: DoryPCPowerAction?
+  public let lastRequestSource: DoryPCPowerRequestSource?
 }
 
 public final class DoryPCPowerController: @unchecked Sendable {
@@ -27,6 +37,8 @@ public final class DoryPCPowerController: @unchecked Sendable {
   private var pm1Control: UInt16 = 0
   private var pm1Enable: UInt16 = 0
   private var pendingAction: DoryPCPowerAction?
+  private var lastRequestedAction: DoryPCPowerAction?
+  private var lastRequestSource: DoryPCPowerRequestSource?
   private var pmTimerCounter: UInt32 = 0
 
   public init(onPendingWork: (@Sendable () -> Void)? = nil) {
@@ -35,7 +47,12 @@ public final class DoryPCPowerController: @unchecked Sendable {
 
   public func snapshot() -> DoryPCPowerControllerSnapshot {
     lock.withLock {
-      .init(pm1Control: pm1Control, pendingAction: pendingAction)
+      .init(
+        pm1Control: pm1Control,
+        pendingAction: pendingAction,
+        lastRequestedAction: lastRequestedAction,
+        lastRequestSource: lastRequestSource
+      )
     }
   }
 
@@ -50,7 +67,15 @@ public final class DoryPCPowerController: @unchecked Sendable {
   /// operation-bound shutdown request. Guest port writes and host requests converge on the same
   /// single-consumer action latch.
   public func request(_ action: DoryPCPowerAction) {
-    lock.withLock { pendingAction = action }
+    latch(action, source: .host)
+  }
+
+  private func latch(_ action: DoryPCPowerAction, source: DoryPCPowerRequestSource) {
+    lock.withLock {
+      pendingAction = action
+      lastRequestedAction = action
+      lastRequestSource = source
+    }
     onPendingWork?()
   }
 
@@ -64,6 +89,8 @@ public final class DoryPCPowerController: @unchecked Sendable {
       let sleepType = (value >> 10) & 0x7
       if value & (1 << 13) != 0, sleepType == Self.softOffSleepType {
         pendingAction = .powerOff
+        lastRequestedAction = .powerOff
+        lastRequestSource = .acpiPMControl
         return true
       }
       return false
@@ -94,7 +121,7 @@ public final class DoryPCPowerController: @unchecked Sendable {
 
   fileprivate func writeReset(_ value: UInt8) {
     guard value == Self.resetValue else { return }
-    request(.reset)
+    latch(.reset, source: .resetControlPort)
   }
 }
 
