@@ -427,6 +427,11 @@ PlatformBootManagerBeforeConsole (
   EfiBootManagerUpdateConsoleVariable (ConIn, (EFI_DEVICE_PATH_PROTOCOL *)&mPs2Console, NULL);
   EfiBootManagerUpdateConsoleVariable (ConOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
   EfiBootManagerUpdateConsoleVariable (ErrOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
+
+  // The console splitter connects only devices that already expose SimpleTextIn. The PS/2
+  // keyboard sits below the LPC/SIO bus, so connect that hierarchy after publishing its stable
+  // ConIn path and before the standard console pass builds EFI_SYSTEM_TABLE.ConIn.
+  EfiBootManagerConnectAll ();
 }
 VOID
 EFIAPI
@@ -434,10 +439,6 @@ PlatformBootManagerAfterConsole (
   VOID
   )
 {
-  // Some console bus drivers only publish their child text protocols while the recursive device
-  // connection pass runs. Rescan those protocols afterwards so the standard console variables
-  // and EFI_SYSTEM_TABLE pointers describe the devices that now exist.
-  EfiBootManagerConnectAll ();
   // PCI I/O handles do not exist until the recursive connection pass enumerates the root bridge.
   // Connect the display here so VirtioGpuDxe can create its GOP child before the console splitter
   // resolves ConOut and publishes it through EFI_SYSTEM_TABLE.

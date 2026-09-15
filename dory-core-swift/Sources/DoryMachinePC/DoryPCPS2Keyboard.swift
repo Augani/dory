@@ -8,6 +8,7 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
   public struct Snapshot: Sendable, Equatable {
     public let bytesPending: Int
     public let commandByte: UInt8
+    public let keyboardScanCodeSet: UInt8
     public let dataReadCount: UInt64
     public let statusReadCount: UInt64
     public let dataWriteCount: UInt64
@@ -19,6 +20,10 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
   private var output: [UInt8] = []
   private var commandByte: UInt8 = 0x01
   private var expectingCommandByte = false
+  private var expectingKeyboardArgument: KeyboardCommand?
+  // DoryPC's UEFI keyboard driver uses the IBM-compatible scan-code-set-1 contract. It can
+  // negotiate another set explicitly, and the host must encode subsequent input accordingly.
+  private var keyboardScanCodeSet: UInt8 = 1
   private var interruptSink: (@Sendable (Bool) -> Void)?
   private var lastInterruptLevel = false
   private var dataReadCount: UInt64 = 0
@@ -37,6 +42,7 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
       Snapshot(
         bytesPending: output.count,
         commandByte: commandByte,
+        keyboardScanCodeSet: keyboardScanCodeSet,
         dataReadCount: dataReadCount,
         statusReadCount: statusReadCount,
         dataWriteCount: dataWriteCount,
@@ -44,8 +50,9 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
     }
   }
 
+  /// Delivers scan bytes in the set currently negotiated by the guest keyboard driver.
   @discardableResult
-  public func enqueueSet1ScanCodes(_ bytes: [UInt8]) -> Bool {
+  public func enqueueScanCodes(_ bytes: [UInt8]) -> Bool {
     let result = lock.withLock { () -> (Bool, (@Sendable (Bool) -> Void, Bool)?) in
       guard bytes.count <= maximumQueuedBytes - output.count else { return (false, nil) }
       output.append(contentsOf: bytes)
@@ -53,6 +60,12 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
     }
     notify(result.1)
     return result.0
+  }
+
+  /// Convenience for existing callers that explicitly target the set-1 test fixture.
+  @discardableResult
+  public func enqueueSet1ScanCodes(_ bytes: [UInt8]) -> Bool {
+    enqueueScanCodes(bytes)
   }
 
   public func connectInterruptSink(_ sink: @escaping @Sendable (Bool) -> Void) {
@@ -88,16 +101,40 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
       if expectingCommandByte {
         commandByte = value
         expectingCommandByte = false
+      } else if let command = expectingKeyboardArgument {
+        expectingKeyboardArgument = nil
+        if command == .scanCodeSet, (1...3).contains(value) {
+          keyboardScanCodeSet = value
+        }
+        output.append(0xFA)
       } else {
         switch value {
-        case 0xFF: output.append(contentsOf: [0xFA, 0xAA])
-        case 0xF4, 0xF5, 0xF0: output.append(0xFA)
+        case 0xFF:
+          keyboardScanCodeSet = 1
+          output.append(contentsOf: [0xFA, 0xAA])
+        case 0xF0:
+          expectingKeyboardArgument = .scanCodeSet
+          output.append(0xFA)
+        case 0xED:
+          expectingKeyboardArgument = .leds
+          output.append(0xFA)
+        case 0xF3:
+          expectingKeyboardArgument = .typematic
+          output.append(0xFA)
+        case 0xF4, 0xF5:
+          output.append(0xFA)
         default: output.append(0xFA)
         }
       }
       return interruptNotificationLocked()
     }
     notify(notification)
+  }
+
+  private enum KeyboardCommand {
+    case scanCodeSet
+    case leds
+    case typematic
   }
 
   fileprivate func writeCommand(_ value: UInt8) {

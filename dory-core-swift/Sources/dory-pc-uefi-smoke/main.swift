@@ -968,6 +968,7 @@ private func ps2KeyboardDiagnostics(_ keyboard: DoryPCPS2KeyboardController) -> 
   return [
     "bytesPending": snapshot.bytesPending,
     "commandByte": String(format: "0x%02x", snapshot.commandByte),
+    "keyboardScanCodeSet": snapshot.keyboardScanCodeSet,
     "dataReadCount": snapshot.dataReadCount,
     "statusReadCount": snapshot.statusReadCount,
     "dataWriteCount": snapshot.dataWriteCount,
@@ -1179,27 +1180,44 @@ private func enqueueKeyboardInput(
     composed.machine.serial.enqueueReceivedBytes(serialInputBytes)
     case .virtio, .usbHID, .ps2:
       break
-    }
+  }
   if route == .all || route == .ps2 {
-    guard composed.machine.ps2Keyboard.enqueueSet1ScanCodes(ps2Set1ScanCodes(for: script)) else {
+    let scanCodeSet = composed.machine.ps2Keyboard.snapshot().keyboardScanCodeSet
+    guard composed.machine.ps2Keyboard.enqueueScanCodes(
+      ps2ScanCodes(for: script, scanCodeSet: scanCodeSet)
+    ) else {
       throw SmokeError.keyboardQueueFull
     }
   }
 }
 
-private func ps2Set1ScanCodes(for script: [String]) -> [UInt8] {
-  let make: [String: UInt8] = [
+private func ps2ScanCodes(for script: [String], scanCodeSet: UInt8) -> [UInt8] {
+  let set1: [String: UInt8] = [
     "enter": 0x1C, "space": 0x39, "e": 0x12, "c": 0x2E,
     "o": 0x18, "n": 0x31, "s": 0x1F, "l": 0x26, "equals": 0x0D,
     "t": 0x14, "y": 0x15, "shift-s": 0x1F, "0": 0x0B, "comma": 0x33,
     "1": 0x02, "2": 0x03, "5": 0x06
   ]
+  let set2: [String: UInt8] = [
+    "enter": 0x5A, "space": 0x29, "e": 0x24, "c": 0x21,
+    "o": 0x44, "n": 0x31, "s": 0x1B, "l": 0x4B, "equals": 0x55,
+    "t": 0x2C, "y": 0x35, "shift-s": 0x1B, "0": 0x45, "comma": 0x41,
+    "1": 0x16, "2": 0x1E, "5": 0x2E
+  ]
+  let usesSet2 = scanCodeSet == 2
+  let make = usesSet2 ? set2 : set1
   return script.flatMap { token -> [UInt8] in
-    if token == "ctrl-x" { return [0x1D, 0x2D, 0xAD, 0x9D] }
-    if token == "end" { return [0xE0, 0x4F, 0xE0, 0xCF] }
+    if token == "ctrl-x" {
+      return usesSet2 ? [0x14, 0x22, 0xF0, 0x22, 0xF0, 0x14] : [0x1D, 0x2D, 0xAD, 0x9D]
+    }
+    if token == "end" {
+      return usesSet2 ? [0xE0, 0x69, 0xE0, 0xF0, 0x69] : [0xE0, 0x4F, 0xE0, 0xCF]
+    }
     guard let code = make[token] else { return [] }
-    if token == "shift-s" { return [0x2A, code, code | 0x80, 0xAA] }
-    return [code, code | 0x80]
+    if token == "shift-s" {
+      return usesSet2 ? [0x12, code, 0xF0, code, 0xF0, 0x12] : [0x2A, code, code | 0x80, 0xAA]
+    }
+    return usesSet2 ? [code, 0xF0, code] : [code, code | 0x80]
   }
 }
 

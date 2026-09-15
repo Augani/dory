@@ -114,6 +114,7 @@ import Testing
     try status.write(portOffset: 0, value: 0x20, width: .byte)
     #expect(try data.read(portOffset: 0, width: .byte) == 0x01)
     let snapshot = controller.snapshot()
+    #expect(snapshot.keyboardScanCodeSet == 1)
     #expect(snapshot.statusReadCount == 2)
     #expect(snapshot.dataReadCount == 3)
     #expect(snapshot.commandWriteCount == 1)
@@ -124,6 +125,22 @@ import Testing
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
     #expect(machine.ps2Keyboard.enqueueSet1ScanCodes([0x1E]))
     #expect(machine.legacyPIC.snapshot().masterRequest & (1 << 1) != 0)
+  }
+
+  @Test func ps2KeyboardTracksNegotiatedScanCodeSet() throws {
+    let controller = DoryPCPS2KeyboardController()
+    let data = DoryPCPS2KeyboardDataPort(controller: controller)
+
+    try data.write(portOffset: 0, value: 0xF0, width: .byte)
+    #expect(try data.read(portOffset: 0, width: .byte) == 0xFA)
+    try data.write(portOffset: 0, value: 0x02, width: .byte)
+    #expect(try data.read(portOffset: 0, width: .byte) == 0xFA)
+    #expect(controller.snapshot().keyboardScanCodeSet == 2)
+
+    try data.write(portOffset: 0, value: 0xFF, width: .byte)
+    #expect(try data.read(portOffset: 0, width: .byte) == 0xFA)
+    #expect(try data.read(portOffset: 0, width: .byte) == 0xAA)
+    #expect(controller.snapshot().keyboardScanCodeSet == 1)
   }
 }
 
