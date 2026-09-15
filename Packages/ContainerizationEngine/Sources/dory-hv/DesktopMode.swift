@@ -1267,6 +1267,19 @@ enum DesktopMode {
         try controller.run()
     }
 
+    /// A thread-safe holder for the current `Machine` reference, used by Sendable
+    /// closures (e.g. the lifecycle receipt server) that need to observe the current
+    /// machine across guest reset relaunches without capturing a main-actor-isolated `var`.
+    private final class CurrentMachineHolder: @unchecked Sendable {
+        private let lock = NSLock()
+        private weak var weakMachine: Machine?
+
+        var machine: Machine? {
+            get { lock.withLock { weakMachine } }
+            set { lock.withLock { weakMachine = newValue } }
+        }
+    }
+
     @MainActor
     private final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         private struct MaterializedVirtioBackend {
@@ -1282,8 +1295,13 @@ enum DesktopMode {
         #if arch(arm64)
         private let serialConsoleInput: RawHVSerialConsoleInput
         #endif
-        private let machine: Machine
-        private let machineRunner: RawHVMachineRunner
+        private var machine: Machine!
+        private var machineRunner: RawHVMachineRunner
+        private let savedMachineConfiguration: MachineConfiguration
+        private var virtioAttachments: [(slot: Int, backend: any VirtioDeviceBackend)] = []
+        /// Shared holder so the lifecycle receipt server's Sendable closures can observe
+        /// the current `machine` without capturing a main-actor-isolated `var`.
+        private let currentMachineHolder = CurrentMachineHolder()
         private let gpu: VirtioGPU
         private let graphicsBackend: DoryDesktopGraphicsBackend
         private let rendererWorkerLaunch: DesktopRendererWorkerLaunch?
@@ -1427,12 +1445,17 @@ enum DesktopMode {
             }
             let machine = try Machine(configuration: machineConfiguration)
             self.machine = machine
+            self.savedMachineConfiguration = machineConfiguration
+            currentMachineHolder.machine = machine
             self.lifecycleReceiptServer = VmmLifecycleReceiptServer(
                 socketPath: configuration.controlSocketPath,
                 deviceTelemetryProvider: { deviceTelemetry.snapshot() },
                 reconnectIdentity: configuration.reconnectIdentity,
-                executionStateProvider: { machine.executionState },
-                executionLifecycleHandler: { action in
+                executionStateProvider: { [weak currentMachineHolder] in
+                    currentMachineHolder?.machine?.executionState ?? .stopped
+                },
+                executionLifecycleHandler: { [weak currentMachineHolder] action in
+                    guard let machine = currentMachineHolder?.machine else { return }
                     if action == .preparePause { try machine.pauseGuestExecution() }
                     else { try machine.resumeGuestExecution() }
                 }
@@ -2020,6 +2043,7 @@ enum DesktopMode {
                         to: machine,
                         slot: slot
                     )
+                    self.virtioAttachments.append((slot: slot, backend: backend))
                     let audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)?
                     if let sound, backend === sound {
                         audioMetrics = { [weak audio] in audio?.runtimeMetrics }
@@ -2347,19 +2371,25 @@ enum DesktopMode {
         }
 
         private func startMachine() throws {
-            let machine = self.machine
+            let machine = self.machine!
             machineExecutionState = .running
             do {
                 try machineRunner.start { [weak self] result in
                     DesktopAppRunLoop.perform {
+                        guard let self else { return }
                         switch result {
                         case .success(let reason):
-                            self?.finish(
-                                error: Self.error(for: reason),
-                                machineExecutionEnded: true
-                            )
+                            switch reason {
+                            case .reset:
+                                self.handleGuestReset()
+                            default:
+                                self.finish(
+                                    error: Self.error(for: reason),
+                                    machineExecutionEnded: true
+                                )
+                            }
                         case .failure(let error):
-                            self?.finish(error: error, machineExecutionEnded: true)
+                            self.finish(error: error, machineExecutionEnded: true)
                         }
                     }
                 }
@@ -2606,7 +2636,7 @@ enum DesktopMode {
             guard !stopping else { return }
             stopping = true
             for window in windows { window.orderOut(nil) }
-            let machine = self.machine
+            guard let machine = self.machine else { return }
             if ShutdownPlan(resolvedDevices: configuration.resolvedDevices) == .immediate {
                 machine.requestStop(.powerOff)
                 return
@@ -3318,6 +3348,110 @@ enum DesktopMode {
             case .reset: VMError.unexpectedExit("desktop guest requested reset")
             case let .crash(detail): VMError.unexpectedExit(detail)
             case .cpuOff: nil
+            }
+        }
+
+        /// Relaunches the guest after a PSCI warm reset. The old `Machine` is released
+        /// (its `deinit` calls `hv_vm_destroy`), a new `Machine` is created from the
+        /// same configuration, virtio backends are re-attached to fresh MMIO transports,
+        /// and a new single-use `RawHVMachineRunner` starts the boot vCPU.
+        private func handleGuestReset() {
+            Self.log("dory-hv desktop: guest requested reset — relaunching VM")
+            // Wait for the old runner's owner thread to fully exit before creating
+            // a new VM. The completion handler runs on the owner thread before it
+            // returns, so the thread is still alive when we get here. We must join
+            // it before hv_vm_destroy() runs (in oldMachine's deinit) to avoid
+            // racing a live vCPU thread.
+            do {
+                _ = try machineRunner.wait()
+            } catch {
+                Self.log("dory-hv desktop: old runner join failed during reset: \(error)")
+            }
+            // Release the old machine so hv_vm_destroy() runs before hvCreateVM().
+            // Hypervisor.framework allows only one VM per process; hv_vm_create
+            // returns HV_BUSY if the prior VM has not been destroyed.
+            machine = nil
+            // Create the new Machine from the saved configuration. This calls hvCreateVM().
+            let newMachine: Machine
+            do {
+                newMachine = try Machine(configuration: savedMachineConfiguration)
+            } catch {
+                Self.log("dory-hv desktop: VM recreation failed during reset: \(error)")
+                finish(error: error, machineExecutionEnded: true)
+                return
+            }
+            // Re-attach platform devices (RTC, UART) to the new machine's bus.
+            #if arch(arm64)
+            _ = Self.attachPlatformDevices(to: newMachine, serialOutput: serialOutput)
+            #endif
+            // Re-attach all virtio backends to fresh MMIO transports on the new machine.
+            // The backends themselves (VirtioGPU, VirtioBlk, etc.) are reused; only the
+            // transport wrappers (which reference machine.memory and machine.raiseGSI)
+            // need to be recreated. The VirtioBalloon is an exception: it captures
+            // machine.memory directly, so it must be re-created with the new machine's
+            // memory to avoid referencing the released old guest memory.
+            for index in virtioAttachments.indices {
+                let slot = virtioAttachments[index].slot
+                var backend = virtioAttachments[index].backend
+                if backend is VirtioBalloon {
+                    let replacement = VirtioBalloon(memory: newMachine.memory) { message in
+                        Self.log(message)
+                    }
+                    virtioAttachments[index] = (slot: slot, backend: replacement)
+                    backend = replacement
+                }
+                do {
+                    _ = try Self.attachBackend(
+                        backend,
+                        to: newMachine,
+                        slot: slot
+                    )
+                } catch {
+                    Self.log("dory-hv desktop: virtio re-attach failed during reset: \(error)")
+                    finish(error: error, machineExecutionEnded: true)
+                    return
+                }
+            }
+            // Reset the vsock transport so pending connections from the previous boot
+            // do not leak into the new guest instance.
+            vsock.resetTransportNeutralDevice()
+            // Load the boot payload (firmware or direct kernel) into the new machine.
+            do {
+                try newMachine.loadBootPayload()
+            } catch {
+                Self.log("dory-hv desktop: boot payload load failed during reset: \(error)")
+                finish(error: error, machineExecutionEnded: true)
+                return
+            }
+            machine = newMachine
+            currentMachineHolder.machine = newMachine
+            machineRunner = RawHVMachineRunner(
+                machine: newMachine,
+                threadName: "dory-hv.desktop.vcpu0"
+            )
+            do {
+                try machineRunner.start { [weak self] result in
+                    DesktopAppRunLoop.perform {
+                        guard let self else { return }
+                        switch result {
+                        case .success(let reason):
+                            switch reason {
+                            case .reset:
+                                self.handleGuestReset()
+                            default:
+                                self.finish(
+                                    error: Self.error(for: reason),
+                                    machineExecutionEnded: true
+                                )
+                            }
+                        case .failure(let error):
+                            self.finish(error: error, machineExecutionEnded: true)
+                        }
+                    }
+                }
+            } catch {
+                Self.log("dory-hv desktop: runner start failed during reset: \(error)")
+                finish(error: error, machineExecutionEnded: true)
             }
         }
 
