@@ -434,6 +434,10 @@ enum VirtioMMIODeviceTree {
     public let configuration: MachineConfiguration
     public let memory: GuestMemory
     public let bus = MMIOBus()
+
+    nonisolated static func log(_ message: String) {
+      FileHandle.standardError.write(Data("dory-hv: \(message)\n".utf8))
+    }
     private var entryPoint: UInt64 = 0
     private var dtbAddress: UInt64 = 0
     private var initialPstate: UInt64 = DoryARMVirtV1InitialCPUState.resetPSTATE
@@ -1042,10 +1046,12 @@ enum VirtioMMIODeviceTree {
       mmioRouteCache: inout MMIORouteCache
     ) throws -> GuestStopReason? {
       guard let exceptionClass = ExceptionClass(syndrome: syndrome) else {
+        // Guest-fault injection: unknown exception class — inject SError instead
+        // of crashing the VM.
         let pc = try vcpu.read(HV_REG_PC)
-        return .crash(
-          "unhandled exception class \(syndrome >> 26), syndrome 0x\(String(syndrome, radix: 16)), pc 0x\(String(pc, radix: 16))"
-        )
+        Self.log("unhandled exception class \(syndrome >> 26), syndrome 0x\(String(syndrome, radix: 16)), pc 0x\(String(pc, radix: 16)) — injecting SError")
+        try vcpu.injectSError()
+        return nil
       }
       switch exceptionClass {
       case .dataAbortLowerEL:
@@ -1058,8 +1064,11 @@ enum VirtioMMIODeviceTree {
         return nil
       case .instructionAbortLowerEL:
         guard restoreIfReleasedRAM(physicalAddress) else {
-          return .crash(
-            "instruction abort outside RAM at pa 0x\(String(physicalAddress, radix: 16))")
+          // Guest-fault injection: instruction abort outside RAM — inject SError
+          // instead of crashing the VM.
+          Self.log("instruction abort outside RAM at pa 0x\(String(physicalAddress, radix: 16)) — injecting SError")
+          try vcpu.injectSError()
+          return nil
         }
         return nil
       case .hvc64:
@@ -1097,10 +1106,13 @@ enum VirtioMMIODeviceTree {
         )
       }
       guard let (device, offset) = bus.device(for: physicalAddress, cache: &routeCache) else {
+        // Guest-fault injection: instead of terminating the VM on an unmapped MMIO
+        // access, inject an SError so the guest's own handler can log, retry, or
+        // panic without losing the entire VM.
         let pc = try vcpu.read(HV_REG_PC)
-        throw VMError.unexpectedExit(
-          "guest touched unmapped pa 0x\(String(physicalAddress, radix: 16)), pc 0x\(String(pc, radix: 16))"
-        )
+        Self.log("guest touched unmapped pa 0x\(String(physicalAddress, radix: 16)), pc 0x\(String(pc, radix: 16)) — injecting SError")
+        try vcpu.injectSError()
+        return
       }
       if abort.isWrite {
         let value = abort.registerIndex == 31 ? 0 : try vcpu.read(registerFor(abort.registerIndex))

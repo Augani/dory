@@ -48,6 +48,22 @@ public final class VCPU {
         try hvCheck(hv_vcpu_set_vtimer_mask(handle, masked), "hv_vcpu_set_vtimer_mask")
     }
 
+    /// Injects a pending SError (System Error) exception into the guest vCPU.
+    /// The guest's SError handler fires on the next vCPU run. Used for guest-fault
+    /// injection: instead of terminating the VM on an unhandled MMIO access or
+    /// unknown exception, the host injects an SError so the guest can handle it
+    /// (log, retry, or panic) without losing the entire VM.
+    func injectSError() throws {
+        if #available(macOS 27.0, *) {
+            try hvCheck(hv_vcpu_set_serror(handle, true), "hv_vcpu_set_serror")
+        } else {
+            // On older macOS where hv_vcpu_set_serror is unavailable, fall back to
+            // the existing crash behavior. The caller should have already decided
+            // this path is preferable to terminating the VM.
+            throw VMError.unexpectedExit("SError injection unavailable on this macOS version")
+        }
+    }
+
     /// Hide debug/trace/PMU/SPE from ID_AA64DFR0/1 so advertised features match RAZ/WI traps.
     func sanitizeUnimplementedDebugAndPMUIdentity() throws {
         let hostDFR0 = try readSystem(HV_SYS_REG_ID_AA64DFR0_EL1)
