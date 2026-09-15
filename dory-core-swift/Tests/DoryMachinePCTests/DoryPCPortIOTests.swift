@@ -109,7 +109,7 @@ import Testing
     #expect(try status.read(portOffset: 0, width: .byte) == 0x05)
     #expect(try data.read(portOffset: 0, width: .byte) == 0x1E)
     #expect(try data.read(portOffset: 0, width: .byte) == 0x9E)
-    #expect(levels.values == [false, true, false])
+    #expect(levels.values == [false, true, false, true, false])
 
     try status.write(portOffset: 0, value: 0x20, width: .byte)
     #expect(try data.read(portOffset: 0, width: .byte) == 0x01)

@@ -82,12 +82,23 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
   }
 
   fileprivate func readData() -> UInt8 {
-    let result = lock.withLock {
+    let result = lock.withLock { () -> (UInt8, [(@Sendable (Bool) -> Void, Bool)]) in
       dataReadCount &+= 1
-      let value = output.isEmpty ? UInt8(0) : output.removeFirst()
-      return (value, interruptNotificationLocked())
+      guard !output.isEmpty else {
+        return (0, interruptNotificationLocked().map { [$0] } ?? [])
+      }
+
+      let value = output.removeFirst()
+      if !output.isEmpty, let interruptSink, interruptLevelLocked() {
+        // The i8042 exposes one output-buffer byte at a time. Once the guest reads the current
+        // byte, the next queued byte becomes visible and raises a new IRQ1 edge. Keeping the
+        // line permanently asserted loses that edge on the legacy PIC and can strand a key
+        // release or command response behind the first byte.
+        return (value, [(interruptSink, false), (interruptSink, true)])
+      }
+      return (value, interruptNotificationLocked().map { [$0] } ?? [])
     }
-    notify(result.1)
+    for notification in result.1 { notify(notification) }
     return result.0
   }
 
