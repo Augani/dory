@@ -975,6 +975,20 @@ private func ps2KeyboardDiagnostics(_ keyboard: DoryPCPS2KeyboardController) -> 
   ]
 }
 
+private func pciConfigurationDiagnostics(_ function: DoryPCPCIConfigurationFunction) -> [String: Any] {
+  let address = function.pciAddress
+  let snapshot = function.configurationAccessSnapshot
+  return [
+    "pciAddress": String(format: "%04x:%02x:%02x.%x", address.segment, address.bus, address.device,
+      address.function),
+    "command": String(format: "0x%04x", function.command),
+    "readCount": snapshot.readCount,
+    "readByteCount": snapshot.readByteCount,
+    "writeCount": snapshot.writeCount,
+    "writeByteCount": snapshot.writeByteCount,
+  ]
+}
+
 private func localAPICDiagnostics(_ apic: DoryPCLocalAPIC) -> [String: Any] {
   let snapshot = apic.snapshot()
   return [
@@ -1554,6 +1568,7 @@ private func run() throws {
     "serialInputBytesPending": composed.machine.serial.hasPendingReceivedBytes,
     "ps2KeyboardBytesPending": composed.machine.ps2Keyboard.hasPendingByte,
     "ps2Keyboard": ps2KeyboardDiagnostics(composed.machine.ps2Keyboard),
+    "isaBridge": pciConfigurationDiagnostics(composed.isaBridge),
     "interruptControllers": interruptControllerDiagnostics(composed.machine),
     "powerController": powerControllerDiagnostics(composed.machine.powerController),
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",

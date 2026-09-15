@@ -38,6 +38,11 @@ import Testing
     #expect(function.command == 7)
     try function.writeConfiguration(offset: 0x3C, bytes: [0x2A])
     #expect(try function.readConfiguration(offset: 0x3C, byteCount: 2) == [0x2A, 1])
+    let snapshot = function.configurationAccessSnapshot
+    #expect(snapshot.readCount == 2)
+    #expect(snapshot.readByteCount == 6)
+    #expect(snapshot.writeCount == 3)
+    #expect(snapshot.writeByteCount == 7)
   }
 
   @Test func isaBridgePublishesAnEnabledPCIToISABridgeHeader() throws {
@@ -46,11 +51,14 @@ import Testing
       vendorID: 0x1B36,
       deviceID: 0x0001,
       classCode: 0x060100,
-      initialCommand: 0x0003
+      initialCommand: 0x0003,
+      requiredCommandBits: 0x0003
     )
 
     #expect(bridge.pciAddress == DoryPCV1ABI.isaBridgePCIAddress)
     #expect(try bridge.readConfiguration(offset: 0x04, byteCount: 8) == [3, 0, 0, 0, 0, 0, 1, 6])
+    try bridge.writeConfiguration(offset: 0x04, bytes: [0, 0])
+    #expect(bridge.command == 3)
   }
 
   @Test func barsReportSizingMasksAndAlignGuestAssignments() throws {

@@ -133,7 +133,8 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
       vendorID: 0x1B36,
       deviceID: 0x0001,
       classCode: 0x060100,
-      initialCommand: 0x0003
+      initialCommand: 0x0003,
+      requiredCommandBits: 0x0003
     )
     let displayDevice = try DoryPCVirtioGPUPCIDevice(
       address: DoryPCV1ABI.displayPCIAddress,

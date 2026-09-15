@@ -366,6 +366,13 @@ private final class DoryPCPCIMSIXController: @unchecked Sendable {
 public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable,
   DoryPCPCIINTxControllable, @unchecked Sendable
 {
+  public struct ConfigurationAccessSnapshot: Sendable, Equatable {
+    public let readCount: UInt64
+    public let readByteCount: UInt64
+    public let writeCount: UInt64
+    public let writeByteCount: UInt64
+  }
+
   private struct BARState {
     let kind: DoryPCPCIBARKind
     let size: UInt64
@@ -380,12 +387,17 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable,
   private var bars: [Int: BARState] = [:]
   private var upperBARSlots: Set<Int> = []
   private let supportsMSI: Bool
+  private let requiredCommandBits: UInt16
   private let msix: DoryPCPCIMSIXController?
   private let msixCapabilityOffset: Int
   private let interruptPin: UInt8
   private var intxAsserted = false
   private var intxSink: (@Sendable (UInt8, Bool) -> Void)?
   private var msiSink: (@Sendable (UInt64, UInt16) -> Bool)?
+  private var configurationReadCount: UInt64 = 0
+  private var configurationReadByteCount: UInt64 = 0
+  private var configurationWriteCount: UInt64 = 0
+  private var configurationWriteByteCount: UInt64 = 0
 
   public init(
     address: DoryPCPCIAddress,
@@ -394,6 +406,7 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable,
     classCode: UInt32,
     revisionID: UInt8 = 0,
     initialCommand: UInt16 = 0,
+    requiredCommandBits: UInt16 = 0,
     subsystemVendorID: UInt16 = 0,
     subsystemID: UInt16 = 0,
     interruptLine: UInt8 = 0xFF,
@@ -411,6 +424,7 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable,
   ) throws {
     pciAddress = address
     self.supportsMSI = supportsMSI
+    self.requiredCommandBits = requiredCommandBits & 0x07
     self.msixCapabilityOffset = Int(msixCapabilityOffset)
     self.interruptPin = interruptPin
     if msixVectorCount > 0 {
@@ -444,7 +458,7 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable,
     }
     put(vendorID, at: 0x00, in: &configuration)
     put(deviceID, at: 0x02, in: &configuration)
-    put(initialCommand & 0x07, at: 0x04, in: &configuration)
+    put((initialCommand | self.requiredCommandBits) & 0x07, at: 0x04, in: &configuration)
     configuration[0x08] = revisionID
     configuration[0x09] = UInt8(truncatingIfNeeded: classCode)
     configuration[0x0A] = UInt8(truncatingIfNeeded: classCode >> 8)
@@ -493,6 +507,16 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable,
 
   public var command: UInt16 {
     lock.withLock { get(UInt16.self, at: 0x04, in: configuration) }
+  }
+
+  public var configurationAccessSnapshot: ConfigurationAccessSnapshot {
+    lock.withLock {
+      .init(
+        readCount: configurationReadCount,
+        readByteCount: configurationReadByteCount,
+        writeCount: configurationWriteCount,
+        writeByteCount: configurationWriteByteCount)
+    }
   }
 
   public var interruptLine: UInt8 { lock.withLock { configuration[0x3C] } }
@@ -582,6 +606,8 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable,
   public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
     try validate(offset: offset, byteCount: byteCount)
     var result = lock.withLock {
+      configurationReadCount &+= 1
+      configurationReadByteCount &+= UInt64(byteCount)
       var bytes = Array(configuration[offset..<(offset + byteCount)])
       for byteIndex in bytes.indices {
         let absoluteOffset = offset + byteIndex
@@ -618,6 +644,10 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable,
 
   public func writeConfiguration(offset: Int, bytes: [UInt8]) throws {
     try validate(offset: offset, byteCount: bytes.count)
+    lock.withLock {
+      configurationWriteCount &+= 1
+      configurationWriteByteCount &+= UInt64(bytes.count)
+    }
     let previousINTx = intxRoute()
     defer { notifyINTxTransition(from: previousINTx) }
     if let msix {
@@ -659,6 +689,8 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable,
       for (index, value) in bytes.enumerated() where writableConfigurationByte(offset + index) {
         configuration[offset + index] = value
       }
+      let command = get(UInt16.self, at: 0x04, in: configuration)
+      put(command | requiredCommandBits, at: 0x04, in: &configuration)
     }
   }
 
