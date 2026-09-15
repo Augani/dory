@@ -279,7 +279,17 @@ struct VirtioBlkFlushTelemetryConfiguration {
     static var production: Self {
         Self(
             slowThresholdNanoseconds: 250_000_000,
-            synchronize: { descriptor in Darwin.fsync(descriptor) },
+            // On macOS, fsync() only flushes to the drive's cache, not to physical media.
+            // F_FULLFSYNC guarantees data is written to the platter/flash. For
+            // VIRTIO_BLK_T_FLUSH (which the guest uses for durability barriers),
+            // the stronger F_FULLFSYNC semantics are required.
+            synchronize: { descriptor in
+                #if canImport(Darwin)
+                return Int32(fcntl(descriptor, F_FULLFSYNC, 0))
+                #else
+                return Darwin.fsync(descriptor)
+                #endif
+            },
             monotonicNanoseconds: { DispatchTime.now().uptimeNanoseconds }
         )
     }
