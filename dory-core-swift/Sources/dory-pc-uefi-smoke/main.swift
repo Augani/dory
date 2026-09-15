@@ -132,6 +132,7 @@ private struct Arguments {
   let keyboardScript: [String]
   let keyboardEvents: [DoryVirtioInputEvent]
   let usbKeyboardReports: [[UInt8]]
+  let keyboardAfterInstructions: UInt64?
   let exceptionPolicy: DoryPCExceptionPolicy
   let executionTier: DoryPCExecutionTier
   let baselineJITTier1Enabled: Bool
@@ -159,7 +160,7 @@ private struct Arguments {
           "--firmware-bundle", "--max-instructions", "--timeout-seconds", "--memory-bytes",
           "--processor-count",
           "--system-disk", "--installer-media", "--variable-store-directory", "--display-capture-output",
-          "--keyboard-script",
+          "--keyboard-script", "--keyboard-after-instructions",
           "--exception-policy", "--execution-tier", "--progress-instructions",
           "--baseline-tier1",
           "--expected-serial-marker",
@@ -181,6 +182,7 @@ private struct Arguments {
           + "[--variable-store-directory /absolute/directory] "
           + "[--display-capture-output /absolute/new-frame.ppm] "
           + "[--keyboard-script enter,esc,up,down,left,right,tab,space] "
+          + "[--keyboard-after-instructions count] "
           + "[--processor-count count] [--exception-policy stop|deliver] "
           + "[--execution-tier interpreter|baseline-jit|optimizing-jit] "
           + "[--baseline-tier1 enabled|disabled] "
@@ -307,6 +309,15 @@ private struct Arguments {
     keyboardScript = try Self.keyboardScript(options["--keyboard-script"])
     keyboardEvents = Self.keyboardEvents(for: keyboardScript)
     usbKeyboardReports = Self.usbKeyboardReports(for: keyboardScript)
+    if let text = options["--keyboard-after-instructions"] {
+      guard let value = UInt64(text) else { throw SmokeError.invalidNumber(text) }
+      guard !keyboardScript.isEmpty else {
+        throw SmokeError.usage("--keyboard-after-instructions requires --keyboard-script")
+      }
+      keyboardAfterInstructions = value
+    } else {
+      keyboardAfterInstructions = keyboardScript.isEmpty ? nil : 0
+    }
   }
 
   private static func absoluteURL(_ path: String, isDirectory: Bool = false) throws -> URL {
@@ -872,11 +883,13 @@ private func runWithProgress(
   traceAfterInstructions: UInt64?,
   traceCapacity: Int,
   traceBreakRIPBelow: UInt64?,
-  bootTimeline: DoryPCBootTimeline?
+  bootTimeline: DoryPCBootTimeline?,
+  beforeInstructionBoundary: ((UInt64) throws -> Void)? = nil
 ) throws -> (stop: DoryPCMachineStop, trace: [[String: Any]], traceStopReason: String?) {
   var completed: UInt64 = 0
   var trace: [[String: Any]] = []
   while completed < maximumInstructions {
+    try beforeInstructionBoundary?(completed)
     let tracing = traceAfterInstructions.map { completed >= $0 } ?? false
     if tracing, let state = machine.state {
       let bytes = (try? machine.instructionBytes(maximumCount: 16)) ?? nil
@@ -953,6 +966,18 @@ private func runWithProgress(
     }
   }
   return (.instructionBudget(completed), trace, nil)
+}
+
+private func enqueueKeyboardInput(
+  on composed: DoryPCUEFIMachine,
+  arguments: Arguments
+) throws {
+  guard composed.keyboardDevice.enqueueSynchronized(arguments.keyboardEvents) else {
+    throw SmokeError.keyboardQueueFull
+  }
+  for report in arguments.usbKeyboardReports {
+    try composed.usbKeyboardDevice.enqueue(report: report)
+  }
 }
 
 private func pageTableTrace(
@@ -1082,16 +1107,11 @@ private func run() throws {
   )
   let bootTimeline = arguments.bootTimelineEnabled ? DoryPCBootTimeline() : nil
   composed.machine.serial.observeBoot(with: bootTimeline)
-  guard composed.keyboardDevice.enqueueSynchronized(arguments.keyboardEvents) else {
-    throw SmokeError.keyboardQueueFull
-  }
-  for report in arguments.usbKeyboardReports {
-    try composed.usbKeyboardDevice.enqueue(report: report)
-  }
   defer { bootTimeline?.finish(reason: "execution-error") }
   let deadline = SmokeDeadline(machine: composed.machine, seconds: arguments.timeoutSeconds)
   defer { deadline.finish() }
   let executionStarted = DispatchTime.now().uptimeNanoseconds
+  var keyboardInjectionAtInstructions: UInt64?
   let execution = try runWithProgress(
     machine: composed.machine,
     blockDevices: composed.blockDevices,
@@ -1101,7 +1121,16 @@ private func run() throws {
     traceAfterInstructions: arguments.traceAfterInstructions,
     traceCapacity: arguments.traceCapacity,
     traceBreakRIPBelow: arguments.traceBreakRIPBelow,
-    bootTimeline: bootTimeline
+    bootTimeline: bootTimeline,
+    beforeInstructionBoundary: { completed in
+      guard
+        keyboardInjectionAtInstructions == nil,
+        let after = arguments.keyboardAfterInstructions,
+        completed >= after
+      else { return }
+      try enqueueKeyboardInput(on: composed, arguments: arguments)
+      keyboardInjectionAtInstructions = completed
+    }
   )
   let executionElapsed = DispatchTime.now().uptimeNanoseconds - executionStarted
   let stop = execution.stop
@@ -1266,6 +1295,10 @@ private func run() throws {
     "displayCapture": displayCapture,
     "keyboardScript": arguments.keyboardScript,
     "keyboardEventCount": arguments.keyboardEvents.count,
+    "keyboardInjectionRequestedAfterInstructions": arguments.keyboardAfterInstructions.map {
+      $0 as Any
+    } ?? NSNull(),
+    "keyboardInjectionAtInstructions": keyboardInjectionAtInstructions.map { $0 as Any } ?? NSNull(),
     "keyboardEventsPending": composed.keyboardDevice.inputDevice.hasPendingEvent,
     "usbKeyboardReportCount": arguments.usbKeyboardReports.count,
     "usbKeyboardReportsPending": composed.usbKeyboardDevice.hasPendingReport,
