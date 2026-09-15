@@ -583,6 +583,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let physicalMemories: [DoryPCPhysicalMemoryBus]
   public let ioBus: DoryPCPortIOBus
   public let serial: DoryPCUART16550
+  public let ps2Keyboard: DoryPCPS2KeyboardController
   public let localAPIC: DoryPCLocalAPIC
   public let localAPICs: [DoryPCLocalAPIC]
   public let multiprocessorController: DoryPCMultiprocessorController
@@ -892,6 +893,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       try? legacyPIC.setAsserted(asserted, irq: 4)
       try? ioAPIC.setAsserted(asserted, pin: 4)
     }
+    ps2Keyboard = DoryPCPS2KeyboardController()
+    ps2Keyboard.connectInterruptSink { [legacyPIC, ioAPIC] asserted in
+      try? legacyPIC.setAsserted(asserted, irq: 1)
+      try? ioAPIC.setAsserted(asserted, pin: 1)
+    }
     rtc = DoryPCRTC146818(
       initialDate: initialRTCDate,
       diagnosticsEnabled: instrumentationEnabled
@@ -944,6 +950,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     try ioBus.attach(DoryPCELCRPort(pic: legacyPIC))
     try ioBus.attach(legacyPIT)
     try ioBus.attach(systemControlPort)
+    try ioBus.attach(DoryPCPS2KeyboardDataPort(controller: ps2Keyboard))
+    try ioBus.attach(DoryPCPS2KeyboardStatusPort(controller: ps2Keyboard))
     try ioBus.attach(rtc)
     try ioBus.attach(serial)
     try ioBus.attach(DoryPCACPIPMEventPort(controller: powerController))

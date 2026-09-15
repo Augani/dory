@@ -1126,6 +1126,7 @@ private func runWithProgress(
 private func enqueueKeyboardInput(
   on composed: DoryPCUEFIMachine,
   route: Arguments.KeyboardRoute,
+  script: [String],
   keyboardEvents: [DoryVirtioInputEvent],
   usbKeyboardReports: [[UInt8]],
   serialInputBytes: [UInt8]
@@ -1151,6 +1152,26 @@ private func enqueueKeyboardInput(
     composed.machine.serial.enqueueReceivedBytes(serialInputBytes)
   case .virtio, .usbHID:
     break
+  }
+  if route == .all {
+    guard composed.machine.ps2Keyboard.enqueueSet1ScanCodes(ps2Set1ScanCodes(for: script)) else {
+      throw SmokeError.keyboardQueueFull
+    }
+  }
+}
+
+private func ps2Set1ScanCodes(for script: [String]) -> [UInt8] {
+  let make: [String: UInt8] = [
+    "enter": 0x1C, "space": 0x39, "end": 0x4F, "e": 0x12, "c": 0x2E,
+    "o": 0x18, "n": 0x31, "s": 0x1F, "l": 0x26, "equals": 0x0D,
+    "t": 0x14, "y": 0x15, "shift-s": 0x1F, "0": 0x0B, "comma": 0x33,
+    "1": 0x02, "2": 0x03, "5": 0x06
+  ]
+  return script.flatMap { token -> [UInt8] in
+    if token == "ctrl-x" { return [0x1D, 0x2D, 0xAD, 0x9D] }
+    guard let code = make[token] else { return [] }
+    if token == "shift-s" { return [0x2A, code, code | 0x80, 0xAA] }
+    return [code, code | 0x80]
   }
 }
 
@@ -1310,6 +1331,7 @@ private func run() throws {
         try enqueueKeyboardInput(
           on: composed,
           route: arguments.keyboardRoute,
+          script: arguments.keyboardScript,
           keyboardEvents: arguments.keyboardEvents,
           usbKeyboardReports: arguments.usbKeyboardReports,
           serialInputBytes: arguments.serialInputBytes
@@ -1324,6 +1346,7 @@ private func run() throws {
         try enqueueKeyboardInput(
           on: composed,
           route: arguments.keyboardRoute,
+          script: arguments.secondKeyboardScript,
           keyboardEvents: arguments.secondKeyboardEvents,
           usbKeyboardReports: arguments.secondUSBKeyboardReports,
           serialInputBytes: arguments.secondSerialInputBytes
