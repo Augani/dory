@@ -792,6 +792,12 @@ private func timerInterruptDiagnostics(
   ]
 }
 
+private func interruptVectorDiagnostics(
+  _ vectors: [DoryPCExecutionStatistics.InterruptVectorCount]
+) -> [[String: Any]] {
+  vectors.map { ["vector": $0.vector, "deliveries": $0.deliveries] }
+}
+
 private func hostTimeBreakdown(_ value: DoryPCHostTimeBreakdown) -> [String: Any] {
   [
     "totalNanoseconds": value.totalNanoseconds,
@@ -1573,6 +1579,11 @@ private func run() throws {
     "optimizingJITInstructions": executionStatistics.optimizingJITInstructions,
     "optimizingJITBlocks": executionStatistics.optimizingJITBlocks,
     "optimizingJITDiagnostics": jitDiagnostics(composed.machine.optimizingJITDiagnostics),
+    "deliveredMaskableInterrupts": executionStatistics.deliveredMaskableInterrupts,
+    "deliveredNonMaskableInterrupts": executionStatistics.deliveredNonMaskableInterrupts,
+    "retiredInterruptReturns": executionStatistics.retiredInterruptReturns,
+    "deliveredInterruptVectors": interruptVectorDiagnostics(
+      executionStatistics.deliveredInterruptVectors),
     "pagingDiagnostics": pagingDiagnostics(composed.machine.pagingDiagnostics),
     "physicalMemoryDiagnostics": physicalMemoryDiagnostics(
       composed.machine.physicalMemory.diagnostics),
