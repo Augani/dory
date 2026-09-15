@@ -65,6 +65,10 @@ public final class DoryPCBootTimeline: @unchecked Sendable {
     .init(.grub, "GNU GRUB"),
     .init(.grub, "Welcome to GRUB"),
     .init(.grub, "  Booting `"),
+    // Arch's current UEFI installer menu is GRUB-driven, but its serial output contains
+    // the selected menu entry rather than GRUB's interactive banner. Keep the established
+    // `grub` receipt value for schema compatibility while recognizing this bounded marker.
+    .init(.grub, "Arch Linux install medium (x86_64, "),
     .init(.kernel, "Linux version "),
     .init(.rootMounted, "VFS: Mounted root"),
     .init(.initStarted, "Run /init as init process"),

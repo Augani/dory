@@ -57,6 +57,21 @@ import Testing
     #expect(timeline.snapshot().events.filter { $0.milestone == .grub }.count == 1)
   }
 
+  @Test func archLinuxUEFIMenuEntryRecordsBootloaderMilestoneAcrossANSIStream() throws {
+    let clock = Clock()
+    let timeline = DoryPCBootTimeline(now: clock.read)
+    let uart = DoryPCUART16550()
+    uart.observeBoot(with: timeline)
+
+    try transmit("\u{1b}[2J\u{1b}[019;052HArch Linux install medi", to: uart)
+    clock.set(240)
+    try transmit("um (x86_64, UEFI)", to: uart)
+
+    let event = try #require(timeline.snapshot().events.last)
+    #expect(event.milestone == .grub)
+    #expect(event.elapsedNanoseconds == 140)
+  }
+
   @Test func observationsSurviveConsoleOverflowAndRemainBounded() throws {
     let uart = DoryPCUART16550(queueCapacity: 1)
     let timeline = DoryPCBootTimeline()
