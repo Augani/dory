@@ -1154,24 +1154,24 @@ private func enqueueKeyboardInput(
     break
   }
   if route == .all {
-    guard composed.machine.ps2Keyboard.enqueueSet1ScanCodes(ps2Set1ScanCodes(for: script)) else {
+    guard composed.machine.ps2Keyboard.enqueueSet1ScanCodes(ps2Set2ScanCodes(for: script)) else {
       throw SmokeError.keyboardQueueFull
     }
   }
 }
 
-private func ps2Set1ScanCodes(for script: [String]) -> [UInt8] {
+private func ps2Set2ScanCodes(for script: [String]) -> [UInt8] {
   let make: [String: UInt8] = [
-    "enter": 0x1C, "space": 0x39, "end": 0x4F, "e": 0x12, "c": 0x2E,
-    "o": 0x18, "n": 0x31, "s": 0x1F, "l": 0x26, "equals": 0x0D,
-    "t": 0x14, "y": 0x15, "shift-s": 0x1F, "0": 0x0B, "comma": 0x33,
-    "1": 0x02, "2": 0x03, "5": 0x06
+    "enter": 0x5A, "space": 0x29, "end": 0x69, "e": 0x24, "c": 0x21,
+    "o": 0x44, "n": 0x31, "s": 0x1B, "l": 0x4B, "equals": 0x55,
+    "t": 0x2C, "y": 0x35, "shift-s": 0x1B, "0": 0x45, "comma": 0x41,
+    "1": 0x16, "2": 0x1E, "5": 0x2E
   ]
   return script.flatMap { token -> [UInt8] in
-    if token == "ctrl-x" { return [0x1D, 0x2D, 0xAD, 0x9D] }
+    if token == "ctrl-x" { return [0x14, 0x22, 0xF0, 0x22, 0xF0, 0x14] }
     guard let code = make[token] else { return [] }
-    if token == "shift-s" { return [0x2A, code, code | 0x80, 0xAA] }
-    return [code, code | 0x80]
+    if token == "shift-s" { return [0x12, code, 0xF0, code, 0xF0, 0x12] }
+    return [code, 0xF0, code]
   }
 }
 
