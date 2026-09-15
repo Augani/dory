@@ -119,6 +119,13 @@ private func identity(of file: URL) throws -> FileIdentity {
 }
 
 private struct Arguments {
+  enum KeyboardRoute: String {
+    case all
+    case virtio
+    case usbHID = "usb-hid"
+    case serial
+  }
+
   let firmwareBundle: URL
   let maximumInstructions: UInt64
   let timeoutSeconds: UInt64
@@ -133,6 +140,7 @@ private struct Arguments {
   let keyboardEvents: [DoryVirtioInputEvent]
   let usbKeyboardReports: [[UInt8]]
   let serialInputBytes: [UInt8]
+  let keyboardRoute: KeyboardRoute
   let keyboardAfterInstructions: UInt64?
   let exceptionPolicy: DoryPCExceptionPolicy
   let executionTier: DoryPCExecutionTier
@@ -161,7 +169,7 @@ private struct Arguments {
           "--firmware-bundle", "--max-instructions", "--timeout-seconds", "--memory-bytes",
           "--processor-count",
           "--system-disk", "--installer-media", "--variable-store-directory", "--display-capture-output",
-          "--keyboard-script", "--keyboard-after-instructions",
+          "--keyboard-script", "--keyboard-route", "--keyboard-after-instructions",
           "--exception-policy", "--execution-tier", "--progress-instructions",
           "--baseline-tier1",
           "--expected-serial-marker",
@@ -182,7 +190,8 @@ private struct Arguments {
           + "[--system-disk /absolute/disk] [--installer-media /absolute/iso] "
           + "[--variable-store-directory /absolute/directory] "
           + "[--display-capture-output /absolute/new-frame.ppm] "
-          + "[--keyboard-script enter,esc,up,down,left,right,tab,space] "
+          + "[--keyboard-script named-key,...] "
+          + "[--keyboard-route all|virtio|usb-hid|serial] "
           + "[--keyboard-after-instructions count] "
           + "[--processor-count count] [--exception-policy stop|deliver] "
           + "[--execution-tier interpreter|baseline-jit|optimizing-jit] "
@@ -311,6 +320,10 @@ private struct Arguments {
     keyboardEvents = Self.keyboardEvents(for: keyboardScript)
     usbKeyboardReports = Self.usbKeyboardReports(for: keyboardScript)
     serialInputBytes = Self.serialInputBytes(for: keyboardScript)
+    guard let keyboardRoute = KeyboardRoute(rawValue: options["--keyboard-route"] ?? "all") else {
+      throw SmokeError.usage("--keyboard-route must be all, virtio, usb-hid, or serial")
+    }
+    self.keyboardRoute = keyboardRoute
     if let text = options["--keyboard-after-instructions"] {
       guard let value = UInt64(text) else { throw SmokeError.invalidNumber(text) }
       guard !keyboardScript.isEmpty else {
@@ -329,83 +342,148 @@ private struct Arguments {
     return URL(fileURLWithPath: path, isDirectory: isDirectory).standardizedFileURL
   }
 
-  /// The smoke runner deliberately accepts navigation keys only. They are queued for both the
-  /// VirtIO and USB-HID keyboards so firmware and installer paths can be distinguished without
-  /// becoming a general unattended-install language.
+  private struct KeyboardStroke {
+    let linuxCode: UInt16
+    let usbUsage: UInt8
+    let serialBytes: [UInt8]
+    let modifierLinuxCode: UInt16?
+    let usbModifier: UInt8
+
+    init(
+      linuxCode: UInt16,
+      usbUsage: UInt8,
+      serialBytes: [UInt8],
+      requiresShift: Bool
+    ) {
+      self.linuxCode = linuxCode
+      self.usbUsage = usbUsage
+      self.serialBytes = serialBytes
+      modifierLinuxCode = requiresShift ? 42 : nil
+      usbModifier = requiresShift ? 0x02 : 0
+    }
+
+    init(
+      linuxCode: UInt16,
+      usbUsage: UInt8,
+      serialBytes: [UInt8],
+      modifierLinuxCode: UInt16?,
+      usbModifier: UInt8
+    ) {
+      self.linuxCode = linuxCode
+      self.usbUsage = usbUsage
+      self.serialBytes = serialBytes
+      self.modifierLinuxCode = modifierLinuxCode
+      self.usbModifier = usbModifier
+    }
+  }
+
+  /// The smoke runner accepts a bounded sequence of physical keys, not an installer language.
+  /// Every accepted key has an explicit Linux EV_KEY code, USB-HID usage, and serial equivalent.
+  /// This lets qualification edit a boot command line or exercise non-navigation input without
+  /// giving the runner filesystem, process, or guest-management authority.
   private static func keyboardScript(_ value: String?) throws -> [String] {
     guard let value else { return [] }
     let tokens = value.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
     guard
       !tokens.isEmpty,
       tokens.count <= 512,
-      tokens.allSatisfy({ keyCodes[$0] != nil && usbHIDKeyCodes[$0] != nil })
+      tokens.allSatisfy({ keyStrokes[$0] != nil })
     else {
       throw SmokeError.usage(
         "--keyboard-script must be a comma-separated list of: "
-          + keyCodes.keys.sorted().joined(separator: ",")
+          + keyStrokes.keys.sorted().joined(separator: ",")
       )
     }
     return tokens
   }
 
-  private static let keyCodes: [String: UInt16] = [
-    "enter": 28,
-    "esc": 1,
-    "up": 103,
-    "down": 108,
-    "left": 105,
-    "right": 106,
-    "tab": 15,
-    "space": 57,
-  ]
-
-  private static let usbHIDKeyCodes: [String: UInt8] = [
-    "enter": 0x28,
-    "esc": 0x29,
-    "up": 0x52,
-    "down": 0x51,
-    "left": 0x50,
-    "right": 0x4F,
-    "tab": 0x2B,
-    "space": 0x2C,
-  ]
+  private static let keyStrokes: [String: KeyboardStroke] = {
+    var strokes: [String: KeyboardStroke] = [
+      "enter": .init(linuxCode: 28, usbUsage: 0x28, serialBytes: [13], requiresShift: false),
+      "esc": .init(linuxCode: 1, usbUsage: 0x29, serialBytes: [27], requiresShift: false),
+      "up": .init(linuxCode: 103, usbUsage: 0x52, serialBytes: [27, 91, 65], requiresShift: false),
+      "down": .init(linuxCode: 108, usbUsage: 0x51, serialBytes: [27, 91, 66], requiresShift: false),
+      "left": .init(linuxCode: 105, usbUsage: 0x50, serialBytes: [27, 91, 68], requiresShift: false),
+      "right": .init(linuxCode: 106, usbUsage: 0x4F, serialBytes: [27, 91, 67], requiresShift: false),
+      "home": .init(linuxCode: 102, usbUsage: 0x4A, serialBytes: [27, 91, 72], requiresShift: false),
+      "end": .init(linuxCode: 107, usbUsage: 0x4D, serialBytes: [27, 91, 70], requiresShift: false),
+      "backspace": .init(linuxCode: 14, usbUsage: 0x2A, serialBytes: [127], requiresShift: false),
+      "tab": .init(linuxCode: 15, usbUsage: 0x2B, serialBytes: [9], requiresShift: false),
+      "space": .init(linuxCode: 57, usbUsage: 0x2C, serialBytes: [32], requiresShift: false),
+      "minus": .init(linuxCode: 12, usbUsage: 0x2D, serialBytes: [45], requiresShift: false),
+      "equals": .init(linuxCode: 13, usbUsage: 0x2E, serialBytes: [61], requiresShift: false),
+      "left-bracket": .init(linuxCode: 26, usbUsage: 0x2F, serialBytes: [91], requiresShift: false),
+      "right-bracket": .init(linuxCode: 27, usbUsage: 0x30, serialBytes: [93], requiresShift: false),
+      "backslash": .init(linuxCode: 43, usbUsage: 0x31, serialBytes: [92], requiresShift: false),
+      "semicolon": .init(linuxCode: 39, usbUsage: 0x33, serialBytes: [59], requiresShift: false),
+      "apostrophe": .init(linuxCode: 40, usbUsage: 0x34, serialBytes: [39], requiresShift: false),
+      "grave": .init(linuxCode: 41, usbUsage: 0x35, serialBytes: [96], requiresShift: false),
+      "comma": .init(linuxCode: 51, usbUsage: 0x36, serialBytes: [44], requiresShift: false),
+      "period": .init(linuxCode: 52, usbUsage: 0x37, serialBytes: [46], requiresShift: false),
+      "slash": .init(linuxCode: 53, usbUsage: 0x38, serialBytes: [47], requiresShift: false),
+    ]
+    let letters: [(UInt8, UInt16)] = [
+      (97, 30), (98, 48), (99, 46), (100, 32), (101, 18), (102, 33), (103, 34),
+      (104, 35), (105, 23), (106, 36), (107, 37), (108, 38), (109, 50), (110, 49),
+      (111, 24), (112, 25), (113, 16), (114, 19), (115, 31), (116, 20), (117, 22),
+      (118, 47), (119, 17), (120, 45), (121, 21), (122, 44),
+    ]
+    for (offset, entry) in letters.enumerated() {
+      let (letter, linuxCode) = entry
+      let lower = String(UnicodeScalar(letter))
+      let usage = UInt8(0x04 + offset)
+      strokes[lower] = .init(
+        linuxCode: linuxCode, usbUsage: usage, serialBytes: [letter], requiresShift: false)
+      strokes["shift-\(lower)"] = .init(
+        linuxCode: linuxCode, usbUsage: usage, serialBytes: [letter - 32], requiresShift: true)
+    }
+    let digits: [(String, UInt16, UInt8)] = [
+      ("1", 2, 0x1E), ("2", 3, 0x1F), ("3", 4, 0x20), ("4", 5, 0x21), ("5", 6, 0x22),
+      ("6", 7, 0x23), ("7", 8, 0x24), ("8", 9, 0x25), ("9", 10, 0x26), ("0", 11, 0x27),
+    ]
+    for (name, linuxCode, usage) in digits {
+      strokes[name] = .init(
+        linuxCode: linuxCode, usbUsage: usage, serialBytes: Array(name.utf8), requiresShift: false)
+    }
+    guard let x = strokes["x"] else { preconditionFailure("x key must be present") }
+    strokes["ctrl-x"] = .init(
+      linuxCode: x.linuxCode, usbUsage: x.usbUsage, serialBytes: [24],
+      modifierLinuxCode: 29, usbModifier: 0x01)
+    return strokes
+  }()
 
   private static func keyboardEvents(for script: [String]) -> [DoryVirtioInputEvent] {
     script.flatMap { key -> [DoryVirtioInputEvent] in
-      guard let code = keyCodes[key] else { return [] }
-      return [
-        .init(type: 1, code: code, value: 1),
+      guard let stroke = keyStrokes[key] else { return [] }
+      var events: [DoryVirtioInputEvent] = []
+      if let modifier = stroke.modifierLinuxCode {
+        events += [.init(type: 1, code: modifier, value: 1), .synchronize]
+      }
+      events += [
+        .init(type: 1, code: stroke.linuxCode, value: 1),
         .synchronize,
-        .init(type: 1, code: code, value: 0),
+        .init(type: 1, code: stroke.linuxCode, value: 0),
         .synchronize,
       ]
+      if let modifier = stroke.modifierLinuxCode {
+        events += [.init(type: 1, code: modifier, value: 0), .synchronize]
+      }
+      return events
     }
   }
 
   private static func usbKeyboardReports(for script: [String]) -> [[UInt8]] {
     script.flatMap { key -> [[UInt8]] in
-      guard let code = usbHIDKeyCodes[key] else { return [] }
+      guard let stroke = keyStrokes[key] else { return [] }
       return [
-        [0, 0, code, 0, 0, 0, 0, 0],
+        [stroke.usbModifier, 0, stroke.usbUsage, 0, 0, 0, 0, 0],
         [0, 0, 0, 0, 0, 0, 0, 0],
       ]
     }
   }
 
   private static func serialInputBytes(for script: [String]) -> [UInt8] {
-    script.flatMap { key -> [UInt8] in
-      switch key {
-      case "enter": return [13]
-      case "esc": return [27]
-      case "up": return [27, 91, 65]
-      case "down": return [27, 91, 66]
-      case "left": return [27, 91, 68]
-      case "right": return [27, 91, 67]
-      case "tab": return [9]
-      case "space": return [32]
-      default: return []
-      }
-    }
+    script.flatMap { keyStrokes[$0]?.serialBytes ?? [] }
   }
 }
 
@@ -1017,13 +1095,28 @@ private func enqueueKeyboardInput(
   on composed: DoryPCUEFIMachine,
   arguments: Arguments
 ) throws {
-  guard composed.keyboardDevice.enqueueSynchronized(arguments.keyboardEvents) else {
-    throw SmokeError.keyboardQueueFull
+  switch arguments.keyboardRoute {
+  case .all, .virtio:
+    guard composed.keyboardDevice.enqueueSynchronized(arguments.keyboardEvents) else {
+      throw SmokeError.keyboardQueueFull
+    }
+  case .usbHID, .serial:
+    break
   }
-  for report in arguments.usbKeyboardReports {
-    try composed.usbKeyboardDevice.enqueue(report: report)
+  switch arguments.keyboardRoute {
+  case .all, .usbHID:
+    for report in arguments.usbKeyboardReports {
+      try composed.usbKeyboardDevice.enqueue(report: report)
+    }
+  case .virtio, .serial:
+    break
   }
-  composed.machine.serial.enqueueReceivedBytes(arguments.serialInputBytes)
+  switch arguments.keyboardRoute {
+  case .all, .serial:
+    composed.machine.serial.enqueueReceivedBytes(arguments.serialInputBytes)
+  case .virtio, .usbHID:
+    break
+  }
 }
 
 private func pageTableTrace(
@@ -1341,6 +1434,7 @@ private func run() throws {
     "lastNonblankDisplayFrame": lastNonblankDisplayFrame,
     "displayCapture": displayCapture,
     "keyboardScript": arguments.keyboardScript,
+    "keyboardRoute": arguments.keyboardRoute.rawValue,
     "keyboardEventCount": arguments.keyboardEvents.count,
     "keyboardInjectionRequestedAfterInstructions": arguments.keyboardAfterInstructions.map {
       $0 as Any
