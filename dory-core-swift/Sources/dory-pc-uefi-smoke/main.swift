@@ -10,6 +10,7 @@ private enum SmokeError: Error, CustomStringConvertible {
   case invalidNumber(String)
   case missingSerialMarker(String)
   case executionDeadlineExceeded
+  case keyboardQueueFull
 
   var description: String {
     switch self {
@@ -18,6 +19,8 @@ private enum SmokeError: Error, CustomStringConvertible {
     case .executionDeadlineExceeded:
       "host execution deadline expired; incomplete boot remains censored"
     case .missingSerialMarker(let marker): "expected serial marker was not observed: \(marker)"
+    case .keyboardQueueFull:
+      "the virtual keyboard could not retain the requested scripted input"
     }
   }
 }
@@ -126,6 +129,8 @@ private struct Arguments {
   let installerMedia: URL?
   let variableStoreDirectory: URL?
   let displayCaptureOutput: URL?
+  let keyboardScript: [String]
+  let keyboardEvents: [DoryVirtioInputEvent]
   let exceptionPolicy: DoryPCExceptionPolicy
   let executionTier: DoryPCExecutionTier
   let baselineJITTier1Enabled: Bool
@@ -153,6 +158,7 @@ private struct Arguments {
           "--firmware-bundle", "--max-instructions", "--timeout-seconds", "--memory-bytes",
           "--processor-count",
           "--system-disk", "--installer-media", "--variable-store-directory", "--display-capture-output",
+          "--keyboard-script",
           "--exception-policy", "--execution-tier", "--progress-instructions",
           "--baseline-tier1",
           "--expected-serial-marker",
@@ -173,6 +179,7 @@ private struct Arguments {
           + "[--system-disk /absolute/disk] [--installer-media /absolute/iso] "
           + "[--variable-store-directory /absolute/directory] "
           + "[--display-capture-output /absolute/new-frame.ppm] "
+          + "[--keyboard-script enter,esc,up,down,left,right,tab,space] "
           + "[--processor-count count] [--exception-policy stop|deliver] "
           + "[--execution-tier interpreter|baseline-jit|optimizing-jit] "
           + "[--baseline-tier1 enabled|disabled] "
@@ -296,6 +303,8 @@ private struct Arguments {
       try Self.absoluteURL($0, isDirectory: true)
     }
     displayCaptureOutput = try options["--display-capture-output"].map { try Self.absoluteURL($0) }
+    keyboardScript = try Self.keyboardScript(options["--keyboard-script"])
+    keyboardEvents = Self.keyboardEvents(for: keyboardScript)
   }
 
   private static func absoluteURL(_ path: String, isDirectory: Bool = false) throws -> URL {
@@ -303,6 +312,43 @@ private struct Arguments {
       throw SmokeError.usage("path must be absolute and narrowly scoped: \(path)")
     }
     return URL(fileURLWithPath: path, isDirectory: isDirectory).standardizedFileURL
+  }
+
+  /// The smoke runner deliberately accepts navigation keys only. It is a bounded way to exercise
+  /// firmware and installer interaction; it is not a general unattended-install language.
+  private static func keyboardScript(_ value: String?) throws -> [String] {
+    guard let value else { return [] }
+    let tokens = value.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+    guard !tokens.isEmpty, tokens.allSatisfy({ keyCodes[$0] != nil }) else {
+      throw SmokeError.usage(
+        "--keyboard-script must be a comma-separated list of: "
+          + keyCodes.keys.sorted().joined(separator: ",")
+      )
+    }
+    return tokens
+  }
+
+  private static let keyCodes: [String: UInt16] = [
+    "enter": 28,
+    "esc": 1,
+    "up": 103,
+    "down": 108,
+    "left": 105,
+    "right": 106,
+    "tab": 15,
+    "space": 57,
+  ]
+
+  private static func keyboardEvents(for script: [String]) -> [DoryVirtioInputEvent] {
+    script.flatMap { key -> [DoryVirtioInputEvent] in
+      guard let code = keyCodes[key] else { return [] }
+      return [
+        .init(type: 1, code: code, value: 1),
+        .synchronize,
+        .init(type: 1, code: code, value: 0),
+        .synchronize,
+      ]
+    }
   }
 }
 
@@ -1008,6 +1054,9 @@ private func run() throws {
   )
   let bootTimeline = arguments.bootTimelineEnabled ? DoryPCBootTimeline() : nil
   composed.machine.serial.observeBoot(with: bootTimeline)
+  guard composed.keyboardDevice.enqueueSynchronized(arguments.keyboardEvents) else {
+    throw SmokeError.keyboardQueueFull
+  }
   defer { bootTimeline?.finish(reason: "execution-error") }
   let deadline = SmokeDeadline(machine: composed.machine, seconds: arguments.timeoutSeconds)
   defer { deadline.finish() }
@@ -1184,6 +1233,9 @@ private func run() throws {
     "lastDisplayFrame": lastDisplayFrame,
     "lastNonblankDisplayFrame": lastNonblankDisplayFrame,
     "displayCapture": displayCapture,
+    "keyboardScript": arguments.keyboardScript,
+    "keyboardEventCount": arguments.keyboardEvents.count,
+    "keyboardEventsPending": composed.keyboardDevice.inputDevice.hasPendingEvent,
     "interruptControllers": interruptControllerDiagnostics(composed.machine),
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
     "rbx": state.map { hexadecimal($0.registers.rbx) } ?? "unavailable",
