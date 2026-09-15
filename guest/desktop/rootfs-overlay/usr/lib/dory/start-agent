@@ -1,4 +1,0 @@
-#!/bin/bash
-set -euo pipefail
-
-exec /usr/bin/dory-agent >/var/log/dory-agent.log 2>&1
