@@ -755,7 +755,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       ? max(4_096, baselineJITMaximumCodeBytes / 4)
       : baselineJITMaximumCodeBytes
     let perProcessorBaselineCodeBytes = max(4_096, baselineCodeBytes / processorCount)
-    let createdBaselineJITs: [DoryARM64BaselineExecutor] = try switch executionTier {
+    let createdBaselineJITs: [DoryARM64BaselineExecutor] = switch executionTier {
     case .interpreter:
       []
     case .baselineJIT, .optimizingJIT:
@@ -776,7 +776,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     baselineJITs = createdBaselineJITs
     let optimizingCodeBytes = max(4_096, baselineJITMaximumCodeBytes * 3 / 4)
     let perProcessorOptimizingCodeBytes = max(4_096, optimizingCodeBytes / processorCount)
-    let createdOptimizingJITs: [DoryARM64BaselineExecutor] = try switch executionTier {
+    let createdOptimizingJITs: [DoryARM64BaselineExecutor] = switch executionTier {
     case .interpreter, .baselineJIT:
       []
     case .optimizingJIT:
