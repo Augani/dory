@@ -191,6 +191,104 @@ DoryReportRuntimePointers (
 }
 
 STATIC
+VOID
+DoryReportConsoleInputAttachments (
+  VOID
+  )
+{
+  EFI_HANDLE                    *Handles;
+  EFI_OPEN_PROTOCOL_INFORMATION_ENTRY  *Entries;
+  UINTN                         HandleCount;
+  UINTN                         EntryCount;
+  UINTN                         HandleIndex;
+  UINTN                         EntryIndex;
+  UINTN                         AttachedCount;
+  EFI_STATUS                    Status;
+
+  Handles       = NULL;
+  AttachedCount = 0;
+  Status        = gBS->LocateHandleBuffer (
+                         ByProtocol,
+                         &gEfiSimpleTextInProtocolGuid,
+                         NULL,
+                         &HandleCount,
+                         &Handles
+                         );
+  if (EFI_ERROR (Status)) {
+    DorySerialWriteString ("DORY-PC-UEFI-CONIN status=");
+    DorySerialWriteHex64 (Status);
+    DorySerialWriteString ("\r\n");
+    return;
+  }
+
+  for (HandleIndex = 0; HandleIndex < HandleCount; HandleIndex++) {
+    Entries    = NULL;
+    EntryCount = 0;
+    Status     = gBS->OpenProtocolInformation (
+                      Handles[HandleIndex],
+                      &gEfiSimpleTextInProtocolGuid,
+                      &Entries,
+                      &EntryCount
+                      );
+    if (!EFI_ERROR (Status)) {
+      for (EntryIndex = 0; EntryIndex < EntryCount; EntryIndex++) {
+        if (Entries[EntryIndex].ControllerHandle == gST->ConsoleInHandle) {
+          AttachedCount++;
+          break;
+        }
+      }
+    }
+
+    if (Entries != NULL) {
+      gBS->FreePool (Entries);
+    }
+  }
+
+  gBS->FreePool (Handles);
+  DorySerialWriteString ("DORY-PC-UEFI-CONIN handles=");
+  DorySerialWriteHex64 (HandleCount);
+  DorySerialWriteString (" attached=");
+  DorySerialWriteHex64 (AttachedCount);
+  DorySerialWriteString ("\r\n");
+}
+
+STATIC
+VOID
+DoryReportConsoleInputKey (
+  VOID
+  )
+{
+  EFI_INPUT_KEY  Key;
+  EFI_STATUS     Status;
+
+  DorySerialWriteString ("DORY-PC-UEFI-CONIN-KEY");
+  if ((gST->ConIn == NULL) || (gST->ConIn->ReadKeyStroke == NULL) ||
+      (gST->ConIn->WaitForKey == NULL))
+  {
+    DorySerialWriteString ("unavailable\r\n");
+    return;
+  }
+
+  DorySerialWriteString (" wait=");
+  Status = gBS->CheckEvent (gST->ConIn->WaitForKey);
+  DorySerialWriteHex64 (Status);
+  DorySerialWriteString (" retry=");
+  Status = gBS->CheckEvent (gST->ConIn->WaitForKey);
+  DorySerialWriteHex64 (Status);
+  DorySerialWriteString (" status=");
+  Status = gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
+  DorySerialWriteHex64 (Status);
+  if (!EFI_ERROR (Status)) {
+    DorySerialWriteString (" scan=");
+    DorySerialWriteHex64 (Key.ScanCode);
+    DorySerialWriteString (" unicode=");
+    DorySerialWriteHex64 (Key.UnicodeChar);
+  }
+
+  DorySerialWriteString ("\r\n");
+}
+
+STATIC
 BOOLEAN
 DoryBootProbeRequested (
   VOID
@@ -222,6 +320,8 @@ DoryRunBootProbe (
     Marker = mDoryConsoleMissingMarker;
   }
 
+  DoryReportConsoleInputAttachments ();
+  DoryReportConsoleInputKey ();
   DoryReportRuntimePointers ();
   DorySerialWriteString (Marker);
 
