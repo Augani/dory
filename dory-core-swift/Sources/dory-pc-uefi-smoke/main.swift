@@ -140,8 +140,13 @@ private struct Arguments {
   let keyboardEvents: [DoryVirtioInputEvent]
   let usbKeyboardReports: [[UInt8]]
   let serialInputBytes: [UInt8]
+  let secondKeyboardScript: [String]
+  let secondKeyboardEvents: [DoryVirtioInputEvent]
+  let secondUSBKeyboardReports: [[UInt8]]
+  let secondSerialInputBytes: [UInt8]
   let keyboardRoute: KeyboardRoute
   let keyboardAfterInstructions: UInt64?
+  let secondKeyboardAfterInstructions: UInt64?
   let exceptionPolicy: DoryPCExceptionPolicy
   let executionTier: DoryPCExecutionTier
   let baselineJITTier1Enabled: Bool
@@ -170,6 +175,7 @@ private struct Arguments {
           "--processor-count",
           "--system-disk", "--installer-media", "--variable-store-directory", "--display-capture-output",
           "--keyboard-script", "--keyboard-route", "--keyboard-after-instructions",
+          "--keyboard-second-script", "--keyboard-second-after-instructions",
           "--exception-policy", "--execution-tier", "--progress-instructions",
           "--baseline-tier1",
           "--expected-serial-marker",
@@ -193,6 +199,8 @@ private struct Arguments {
           + "[--keyboard-script named-key,...] "
           + "[--keyboard-route all|virtio|usb-hid|serial] "
           + "[--keyboard-after-instructions count] "
+          + "[--keyboard-second-script named-key,...] "
+          + "[--keyboard-second-after-instructions count] "
           + "[--processor-count count] [--exception-policy stop|deliver] "
           + "[--execution-tier interpreter|baseline-jit|optimizing-jit] "
           + "[--baseline-tier1 enabled|disabled] "
@@ -320,6 +328,10 @@ private struct Arguments {
     keyboardEvents = Self.keyboardEvents(for: keyboardScript)
     usbKeyboardReports = Self.usbKeyboardReports(for: keyboardScript)
     serialInputBytes = Self.serialInputBytes(for: keyboardScript)
+    secondKeyboardScript = try Self.keyboardScript(options["--keyboard-second-script"])
+    secondKeyboardEvents = Self.keyboardEvents(for: secondKeyboardScript)
+    secondUSBKeyboardReports = Self.usbKeyboardReports(for: secondKeyboardScript)
+    secondSerialInputBytes = Self.serialInputBytes(for: secondKeyboardScript)
     guard let keyboardRoute = KeyboardRoute(rawValue: options["--keyboard-route"] ?? "all") else {
       throw SmokeError.usage("--keyboard-route must be all, virtio, usb-hid, or serial")
     }
@@ -332,6 +344,21 @@ private struct Arguments {
       keyboardAfterInstructions = value
     } else {
       keyboardAfterInstructions = keyboardScript.isEmpty ? nil : 0
+    }
+    if let text = options["--keyboard-second-after-instructions"] {
+      guard let value = UInt64(text) else { throw SmokeError.invalidNumber(text) }
+      guard !secondKeyboardScript.isEmpty else {
+        throw SmokeError.usage("--keyboard-second-after-instructions requires --keyboard-second-script")
+      }
+      guard let firstAfter = keyboardAfterInstructions, value > firstAfter else {
+        throw SmokeError.usage("--keyboard-second-after-instructions must follow the first keyboard injection")
+      }
+      secondKeyboardAfterInstructions = value
+    } else {
+      guard secondKeyboardScript.isEmpty else {
+        throw SmokeError.usage("--keyboard-second-script requires --keyboard-second-after-instructions")
+      }
+      secondKeyboardAfterInstructions = nil
     }
   }
 
@@ -1004,7 +1031,7 @@ private func runWithProgress(
   traceCapacity: Int,
   traceBreakRIPBelow: UInt64?,
   bootTimeline: DoryPCBootTimeline?,
-  inputBoundaryInstructions: UInt64? = nil,
+  inputBoundaryInstructions: [UInt64] = [],
   beforeInstructionBoundary: ((UInt64) throws -> Void)? = nil
 ) throws -> (stop: DoryPCMachineStop, trace: [[String: Any]], traceStopReason: String?) {
   var completed: UInt64 = 0
@@ -1038,8 +1065,9 @@ private func runWithProgress(
       }
     }
     let distanceToTrace = traceAfterInstructions.map { $0 > completed ? $0 - completed : 0 } ?? 0
-    let distanceToInput = inputBoundaryInstructions.map { $0 > completed ? $0 - completed : 0 }
-      ?? 0
+    let distanceToInput = inputBoundaryInstructions.compactMap {
+      $0 > completed ? $0 - completed : nil
+    }.min() ?? 0
     let nextBoundary = min(
       distanceToTrace == 0 ? progressInstructions : distanceToTrace,
       distanceToInput == 0 ? progressInstructions : distanceToInput
@@ -1097,27 +1125,30 @@ private func runWithProgress(
 
 private func enqueueKeyboardInput(
   on composed: DoryPCUEFIMachine,
-  arguments: Arguments
+  route: Arguments.KeyboardRoute,
+  keyboardEvents: [DoryVirtioInputEvent],
+  usbKeyboardReports: [[UInt8]],
+  serialInputBytes: [UInt8]
 ) throws {
-  switch arguments.keyboardRoute {
+  switch route {
   case .all, .virtio:
-    guard composed.keyboardDevice.enqueueSynchronized(arguments.keyboardEvents) else {
+    guard composed.keyboardDevice.enqueueSynchronized(keyboardEvents) else {
       throw SmokeError.keyboardQueueFull
     }
   case .usbHID, .serial:
     break
   }
-  switch arguments.keyboardRoute {
+  switch route {
   case .all, .usbHID:
-    for report in arguments.usbKeyboardReports {
+    for report in usbKeyboardReports {
       try composed.usbKeyboardDevice.enqueue(report: report)
     }
   case .virtio, .serial:
     break
   }
-  switch arguments.keyboardRoute {
+  switch route {
   case .all, .serial:
-    composed.machine.serial.enqueueReceivedBytes(arguments.serialInputBytes)
+    composed.machine.serial.enqueueReceivedBytes(serialInputBytes)
   case .virtio, .usbHID:
     break
   }
@@ -1255,6 +1286,7 @@ private func run() throws {
   defer { deadline.finish() }
   let executionStarted = DispatchTime.now().uptimeNanoseconds
   var keyboardInjectionAtInstructions: UInt64?
+  var secondKeyboardInjectionAtInstructions: UInt64?
   let execution = try runWithProgress(
     machine: composed.machine,
     blockDevices: composed.blockDevices,
@@ -1265,15 +1297,39 @@ private func run() throws {
     traceCapacity: arguments.traceCapacity,
     traceBreakRIPBelow: arguments.traceBreakRIPBelow,
     bootTimeline: bootTimeline,
-    inputBoundaryInstructions: arguments.keyboardAfterInstructions,
+    inputBoundaryInstructions: [
+      arguments.keyboardAfterInstructions,
+      arguments.secondKeyboardAfterInstructions,
+    ].compactMap { $0 },
     beforeInstructionBoundary: { completed in
-      guard
+      if
         keyboardInjectionAtInstructions == nil,
         let after = arguments.keyboardAfterInstructions,
         completed >= after
-      else { return }
-      try enqueueKeyboardInput(on: composed, arguments: arguments)
-      keyboardInjectionAtInstructions = completed
+      {
+        try enqueueKeyboardInput(
+          on: composed,
+          route: arguments.keyboardRoute,
+          keyboardEvents: arguments.keyboardEvents,
+          usbKeyboardReports: arguments.usbKeyboardReports,
+          serialInputBytes: arguments.serialInputBytes
+        )
+        keyboardInjectionAtInstructions = completed
+      }
+      if
+        secondKeyboardInjectionAtInstructions == nil,
+        let after = arguments.secondKeyboardAfterInstructions,
+        completed >= after
+      {
+        try enqueueKeyboardInput(
+          on: composed,
+          route: arguments.keyboardRoute,
+          keyboardEvents: arguments.secondKeyboardEvents,
+          usbKeyboardReports: arguments.secondUSBKeyboardReports,
+          serialInputBytes: arguments.secondSerialInputBytes
+        )
+        secondKeyboardInjectionAtInstructions = completed
+      }
     }
   )
   let executionElapsed = DispatchTime.now().uptimeNanoseconds - executionStarted
@@ -1444,10 +1500,20 @@ private func run() throws {
       $0 as Any
     } ?? NSNull(),
     "keyboardInjectionAtInstructions": keyboardInjectionAtInstructions.map { $0 as Any } ?? NSNull(),
+    "keyboardSecondScript": arguments.secondKeyboardScript,
+    "keyboardSecondEventCount": arguments.secondKeyboardEvents.count,
+    "keyboardSecondInjectionRequestedAfterInstructions": arguments.secondKeyboardAfterInstructions.map {
+      $0 as Any
+    } ?? NSNull(),
+    "keyboardSecondInjectionAtInstructions": secondKeyboardInjectionAtInstructions.map {
+      $0 as Any
+    } ?? NSNull(),
     "keyboardEventsPending": composed.keyboardDevice.inputDevice.hasPendingEvent,
     "usbKeyboardReportCount": arguments.usbKeyboardReports.count,
+    "usbKeyboardSecondReportCount": arguments.secondUSBKeyboardReports.count,
     "usbKeyboardReportsPending": composed.usbKeyboardDevice.hasPendingReport,
     "serialInputByteCount": arguments.serialInputBytes.count,
+    "serialSecondInputByteCount": arguments.secondSerialInputBytes.count,
     "serialInputBytesPending": composed.machine.serial.hasPendingReceivedBytes,
     "interruptControllers": interruptControllerDiagnostics(composed.machine),
     "powerController": powerControllerDiagnostics(composed.machine.powerController),
