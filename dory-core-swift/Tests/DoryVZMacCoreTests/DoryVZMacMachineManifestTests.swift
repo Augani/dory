@@ -76,6 +76,7 @@ final class DoryVZMacMachineManifestTests: XCTestCase {
                 requestedCPUCount: 4,
                 requestedMemoryBytes: 8 * DoryVZMacResourcePlan.gibibyte,
                 requestedDiskBytes: 80 * DoryVZMacResourcePlan.gibibyte,
+                requestedDisplays: nil,
                 minimumCPUCount: 4,
                 minimumMemoryBytes: 8 * DoryVZMacResourcePlan.gibibyte,
                 maximumCPUCount: 12,

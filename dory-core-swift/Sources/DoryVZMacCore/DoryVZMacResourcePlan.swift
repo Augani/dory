@@ -21,6 +21,18 @@ public enum DoryVZMacResourcePlanError: Error, Sendable, Equatable, CustomString
     }
 }
 
+public struct DoryVZMacDisplay: Codable, Sendable, Equatable {
+    public let widthInPixels: Int
+    public let heightInPixels: Int
+    public let pixelsPerInch: Int
+
+    public init(widthInPixels: Int, heightInPixels: Int, pixelsPerInch: Int) {
+        self.widthInPixels = widthInPixels
+        self.heightInPixels = heightInPixels
+        self.pixelsPerInch = pixelsPerInch
+    }
+}
+
 public struct DoryVZMacResourcePlan: Codable, Sendable, Equatable {
     public static let mebibyte: UInt64 = 1_024 * 1_024
     public static let gibibyte: UInt64 = 1_024 * 1_024 * 1_024
@@ -29,11 +41,13 @@ public struct DoryVZMacResourcePlan: Codable, Sendable, Equatable {
     public let cpuCount: Int
     public let memoryBytes: UInt64
     public let diskBytes: UInt64
+    public let displays: [DoryVZMacDisplay]
 
     public init(
         requestedCPUCount: Int?,
         requestedMemoryBytes: UInt64?,
         requestedDiskBytes: UInt64,
+        requestedDisplays: [DoryVZMacDisplay]?,
         minimumCPUCount: Int,
         minimumMemoryBytes: UInt64,
         maximumCPUCount: Int,
@@ -67,6 +81,7 @@ public struct DoryVZMacResourcePlan: Codable, Sendable, Equatable {
         self.cpuCount = cpuCount
         self.memoryBytes = memoryBytes
         self.diskBytes = requestedDiskBytes
+        self.displays = requestedDisplays ?? [Self.defaultDisplay]
     }
 
     public init(
@@ -79,10 +94,15 @@ public struct DoryVZMacResourcePlan: Codable, Sendable, Equatable {
             requestedCPUCount: requestedCPUCount,
             requestedMemoryBytes: requestedMemoryBytes,
             requestedDiskBytes: requestedDiskBytes,
+            requestedDisplays: nil,
             minimumCPUCount: requirements.minimumSupportedCPUCount,
             minimumMemoryBytes: requirements.minimumSupportedMemorySize,
             maximumCPUCount: VZVirtualMachineConfiguration.maximumAllowedCPUCount,
             maximumMemoryBytes: VZVirtualMachineConfiguration.maximumAllowedMemorySize
         )
+    }
+
+    static var defaultDisplay: DoryVZMacDisplay {
+        DoryVZMacDisplay(widthInPixels: 1_920, heightInPixels: 1_080, pixelsPerInch: 144)
     }
 }

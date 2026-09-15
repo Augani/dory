@@ -114,7 +114,8 @@ public enum DoryVZMacConfigurationBuilder {
     public static func fingerprint(
         sharedDirectories: [DoryVZMacSharedDirectory] = [],
         usbMassStorage: DoryVZMacUSBMassStorage? = nil,
-        devicePolicy: DoryVZMacDevicePolicy = .legacyDefault
+        devicePolicy: DoryVZMacDevicePolicy = .legacyDefault,
+        displays: [DoryVZMacDisplay]? = nil
     ) throws -> String {
         struct SharedDirectory: Codable {
             let name: String
@@ -177,14 +178,19 @@ public enum DoryVZMacConfigurationBuilder {
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let effectiveDisplays = displays ?? [DoryVZMacResourcePlan.defaultDisplay]
+        let displayString = effectiveDisplays
+            .map { "\($0.widthInPixels)x\($0.heightInPixels)@\($0.pixelsPerInch)ppi" }
+            .joined(separator: "+")
+            + "-auto-resize"
         let encoded: Data
         let mappedUSBMassStorage = usbMassStorage.map {
             USBMassStorage(path: $0.url.path, readOnly: $0.readOnly, byteCount: $0.byteCount)
         }
         if devicePolicy != .legacyDefault {
             encoded = try encoder.encode(PolicyDescriptor(
-                schema: "dory.vzmac-configuration@3",
-                display: "1920x1080@144ppi-auto-resize",
+                schema: "dory.vzmac-configuration@4",
+                display: displayString,
                 network: devicePolicy.network.rawValue,
                 audioInput: devicePolicy.audio.inputEnabled,
                 audioOutput: devicePolicy.audio.outputEnabled,
@@ -200,7 +206,7 @@ public enum DoryVZMacConfigurationBuilder {
         } else if mappedUSBMassStorage != nil {
             encoded = try encoder.encode(Descriptor(
                 schema: "dory.vzmac-configuration@2",
-                display: "1920x1080@144ppi-auto-resize",
+                display: displayString,
                 network: "virtio-nat",
                 audio: "virtio-host-input-output",
                 input: "mac-keyboard-trackpad",
@@ -216,7 +222,7 @@ public enum DoryVZMacConfigurationBuilder {
             // configuration did not change. Preserve the exact pre-USB descriptor in that case.
             encoded = try encoder.encode(LegacyDescriptor(
                 schema: "dory.vzmac-configuration@1",
-                display: "1920x1080@144ppi-auto-resize",
+                display: displayString,
                 network: "virtio-nat",
                 audio: "virtio-host-input-output",
                 input: "mac-keyboard-trackpad",
@@ -273,13 +279,14 @@ public enum DoryVZMacConfigurationBuilder {
         }
         configuration.storageDevices = storageDevices
 
-        let display = VZMacGraphicsDisplayConfiguration(
-            widthInPixels: 1_920,
-            heightInPixels: 1_080,
-            pixelsPerInch: 144
-        )
         let graphics = VZMacGraphicsDeviceConfiguration()
-        graphics.displays = [display]
+        graphics.displays = bundle.manifest.resources.displays.map { display in
+            VZMacGraphicsDisplayConfiguration(
+                widthInPixels: display.widthInPixels,
+                heightInPixels: display.heightInPixels,
+                pixelsPerInch: display.pixelsPerInch
+            )
+        }
         configuration.graphicsDevices = [graphics]
         configuration.keyboards = [VZMacKeyboardConfiguration()]
         configuration.pointingDevices = [VZMacTrackpadConfiguration()]
@@ -455,7 +462,8 @@ public final class DoryVZMacRuntime {
         configurationSHA256 = try DoryVZMacConfigurationBuilder.fingerprint(
             sharedDirectories: sharedDirectories,
             usbMassStorage: usbMassStorage,
-            devicePolicy: devicePolicy
+            devicePolicy: devicePolicy,
+            displays: bundle.manifest.resources.displays
         )
         virtualMachine = VZVirtualMachine(configuration: configuration)
         if devicePolicy.cameraBridgeEnabled {
