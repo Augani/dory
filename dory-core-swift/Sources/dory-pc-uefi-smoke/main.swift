@@ -902,6 +902,7 @@ private func runWithProgress(
   traceCapacity: Int,
   traceBreakRIPBelow: UInt64?,
   bootTimeline: DoryPCBootTimeline?,
+  inputBoundaryInstructions: UInt64? = nil,
   beforeInstructionBoundary: ((UInt64) throws -> Void)? = nil
 ) throws -> (stop: DoryPCMachineStop, trace: [[String: Any]], traceStopReason: String?) {
   var completed: UInt64 = 0
@@ -935,12 +936,18 @@ private func runWithProgress(
       }
     }
     let distanceToTrace = traceAfterInstructions.map { $0 > completed ? $0 - completed : 0 } ?? 0
+    let distanceToInput = inputBoundaryInstructions.map { $0 > completed ? $0 - completed : 0 }
+      ?? 0
+    let nextBoundary = min(
+      distanceToTrace == 0 ? progressInstructions : distanceToTrace,
+      distanceToInput == 0 ? progressInstructions : distanceToInput
+    )
     let chunk = min(
       tracing
         ? 1
         : max(
           1,
-          min(progressInstructions, distanceToTrace == 0 ? progressInstructions : distanceToTrace)),
+          min(progressInstructions, nextBoundary)),
       maximumInstructions - completed
     )
     let stop = try machine.run(maximumInstructions: chunk, exceptionPolicy: exceptionPolicy)
@@ -1141,6 +1148,7 @@ private func run() throws {
     traceCapacity: arguments.traceCapacity,
     traceBreakRIPBelow: arguments.traceBreakRIPBelow,
     bootTimeline: bootTimeline,
+    inputBoundaryInstructions: arguments.keyboardAfterInstructions,
     beforeInstructionBoundary: { completed in
       guard
         keyboardInjectionAtInstructions == nil,
