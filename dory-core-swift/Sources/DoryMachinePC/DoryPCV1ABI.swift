@@ -345,6 +345,24 @@ public enum DoryPCV1ABI {
     `dory-pc-uefi-smoke` must reach the firmware-owned `DORY-PC-UEFI-BOOT` marker and ACPI power-off
     under the interpreter, baseline JIT, and optimizing JIT with the same zero RTC epoch, memory size,
     processor count, firmware bundle, runner, and in-memory boot disk. Preserve each JSON receipt, then
+    issue the comparison receipt. Each smoke invocation must explicitly enable the dormant firmware
+    probe and use delivered exceptions; the runner defaults (`--boot-probe disabled` and
+    `--exception-policy stop`) are valid for ordinary diagnostics but are rejected by the tier
+    qualifier. For example, run each tier with the same absolute firmware bundle and evidence root:
+
+    ```sh
+    swift run -c release --package-path dory-core-swift dory-pc-uefi-smoke \
+      --firmware-bundle /absolute/dory-pc-firmware \
+      --execution-tier interpreter|baseline-jit|optimizing-jit \
+      --baseline-tier1 enabled --boot-probe enabled --exception-policy deliver \
+      --clock-source deterministic --initial-rtc-unix-seconds 0 \
+      --memory-bytes 536870912 --processor-count 1 \
+      --expected-serial-marker DORY-PC-UEFI-BOOT \
+      --timeout-seconds 300 --max-instructions 100000000 \
+      > /absolute/evidence/<tier>.json
+    ```
+
+    Do not supply `--system-disk` or `--installer-media` to this deterministic firmware gate. Then
     issue the comparison receipt with:
 
     ```sh
