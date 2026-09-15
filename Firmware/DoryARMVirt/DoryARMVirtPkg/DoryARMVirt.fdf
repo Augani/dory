@@ -74,6 +74,8 @@ READ_LOCK_STATUS   = TRUE
   INF OvmfPkg/VirtioBlkDxe/VirtioBlk.inf
   INF OvmfPkg/VirtioNetDxe/VirtioNet.inf
   INF OvmfPkg/VirtioRngDxe/VirtioRng.inf
+  INF OvmfPkg/VirtioGpuDxe/VirtioGpu.inf
+  INF OvmfPkg/VirtioInputDxe/VirtioInput.inf
   INF SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf
 
   INF MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf

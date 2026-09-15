@@ -46,7 +46,7 @@
   CLANGDWARF:*_*_AARCH64_CC_FLAGS = -Wno-tautological-constant-out-of-range-compare
 
 [PcdsFeatureFlag.common]
-  gEfiMdeModulePkgTokenSpaceGuid.PcdConOutGopSupport|FALSE
+  gEfiMdeModulePkgTokenSpaceGuid.PcdConOutGopSupport|TRUE
   gEfiMdeModulePkgTokenSpaceGuid.PcdHiiOsRuntimeSupport|FALSE
   gEmbeddedTokenSpaceGuid.PcdPrePiProduceMemoryTypeInformationHob|TRUE
   gEfiMdeModulePkgTokenSpaceGuid.PcdInstallAcpiSdtProtocol|FALSE
@@ -143,6 +143,8 @@
   OvmfPkg/VirtioBlkDxe/VirtioBlk.inf
   OvmfPkg/VirtioNetDxe/VirtioNet.inf
   OvmfPkg/VirtioRngDxe/VirtioRng.inf
+  OvmfPkg/VirtioGpuDxe/VirtioGpu.inf
+  OvmfPkg/VirtioInputDxe/VirtioInput.inf
 
   SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf
   MdeModulePkg/Bus/Pci/PciHostBridgeDxe/PciHostBridgeDxe.inf
