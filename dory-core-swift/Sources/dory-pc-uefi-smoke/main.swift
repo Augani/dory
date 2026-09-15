@@ -1154,24 +1154,25 @@ private func enqueueKeyboardInput(
     break
   }
   if route == .all {
-    guard composed.machine.ps2Keyboard.enqueueSet1ScanCodes(ps2Set2ScanCodes(for: script)) else {
+      guard composed.machine.ps2Keyboard.enqueueSet1ScanCodes(ps2Set1ScanCodes(for: script)) else {
       throw SmokeError.keyboardQueueFull
     }
   }
 }
 
-private func ps2Set2ScanCodes(for script: [String]) -> [UInt8] {
+private func ps2Set1ScanCodes(for script: [String]) -> [UInt8] {
   let make: [String: UInt8] = [
-    "enter": 0x5A, "space": 0x29, "end": 0x69, "e": 0x24, "c": 0x21,
-    "o": 0x44, "n": 0x31, "s": 0x1B, "l": 0x4B, "equals": 0x55,
-    "t": 0x2C, "y": 0x35, "shift-s": 0x1B, "0": 0x45, "comma": 0x41,
-    "1": 0x16, "2": 0x1E, "5": 0x2E
+    "enter": 0x1C, "space": 0x39, "e": 0x12, "c": 0x2E,
+    "o": 0x18, "n": 0x31, "s": 0x1F, "l": 0x26, "equals": 0x0D,
+    "t": 0x14, "y": 0x15, "shift-s": 0x1F, "0": 0x0B, "comma": 0x33,
+    "1": 0x02, "2": 0x03, "5": 0x06
   ]
   return script.flatMap { token -> [UInt8] in
-    if token == "ctrl-x" { return [0x14, 0x22, 0xF0, 0x22, 0xF0, 0x14] }
+    if token == "ctrl-x" { return [0x1D, 0x2D, 0xAD, 0x9D] }
+    if token == "end" { return [0xE0, 0x4F, 0xE0, 0xCF] }
     guard let code = make[token] else { return [] }
-    if token == "shift-s" { return [0x12, code, 0xF0, code, 0xF0, 0x12] }
-    return [code, 0xF0, code]
+    if token == "shift-s" { return [0x2A, code, code | 0x80, 0xAA] }
+    return [code, code | 0x80]
   }
 }
 
@@ -1538,6 +1539,7 @@ private func run() throws {
     "serialInputByteCount": arguments.serialInputBytes.count,
     "serialSecondInputByteCount": arguments.secondSerialInputBytes.count,
     "serialInputBytesPending": composed.machine.serial.hasPendingReceivedBytes,
+    "ps2KeyboardBytesPending": composed.machine.ps2Keyboard.hasPendingByte,
     "interruptControllers": interruptControllerDiagnostics(composed.machine),
     "powerController": powerControllerDiagnostics(composed.machine.powerController),
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",

@@ -96,6 +96,30 @@ import Testing
 
     #expect(machine.legacyPIC.snapshot().masterRequest & (1 << 4) != 0)
   }
+
+  @Test func ps2KeyboardControllerProvidesSet1BytesAndTracksIRQ1() throws {
+    let levels = LockedLevels()
+    let controller = DoryPCPS2KeyboardController()
+    let data = DoryPCPS2KeyboardDataPort(controller: controller)
+    let status = DoryPCPS2KeyboardStatusPort(controller: controller)
+    controller.connectInterruptSink { levels.append($0) }
+
+    #expect(try status.read(portOffset: 0, width: .byte) == 0x04)
+    #expect(controller.enqueueSet1ScanCodes([0x1E, 0x9E]))
+    #expect(try status.read(portOffset: 0, width: .byte) == 0x05)
+    #expect(try data.read(portOffset: 0, width: .byte) == 0x1E)
+    #expect(try data.read(portOffset: 0, width: .byte) == 0x9E)
+    #expect(levels.values == [false, true, false])
+
+    try status.write(portOffset: 0, value: 0x20, width: .byte)
+    #expect(try data.read(portOffset: 0, width: .byte) == 0x01)
+  }
+
+  @Test func machineRoutesPS2KeyboardInterruptToLegacyIRQ1() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    #expect(machine.ps2Keyboard.enqueueSet1ScanCodes([0x1E]))
+    #expect(machine.legacyPIC.snapshot().masterRequest & (1 << 1) != 0)
+  }
 }
 
 private final class LockedLevels: @unchecked Sendable {

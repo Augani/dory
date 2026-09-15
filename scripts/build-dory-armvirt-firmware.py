@@ -160,6 +160,15 @@ def verify_platform_contract() -> None:
         raise BuildFailure(
             "DoryPC firmware must publish a serial Simple Text Output console"
         )
+    sio_bus_driver = "OvmfPkg/SioBusDxe/SioBusDxe.inf"
+    ps2_keyboard_driver = "MdeModulePkg/Bus/Isa/Ps2KeyboardDxe/Ps2KeyboardDxe.inf"
+    if any(
+        driver not in contents or driver not in flash_contents
+        for driver in (sio_bus_driver, ps2_keyboard_driver)
+    ):
+        raise BuildFailure(
+            "DoryPC firmware must include the Super I/O and PS/2 keyboard drivers"
+        )
     apriori_start = flash_contents.find("APRIORI DXE {")
     apriori_end = flash_contents.find("\n}", apriori_start)
     if apriori_start < 0 or apriori_end < 0:
@@ -190,6 +199,11 @@ def verify_platform_contract() -> None:
         raise BuildFailure("DoryPC console drivers must be dispatched before BDS")
     if console_dispatch_positions != sorted(console_dispatch_positions):
         raise BuildFailure("DoryPC console drivers must preserve their dependency order")
+    keyboard_dispatch_positions = [apriori.find(driver) for driver in (sio_bus_driver, ps2_keyboard_driver)]
+    if any(position < 0 for position in keyboard_dispatch_positions):
+        raise BuildFailure("DoryPC keyboard drivers must be dispatched before BDS")
+    if keyboard_dispatch_positions != sorted(keyboard_dispatch_positions):
+        raise BuildFailure("DoryPC keyboard drivers must preserve their dependency order")
     graphics_apriori_order = (
         "MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf",
         "MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf",

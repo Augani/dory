@@ -177,6 +177,7 @@ APRIORI DXE {
   INF  MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
   INF  MdeModulePkg/Universal/SerialDxe/SerialDxe.inf
   INF  MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
+  INF  OvmfPkg/SioBusDxe/SioBusDxe.inf
   INF  MdeModulePkg/Bus/Isa/Ps2KeyboardDxe/Ps2KeyboardDxe.inf
   INF  MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe.inf
   INF  OvmfPkg/Virtio10Dxe/Virtio10.inf
@@ -231,6 +232,7 @@ INF  MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf
 INF  MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
 INF  MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
 INF  MdeModulePkg/Universal/SerialDxe/SerialDxe.inf
+INF  OvmfPkg/SioBusDxe/SioBusDxe.inf
 INF  MdeModulePkg/Bus/Isa/Ps2KeyboardDxe/Ps2KeyboardDxe.inf
 INF  MdeModulePkg/Universal/DriverHealthManagerDxe/DriverHealthManagerDxe.inf
 INF  MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
