@@ -72,11 +72,25 @@ import Testing
     #expect(event.elapsedNanoseconds == 140)
   }
 
+  @Test func interactiveGrubPromptRecordsDistinctMenuReadyMilestone() throws {
+    let clock = Clock()
+    let timeline = DoryPCBootTimeline(now: clock.read)
+    let uart = DoryPCUART16550()
+    uart.observeBoot(with: timeline)
+
+    try transmit("GNU GRUB", to: uart)
+    clock.set(240)
+    try transmit("Press enter to boot the selected OS", to: uart)
+
+    #expect(timeline.snapshot().events.suffix(2).map(\.milestone) == [.grub, .grubMenu])
+    #expect(timeline.snapshot().events.last?.elapsedNanoseconds == 140)
+  }
+
   @Test func observationsSurviveConsoleOverflowAndRemainBounded() throws {
     let uart = DoryPCUART16550(queueCapacity: 1)
     let timeline = DoryPCBootTimeline()
     uart.observeBoot(with: timeline)
-    let text = "GNU GRUB Linux version VFS: Mounted root Run /init as init process\n"
+    let text = "GNU GRUB Press enter to boot the selected OS Linux version VFS: Mounted root Run /init as init process\n"
     for _ in 0..<1_000 { try transmit(text, to: uart) }
     let snapshot = timeline.snapshot()
     #expect(snapshot.events.count == DoryPCBootTimeline.Milestone.allCases.count)

@@ -203,7 +203,7 @@ private struct Arguments {
           + "[--keyboard-script named-key,...] "
           + "[--keyboard-route all|virtio|usb-hid|serial|ps2] "
           + "[--keyboard-after-instructions count] "
-          + "[--keyboard-after-milestone grub|kernel|rootMounted|initStarted] "
+          + "[--keyboard-after-milestone grub|grubMenu|kernel|rootMounted|initStarted] "
           + "[--keyboard-after-milestone-delay-instructions count] "
           + "[--keyboard-second-script named-key,...] "
           + "[--keyboard-second-after-instructions count] "

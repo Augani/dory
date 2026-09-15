@@ -4,7 +4,7 @@ import Foundation
 /// These markers are diagnostics, not authenticated guest readiness or capability evidence.
 public final class DoryPCBootTimeline: @unchecked Sendable {
   public enum Milestone: String, Codable, CaseIterable, Sendable {
-    case executionStarted, grub, kernel, rootMounted, initStarted
+    case executionStarted, grub, grubMenu, kernel, rootMounted, initStarted
   }
 
   public struct Event: Codable, Sendable, Equatable {
@@ -69,6 +69,9 @@ public final class DoryPCBootTimeline: @unchecked Sendable {
     // the selected menu entry rather than GRUB's interactive banner. Keep the established
     // `grub` receipt value for schema compatibility while recognizing this bounded marker.
     .init(.grub, "Arch Linux install medium (x86_64, "),
+    // The interactive prompt is a later and distinct bootloader phase from the banner. It is
+    // suitable for synchronized keyboard injection; a banner alone is not an input-ready proof.
+    .init(.grubMenu, "Press enter to boot the selected OS"),
     .init(.kernel, "Linux version "),
     .init(.rootMounted, "VFS: Mounted root"),
     .init(.initStarted, "Run /init as init process"),
