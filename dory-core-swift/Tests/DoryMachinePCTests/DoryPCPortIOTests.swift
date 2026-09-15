@@ -113,6 +113,11 @@ import Testing
 
     try status.write(portOffset: 0, value: 0x20, width: .byte)
     #expect(try data.read(portOffset: 0, width: .byte) == 0x01)
+    let snapshot = controller.snapshot()
+    #expect(snapshot.statusReadCount == 2)
+    #expect(snapshot.dataReadCount == 3)
+    #expect(snapshot.commandWriteCount == 1)
+    #expect(snapshot.dataWriteCount == 0)
   }
 
   @Test func machineRoutesPS2KeyboardInterruptToLegacyIRQ1() throws {

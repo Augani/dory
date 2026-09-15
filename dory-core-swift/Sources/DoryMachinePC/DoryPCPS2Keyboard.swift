@@ -5,6 +5,15 @@ import Foundation
 /// port used by firmware and ordinary boot loaders: status, command byte, keyboard ACK/reset and
 /// bounded set-1 scan-code delivery. Mouse and controller self-test extensions remain absent.
 public final class DoryPCPS2KeyboardController: @unchecked Sendable {
+  public struct Snapshot: Sendable, Equatable {
+    public let bytesPending: Int
+    public let commandByte: UInt8
+    public let dataReadCount: UInt64
+    public let statusReadCount: UInt64
+    public let dataWriteCount: UInt64
+    public let commandWriteCount: UInt64
+  }
+
   private let lock = NSLock()
   private let maximumQueuedBytes: Int
   private var output: [UInt8] = []
@@ -12,12 +21,28 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
   private var expectingCommandByte = false
   private var interruptSink: (@Sendable (Bool) -> Void)?
   private var lastInterruptLevel = false
+  private var dataReadCount: UInt64 = 0
+  private var statusReadCount: UInt64 = 0
+  private var dataWriteCount: UInt64 = 0
+  private var commandWriteCount: UInt64 = 0
 
   public init(maximumQueuedBytes: Int = 1024) {
     self.maximumQueuedBytes = max(1, maximumQueuedBytes)
   }
 
   public var hasPendingByte: Bool { lock.withLock { !output.isEmpty } }
+
+  public func snapshot() -> Snapshot {
+    lock.withLock {
+      Snapshot(
+        bytesPending: output.count,
+        commandByte: commandByte,
+        dataReadCount: dataReadCount,
+        statusReadCount: statusReadCount,
+        dataWriteCount: dataWriteCount,
+        commandWriteCount: commandWriteCount)
+    }
+  }
 
   @discardableResult
   public func enqueueSet1ScanCodes(_ bytes: [UInt8]) -> Bool {
@@ -42,6 +67,7 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
 
   fileprivate func readData() -> UInt8 {
     let result = lock.withLock {
+      dataReadCount &+= 1
       let value = output.isEmpty ? UInt8(0) : output.removeFirst()
       return (value, interruptNotificationLocked())
     }
@@ -50,11 +76,15 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
   }
 
   fileprivate func readStatus() -> UInt8 {
-    lock.withLock { (output.isEmpty ? 0 : 1) | 0x04 }
+    lock.withLock {
+      statusReadCount &+= 1
+      return (output.isEmpty ? 0 : 1) | 0x04
+    }
   }
 
   fileprivate func writeData(_ value: UInt8) {
     let notification = lock.withLock {
+      dataWriteCount &+= 1
       if expectingCommandByte {
         commandByte = value
         expectingCommandByte = false
@@ -72,6 +102,7 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
 
   fileprivate func writeCommand(_ value: UInt8) {
     let notification = lock.withLock {
+      commandWriteCount &+= 1
       switch value {
       case 0x20: output.append(commandByte)
       case 0x60: expectingCommandByte = true

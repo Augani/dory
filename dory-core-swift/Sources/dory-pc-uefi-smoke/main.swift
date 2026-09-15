@@ -963,6 +963,18 @@ private func interruptControllerDiagnostics(_ machine: DoryPCDirectKernelMachine
   ]
 }
 
+private func ps2KeyboardDiagnostics(_ keyboard: DoryPCPS2KeyboardController) -> [String: Any] {
+  let snapshot = keyboard.snapshot()
+  return [
+    "bytesPending": snapshot.bytesPending,
+    "commandByte": String(format: "0x%02x", snapshot.commandByte),
+    "dataReadCount": snapshot.dataReadCount,
+    "statusReadCount": snapshot.statusReadCount,
+    "dataWriteCount": snapshot.dataWriteCount,
+    "commandWriteCount": snapshot.commandWriteCount,
+  ]
+}
+
 private func localAPICDiagnostics(_ apic: DoryPCLocalAPIC) -> [String: Any] {
   let snapshot = apic.snapshot()
   return [
@@ -1541,6 +1553,7 @@ private func run() throws {
     "serialSecondInputByteCount": arguments.secondSerialInputBytes.count,
     "serialInputBytesPending": composed.machine.serial.hasPendingReceivedBytes,
     "ps2KeyboardBytesPending": composed.machine.ps2Keyboard.hasPendingByte,
+    "ps2Keyboard": ps2KeyboardDiagnostics(composed.machine.ps2Keyboard),
     "interruptControllers": interruptControllerDiagnostics(composed.machine),
     "powerController": powerControllerDiagnostics(composed.machine.powerController),
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
