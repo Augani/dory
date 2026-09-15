@@ -30,6 +30,8 @@ import Testing
     #expect(composed.machine.jitWriteCoherencePolicy == .checkedCallbacks)
     #expect(composed.variableBridge.baseAddress == DoryPCV1ABI.firmwareVariableBase)
     #expect(composed.firmwareFlash.baseAddress == DoryPCV1ABI.firmwareCodeBase)
+    #expect(composed.isaBridge.pciAddress == DoryPCV1ABI.isaBridgePCIAddress)
+    #expect(composed.isaBridge.command & 0x03 == 0x03)
     #expect(composed.blockDevices.map(\.pciAddress) == fixture.plan.bootDevices.map(\.pciAddress))
     #expect(composed.blockDevices.map(\.blockDevice.storage.readOnly) == [false, true])
     #expect(try barAddress(composed.blockDevices[0]) == DoryPCV1ABI.systemDiskBARAddress)

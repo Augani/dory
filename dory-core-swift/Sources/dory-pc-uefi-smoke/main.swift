@@ -124,6 +124,7 @@ private struct Arguments {
     case virtio
     case usbHID = "usb-hid"
     case serial
+    case ps2
   }
 
   let firmwareBundle: URL
@@ -197,7 +198,7 @@ private struct Arguments {
           + "[--variable-store-directory /absolute/directory] "
           + "[--display-capture-output /absolute/new-frame.ppm] "
           + "[--keyboard-script named-key,...] "
-          + "[--keyboard-route all|virtio|usb-hid|serial] "
+          + "[--keyboard-route all|virtio|usb-hid|serial|ps2] "
           + "[--keyboard-after-instructions count] "
           + "[--keyboard-second-script named-key,...] "
           + "[--keyboard-second-after-instructions count] "
@@ -1132,29 +1133,29 @@ private func enqueueKeyboardInput(
   serialInputBytes: [UInt8]
 ) throws {
   switch route {
-  case .all, .virtio:
-    guard composed.keyboardDevice.enqueueSynchronized(keyboardEvents) else {
-      throw SmokeError.keyboardQueueFull
-    }
-  case .usbHID, .serial:
-    break
+    case .all, .virtio:
+      guard composed.keyboardDevice.enqueueSynchronized(keyboardEvents) else {
+        throw SmokeError.keyboardQueueFull
+      }
+    case .usbHID, .serial, .ps2:
+      break
   }
   switch route {
   case .all, .usbHID:
     for report in usbKeyboardReports {
       try composed.usbKeyboardDevice.enqueue(report: report)
     }
-  case .virtio, .serial:
-    break
+    case .virtio, .serial, .ps2:
+      break
   }
   switch route {
   case .all, .serial:
     composed.machine.serial.enqueueReceivedBytes(serialInputBytes)
-  case .virtio, .usbHID:
-    break
-  }
-  if route == .all {
-      guard composed.machine.ps2Keyboard.enqueueSet1ScanCodes(ps2Set1ScanCodes(for: script)) else {
+    case .virtio, .usbHID, .ps2:
+      break
+    }
+  if route == .all || route == .ps2 {
+    guard composed.machine.ps2Keyboard.enqueueSet1ScanCodes(ps2Set1ScanCodes(for: script)) else {
       throw SmokeError.keyboardQueueFull
     }
   }

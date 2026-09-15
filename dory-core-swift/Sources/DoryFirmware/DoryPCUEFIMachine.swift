@@ -32,6 +32,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
   public let firmware: DoryVerifiedFirmwareArtifacts
   public let firmwareFlash: DoryPCFirmwareFlash
   public let variableBridge: DoryPCUEFIVariableBridgeMMIO
+  public let isaBridge: DoryPCPCIConfigurationFunction
   public let blockDevices: [DoryPCVirtioBlockPCIDevice]
   public let displayDevice: DoryPCVirtioGPUPCIDevice
   public let keyboardDevice: DoryPCVirtioInputPCIDevice
@@ -127,6 +128,13 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     let variableBridge = try DoryPCUEFIVariableBridgeMMIO(
       service: .init(store: variableStore)
     )
+    let isaBridge = try DoryPCPCIConfigurationFunction(
+      address: DoryPCV1ABI.isaBridgePCIAddress,
+      vendorID: 0x1B36,
+      deviceID: 0x0001,
+      classCode: 0x060100,
+      initialCommand: 0x0003
+    )
     let displayDevice = try DoryPCVirtioGPUPCIDevice(
       address: DoryPCV1ABI.displayPCIAddress,
       initialBARAddress: DoryPCV1ABI.displayBARAddress,
@@ -173,7 +181,8 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
       address: DoryPCV1ABI.entropyPCIAddress,
       initialBARAddress: DoryPCV1ABI.entropyBARAddress
     )
-    var pciFunctions: [any DoryPCPCIFunction] = blockDevices
+    var pciFunctions: [any DoryPCPCIFunction] = [isaBridge]
+    pciFunctions += blockDevices
     pciFunctions += [
       displayDevice,
       keyboardDevice,
@@ -216,6 +225,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     self.firmware = firmware
     self.firmwareFlash = firmwareFlash
     self.variableBridge = variableBridge
+    self.isaBridge = isaBridge
     self.blockDevices = blockDevices
     self.displayDevice = displayDevice
     self.keyboardDevice = keyboardDevice

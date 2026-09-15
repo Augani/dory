@@ -55,7 +55,8 @@ public enum DoryPCV1ABI {
   // PCIe ECAM (0xE000_0000, 256 MiB) and PCIe MMIO (0xD000_0000, 256 MiB) are active
   // in ABI v1: the PCI host bridge enumerates devices and the guest discovers them
   // via ACPI/PNP0A03. All BAR addresses are allocated from the frozen PCIe MMIO
-  // aperture. USB (xHCI at device 7) is active when a USB controller is instantiated.
+  // aperture. The PCI-to-ISA bridge at device 0 exposes the legacy PS/2 controller. USB (xHCI
+  // at device 7) is active when a USB controller is instantiated.
   // GPU (VirtIO GPU at device 2) is active when a graphics device is instantiated.
   // A device slot that is not instantiated is a reservation: the PCI address is
   // allocated but no device function is exposed to the guest.
@@ -119,6 +120,7 @@ public enum DoryPCV1ABI {
 
   public static let pciINTxFirstGSI: UInt8 = 16
   public static let pciINTxLineCount: UInt8 = 8
+  public static let isaBridgePCIAddress = DoryPCPCIAddress(bus: 0, device: 0, function: 0)
   public static let systemDiskPCIAddress = DoryPCPCIAddress(bus: 0, device: 1, function: 0)
   public static let displayPCIAddress = DoryPCPCIAddress(bus: 0, device: 2, function: 0)
   public static let keyboardPCIAddress = DoryPCPCIAddress(bus: 0, device: 3, function: 0)

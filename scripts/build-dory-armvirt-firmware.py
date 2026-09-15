@@ -204,6 +204,10 @@ def verify_platform_contract() -> None:
         raise BuildFailure("DoryPC keyboard drivers must be dispatched before BDS")
     if keyboard_dispatch_positions != sorted(keyboard_dispatch_positions):
         raise BuildFailure("DoryPC keyboard drivers must preserve their dependency order")
+    pci_bus_driver = "MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe.inf"
+    pci_bus_position = apriori.find(pci_bus_driver)
+    if pci_bus_position < 0 or pci_bus_position > keyboard_dispatch_positions[0]:
+        raise BuildFailure("DoryPC must dispatch PCI enumeration before Super I/O")
     graphics_apriori_order = (
         "MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf",
         "MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf",

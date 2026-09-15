@@ -393,6 +393,7 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable,
     deviceID: UInt16,
     classCode: UInt32,
     revisionID: UInt8 = 0,
+    initialCommand: UInt16 = 0,
     subsystemVendorID: UInt16 = 0,
     subsystemID: UInt16 = 0,
     interruptLine: UInt8 = 0xFF,
@@ -443,6 +444,7 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable,
     }
     put(vendorID, at: 0x00, in: &configuration)
     put(deviceID, at: 0x02, in: &configuration)
+    put(initialCommand & 0x07, at: 0x04, in: &configuration)
     configuration[0x08] = revisionID
     configuration[0x09] = UInt8(truncatingIfNeeded: classCode)
     configuration[0x0A] = UInt8(truncatingIfNeeded: classCode >> 8)
