@@ -462,6 +462,7 @@ public enum DoryCapabilityAvailabilityState: String, Codable, Sendable, CaseIter
 }
 
 public enum DoryCapabilityReasonCode: String, Codable, Sendable, CaseIterable, Hashable {
+    case releaseScopeUnavailable = "release-scope-unavailable"
     case unsupportedHostArchitecture = "unsupported-host-architecture"
     case unsupportedGuestArchitecture = "unsupported-guest-architecture"
     case translationConsentRequired = "translation-consent-required"

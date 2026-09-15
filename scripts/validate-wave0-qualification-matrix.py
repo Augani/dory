@@ -240,11 +240,24 @@ def validate(
                 fail("macOS cell must bind the selected arm64 26.6.2/25G83 IPSW")
         else:
             fail(f"cell {cell['id']} has invalid guest family")
-    for architecture, selected_families in families.items():
-        if len(selected_families) < 2 or not {"debian", "fedora"}.issubset(selected_families):
-            fail(f"{architecture} lacks two immutable general-purpose Linux families")
-    if mac_cells != 1:
-        fail("matrix must include exactly one frozen macOS restore cell")
+    # The release closeout deliberately narrows the public candidate to exactly one cell.
+    # Preserve the broader review fixture contract below so historical proposal records remain
+    # readable, but do not let it expand the public release matrix.
+    release_cell_ids = set(cells)
+    if release_cell_ids == {"linux-arm64-ubuntu-24.04.4"}:
+        cell = cells["linux-arm64-ubuntu-24.04.4"]
+        if (cell.get("guest"), cell.get("architecture"), cell.get("mediaID")) != (
+            "linux", "arm64", "ubuntu-server-24.04.4-arm64"
+        ):
+            fail("release matrix must bind Ubuntu 24.04.4 ARM64 only")
+        if mac_cells != 0:
+            fail("release matrix must not include a macOS guest cell")
+    else:
+        for architecture, selected_families in families.items():
+            if len(selected_families) < 2 or not {"debian", "fedora"}.issubset(selected_families):
+                fail(f"{architecture} lacks two immutable general-purpose Linux families")
+        if mac_cells != 1:
+            fail("matrix must include exactly one frozen macOS restore cell")
 
     review = matrix["review"]
     if not isinstance(review, dict) or set(review) != {"status", "requiredApprovals", "approvalRule", "approvals"}:

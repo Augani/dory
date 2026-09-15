@@ -6726,6 +6726,38 @@ final class AppStore {
             actionError = message
             return message
         }
+        let releaseGuest = DoryGuestPlatform(
+            family: settings.guestFamily == "macos" ? .macOS : .linux,
+            architecture: settings.guestArchitecture == .amd64 ? .x86_64 : .arm64
+        )
+        let releaseAvailability = DoryReleaseSupportPolicy.availability(
+            hostArchitecture: .current,
+            guest: releaseGuest
+        )
+        guard releaseAvailability.isUsable else {
+            let message = releaseAvailability.reason?.message
+                ?? "This guest configuration is unavailable in this release."
+            actionError = message
+            return message
+        }
+        if settings.bootMode == .efi, let installerISOPath = settings.installerISOPath {
+            do {
+                let identity = try DoryInstallerISOInspector.portableEFIMediaIdentity(
+                    atPath: installerISOPath
+                )
+                let mediaAvailability = DoryReleaseSupportPolicy.installerMediaAvailability(identity)
+                guard mediaAvailability.isUsable else {
+                    let message = mediaAvailability.reason?.message
+                        ?? "Installer media is unavailable in this release."
+                    actionError = message
+                    return message
+                }
+            } catch {
+                let message = "Could not inspect the selected Ubuntu installer: \(error)"
+                actionError = message
+                return message
+            }
+        }
         guard !trimmedName.isEmpty else { actionError = "Name is required"; return "Name is required" }
         guard trimmedName.utf8.count <= 63 else {
             actionError = "Invalid machine name: use 63 characters or fewer"

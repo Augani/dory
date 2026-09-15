@@ -105,4 +105,41 @@ struct DoryVirtualizationProductPolicyTests {
         #expect(facts.executionTier == .translated)
         #expect(facts.productCell == .linuxX86_64Translated)
     }
+
+    @Test("release support exposes only the Ubuntu ARM64 product cell")
+    func releaseSupportAvailabilityIsSingleCell() {
+        let arm = DoryReleaseSupportPolicy.availability(
+            hostArchitecture: .arm64,
+            guest: DoryGuestPlatform(family: .linux, architecture: .arm64)
+        )
+        #expect(arm.isUsable)
+        #expect(arm.supportTier == .supported)
+        #expect(
+            DoryReleaseSupportPolicy.installerMediaAvailability(.init(
+                architecture: .arm64,
+                sha256: DoryReleaseSupportPolicy.supportedUbuntuARM64SHA256,
+                byteCount: 1
+            )).isUsable
+        )
+        #expect(
+            !DoryReleaseSupportPolicy.installerMediaAvailability(.init(
+                architecture: .arm64,
+                sha256: String(repeating: "0", count: 64),
+                byteCount: 1
+            )).isUsable
+        )
+
+        for guest in [
+            DoryGuestPlatform(family: .linux, architecture: .x86_64),
+            DoryGuestPlatform(family: .macOS, architecture: .arm64),
+        ] {
+            let availability = DoryReleaseSupportPolicy.availability(
+                hostArchitecture: .arm64,
+                guest: guest
+            )
+            #expect(!availability.isUsable)
+            #expect(availability.reason?.code == .releaseScopeUnavailable)
+            #expect(availability.reason?.message.isEmpty == false)
+        }
+    }
 }

@@ -142,6 +142,63 @@ public enum DoryVirtualizationProductPolicy {
     }
 }
 
+/// Release admission is narrower than the set of implemented product cells.  Keep this policy
+/// next to the product table so the app and daemon cannot advertise different release scopes.
+public enum DoryReleaseSupportPolicy {
+    public static let supportedUbuntuARM64MediaID = "ubuntu-server-24.04.4-arm64"
+    public static let supportedUbuntuARM64CellID = "linux-arm64-ubuntu-24.04.4"
+    public static let supportedUbuntuARM64SHA256 =
+        "9a6ce6d7e66c8abed24d24944570a495caca80b3b0007df02818e13829f27f32"
+
+    public static func availability(
+        hostArchitecture: DoryHostArchitecture,
+        guest: DoryGuestPlatform
+    ) -> DoryCapabilityAvailability {
+        switch DoryVirtualizationProductPolicy.cell(
+            hostArchitecture: hostArchitecture,
+            guest: guest
+        ) {
+        case .failure(let error):
+            return DoryCapabilityAvailability(
+                supportTier: .unsupported,
+                state: .unavailable,
+                reason: DoryCapabilityReason(
+                    code: error.reasonCode,
+                    message: "This guest configuration is unavailable: \(error.reasonCode.rawValue)."
+                )
+            )
+        case .success(.linuxARM64Native):
+            return DoryCapabilityAvailability(supportTier: .supported, state: .available)
+        case .success(.linuxX86_64Translated):
+            return unavailable("Linux x86_64 is not available in this release; it remains an internal qualification path.")
+        case .success(.macOSARM64VZMac):
+            return unavailable("macOS virtual machines are deferred from this release.")
+        }
+    }
+
+    private static func unavailable(_ message: String) -> DoryCapabilityAvailability {
+        DoryCapabilityAvailability(
+            supportTier: .unsupported,
+            state: .unavailable,
+            reason: DoryCapabilityReason(code: .releaseScopeUnavailable, message: message)
+        )
+    }
+
+    /// ISO identity completes the public release cell. ARM64 alone is deliberately insufficient:
+    /// it would otherwise admit Fedora or another unqualified ARM64 installer.
+    public static func installerMediaAvailability(
+        _ identity: DoryInstallerISOMediaIdentity
+    ) -> DoryCapabilityAvailability {
+        guard identity.architecture == .arm64,
+              identity.sha256 == supportedUbuntuARM64SHA256 else {
+            return unavailable(
+                "Only the pinned Ubuntu Server 24.04.4 ARM64 installer is available in this release."
+            )
+        }
+        return DoryCapabilityAvailability(supportTier: .supported, state: .available)
+    }
+}
+
 /// CPU execution is deliberately independent from the guest-visible machine model.
 public enum DoryExecutionEngineIdentity: String, Codable, Sendable, CaseIterable, Hashable {
     case nativeARM64 = "dory.native-hv.arm64@1"

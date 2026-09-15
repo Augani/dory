@@ -2041,6 +2041,7 @@ public final class MachineManager: @unchecked Sendable {
     ) throws -> DoryMachineStatus {
         let operationID = try Self.lifecycleOperationID(operationID, action: "create")
         try Self.validateProductCell(machine)
+        try Self.validateReleaseSupport(machine)
         guard machine.guestFamily == .linux else {
             throw MachineManagerError.persistence("native macOS creation requires asynchronous daemon-owned platform preparation")
         }
@@ -2092,6 +2093,7 @@ public final class MachineManager: @unchecked Sendable {
     ) async throws -> DoryMachineStatus {
         let operationID = try Self.lifecycleOperationID(operationID, action: "create")
         try Self.validateProductCell(requestedMachine)
+        try Self.validateReleaseSupport(requestedMachine)
         let controller = try creationPlanningController(productionPlanningController)
         let request = DoryMachineCreationRequest(configuration: requestedMachine, typedSettings: typedSettings,
             sandboxPolicy: nil, sourceMachineID: nil, sourceSnapshotID: nil)
@@ -21008,6 +21010,41 @@ public final class MachineManager: @unchecked Sendable {
         ) {
             throw MachineManagerError.persistence(
                 "unsupported virtual machine: \(error.reasonCode.rawValue)"
+            )
+        }
+    }
+
+    /// Public lifecycle admission follows the release policy.  Debug/bootstrap seams retain
+    /// access to implementation work; normal customer creation never does.
+    private static func validateReleaseSupport(_ machine: DoryMachineConfiguration) throws {
+        let availability = DoryReleaseSupportPolicy.availability(
+            hostArchitecture: .current,
+            guest: DoryGuestPlatform(
+                family: machine.guestFamily,
+                architecture: machine.guestArchitecture ?? .arm64
+            )
+        )
+        guard availability.isUsable else {
+            throw MachineManagerError.persistence(
+                availability.reason?.message ?? "This guest configuration is unavailable in this release."
+            )
+        }
+        guard machine.guestFamily == .linux, machine.bootMode == .efi,
+              let installerISOPath = machine.installerISOPath else {
+            throw MachineManagerError.persistence(
+                "This release supports only installation from the pinned Ubuntu Server 24.04.4 ARM64 installer."
+            )
+        }
+        let identity: DoryInstallerISOMediaIdentity
+        do {
+            identity = try DoryInstallerISOInspector.portableEFIMediaIdentity(atPath: installerISOPath)
+        } catch {
+            throw MachineManagerError.persistence("could not inspect release installer ISO: \(error)")
+        }
+        let mediaAvailability = DoryReleaseSupportPolicy.installerMediaAvailability(identity)
+        guard mediaAvailability.isUsable else {
+            throw MachineManagerError.persistence(
+                mediaAvailability.reason?.message ?? "Installer media is unavailable in this release."
             )
         }
     }

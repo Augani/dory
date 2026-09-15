@@ -77,6 +77,17 @@ struct NewMachineSheet: View {
             }
         }
         var isMacOS: Bool { self == .macOSARM64 }
+        var releaseAvailability: DoryCapabilityAvailability {
+            let guest: DoryGuestPlatform = switch self {
+            case .linuxARM64: .init(family: .linux, architecture: .arm64)
+            case .linuxX86_64: .init(family: .linux, architecture: .x86_64)
+            case .macOSARM64: .init(family: .macOS, architecture: .arm64)
+            }
+            return DoryReleaseSupportPolicy.availability(
+                hostArchitecture: .current,
+                guest: guest
+            )
+        }
     }
 
     enum Stage: Hashable { case useCase, form }
@@ -335,6 +346,7 @@ struct NewMachineSheet: View {
             ) {
                 ForEach(GuestPlatform.allCases) { platform in
                     Button {
+                        guard platform.releaseAvailability.isUsable else { return }
                         guestPlatform = platform
                         cameraEnabled = false
                         installerISOPath = ""
@@ -357,6 +369,12 @@ struct NewMachineSheet: View {
                                 Text(platform.architecture)
                                     .font(.system(size: 10.5))
                                     .foregroundStyle(p.text3)
+                                if let reason = platform.releaseAvailability.reason?.message {
+                                    Text(reason)
+                                        .font(.system(size: 9.5))
+                                        .foregroundStyle(p.text3)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             Spacer(minLength: 0)
                             if guestPlatform == platform {
@@ -364,7 +382,7 @@ struct NewMachineSheet: View {
                                     .foregroundStyle(p.accent)
                             }
                         }
-                        .foregroundStyle(p.text)
+                        .foregroundStyle(platform.releaseAvailability.isUsable ? p.text : p.text3)
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 9))
@@ -374,9 +392,10 @@ struct NewMachineSheet: View {
                         ))
                     }
                     .buttonStyle(.plain)
+                    .disabled(!platform.releaseAvailability.isUsable)
                     .accessibilityIdentifier("guest-platform-\(platform.rawValue)")
                     .accessibilityLabel("\(platform.title) \(platform.architecture)")
-                    .accessibilityHint("Select this guest platform")
+                    .accessibilityHint(platform.releaseAvailability.reason?.message ?? "Select this guest platform")
                 }
             }
         }
@@ -385,7 +404,7 @@ struct NewMachineSheet: View {
     private var desktopDistroSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             sectionLabel("INSTALLATION SOURCE")
-            Text("Choose any compatible installer ISO. The operating system, desktop environment, and applications are entirely yours.")
+            Text("This release is qualified only for Ubuntu Server 24.04.4 ARM64 media. Other guest families and architectures are unavailable.")
                 .font(.system(size: 11.5)).foregroundStyle(p.text2)
             customISOSection
         }
@@ -1015,6 +1034,7 @@ struct NewMachineSheet: View {
     private var createDisabled: Bool {
         name.trimmingCharacters(in: .whitespaces).isEmpty
             || !nameValid
+            || !guestPlatform.releaseAvailability.isUsable
             || (!guestPlatform.isMacOS && !customISOInstall && guestUsernameInvalid)
             || (!guestPlatform.isMacOS && customISOInstall && installerISOPath.isEmpty)
             || (!guestPlatform.isMacOS && customISOInstall && installerISOCheckBlocksCreate)
