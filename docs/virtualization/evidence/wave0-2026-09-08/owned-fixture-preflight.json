@@ -1,0 +1,67 @@
+{
+  "acquisition": {
+    "doesNotAdopt": "pre-existing VM, installed disk, or user runtime directory",
+    "producer": "guest/desktop/build.sh arm64 <debian|ubuntu|kali>"
+  },
+  "blockers": [],
+  "campaignRoot": {
+    "cleanupOwner": "Wave 0 qualification",
+    "cleanupRule": "remove only after campaign helpers and guests are confirmed stopped",
+    "path": "<DORY_SOURCE_ROOT>/.dory-build/wave0-fixtures",
+    "status": "reserved-uncreated"
+  },
+  "capacity": {
+    "freeBytes": 53407662080,
+    "path": "<DORY_SOURCE_ROOT>/.dory-build",
+    "requiredFreeBytes": 12884901888,
+    "status": "available"
+  },
+  "desktopRootfs": [
+    {
+      "byteCount": 730910646,
+      "name": "dory-desktop-debian-rootfs-arm64.ext4.zst",
+      "sha256": "f709e9bbc7529b6ee81838dad177c7c5849100b2e0cbbd26cff2bbfaef6940ae",
+      "status": "available"
+    },
+    {
+      "byteCount": 602598000,
+      "name": "dory-desktop-ubuntu-rootfs-arm64.ext4.zst",
+      "sha256": "10d578f9b4d8e448c926a9c35b899d3410ad0b9cb2e0c297010f2e5a4166e677",
+      "status": "available"
+    },
+    {
+      "byteCount": 826716439,
+      "name": "dory-desktop-kali-rootfs-arm64.ext4.zst",
+      "sha256": "3628924ee7d98f205e43178b5ad7a3e6fa24da235d439c65c1f97787ec7b152f",
+      "status": "available"
+    }
+  ],
+  "docker": {
+    "serverVersion": "29.5.2",
+    "status": "available"
+  },
+  "fixtureReadiness": "ready-to-build",
+  "guestOutput": "<DORY_SOURCE_ROOT>/guest/out",
+  "kind": "dev.dory.wave0-owned-fixture-preflight",
+  "releaseQualified": false,
+  "schemaVersion": 1,
+  "sourceInputs": [
+    {
+      "path": "guest/desktop/PINS",
+      "status": "available"
+    },
+    {
+      "path": "guest/desktop/build.sh",
+      "status": "available"
+    },
+    {
+      "path": "guest/desktop/input-fingerprint.sh",
+      "status": "available"
+    },
+    {
+      "path": "guest/desktop/verify-build.sh",
+      "status": "available"
+    }
+  ],
+  "sourceRoot": "<DORY_SOURCE_ROOT>"
+}

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.wave0-production-catalog-schema-audit",
+  "fetchedAt": "2026-09-08T21:24:19Z",
+  "endpoint": "https://augani.github.io/dory/components/arm64/catalog.json",
+  "transport": {
+    "catalogFetch": "succeeded",
+    "signatureFetch": "succeeded"
+  },
+  "catalog": {
+    "sha256": "c22374d7213c1bf763f74097e1ee5f4d10e13426898eff4aded67385686bc66f",
+    "signatureSha256": "4e0f88559c44c50bfca0237258c56011b1ac99d53632cf8753ce42121a9cecb8",
+    "schemaVersion": 1,
+    "releaseVersion": "0.4.5",
+    "minimumAppVersion": "0.4.5",
+    "architecture": "arm64",
+    "linuxMachinesVersion": "0.4.5",
+    "linuxMachinesAssetCount": 2,
+    "hasVirtualMachineQualification": false
+  },
+  "result": {
+    "eligibleForCurrentDoryPCProductionActivation": false,
+    "reason": "The current DoryPC gate requires schemaVersion 2 and a virtualMachineQualification object before it starts a daemon or creates a machine."
+  },
+  "requiredPublication": "Publish a schema-2 arm64 component catalog signed by Dory's pinned production component root, containing the linux-machines virtual-machine qualification bound to the current PC VirGL2 artifacts."
+}

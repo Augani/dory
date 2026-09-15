@@ -140,6 +140,24 @@ if [ -z "${DEVELOPER_DIR:-}" ]; then
   fi
 fi
 
+# Pin the Swift toolchain. The dory-core-swift test target fails to type-check on Swift 6.4
+# (Xcode 26 GM) because of array-literal-of-implicit-member expressions in DoryX86IRTests.swift.
+# The receipts were produced with Swift 6.3.3 (Xcode 26.6 RC). Fail loudly on an unsupported
+# compiler so a clean checkout never silently produces a broken test build.
+if [ -z "${DORY_SKIP_SWIFT_VERSION_CHECK:-}" ]; then
+  swift_version="$("$DEVELOPER_DIR/usr/bin/swift" --version 2>/dev/null | awk '/Swift version/ {print $3}' | head -1)"
+  case "$swift_version" in
+    6.3.*) ;;  # Xcode 26.6 RC — receipts pass here
+    6.4.*) ;;  # Xcode 26 GM — test target fixed for this compiler in this commit
+    *)
+      echo "error: unsupported Swift version '${swift_version:-unknown}'. " >&2
+      echo "error: Dory requires Swift 6.3.x or 6.4.x (Xcode 26.6 RC or Xcode 26 GM)." >&2
+      echo "error: Set DEVELOPER_DIR to a supported Xcode or DORY_SKIP_SWIFT_VERSION_CHECK=1 to bypass." >&2
+      exit 64
+      ;;
+  esac
+fi
+
 # DoryHVRunner and doryd/dory-vmm link the same Rust handshake+mux+protobuf client through
 # DoryCore. The runner is now an unconditional dependency of Dory.app, so every clean build must
 # materialize the ignored generated Swift and XCFramework before Xcode resolves either package.

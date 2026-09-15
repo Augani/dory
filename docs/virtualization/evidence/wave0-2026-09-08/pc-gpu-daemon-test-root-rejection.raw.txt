@@ -1,0 +1,30 @@
+Wave 0 DoryPC GPU daemon negative admission
+Recorded: 2026-09-08T20:58:53Z
+
+The isolated signed doryd service started with Docker disabled, bootstrap activation disabled,
+and an isolated DORYD_HOME. The historical private test-root candidate was submitted through
+the normal `dorydctl component install-candidate linux-machines` production path.
+
+results.tsv
+check	status	detail
+daemon	PASS	isolated signed daemon serving dev.dory.wave0.pcgpu.20260908T205853Z-21496 with Docker and bootstrap disabled
+cleanup_service=PASS
+
+component-install.stderr
+dorydctl: component catalog signature is invalid
+
+doryd.stderr
+doryd: data drive 540c7b81-ee29-4e38-ab08-b48ad46ed117 ready at /private/tmp/dory-pc-gpu-negative.o7Ml4L/campaign/20260908T205853Z-21496/home/Library/Application Support/Dory/Dory.dorydrive
+doryd: host CLI integration disabled by settings
+doryd: VM planning authority unavailable; existing machines require qualification (catalog-unavailable: no signature-verified component catalog is cached)
+doryd: bound /tmp/dory-pc-gpu-negative.o7Ml4L/campaign/20260908T205853Z-21496/home/.dory/dory.sock
+doryd: serving XPC dev.dory.wave0.pcgpu.20260908T205853Z-21496
+doryd: observing host sleep/wake
+doryd: shutting down (SIGTERM)
+doryd: shutdown complete
+
+Post-cleanup
+launchctl print gui/501/dev.dory.wave0.pcgpu.20260908T205853Z-21496 exited 113:
+Could not find service "dev.dory.wave0.pcgpu.20260908T205853Z-21496" in domain for user gui: 501
+
+No machine-create.json, machine-id.txt, or guest-exec.json artifact was written.

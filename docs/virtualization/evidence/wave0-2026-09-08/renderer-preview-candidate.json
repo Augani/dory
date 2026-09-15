@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.wave0-renderer-preview-candidate",
+  "createdAt": "2026-09-08T20:30:00Z",
+  "baseCommit": "9e78da159996104e64fb68fa2578285e64b1357d",
+  "sourceSnapshot": {
+    "worktreeDirty": true,
+    "worktreeStatusSHA256": "1bc56cf5cce694cb81b5c582f5cb31a086b43f2b785118f1ef0784eb991e203a",
+    "sourceTreeSHA256": "4d0a8472bc261e8a8816863b6bc4de99ab97f5060de5ce5a6209c40cfbb7f11a",
+    "binding": "verified: embedded complete development-source snapshot"
+  },
+  "host": {
+    "architecture": "arm64",
+    "macOS": "27.0 (26A5425a)",
+    "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "xcode": "26.6 (17F109)"
+  },
+  "candidate": {
+    "configuration": "Release",
+    "location": "local DerivedData; not portable",
+    "classification": "development-preview",
+    "releaseQualified": false,
+    "signingIdentity": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "teamIdentifier": "864H636QW4",
+    "minimumMacOS": {
+      "app": "14.0",
+      "runner": "15.0",
+      "rendererWorker": "15.0"
+    }
+  },
+  "artifacts": {
+    "appSHA256": "b0f37baf269732e49b1a6752c8fe6ad7b48426eb1db1471c87960e5b2cb92e4f",
+    "runnerSHA256": "cccfb2138e279a2602abaa3a21a363227aeca02d5306f7f0845fec2891c91aa8",
+    "rendererWorkerSHA256": "2085f2ac3c90fde66d75599349a1f0776e9fb345525505a62c88c6121166720d",
+    "rendererWorkerCodeDirectoryHash": "c81248181d30dba5a2f6eeacda2fa1406ab1fdc3",
+    "rendererInventorySHA256": "f0c7ea15cfecaef30d948fd4ba5321563347b735ab8e7ecdab7f9930c9296fdc",
+    "staticLinkInventorySHA256": "1aaf9e21ad20ae54cb1d30d3d36ac6ad47970383f0bc166a0e864d68e0d4cdf7"
+  },
+  "rendererQualification": {
+    "receiptMode": "preview; no detached release signature",
+    "arm64": {
+      "producerFenceContract": 1,
+      "managedGuestKernelSHA256": "fb8a381992afec20f3522bc6242868548829f82c209b261e0efd57e01498494f",
+      "guestMesaSHA256": "fa12e2bef9855dd382c3cd7f1dcd434f65302fc13471ae06367179f1ad37124c",
+            "receiptSHA256": "c1cd173ff8c8d34e3d5f9669463649f7f26196afc17b1d3760ff5c2b506600cc"
+    },
+    "pcX8664Virgl2": {
+      "producerFenceContract": 2,
+      "managedGuestKernelSHA256": "7b25d6c81f8c42624fad40f410baaddee3f4f9694a9239bf1e3c5cd41d72093d",
+      "guestMesaSHA256": "410e364a0f9a93ed9f370c4eae90c88a625416be1dffa96dd8af5952a6558450",
+            "receiptSHA256": "6bcb96e8339c1510be6836e97ce3e3adfea47098c83200ffecb02ed7eb6364f0"
+    }
+  },
+  "verification": {
+    "codesignDeepStrict": "passed",
+    "rendererBundleVerification": "passed with the exact verified ARM64 Venus and PC VirGL2 kernel/Mesa artifacts",
+    "resourceSeals": "verified for both preview receipts",
+    "signatureGraph": "verified-dual-metal"
+  },
+  "limitations": [
+    "The host is macOS 27.0, outside the frozen 26.6.2 release-host policy.",
+    "Preview receipts cannot authorize a release candidate.",
+    "The candidate producer inventory is development-source-bound to a dirty local development snapshot, not a clean release revision.",
+    "No physical GPU campaign, wrong-team signed-peer case, reviewer-approved support matrix, or detached release qualification is represented here."
+  ]
+}

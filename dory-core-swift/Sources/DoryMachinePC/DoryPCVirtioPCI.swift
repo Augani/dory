@@ -149,6 +149,15 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   private var registerReadCount: UInt64 = 0
   private var registerWriteCount: UInt64 = 0
   private var recentRegisterAccesses: [DoryPCVirtioPCIRegisterAccess] = []
+  /// Queue indices that were re-requested for draining while a drain was already
+  /// in progress on the transport. The outer drain flushes these after releasing
+  /// its processing lock so a backend callback (e.g. vsock TX → RX publish) does
+  /// not re-enter `deviceState.withLockedSnapshot` and deadlock.
+  private var pendingReDrain: Set<UInt16> = []
+  /// Tracks which queue indices currently have an active drain so `processQueue`
+  /// can defer re-entrant calls instead of recursing into the non-reentrant
+  /// `deviceState` lock.
+  private var activeDrains: Set<UInt16> = []
 
   public init(
     queueCount: Int,
@@ -230,9 +239,37 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   }
 
   /// Rechecks a queue after host-side work becomes available, such as an inbound network frame.
+  /// If any drain is already active on this transport (re-entrant call from a backend callback
+  /// like vsock TX → RX publish), the request is deferred and flushed by the outer drain after
+  /// it releases its processing lock. This avoids re-entering the non-reentrant
+  /// `deviceState.withLockedSnapshot` — which is shared across all queues — and deadlocking.
   public func processQueue(_ index: UInt16) {
     guard Int(index) < queueCount else { return }
+    let shouldDrainNow = lock.withLock { () -> Bool in
+      if !activeDrains.isEmpty {
+        pendingReDrain.insert(index)
+        return false
+      }
+      return true
+    }
+    guard shouldDrainNow else { return }
     drain(queue: index)
+  }
+
+  /// Drains any queues that were re-requested during an active drain. Called from
+  /// `drainEpilogue` after the outer drain completes and releases its active-drain
+  /// marker. Each deferred queue is drained once; if that drain itself produces
+  /// more re-entrant requests, they are flushed recursively.
+  private func flushPendingReDrain() {
+    while true {
+      let next = lock.withLock { () -> UInt16? in
+        guard let deferred = pendingReDrain.first else { return nil }
+        pendingReDrain.remove(deferred)
+        return deferred
+      }
+      guard let next else { return }
+      drain(queue: next)
+    }
   }
 
   public func queue(at index: UInt16) throws -> DoryVirtioSplitQueue {
@@ -393,12 +430,29 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     }
   }
 
+  /// Clears the active-drain marker for a queue and flushes any re-entrant
+  /// drain requests that arrived during the drain. Called by `drain`'s `defer`
+  /// after both the direct and deferred paths finish. Re-entrant `processQueue`
+  /// calls (e.g. vsock TX → RX publish) that arrived during the drain are
+  /// deferred via `pendingReDrain` and flushed here to avoid re-entering the
+  /// non-reentrant `deviceState` lock.
+  private func drainEpilogue(_ index: UInt16) {
+    lock.withLock { activeDrains.remove(index) }
+    flushPendingReDrain()
+  }
+
   private func drain(queue index: UInt16, armNotifications: Bool = false) {
     let processing = lock.withLock {
       (guestMemory, queueCanProcess, queueProcessor, deferredQueueProcessor)
     }
     guard let memory = processing.0,
       processing.2 != nil || processing.3 != nil else { return }
+    // Mark this queue as actively draining so re-entrant processQueue calls
+    // (e.g. vsock TX → RX publish) defer instead of recursing into the
+    // non-reentrant deviceState lock. Cleared by drainEpilogue after both
+    // the direct and deferred paths finish.
+    lock.withLock { activeDrains.insert(index) }
+    defer { drainEpilogue(index) }
     let processingLock = processingLocks[Int(index)]
     if let processor = processing.2 {
       // Direct path: the backend performs guest-memory DMA inline, so the

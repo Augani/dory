@@ -138,8 +138,20 @@ run_swift() {
   # SwiftPM's --no-parallel serializes XCTest workers, but Swift Testing still schedules suites
   # concurrently inside the test process. The DoryHV package has bounded concurrency fixtures whose
   # one-second safety deadlines must not be consumed by hundreds of unrelated runnable tests.
+  #
+  # Wrap the ContainerizationEngine run in a wall-clock timeout so a deadlocked test (e.g. a
+  # virtio transport re-entrant lock acquisition) fails the job instead of hanging it indefinitely.
+  # The normal serial run completes in ~15 s; the timeout is generous to avoid flaking on loaded
+  # shared runners. Override with DORY_CE_TEST_TIMEOUT_SECONDS.
   SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=1 \
+    timeout "${DORY_CE_TEST_TIMEOUT_SECONDS:-300}" \
     swift test --no-parallel --package-path Packages/ContainerizationEngine
+  local ce_status=$?
+  if [ "$ce_status" -eq 124 ]; then
+    echo "test: ContainerizationEngine suite timed out after ${DORY_CE_TEST_TIMEOUT_SECONDS:-300}s — a test may be deadlocked" >&2
+    return 1
+  fi
+  return "$ce_status"
 }
 
 run_app_xcodebuild() {

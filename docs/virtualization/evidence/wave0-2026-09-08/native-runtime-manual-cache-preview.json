@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.wave0-native-runtime-manual-cache-preview",
+  "executedAt": "2026-09-08T20:04:01Z",
+  "status": "passed",
+  "releaseQualified": false,
+  "candidate": {
+    "classification": "development-source-bound-preview",
+    "sourceTreeSHA256": "1b06e4c185d0846f79e4323b5cf4ac6b199c198b706677ad32e6a89085120f56",
+    "signingTeam": "864H636QW4",
+    "archiveLayout": "dory-engine-0.4.6-arm64.tar.gz, extracted before the disposable clone"
+  },
+  "runtime": {
+    "executionPath": "Dory native Virtualization.framework runner with its signed DoryFSWorker and DoryRendererWorker XPC services; no QEMU or Colima runtime",
+    "doryEngineSHA256": "3ebb15e3ce7102f19ca26f18b4eaf8a631ced3d363de0c75390071e09ec2e1c3",
+    "launcherSHA256": "65326c1e608a23b750edb3d0bb4ac57cbccb03a7ba8847ae562372190e97af97",
+    "runnerSHA256": "c9f642f6686b32da6b29591e78f6783ab89b14d8bffee92a880c6c1077687508",
+    "signedRunnerGraph": "codesign --verify --deep --strict passed",
+    "compressedKernelSHA256": "84e8bf6530a6ce69e9c24b9d8c719e1f84f6ad41e8bff995fd27699b8ae7dc9d",
+    "compressedRootfsSHA256": "6887be057eb7b78869eb8a0cd466ca86f532f928fe2035adb4f0c31f760a139e"
+  },
+  "freshBoot": {
+    "status": "passed",
+    "environment": "isolated /tmp HOME with dead HTTP(S)/SOCKS proxy variables",
+    "dockerPing": "OK",
+    "preparedKernelSHA256": "e5b539373575c68c385e000a23b491ae01dca394a34508c743b0d7e2fbebd48c",
+    "preparedRootfsSHA256": "3281e758c629cd36eaed86ba2e684d3e7ad5b421000f26c801be37d8404dc641"
+  },
+  "cachedBoot": {
+    "status": "passed",
+    "compressedSourcesHidden": [
+      "share/dory/dory-hv-kernel-arm64.lzfse",
+      "share/dory/dory-engine-rootfs.ext4.lzfse"
+    ],
+    "dockerPing": "OK",
+    "stoppedCleanly": true,
+    "sourcesRestored": true
+  },
+  "limitations": [
+    "This is a development native-runtime smoke, not a physical GPU campaign or a release qualification.",
+    "The standard offline-bundled-boot gate wrapper still exits early on this host although direct fresh and cached executions of the same extracted archive pass; its failed receipts are retained separately."
+  ]
+}

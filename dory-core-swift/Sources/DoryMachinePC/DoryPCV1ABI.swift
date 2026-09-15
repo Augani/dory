@@ -354,14 +354,14 @@ public enum DoryPCV1ABI {
     qualifier. For example, run each tier with the same absolute firmware bundle and evidence root:
 
     ```sh
-    swift run -c release --package-path dory-core-swift dory-pc-uefi-smoke \
-      --firmware-bundle /absolute/dory-pc-firmware \
-      --execution-tier interpreter|baseline-jit|optimizing-jit \
-      --baseline-tier1 enabled --boot-probe enabled --exception-policy deliver \
-      --clock-source deterministic --initial-rtc-unix-seconds 0 \
-      --memory-bytes 536870912 --processor-count 1 \
-      --expected-serial-marker DORY-PC-UEFI-BOOT \
-      --timeout-seconds 300 --max-instructions 100000000 \
+    swift run -c release --package-path dory-core-swift dory-pc-uefi-smoke \\
+      --firmware-bundle /absolute/dory-pc-firmware \\
+      --execution-tier interpreter|baseline-jit|optimizing-jit \\
+      --baseline-tier1 enabled --boot-probe enabled --exception-policy deliver \\
+      --clock-source deterministic --initial-rtc-unix-seconds 0 \\
+      --memory-bytes 536870912 --processor-count 1 \\
+      --expected-serial-marker DORY-PC-UEFI-BOOT \\
+      --timeout-seconds 300 --max-instructions 100000000 \\
       > /absolute/evidence/<tier>.json
     ```
 

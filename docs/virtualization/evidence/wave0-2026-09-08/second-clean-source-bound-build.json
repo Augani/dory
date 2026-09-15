@@ -1,0 +1,63 @@
+{
+  "artifacts": {
+    "firstCleanBuild": {
+      "appExecutableSHA256": "9288cb16f44cc764f0dba02036e0f0e3c21430f09f908fded5e0432d008f358b",
+      "rendererInventorySHA256": "18c5b80f86dd21da8a305f2516efd73c5aa3e1058e79caab95dec5313f7ab682",
+      "rendererWorkerCodeDirectoryHash": "7583826017d50f00df2fe4802cb83837a5ab3a42",
+      "rendererWorkerSHA256": "fd2586654528f3cd6f7be3e8d7ca04ac5189b9b7725bd8aa2e0ae4cde01dbcf0",
+      "runnerSHA256": "c9f642f6686b32da6b29591e78f6783ab89b14d8bffee92a880c6c1077687508"
+    },
+    "secondCleanBuild": {
+      "appExecutableSHA256": "86811b339bdef95c7851679faab48e8427c80d4b99c56d108ea194f72ddd69ba",
+      "daemonSHA256": "083c185c733fcb8b205756f590bbd7dbd6b9c929df90582a7d81971b7cabcc1f",
+      "rendererInventorySHA256": "256a680917dd89f5b878d37e43fae0e5f1c2c1892d5b5bbfc330bdeff4ff9b68",
+      "rendererWorkerCodeDirectoryHash": "875574a0274a43abc486983be7e1a0477243804b",
+      "rendererWorkerSHA256": "aad3ab201bd851163746129fb5a755f1fb671a8f9e1283e9989a33bde82379f4",
+      "runnerCodeDirectoryHash": "01d643e33388012ccdc50df8003d330fa3a61032",
+      "runnerSHA256": "4c3e999d010a8be01b2c73697ceb50d3237bf5df1ecffd3adc51931d421f0971"
+    },
+    "signing": {
+      "identity": "Developer ID Application: Augustus Otu (864H636QW4)",
+      "teamIdentifier": "864H636QW4"
+    }
+  },
+  "candidate": {
+    "classification": "development-preview",
+    "location": "<DORY_DERIVED_DATA>/Build/Products/Release/Dory.app",
+    "releaseQualified": false
+  },
+  "createdAt": "2026-09-08T20:22:14Z",
+  "immutableInputs": {
+    "arm64VenusKernelSHA256": "fb8a381992afec20f3522bc6242868548829f82c209b261e0efd57e01498494f",
+    "ffiArchiveSHA256": "ee59c027b28537d6ab6769f2ce66367e0374f755672b0903cfd3f1937da3dd86",
+    "pcVirgl2KernelSHA256": "7b25d6c81f8c42624fad40f410baaddee3f4f9694a9239bf1e3c5cd41d72093d",
+    "pcVirgl2MesaSHA256": "410e364a0f9a93ed9f370c4eae90c88a625416be1dffa96dd8af5952a6558450",
+    "rendererStaticLinkInventorySHA256": "1aaf9e21ad20ae54cb1d30d3d36ac6ad47970383f0bc166a0e864d68e0d4cdf7"
+  },
+  "kind": "dev.dory.wave0-second-clean-source-bound-build",
+  "previousPreview": {
+    "path": "docs/virtualization/evidence/wave0-2026-09-08/renderer-preview-candidate.json",
+    "sha256BeforeSecondBuild": "f5bfd3a505149dc5bc6620ad5023e145a9bbc2c64c2a519fc71cdeb26157df04"
+  },
+  "schemaVersion": 1,
+  "sourceSnapshot": {
+    "bindingSHA256": "1807e1dac6c8e63b9a315ceddf28f688fd6db9d037a38c66ab8f4de3f6ffe588",
+    "headCommit": "9e78da159996104e64fb68fa2578285e64b1357d",
+    "sourceTreeSHA256": "1b06e4c185d0846f79e4323b5cf4ac6b199c198b706677ad32e6a89085120f56",
+    "worktreeDirty": true,
+    "worktreeStatusSHA256": "041f7b5c8432aad5a3723d24bcf32cf7e0e2ef6e6f8d9a8bce244e05bf9f7f33"
+  },
+  "toolchain": {
+    "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "macOS": "27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "verification": {
+    "build": "passed: ** BUILD SUCCEEDED **",
+    "codesignDeepStrict": "passed",
+    "embeddedDevelopmentSourceBinding": "passed",
+    "rendererBundle": "passed: exact ARM64 Venus and PC VirGL2 managed inputs",
+    "result": "passed-development-only"
+  },
+  "whyArtifactHashesDiffer": "The two independently sealed Xcode builds use the same source binding and immutable inputs, but Developer-ID signing timestamps and build/link output are not declared byte-reproducible. The receipt retains both complete signed artifact identities rather than treating different signed bytes as an equivalence claim."
+}

@@ -17,18 +17,17 @@ import Testing
     #expect(block.guestByteCount == 17)
     #expect(block.guestInstructionCount == 4)
     #expect(block.statements.count == 3)
-    #expect(
-      block.instructionBoundaries == [
-        .init(guestRIP: 0x1000, guestByteOffset: 0, guestByteCount: 5,
-          statementStartIndex: 0, statementCount: 1),
-        .init(guestRIP: 0x1005, guestByteOffset: 5, guestByteCount: 5,
-          statementStartIndex: 1, statementCount: 1),
-        .init(guestRIP: 0x100A, guestByteOffset: 10, guestByteCount: 5,
-          statementStartIndex: 2, statementCount: 1),
-        .init(guestRIP: 0x100F, guestByteOffset: 15, guestByteCount: 2,
-          statementStartIndex: 3, statementCount: 0),
-      ]
-    )
+    let expectedBoundaries: [DoryIRInstructionBoundary] = [
+      .init(guestRIP: 0x1000, guestByteOffset: 0, guestByteCount: 5,
+        statementStartIndex: 0, statementCount: 1),
+      .init(guestRIP: 0x1005, guestByteOffset: 5, guestByteCount: 5,
+        statementStartIndex: 1, statementCount: 1),
+      .init(guestRIP: 0x100A, guestByteOffset: 10, guestByteCount: 5,
+        statementStartIndex: 2, statementCount: 1),
+      .init(guestRIP: 0x100F, guestByteOffset: 15, guestByteCount: 2,
+        statementStartIndex: 3, statementCount: 0),
+    ]
+    #expect(block.instructionBoundaries == expectedBoundaries)
     #expect(
       block.terminator
         == .conditional(
@@ -157,12 +156,11 @@ import Testing
     #expect(block.guestInstructionCount == 1)
     #expect(block.guestByteCount == 1)
     #expect(block.terminator == .next(0x3101))
-    #expect(
-      block.instructionBoundaries == [
-        .init(guestRIP: 0x3100, guestByteOffset: 0, guestByteCount: 1,
-          statementStartIndex: 0, statementCount: 0)
-      ]
-    )
+    let expectedBoundaries: [DoryIRInstructionBoundary] = [
+      .init(guestRIP: 0x3100, guestByteOffset: 0, guestByteCount: 1,
+        statementStartIndex: 0, statementCount: 0)
+    ]
+    #expect(block.instructionBoundaries == expectedBoundaries)
   }
 
   @Test func prefetchHintsRemainPureNativeInstructions() throws {

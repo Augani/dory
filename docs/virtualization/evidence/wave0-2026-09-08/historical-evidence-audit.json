@@ -1,0 +1,224 @@
+{
+  "auditorSHA256": "78ca2e0696c1d954e4ed85292743ec061f6d04e2d17a1faed84de4380c1b000e",
+  "documents": [
+    {
+      "admission": "historical-only",
+      "jsonValues": 4,
+      "path": "docs/virtualization/evidence/arm-review-2026-09-08/entitled-smoke.jsonl",
+      "status": "preserved-jsonl"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [
+        {
+          "actualSHA256": "f7749ae3f0a1625a72e7c415a2ed905b59ef1c00397424aebacba17eead3eebf",
+          "expectedSHA256": "f7749ae3f0a1625a72e7c415a2ed905b59ef1c00397424aebacba17eead3eebf",
+          "label": "artifactSHA256",
+          "name": "core-tests.log",
+          "status": "match"
+        },
+        {
+          "actualSHA256": "7d69332869d806a260fb9e187938914efb5b36e9f5e6e0329f848ea1daecb3d5",
+          "expectedSHA256": "7d69332869d806a260fb9e187938914efb5b36e9f5e6e0329f848ea1daecb3d5",
+          "label": "artifactSHA256",
+          "name": "device-tests.log",
+          "status": "match"
+        },
+        {
+          "actualSHA256": "0d1407aa763a2c269faf6d413bd4f3db14936c13d7865d7463719dc69ca68c11",
+          "expectedSHA256": "0d1407aa763a2c269faf6d413bd4f3db14936c13d7865d7463719dc69ca68c11",
+          "label": "artifactSHA256",
+          "name": "entitled-smoke.jsonl",
+          "status": "match"
+        }
+      ],
+      "commitBindings": [
+        {
+          "label": "baseCommit",
+          "status": "reachable",
+          "value": "713473475283cadc3543d3e0e9bfa1c419546ad1"
+        }
+      ],
+      "path": "docs/virtualization/evidence/arm-review-2026-09-08/verification.json",
+      "receiptReferences": [],
+      "status": "preserved"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [
+        {
+          "expectedSHA256": "9b3c197371a619cff4c8701c9170b0841682f0499c5998e9a4225814ab52c7b3",
+          "label": "artifacts.coldPostCommandSerialReceipt",
+          "name": "/private/tmp/dory-rawarm-manager-0905.405d3e5a/actual-manager-cold-reopen-serial.log",
+          "status": "external-unavailable"
+        },
+        {
+          "expectedSHA256": "9b3c197371a619cff4c8701c9170b0841682f0499c5998e9a4225814ab52c7b3",
+          "label": "artifacts.firstPostCommandSerialReceipt",
+          "name": "/private/tmp/dory-rawarm-manager-0905.405d3e5a/actual-manager-detach-serial.log",
+          "status": "external-unavailable"
+        },
+        {
+          "expectedSHA256": "4d832184b6356745227896042e7e5f9c50fead3a843ddf4d543f5257ce811c69",
+          "label": "artifacts.fullConsoleLog",
+          "name": "fullConsoleLog",
+          "status": "external-unavailable"
+        },
+        {
+          "expectedSHA256": "050d2cac5019a1622b52b095a20e6fa477dab1c92bac9c6cd33d3f906d8aeeab",
+          "label": "artifacts.machineJSON",
+          "name": "/Users/Shared/dra-7A537F82/Library/Application Support/Dory/Dory.dorydrive/machines/rawarm-alpine/machine.json",
+          "status": "external-unavailable"
+        },
+        {
+          "expectedSHA256": "dd5a4fa5356532c26fea9c9b2b1f4cf5c633b0bb7fbe4093643e3baa564ef9bc",
+          "label": "artifacts.uefiVariables",
+          "name": "uefiVariables",
+          "status": "external-unavailable"
+        }
+      ],
+      "commitBindings": [],
+      "path": "docs/virtualization/evidence/p05-arm-2026-09-05/actual-manager-desktop-installer-detach-cold-reopen.json",
+      "receiptReferences": [],
+      "status": "incomplete-local-payload"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [],
+      "commitBindings": [
+        {
+          "label": "sourceCommit",
+          "status": "reachable",
+          "value": "051c97f25b4ae803b6e8f20963b3c6e7f418eaee"
+        }
+      ],
+      "path": "docs/virtualization/evidence/p06-pc-2026-09-06/clock-stall-rescope.json",
+      "receiptReferences": [
+        {
+          "name": "rpcdiag-bindready-rpc-true.json",
+          "status": "available"
+        }
+      ],
+      "status": "insufficient-portable-bindings"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [],
+      "commitBindings": [
+        {
+          "label": "sourceCommit",
+          "status": "reachable",
+          "value": "051c97f25b4ae803b6e8f20963b3c6e7f418eaee"
+        }
+      ],
+      "path": "docs/virtualization/evidence/p06-pc-2026-09-06/tier-comparison-rpcdiag.json",
+      "receiptReferences": [],
+      "status": "insufficient-portable-bindings"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [],
+      "commitBindings": [],
+      "path": "docs/virtualization/evidence/p07-macos-2026-09-05/actual-managed-suspend-restore.json",
+      "receiptReferences": [],
+      "status": "insufficient-portable-bindings"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [
+        {
+          "actualSHA256": "cf7f641bacc1a9f715e36a1049640a451ca7b0271aeb75c7578883d397a27f56",
+          "expectedSHA256": "cf7f641bacc1a9f715e36a1049640a451ca7b0271aeb75c7578883d397a27f56",
+          "label": "artifacts[0]",
+          "name": "installed-media-physical-private-receipt.json",
+          "status": "match"
+        },
+        {
+          "actualSHA256": "63a060898ce69e2e366adfee9d3f2566de6f300cf7555f86af67117b84deb90e",
+          "expectedSHA256": "63a060898ce69e2e366adfee9d3f2566de6f300cf7555f86af67117b84deb90e",
+          "label": "artifacts[1]",
+          "name": "installed-media-physical-private-launch.json",
+          "status": "match"
+        },
+        {
+          "actualSHA256": "6199d8eed3d12cbf265a99e1656aac7d2b46da693376a59f26e3843d24c6ab99",
+          "expectedSHA256": "6199d8eed3d12cbf265a99e1656aac7d2b46da693376a59f26e3843d24c6ab99",
+          "label": "artifacts[2]",
+          "name": "installed-media-physical-private.log.gz",
+          "status": "match"
+        }
+      ],
+      "commitBindings": [
+        {
+          "label": "implementationCommits[0]",
+          "status": "reachable",
+          "value": "d6d87cf80"
+        },
+        {
+          "label": "implementationCommits[1]",
+          "status": "reachable",
+          "value": "3ff5cdcd3"
+        },
+        {
+          "label": "implementationCommits[2]",
+          "status": "reachable",
+          "value": "f70233ba9"
+        },
+        {
+          "label": "implementationCommits[3]",
+          "status": "reachable",
+          "value": "c7e105fcc"
+        }
+      ],
+      "path": "docs/virtualization/evidence/p07-macos-2026-09-05/installed-media-physical-private.json",
+      "receiptReferences": [],
+      "status": "preserved"
+    },
+    {
+      "admission": "historical-only",
+      "attachments": [
+        {
+          "actualSHA256": "2fcba59f49128ab99f2ce0a4e8dd1030f49f595e6beb274d7e50c89de5ea6d97",
+          "expectedSHA256": "2fcba59f49128ab99f2ce0a4e8dd1030f49f595e6beb274d7e50c89de5ea6d97",
+          "label": "logs",
+          "name": "focused-tests.log.gz",
+          "status": "match"
+        },
+        {
+          "actualSHA256": "bad32a29846895a0d7fc83dcd1a95a124f3de5dc60b2fefbd63afe2077effece",
+          "expectedSHA256": "bad32a29846895a0d7fc83dcd1a95a124f3de5dc60b2fefbd63afe2077effece",
+          "label": "logs",
+          "name": "intermediate-cleanup-regression.log.gz",
+          "status": "match"
+        },
+        {
+          "actualSHA256": "400ef827d8785260649de6ebea058392204cf4ed9bcf8edaaeca90cf839f7bc9",
+          "expectedSHA256": "400ef827d8785260649de6ebea058392204cf4ed9bcf8edaaeca90cf839f7bc9",
+          "label": "logs",
+          "name": "runner-build.log.gz",
+          "status": "match"
+        }
+      ],
+      "commitBindings": [
+        {
+          "label": "baseCommit",
+          "status": "reachable",
+          "value": "08d7524c27b6cf7e21b475c71050ff5dc1b83392"
+        }
+      ],
+      "path": "docs/virtualization/evidence/review-fixes-2026-09-08/verification.json",
+      "receiptReferences": [],
+      "status": "preserved"
+    }
+  ],
+  "historicalEvidenceOnly": true,
+  "incompleteDocuments": [
+    "docs/virtualization/evidence/p05-arm-2026-09-05/actual-manager-desktop-installer-detach-cold-reopen.json",
+    "docs/virtualization/evidence/p06-pc-2026-09-06/clock-stall-rescope.json",
+    "docs/virtualization/evidence/p06-pc-2026-09-06/tier-comparison-rpcdiag.json",
+    "docs/virtualization/evidence/p07-macos-2026-09-05/actual-managed-suspend-restore.json"
+  ],
+  "kind": "dory.plan-evidence-audit",
+  "planSHA256": "90e3cc132b243e9c4160e8b3b4dd4d7cc0c2e9ee75549ef4891f1797cf574ab2",
+  "schemaVersion": 1
+}
