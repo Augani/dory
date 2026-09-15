@@ -7,12 +7,15 @@
 #include <Guid/TtyTerm.h>
 #include <IndustryStandard/Pci.h>
 #include <Library/IoLib.h>
+#include <Library/DevicePathLib.h>
 #include <Library/PcdLib.h>
 #include <Library/PlatformBootManagerLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiBootManagerLib.h>
 #include <Library/UefiLib.h>
+#include <Protocol/DevicePath.h>
 #include <Protocol/LoadedImage.h>
+#include <Protocol/SimpleTextIn.h>
 #include <Protocol/PciIo.h>
 
 #define DP_NODE_LEN(Type)  { (UINT8)sizeof (Type), (UINT8)(sizeof (Type) >> 8) }
@@ -352,6 +355,63 @@ DoryConnectDisplayConsole (
   gBS->FreePool (Handles);
 }
 
+STATIC
+VOID
+DoryConnectPs2KeyboardConsole (
+  VOID
+  )
+{
+  EFI_HANDLE                    *Handles;
+  UINTN                         HandleCount;
+  UINTN                         Index;
+  EFI_STATUS                    Status;
+  EFI_DEVICE_PATH_PROTOCOL      *DevicePath;
+  EFI_DEVICE_PATH_PROTOCOL      *Node;
+  ACPI_HID_DEVICE_PATH          *Acpi;
+
+  Handles = NULL;
+  Status  = gBS->LocateHandleBuffer (
+                   ByProtocol,
+                   &gEfiSimpleTextInProtocolGuid,
+                   NULL,
+                   &HandleCount,
+                   &Handles
+                   );
+  if (EFI_ERROR (Status)) {
+    return;
+  }
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    Status = gBS->HandleProtocol (
+                    Handles[Index],
+                    &gEfiDevicePathProtocolGuid,
+                    (VOID **)&DevicePath
+                    );
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    Node = DevicePath;
+    while (!IsDevicePathEnd (NextDevicePathNode (Node))) {
+      Node = NextDevicePathNode (Node);
+    }
+
+    Acpi = (ACPI_HID_DEVICE_PATH *)Node;
+    if ((DevicePathType (Acpi) != ACPI_DEVICE_PATH) ||
+        ((DevicePathSubType (Acpi) != ACPI_DP) && (DevicePathSubType (Acpi) != ACPI_EXTENDED_DP)) ||
+        (Acpi->HID != EISA_PNP_ID (0x0303)) ||
+        (Acpi->UID != 0))
+    {
+      continue;
+    }
+
+    EfiBootManagerUpdateConsoleVariable (ConIn, DevicePath, NULL);
+    break;
+  }
+
+  gBS->FreePool (Handles);
+}
+
 VOID
 EFIAPI
 PlatformBootManagerBeforeConsole (
@@ -382,6 +442,7 @@ PlatformBootManagerAfterConsole (
   // Connect the display here so VirtioGpuDxe can create its GOP child before the console splitter
   // resolves ConOut and publishes it through EFI_SYSTEM_TABLE.
   DoryConnectDisplayConsole ();
+  DoryConnectPs2KeyboardConsole ();
   EfiBootManagerUpdateConsoleVariable (ConIn, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
   EfiBootManagerUpdateConsoleVariable (ConIn, (EFI_DEVICE_PATH_PROTOCOL *)&mPs2Console, NULL);
   EfiBootManagerUpdateConsoleVariable (ConOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);

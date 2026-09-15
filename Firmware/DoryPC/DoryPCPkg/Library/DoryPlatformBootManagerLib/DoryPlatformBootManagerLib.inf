@@ -15,6 +15,7 @@
   MdeModulePkg/MdeModulePkg.dec
 
 [LibraryClasses]
+  DevicePathLib
   IoLib
   PcdLib
   UefiLib
@@ -32,5 +33,7 @@
   gEdkiiSerialPortLibVendorGuid
 
 [Protocols]
+  gEfiDevicePathProtocolGuid
+  gEfiSimpleTextInProtocolGuid
   gEfiLoadedImageProtocolGuid
   gEfiPciIoProtocolGuid
