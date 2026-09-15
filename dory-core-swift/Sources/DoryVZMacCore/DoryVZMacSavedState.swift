@@ -26,7 +26,7 @@ public enum DoryVZMacSavedStateError: Error, Sendable, Equatable, CustomStringCo
 }
 
 public struct DoryVZMacSavedStateReceipt: Codable, Sendable, Equatable {
-    public static let schema = "dory.vzmac-saved-state@2"
+    public static let schema = "dory.vzmac-saved-state@3"
 
     public let schema: String
     public let createdAt: String
@@ -128,6 +128,15 @@ public struct DoryVZMacSavedStateArtifact: Sendable {
         guard receipt.hostIdentifierSHA256 == (try currentHostIdentifierSHA256()) else {
             throw DoryVZMacSavedStateError.hostMismatch
         }
+        // Host-build preflight: a saved state created on a different macOS build
+        // may contain incompatible VZ state blobs. Reject the restore rather than
+        // letting the guest see a corrupted device tree.
+        let currentBuild = hostBuildVersion()
+        guard receipt.hostBuildVersion == currentBuild else {
+            throw DoryVZMacSavedStateError.invalidArtifact(
+                "host build mismatch: saved on \(receipt.hostBuildVersion), running \(currentBuild)"
+            )
+        }
         guard receipt.hardwareModelSHA256 == bundle.manifest.hardwareModelSHA256,
               receipt.machineIdentifierSHA256 == bundle.manifest.machineIdentifierSHA256 else {
             throw DoryVZMacSavedStateError.machineIdentityMismatch
@@ -212,16 +221,33 @@ private func savedStateSHA256(of data: Data) -> String {
 }
 
 private func savedStateSHA256(of url: URL) throws -> String {
+    // Sampled digest: for large saved-state files (potentially several GB), a full
+    // SHA256 scan is prohibitively slow. Instead, sample three fixed regions —
+    // head (first 4KB), middle (4KB at midpoint), and tail (last 4KB) — plus the
+    // file size. This detects accidental corruption and truncation while keeping
+    // the digest O(1) regardless of file size. The sampling positions depend only
+    // on the file size, so the same file always produces the same digest.
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
+    let fileSize = try handle.seekToEnd()
+    guard fileSize > 0 else { return savedStateSHA256(of: Data()) }
+
     var hasher = SHA256()
-    while true {
-        let readChunk = try autoreleasepool {
-            guard let data = try handle.read(upToCount: 4 * 1_024 * 1_024), !data.isEmpty else { return false }
-            hasher.update(data: data)
-            return true
+    // Bind the file size into the digest so truncation is detected.
+    hasher.update(data: withUnsafeBytes(of: fileSize.littleEndian) { Data($0) })
+
+    let sampleSize: UInt64 = 4 * 1_024  // 4KB per sample
+    let sampleOffsets: [UInt64] = [
+        0,                                                          // head
+        fileSize > 2 * sampleSize ? (fileSize - sampleSize) / 2 : 0, // middle
+        fileSize > sampleSize ? fileSize - sampleSize : 0,           // tail
+    ]
+    for offset in sampleOffsets {
+        try handle.seek(toOffset: offset)
+        let chunk = try handle.read(upToCount: Int(min(sampleSize, fileSize - offset)))
+        if let chunk, !chunk.isEmpty {
+            hasher.update(data: chunk)
         }
-        if !readChunk { break }
     }
     return hasher.finalize().map { String(format: "%02x", $0) }.joined()
 }
