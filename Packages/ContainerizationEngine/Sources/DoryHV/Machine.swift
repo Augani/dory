@@ -1063,14 +1063,21 @@ enum VirtioMMIODeviceTree {
         )
         return nil
       case .instructionAbortLowerEL:
-        guard restoreIfReleasedRAM(physicalAddress) else {
+        switch restoreIfReleasedRAM(physicalAddress) {
+        case .restored, .alreadyMapped:
+          return nil
+        case .notReleased:
           // Guest-fault injection: instruction abort outside RAM — inject SError
           // instead of crashing the VM.
           Self.log("instruction abort outside RAM at pa 0x\(String(physicalAddress, radix: 16)) — injecting SError")
           try vcpu.injectSError()
           return nil
+        case .restoreFailed:
+          // Restore attempt failed — inject SError so the guest can handle the fault.
+          Self.log("instruction abort RAM restore failed at pa 0x\(String(physicalAddress, radix: 16)) — injecting SError")
+          try vcpu.injectSError()
+          return nil
         }
-        return nil
       case .hvc64:
         // HVC returns with PC already past the instruction; unknown hypercalls get
         // SMCCC NOT_SUPPORTED.
@@ -1097,7 +1104,17 @@ enum VirtioMMIODeviceTree {
       physicalAddress: UInt64,
       routeCache: inout MMIORouteCache
     ) throws {
-      if restoreIfReleasedRAM(physicalAddress) { return }
+      switch restoreIfReleasedRAM(physicalAddress) {
+      case .restored, .alreadyMapped:
+        return
+      case .notReleased:
+        break  // Not a released RAM page — fall through to MMIO device lookup.
+      case .restoreFailed:
+        // RAM restore failed — inject SError so the guest can handle the fault.
+        Self.log("RAM restore failed at pa 0x\(String(physicalAddress, radix: 16)) — injecting SError")
+        try vcpu.injectSError()
+        return
+      }
       let abort = DataAbortInfo(syndrome: syndrome)
       guard abort.isValid else {
         let pc = try vcpu.read(HV_REG_PC)
@@ -1247,10 +1264,10 @@ enum VirtioMMIODeviceTree {
     }
 
     /// A fault inside the RAM window MIGHT be the guest touching a page that free page reporting
-    /// returned to macOS. restorePage remaps it and returns true; if the page was never released
-    /// this returns false, so a genuine guest fault falls through to the crash path with a
-    /// diagnostic instead of an unkillable refault loop.
-    private func restoreIfReleasedRAM(_ physicalAddress: UInt64) -> Bool {
+    /// returned to macOS. restorePage remaps it and returns the tri-state result so the caller
+    /// can distinguish a successful restore (retry the instruction) from a genuine fault (inject
+    /// SError) from a restore failure (retry with escalation, then inject SError).
+    private func restoreIfReleasedRAM(_ physicalAddress: UInt64) -> GuestMemory.RestorePageResult {
       memory.restorePage(guestAddress: physicalAddress)
     }
 
@@ -1564,8 +1581,15 @@ enum VirtioMMIODeviceTree {
           try vcpu.advanceRIP(by: state.instructionLength)
           usleep(1_000)
         case .eptViolation(let violation):
-          if memory.restorePage(guestAddress: violation.guestPhysicalAddress) {
+          switch memory.restorePage(guestAddress: violation.guestPhysicalAddress) {
+          case .restored, .alreadyMapped:
             continue
+          case .notReleased:
+            break  // Not a released RAM page — fall through to EPT violation handler.
+          case .restoreFailed:
+            throw VMError.unexpectedExit(
+              "x86 EPT violation RAM restore failed at gpa 0x\(String(violation.guestPhysicalAddress, radix: 16))"
+            )
           }
           let ripAdvance = try handleEPTViolation(violation, vcpu: vcpu, registers: &registers)
           try vcpu.applyGeneralRegisters(registers)

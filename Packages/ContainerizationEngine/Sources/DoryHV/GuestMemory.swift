@@ -228,27 +228,47 @@ public final class GuestMemory: @unchecked Sendable {
         }
     }
 
+    /// Tri-state result for `restorePage` that distinguishes a successful restore
+    /// from a page that was never released (genuine fault) vs a restore failure
+    /// (host advice or stage-2 map error). Callers use this to decide whether to
+    /// retry the faulting instruction, inject a guest fault, or escalate.
+    public enum RestorePageResult: Sendable, Equatable {
+        /// Page was released and has been successfully restored. The guest can
+        /// retry the faulting instruction.
+        case restored
+        /// Page was already mapped (never released or a concurrent restore won).
+        /// The guest can retry the faulting instruction.
+        case alreadyMapped
+        /// The address is outside the RAM window or the page was never released.
+        /// This is a genuine guest fault, not a restore case.
+        case notReleased
+        /// The restore attempt failed (host advice or stage-2 map error).
+        /// The caller should inject a guest fault or retry with escalation.
+        case restoreFailed
+    }
+
     /// Remaps a single host RAM page the guest faulted on. A stage-2 fault inside the RAM window
     /// can only mean this page was unmapped by free page reporting (nothing else touches stage-2
     /// RAM mappings), so restoring a tracked page resolves the fault. A successfully reclaimed
     /// page must first leave MADV_FREE_REUSABLE state; an advice or map failure remains tracked and
-    /// returns false for the run loop to surface rather than mapping memory macOS may still reuse.
-    public func restorePage(guestAddress: UInt64) -> Bool {
-        guard contains(guestAddress, count: 1) else { return false }
+    /// returns `.restoreFailed` for the run loop to surface rather than mapping memory macOS may
+    /// still reuse.
+    public func restorePage(guestAddress: UInt64) -> RestorePageResult {
+        guard contains(guestAddress, count: 1) else { return .notReleased }
         let pageStart = guestAddress & ~(Self.pageSize - 1)
         let index = Int((pageStart - guestBase) / Self.pageSize)
         let host = hostBase.advanced(by: Int(pageStart - guestBase))
-        return pageStates.withLock { states -> Bool in
-            guard index < states.count else { return false }
+        return pageStates.withLock { states -> RestorePageResult in
+            guard index < states.count else { return .notReleased }
             // Mapped means a concurrent fault on this page already won the lock and restored it.
             // The guest retry can proceed without another stage-2 map or accounting change.
             guard case .released(let reclaimed, let requiresMarkInUse) = states[index] else {
-                return true
+                return .alreadyMapped
             }
             if requiresMarkInUse {
                 guard reclaimOperations.markInUse(host, Int(Self.pageSize)) else {
                     restoreAdviceFailures.add(1)
-                    return false
+                    return .restoreFailed
                 }
                 // MADV_FREE_REUSE succeeded even if the following stage-2 map does not. Persist
                 // that sub-state so a retry never repeats a one-way host advice transition.
@@ -256,11 +276,11 @@ public final class GuestMemory: @unchecked Sendable {
             }
             guard reclaimOperations.map(host, pageStart, Int(Self.pageSize)) else {
                 restoreMapFailures.add(1)
-                return false
+                return .restoreFailed
             }
             states[index] = .mapped
             if reclaimed { restoredBytes.add(Self.pageSize) }
-            return true
+            return .restored
         }
     }
 

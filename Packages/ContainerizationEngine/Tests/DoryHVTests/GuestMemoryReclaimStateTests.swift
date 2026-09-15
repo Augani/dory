@@ -81,13 +81,13 @@ import Testing
         #expect(box.reusableCalls == 1)
         #expect(memory.releasedBytes.load() == HostPage.size)
 
-        #expect(memory.restorePage(guestAddress: address + 17))
+        #expect(memory.restorePage(guestAddress: address + 17) == .restored)
         #expect(box.inUseCalls == 1)
         #expect(box.mapCalls == 1)
         #expect(memory.restoredBytes.load() == HostPage.size)
 
         // A duplicate fault after the state is mapped is an idempotent success.
-        #expect(memory.restorePage(guestAddress: address))
+        #expect(memory.restorePage(guestAddress: address) == .alreadyMapped)
         #expect(box.mapCalls == 1)
     }
 
@@ -106,7 +106,7 @@ import Testing
 
         // Stage-2 was already removed, so the page is still tracked and must be remapped. Because
         // MADV_FREE_REUSABLE never succeeded, MADV_FREE_REUSE is neither needed nor counted.
-        #expect(memory.restorePage(guestAddress: address))
+        #expect(memory.restorePage(guestAddress: address) == .restored)
         #expect(box.inUseCalls == 0)
         #expect(box.mapCalls == 1)
         #expect(memory.restoredBytes.load() == 0)
@@ -121,7 +121,7 @@ import Testing
         #expect(memory.releaseRange(guestAddress: address, length: HostPage.size) == .unmapFailed)
         #expect(memory.reclaimUnmapFailures.load() == 1)
         #expect(box.reusableCalls == 0)
-        #expect(memory.restorePage(guestAddress: address))
+        #expect(memory.restorePage(guestAddress: address) == .alreadyMapped)
         #expect(box.mapCalls == 0)
     }
 
@@ -132,18 +132,18 @@ import Testing
         #expect(memory.releaseRange(guestAddress: address, length: HostPage.size) == .reclaimed)
 
         box.inUseResult = false
-        #expect(!memory.restorePage(guestAddress: address))
+        #expect(memory.restorePage(guestAddress: address) == .restoreFailed)
         #expect(memory.restoreAdviceFailures.load() == 1)
         #expect(box.mapCalls == 0)
 
         box.inUseResult = true
         box.mapResult = false
-        #expect(!memory.restorePage(guestAddress: address))
+        #expect(memory.restorePage(guestAddress: address) == .restoreFailed)
         #expect(memory.restoreMapFailures.load() == 1)
         #expect(memory.restoredBytes.load() == 0)
 
         box.mapResult = true
-        #expect(memory.restorePage(guestAddress: address))
+        #expect(memory.restorePage(guestAddress: address) == .restored)
         #expect(box.inUseCalls == 2)
         #expect(memory.restoredBytes.load() == HostPage.size)
     }

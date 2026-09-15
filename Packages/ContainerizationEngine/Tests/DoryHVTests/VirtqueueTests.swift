@@ -164,12 +164,12 @@ import Testing
 
     @Test func restorePageNeverDoubleCountsOrTouchesOutOfRange() throws {
         let memory = try GuestMemory(guestBase: 0x8000_0000, size: 64 * HostPage.size)
-        // Outside RAM is a genuine fault the caller must surface: false, no counters moved.
-        #expect(!memory.restorePage(guestAddress: 0x7000_0000))
+        // Outside RAM is a genuine fault the caller must surface: .notReleased, no counters moved.
+        #expect(memory.restorePage(guestAddress: 0x7000_0000) == .notReleased)
         // An in-RAM page whose released-bit is clear was never unmapped (the releaseRange lock
         // makes "unmapped implies bit set" an invariant), so this is a benign no-op: it reports
-        // success (the guest retry resolves) but must NOT charge a restore.
-        #expect(memory.restorePage(guestAddress: 0x8000_0000 + HostPage.size))
+        // .alreadyMapped (the guest retry resolves) but must NOT charge a restore.
+        #expect(memory.restorePage(guestAddress: 0x8000_0000 + HostPage.size) == .alreadyMapped)
         #expect(memory.releasedBytes.load() == 0)
         #expect(memory.restoredBytes.load() == 0)
     }
