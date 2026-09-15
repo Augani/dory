@@ -68,22 +68,37 @@ private struct FileIdentity {
 private final class SmokeDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Sendable {
   struct Snapshot: Sendable {
     let frameCount: UInt64
+    let nonblankFrameCount: UInt64
     let lastFrame: DoryVirtioGPUFrame?
+    let lastNonblankFrame: DoryVirtioGPUFrame?
   }
 
   private let lock = NSLock()
   private var frameCount: UInt64 = 0
+  private var nonblankFrameCount: UInt64 = 0
   private var lastFrame: DoryVirtioGPUFrame?
+  private var lastNonblankFrame: DoryVirtioGPUFrame?
 
   func present(_ frame: DoryVirtioGPUFrame) {
     lock.withLock {
       frameCount &+= 1
       lastFrame = frame
+      if frame.pixels.contains(where: { $0 != 0 }) {
+        nonblankFrameCount &+= 1
+        lastNonblankFrame = frame
+      }
     }
   }
 
   func snapshot() -> Snapshot {
-    lock.withLock { Snapshot(frameCount: frameCount, lastFrame: lastFrame) }
+    lock.withLock {
+      Snapshot(
+        frameCount: frameCount,
+        nonblankFrameCount: nonblankFrameCount,
+        lastFrame: lastFrame,
+        lastNonblankFrame: lastNonblankFrame
+      )
+    }
   }
 }
 
@@ -110,6 +125,7 @@ private struct Arguments {
   let systemDisk: URL?
   let installerMedia: URL?
   let variableStoreDirectory: URL?
+  let displayCaptureOutput: URL?
   let exceptionPolicy: DoryPCExceptionPolicy
   let executionTier: DoryPCExecutionTier
   let baselineJITTier1Enabled: Bool
@@ -136,7 +152,7 @@ private struct Arguments {
         [
           "--firmware-bundle", "--max-instructions", "--timeout-seconds", "--memory-bytes",
           "--processor-count",
-          "--system-disk", "--installer-media", "--variable-store-directory",
+          "--system-disk", "--installer-media", "--variable-store-directory", "--display-capture-output",
           "--exception-policy", "--execution-tier", "--progress-instructions",
           "--baseline-tier1",
           "--expected-serial-marker",
@@ -156,6 +172,7 @@ private struct Arguments {
         "usage: dory-pc-uefi-smoke --firmware-bundle /absolute/bundle "
           + "[--system-disk /absolute/disk] [--installer-media /absolute/iso] "
           + "[--variable-store-directory /absolute/directory] "
+          + "[--display-capture-output /absolute/new-frame.ppm] "
           + "[--processor-count count] [--exception-policy stop|deliver] "
           + "[--execution-tier interpreter|baseline-jit|optimizing-jit] "
           + "[--baseline-tier1 enabled|disabled] "
@@ -278,6 +295,7 @@ private struct Arguments {
     variableStoreDirectory = try options["--variable-store-directory"].map {
       try Self.absoluteURL($0, isDirectory: true)
     }
+    displayCaptureOutput = try options["--display-capture-output"].map { try Self.absoluteURL($0) }
   }
 
   private static func absoluteURL(_ path: String, isDirectory: Bool = false) throws -> URL {
@@ -328,6 +346,70 @@ private func sha256(of bytes: [UInt8]) -> String {
   SHA256.hash(data: Data(bytes))
     .map { String(format: "%02x", $0) }
     .joined()
+}
+
+private func displayFrameMetadata(_ frame: DoryVirtioGPUFrame) -> [String: Any] {
+  [
+    "scanoutID": frame.scanoutID,
+    "resourceID": frame.resourceID,
+    "resourceWidth": frame.resourceWidth,
+    "resourceHeight": frame.resourceHeight,
+    "scanoutX": frame.scanoutRectangle.x,
+    "scanoutY": frame.scanoutRectangle.y,
+    "scanoutWidth": frame.scanoutRectangle.width,
+    "scanoutHeight": frame.scanoutRectangle.height,
+    "damagedX": frame.damagedRectangle.x,
+    "damagedY": frame.damagedRectangle.y,
+    "damagedWidth": frame.damagedRectangle.width,
+    "damagedHeight": frame.damagedRectangle.height,
+    "format": frame.format.rawValue,
+    "pixelByteCount": frame.pixels.count,
+    "nonzeroPixelByteCount": frame.pixels.reduce(into: 0) { count, byte in
+      if byte != 0 { count += 1 }
+    },
+    "pixelSHA256": sha256(of: frame.pixels),
+  ]
+}
+
+private func captureDisplayFrame(
+  _ frame: DoryVirtioGPUFrame?,
+  to output: URL?
+) throws -> [String: Any] {
+  guard let output else { return ["status": "not-requested"] }
+  guard let frame else {
+    return ["status": "no-nonblank-frame", "path": output.path]
+  }
+  guard output.pathExtension.lowercased() == "ppm" else {
+    throw SmokeError.usage("--display-capture-output must end in .ppm")
+  }
+  let pixelCount = Int(exactly: frame.resourceWidth)
+    .flatMap { width in Int(exactly: frame.resourceHeight).map { width * $0 } }
+  guard let pixelCount, frame.pixels.count == pixelCount * 4 else {
+    throw SmokeError.usage("display frame dimensions do not match its pixel payload")
+  }
+
+  var portablePixmap = Data("P6\n\(frame.resourceWidth) \(frame.resourceHeight)\n255\n".utf8)
+  portablePixmap.reserveCapacity(portablePixmap.count + pixelCount * 3)
+  for offset in stride(from: 0, to: frame.pixels.count, by: 4) {
+    switch frame.format {
+    case .b8g8r8a8UNorm, .b8g8r8x8UNorm, .a8r8g8b8UNorm, .x8r8g8b8UNorm:
+      portablePixmap.append(frame.pixels[offset + 2])
+      portablePixmap.append(frame.pixels[offset + 1])
+      portablePixmap.append(frame.pixels[offset])
+    case .r8g8b8a8UNorm, .x8b8g8r8UNorm, .a8b8g8r8UNorm, .r8g8b8x8UNorm:
+      portablePixmap.append(frame.pixels[offset])
+      portablePixmap.append(frame.pixels[offset + 1])
+      portablePixmap.append(frame.pixels[offset + 2])
+    }
+  }
+  try portablePixmap.write(to: output, options: [.withoutOverwriting])
+  return [
+    "status": "written",
+    "path": output.path,
+    "byteCount": portablePixmap.count,
+    "sha256": sha256(of: [UInt8](portablePixmap)),
+    "sourceFrame": displayFrameMetadata(frame),
+  ]
 }
 
 private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
@@ -1011,28 +1093,13 @@ private func run() throws {
   )
   let display = displaySink.snapshot()
   let lastDisplayFrame: Any =
-    display.lastFrame.map { frame in
-      [
-        "scanoutID": frame.scanoutID,
-        "resourceID": frame.resourceID,
-        "resourceWidth": frame.resourceWidth,
-        "resourceHeight": frame.resourceHeight,
-        "scanoutX": frame.scanoutRectangle.x,
-        "scanoutY": frame.scanoutRectangle.y,
-        "scanoutWidth": frame.scanoutRectangle.width,
-        "scanoutHeight": frame.scanoutRectangle.height,
-        "damagedX": frame.damagedRectangle.x,
-        "damagedY": frame.damagedRectangle.y,
-        "damagedWidth": frame.damagedRectangle.width,
-        "damagedHeight": frame.damagedRectangle.height,
-        "format": frame.format.rawValue,
-        "pixelByteCount": frame.pixels.count,
-        "nonzeroPixelByteCount": frame.pixels.reduce(into: 0) { count, byte in
-          if byte != 0 { count += 1 }
-        },
-        "pixelSHA256": sha256(of: frame.pixels),
-      ] as [String: Any]
-    } ?? NSNull()
+    display.lastFrame.map(displayFrameMetadata) ?? NSNull()
+  let lastNonblankDisplayFrame: Any =
+    display.lastNonblankFrame.map(displayFrameMetadata) ?? NSNull()
+  let displayCapture = try captureDisplayFrame(
+    display.lastNonblankFrame,
+    to: arguments.displayCaptureOutput
+  )
   let payload: [String: Any] = [
     "bootTimeline": try bootTimeline.map {
       try JSONSerialization.jsonObject(with: JSONEncoder().encode($0.snapshot()))
@@ -1113,7 +1180,10 @@ private func run() throws {
     "clockSource": arguments.clockSourceDescription,
     "displayDevice": displayDevice,
     "displayFrameCount": display.frameCount,
+    "displayNonblankFrameCount": display.nonblankFrameCount,
     "lastDisplayFrame": lastDisplayFrame,
+    "lastNonblankDisplayFrame": lastNonblankDisplayFrame,
+    "displayCapture": displayCapture,
     "interruptControllers": interruptControllerDiagnostics(composed.machine),
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
     "rbx": state.map { hexadecimal($0.registers.rbx) } ?? "unavailable",
