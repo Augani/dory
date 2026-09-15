@@ -157,6 +157,10 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
     lock.withLock { (droppedReceivedByteCount, droppedTransmittedByteCount) }
   }
 
+  /// A console harness can use this to record whether bounded host input was consumed. The
+  /// inspection intentionally exposes only queue state, never input bytes.
+  public var hasPendingReceivedBytes: Bool { lock.withLock { !received.isEmpty } }
+
   public func read(portOffset: UInt16, width: DoryX86OperandWidth) throws -> UInt32 {
     guard width == .byte else { throw DoryPCPortIOError.unsupportedWidth(width) }
     let (value, notification) = lock.withLock {

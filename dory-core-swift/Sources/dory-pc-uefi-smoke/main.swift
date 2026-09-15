@@ -132,6 +132,7 @@ private struct Arguments {
   let keyboardScript: [String]
   let keyboardEvents: [DoryVirtioInputEvent]
   let usbKeyboardReports: [[UInt8]]
+  let serialInputBytes: [UInt8]
   let keyboardAfterInstructions: UInt64?
   let exceptionPolicy: DoryPCExceptionPolicy
   let executionTier: DoryPCExecutionTier
@@ -309,6 +310,7 @@ private struct Arguments {
     keyboardScript = try Self.keyboardScript(options["--keyboard-script"])
     keyboardEvents = Self.keyboardEvents(for: keyboardScript)
     usbKeyboardReports = Self.usbKeyboardReports(for: keyboardScript)
+    serialInputBytes = Self.serialInputBytes(for: keyboardScript)
     if let text = options["--keyboard-after-instructions"] {
       guard let value = UInt64(text) else { throw SmokeError.invalidNumber(text) }
       guard !keyboardScript.isEmpty else {
@@ -387,6 +389,22 @@ private struct Arguments {
         [0, 0, code, 0, 0, 0, 0, 0],
         [0, 0, 0, 0, 0, 0, 0, 0],
       ]
+    }
+  }
+
+  private static func serialInputBytes(for script: [String]) -> [UInt8] {
+    script.flatMap { key -> [UInt8] in
+      switch key {
+      case "enter": return [13]
+      case "esc": return [27]
+      case "up": return [27, 91, 65]
+      case "down": return [27, 91, 66]
+      case "left": return [27, 91, 68]
+      case "right": return [27, 91, 67]
+      case "tab": return [9]
+      case "space": return [32]
+      default: return []
+      }
     }
   }
 }
@@ -978,6 +996,7 @@ private func enqueueKeyboardInput(
   for report in arguments.usbKeyboardReports {
     try composed.usbKeyboardDevice.enqueue(report: report)
   }
+  composed.machine.serial.enqueueReceivedBytes(arguments.serialInputBytes)
 }
 
 private func pageTableTrace(
@@ -1302,6 +1321,8 @@ private func run() throws {
     "keyboardEventsPending": composed.keyboardDevice.inputDevice.hasPendingEvent,
     "usbKeyboardReportCount": arguments.usbKeyboardReports.count,
     "usbKeyboardReportsPending": composed.usbKeyboardDevice.hasPendingReport,
+    "serialInputByteCount": arguments.serialInputBytes.count,
+    "serialInputBytesPending": composed.machine.serial.hasPendingReceivedBytes,
     "interruptControllers": interruptControllerDiagnostics(composed.machine),
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
     "rbx": state.map { hexadecimal($0.registers.rbx) } ?? "unavailable",

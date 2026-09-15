@@ -54,10 +54,12 @@ import Testing
     uart.connectInterruptSink { levels.append($0) }
     try uart.write(portOffset: 1, value: 3, width: .byte)
     uart.enqueueReceivedBytes([0x41, 0x42])
+    #expect(uart.hasPendingReceivedBytes)
     #expect(try uart.read(portOffset: 2, width: .byte) == 4)
     #expect(try uart.read(portOffset: 0, width: .byte) == 0x41)
     #expect(try uart.read(portOffset: 2, width: .byte) == 4)
     #expect(try uart.read(portOffset: 0, width: .byte) == 0x42)
+    #expect(!uart.hasPendingReceivedBytes)
     #expect(levels.values == [false, true])
     #expect(try uart.read(portOffset: 2, width: .byte) == 2)
     #expect(levels.values == [false, true, false])
