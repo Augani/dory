@@ -310,8 +310,15 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     try validate(offset: offset, byteCount: byteCount, write: false)
     let result: [UInt8]
     if offset < 0x40 {
-      let common = lock.withLock { commonConfigurationLocked() }
-      result = Array(common[Int(offset)..<(Int(offset) + byteCount)])
+      let start = Int(offset)
+      result = lock.withLock {
+        let common = commonConfigurationLocked()
+        guard start < common.count else { return [UInt8](repeating: 0, count: byteCount) }
+        let end = min(common.count, start + byteCount)
+        var bytes = Array(common[start..<end])
+        bytes.append(contentsOf: repeatElement(0, count: byteCount - bytes.count))
+        return bytes
+      }
     } else if offset == 0x200, byteCount == 1 {
       result = [
         lock.withLock {

@@ -4,6 +4,13 @@ import Foundation
 import Testing
 
 @Suite struct DoryPCVirtioPCITests {
+  @Test func readsAcrossTheShortCommonConfigurationRegionAreZeroExtended() throws {
+    let function = try makeFunction()
+    let bytes = try function.transport.readBAR(offset: 0x3E, byteCount: 4)
+    #expect(bytes.count == 4)
+    #expect(bytes.suffix(2) == [0, 0])
+  }
+
   @Test func publishesModernCapabilitiesAndVirtioIdentity() throws {
     let function = try makeFunction()
     #expect(try function.readConfiguration(offset: 0, byteCount: 4) == [0xF4, 0x1A, 0x42, 0x10])
