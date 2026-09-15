@@ -236,6 +236,13 @@ typedef struct {
   VENDOR_DEFINED_DEVICE_PATH  TerminalType;
   EFI_DEVICE_PATH_PROTOCOL    End;
 } DORY_SERIAL_CONSOLE;
+
+typedef struct {
+  ACPI_HID_DEVICE_PATH      RootBridge;
+  PCI_DEVICE_PATH           LpcBridge;
+  ACPI_HID_DEVICE_PATH      Keyboard;
+  EFI_DEVICE_PATH_PROTOCOL  End;
+} DORY_PS2_CONSOLE;
 #pragma pack ()
 
 STATIC DORY_SERIAL_CONSOLE mSerialConsole = {
@@ -254,6 +261,29 @@ STATIC DORY_SERIAL_CONSOLE mSerialConsole = {
   {
     { MESSAGING_DEVICE_PATH, MSG_VENDOR_DP, DP_NODE_LEN (VENDOR_DEFINED_DEVICE_PATH) },
     EFI_TTY_TERM_GUID
+  },
+  {
+    END_DEVICE_PATH_TYPE,
+    END_ENTIRE_DEVICE_PATH_SUBTYPE,
+    DP_NODE_LEN (EFI_DEVICE_PATH_PROTOCOL)
+  }
+};
+
+STATIC DORY_PS2_CONSOLE mPs2Console = {
+  {
+    { ACPI_DEVICE_PATH, ACPI_DP, DP_NODE_LEN (ACPI_HID_DEVICE_PATH) },
+    EISA_PNP_ID (0x0A03),
+    0
+  },
+  {
+    { HARDWARE_DEVICE_PATH, HW_PCI_DP, DP_NODE_LEN (PCI_DEVICE_PATH) },
+    0,
+    31
+  },
+  {
+    { ACPI_DEVICE_PATH, ACPI_DP, DP_NODE_LEN (ACPI_HID_DEVICE_PATH) },
+    EISA_PNP_ID (0x0303),
+    0
   },
   {
     END_DEVICE_PATH_TYPE,
@@ -334,6 +364,7 @@ PlatformBootManagerBeforeConsole (
   EfiBootManagerDispatchDeferredImages ();
 
   EfiBootManagerUpdateConsoleVariable (ConIn, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
+  EfiBootManagerUpdateConsoleVariable (ConIn, (EFI_DEVICE_PATH_PROTOCOL *)&mPs2Console, NULL);
   EfiBootManagerUpdateConsoleVariable (ConOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
   EfiBootManagerUpdateConsoleVariable (ErrOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
 }
@@ -352,6 +383,7 @@ PlatformBootManagerAfterConsole (
   // resolves ConOut and publishes it through EFI_SYSTEM_TABLE.
   DoryConnectDisplayConsole ();
   EfiBootManagerUpdateConsoleVariable (ConIn, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
+  EfiBootManagerUpdateConsoleVariable (ConIn, (EFI_DEVICE_PATH_PROTOCOL *)&mPs2Console, NULL);
   EfiBootManagerUpdateConsoleVariable (ConOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
   EfiBootManagerUpdateConsoleVariable (ErrOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
   EfiBootManagerConnectAllDefaultConsoles ();
