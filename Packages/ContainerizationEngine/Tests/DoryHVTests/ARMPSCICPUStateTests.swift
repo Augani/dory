@@ -49,10 +49,10 @@ struct ARMPSCICPUStateTests {
         var state = ARMPSCICPUState(cpuCount: 4)
         // CPU 0 is on at startup; CPU_OFF on index 0 is rejected by the caller, but the
         // state machine itself rejects index 0.
-        #expect(state.requestOff(index: 0) == -1)
+        #expect(state.requestOff(index: 0) == -3)
         #expect(state.affinityInfo(target: 0, lowestLevel: 0) == 0)
         // CPU 1 is off at startup; CPU_OFF on an already-off CPU is an error.
-        #expect(state.requestOff(index: 1) == -1)
+        #expect(state.requestOff(index: 1) == -3)
         // Bring CPU 1 online, then turn it off.
         #expect(state.requestOn(target: 1, entry: 0x4000_0000, executableRanges: ram) == 0)
         state.completeOn(index: 1)
@@ -67,10 +67,10 @@ struct ARMPSCICPUStateTests {
         var state = ARMPSCICPUState(cpuCount: 2)
         // CPU 1 is on-pending after requestOn but before completeOn.
         #expect(state.requestOn(target: 1, entry: 0x4000_0000, executableRanges: ram) == 0)
-        #expect(state.requestOff(index: 1) == -1)
+        #expect(state.requestOff(index: 1) == -3)
         #expect(state.affinityInfo(target: 1, lowestLevel: 0) == 2)
         // Out-of-range indices are rejected.
-        #expect(state.requestOff(index: -1) == -1)
-        #expect(state.requestOff(index: 2) == -1)
+        #expect(state.requestOff(index: -1) == -3)
+        #expect(state.requestOff(index: 2) == -3)
     }
 }

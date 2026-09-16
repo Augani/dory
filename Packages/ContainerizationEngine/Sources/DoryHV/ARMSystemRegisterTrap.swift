@@ -103,21 +103,30 @@ public struct ARMSystemRegisterTrap: Equatable, Sendable {
     }
 }
 
-/// Guest ID_AA64DFR0/DFR1 bits that must not be advertised while debug/PMU traps are RAZ/WI.
+/// Guest ID_AA64DFR0/DFR1 identity for the board's architectural debug-register contract.
+///
+/// The debug register accesses themselves remain RAZ/WI, but ID_AA64DFR0 must not report
+/// `DebugVer == 0`: that encoding is reserved. Expose the Armv8.0 minimum (two breakpoint and
+/// two watchpoint register pairs) while keeping PMU, trace, SPE, and every host-specific extension
+/// unavailable to the guest.
 public enum ARMGuestDebugPMUIdentity: Sendable {
-    /// Hide all debug, trace and profiling fields, including newer upper-half extensions.
+    /// Hide all host debug, trace, and profiling fields before publishing the fixed contract.
     public static let dfr0UnimplementedMask: UInt64 = UInt64.max
 
+    /// ID_AA64DFR0_EL1: DebugVer=0b0110 (Armv8.0); BRPs/WRPs fields are count-minus-one.
+    public static let minimalDebugDFR0: UInt64 = 0x0010_1006
+
     public static func sanitizedDFR0(from host: UInt64) -> UInt64 {
-        host & ~dfr0UnimplementedMask
+        _ = host
+        return minimalDebugDFR0
     }
 
     public static func sanitizedDFR1(from host: UInt64) -> UInt64 {
         0
     }
 
-    public static func advertisesNoDebugOrPMU(dfr0: UInt64, dfr1: UInt64) -> Bool {
-        (dfr0 & dfr0UnimplementedMask) == 0 && dfr1 == 0
+    public static func advertisesMinimalDebugWithoutPMU(dfr0: UInt64, dfr1: UInt64) -> Bool {
+        dfr0 == minimalDebugDFR0 && dfr1 == 0
     }
 }
 
@@ -140,4 +149,14 @@ public enum ARMUndefinedInstructionEntry {
         if hasMTE { result |= 1 << 25 } // Disable tag checks on entry.
         return result
     }
+}
+
+/// Encoding and EL1 entry state shared by host-injected synchronous guest faults. Keeping the
+/// syndrome construction outside the Hypervisor.framework path makes the architectural contract
+/// directly testable: an unmapped MMIO access is a guest data abort, not a host VM failure.
+public enum ARMGuestSynchronousFault {
+    /// EC=Data Abort from a lower EL, IL=A64, DFSC=synchronous external abort. Guest kernels
+    /// recognize this as an external abort rather than a translation or permission fault invented
+    /// by the VMM.
+    public static let externalDataAbortESR: UInt64 = (0x24 << 26) | (1 << 25) | 0b010000
 }

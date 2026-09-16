@@ -737,6 +737,9 @@ enum VirtioMMIODeviceTree {
     private var vcpusExited = false
     private let executionPause = GuestExecutionPauseCoordinator()
     private var pauseExitRequests: Set<hv_vcpu_t> = []
+    /// Access is serialized by `teamCondition`. See `MappedPageFaultRetryBudget` for why an
+    /// already-mapped stage-2 fault cannot be retried indefinitely.
+    private var mappedPageFaultRetryBudget = MappedPageFaultRetryBudget()
 
     /// Clock semantics (P2-02 item 7):
     ///
@@ -1013,10 +1016,12 @@ enum VirtioMMIODeviceTree {
             // With the in-kernel GIC the timer PPI is delivered by the GIC itself; unmask
             // and continue so the vtimer can fire again.
             try vcpu.setVTimerMask(false)
-          case .exception(let syndrome, _, let physicalAddress):
+          case .exception(let syndrome, let virtualAddress, let physicalAddress):
             if let stop = try handleException(
               vcpu: vcpu,
+              vcpuIndex: index,
               syndrome: syndrome,
+              virtualAddress: virtualAddress,
               physicalAddress: physicalAddress,
               mmioRouteCache: &mmioRouteCache
             ) {
@@ -1041,7 +1046,9 @@ enum VirtioMMIODeviceTree {
 
     private func handleException(
       vcpu: VCPU,
+      vcpuIndex: Int,
       syndrome: UInt64,
+      virtualAddress: UInt64,
       physicalAddress: UInt64,
       mmioRouteCache: inout MMIORouteCache
     ) throws -> GuestStopReason? {
@@ -1057,31 +1064,44 @@ enum VirtioMMIODeviceTree {
       case .dataAbortLowerEL:
         try handleMMIO(
           vcpu: vcpu,
+          vcpuIndex: vcpuIndex,
           syndrome: syndrome,
+          virtualAddress: virtualAddress,
           physicalAddress: physicalAddress,
           routeCache: &mmioRouteCache
         )
         return nil
       case .instructionAbortLowerEL:
         switch restoreIfReleasedRAM(physicalAddress) {
-        case .restored, .alreadyMapped:
+        case .restored:
+          resolveMappedPageFault(vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
+          return nil
+        case .alreadyMapped:
+          guard retryMappedPageFault(vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
+          else {
+            Self.log("instruction abort kept faulting on mapped RAM at pa 0x\(String(physicalAddress, radix: 16)) — injecting SError")
+            try vcpu.injectSError()
+            return nil
+          }
           return nil
         case .notReleased:
+          resolveMappedPageFault(vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
           // Guest-fault injection: instruction abort outside RAM — inject SError
           // instead of crashing the VM.
           Self.log("instruction abort outside RAM at pa 0x\(String(physicalAddress, radix: 16)) — injecting SError")
           try vcpu.injectSError()
           return nil
         case .restoreFailed:
+          resolveMappedPageFault(vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
           // Restore attempt failed — inject SError so the guest can handle the fault.
           Self.log("instruction abort RAM restore failed at pa 0x\(String(physicalAddress, radix: 16)) — injecting SError")
           try vcpu.injectSError()
           return nil
         }
       case .hvc64:
-        // HVC returns with PC already past the instruction; unknown hypercalls get
-        // SMCCC NOT_SUPPORTED.
-        try vcpu.write(HV_REG_X0, UInt64(bitPattern: -1))
+        try vcpu.write(HV_REG_X0, SMCCC.result(
+          function: UInt32(truncatingIfNeeded: try vcpu.read(HV_REG_X0)),
+          argument: try vcpu.read(HV_REG_X1)))
         return nil
       case .smc64:
         let result = try handleSMC(vcpu: vcpu)
@@ -1095,40 +1115,66 @@ enum VirtioMMIODeviceTree {
           try advancePC(vcpu)
         }
         return nil
+      case .floatingPointSIMD, .illegalExecutionState, .branchTarget, .breakpointLowerEL:
+        // These are architecturally guest-visible synchronous exceptions. The
+        // current virtual CPU does not emulate the optional facility that made
+        // them trap, so deliver an SError to the guest instead of converting a
+        // guest fault into a host-side VM termination.
+        let pc = try vcpu.read(HV_REG_PC)
+        Self.log("guest exception class \(exceptionClass.rawValue) at pc 0x\(String(pc, radix: 16)) — injecting SError")
+        try vcpu.injectSError()
+        return nil
       }
     }
 
     private func handleMMIO(
       vcpu: VCPU,
+      vcpuIndex: Int,
       syndrome: UInt64,
+      virtualAddress: UInt64,
       physicalAddress: UInt64,
       routeCache: inout MMIORouteCache
     ) throws {
       switch restoreIfReleasedRAM(physicalAddress) {
-      case .restored, .alreadyMapped:
+      case .restored:
+        resolveMappedPageFault(vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
+        return
+      case .alreadyMapped:
+        guard retryMappedPageFault(vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
+        else {
+          Self.log("data abort kept faulting on mapped RAM at pa 0x\(String(physicalAddress, radix: 16)) — injecting synchronous external data abort")
+          try injectSynchronousExternalDataAbort(vcpu: vcpu, virtualAddress: virtualAddress)
+          return
+        }
         return
       case .notReleased:
+        resolveMappedPageFault(vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
         break  // Not a released RAM page — fall through to MMIO device lookup.
       case .restoreFailed:
-        // RAM restore failed — inject SError so the guest can handle the fault.
-        Self.log("RAM restore failed at pa 0x\(String(physicalAddress, radix: 16)) — injecting SError")
-        try vcpu.injectSError()
+        resolveMappedPageFault(vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
+        // RAM restore failed — make the fault visible to the guest instead of terminating the VM.
+        Self.log("RAM restore failed at pa 0x\(String(physicalAddress, radix: 16)) — injecting synchronous external data abort")
+        try injectSynchronousExternalDataAbort(vcpu: vcpu, virtualAddress: virtualAddress)
         return
       }
       let abort = DataAbortInfo(syndrome: syndrome)
       guard abort.isValid else {
         let pc = try vcpu.read(HV_REG_PC)
-        throw VMError.unexpectedExit(
-          "data abort without syndrome info at pa 0x\(String(physicalAddress, radix: 16)), pc 0x\(String(pc, radix: 16))"
-        )
+        // ISV=0 means Hypervisor.framework could not provide a decodable
+        // load/store syndrome (for example an atomic or paired access). There
+        // is no safe way to synthesize the register side effects, so preserve
+        // the guest-visible fault rather than crashing the entire VM.
+        Self.log("data abort without syndrome info at pa 0x\(String(physicalAddress, radix: 16)), pc 0x\(String(pc, radix: 16)) — injecting synchronous external data abort")
+        try injectSynchronousExternalDataAbort(vcpu: vcpu, virtualAddress: virtualAddress)
+        return
       }
       guard let (device, offset) = bus.device(for: physicalAddress, cache: &routeCache) else {
         // Guest-fault injection: instead of terminating the VM on an unmapped MMIO
-        // access, inject an SError so the guest's own handler can log, retry, or
-        // panic without losing the entire VM.
+        // access, take a synchronous external data abort to EL1 so the guest's own
+        // handler can log, retry, or panic without losing the entire VM.
         let pc = try vcpu.read(HV_REG_PC)
-        Self.log("guest touched unmapped pa 0x\(String(physicalAddress, radix: 16)), pc 0x\(String(pc, radix: 16)) — injecting SError")
-        try vcpu.injectSError()
+        Self.log("guest touched unmapped pa 0x\(String(physicalAddress, radix: 16)), pc 0x\(String(pc, radix: 16)) — injecting synchronous external data abort")
+        try injectSynchronousExternalDataAbort(vcpu: vcpu, virtualAddress: virtualAddress)
         return
       }
       if abort.isWrite {
@@ -1179,7 +1225,7 @@ enum VirtioMMIODeviceTree {
         // exit their run loop; CPU 0 is rejected because the primary must use SYSTEM_OFF.
         let isPrimary = teamCondition.withLock { teamHandles[0] == vcpu.handle }
         if isPrimary {
-          try vcpu.write(HV_REG_X0, UInt64(bitPattern: -1))  // DENIED
+          try vcpu.write(HV_REG_X0, PSCIPolicy.denied)
         } else {
           let cpuIndex = teamCondition.withLock {
             (teamHandles.firstIndex { $0 == vcpu.handle }) ?? -1
@@ -1188,7 +1234,7 @@ enum VirtioMMIODeviceTree {
             // Validate only. cpuMain commits OFF once the retained worker is ready for
             // another start; publishing it here would race fallible exit preparation.
             var proposedState = psciCPUState
-            return cpuIndex >= 0 ? proposedState.requestOff(index: cpuIndex) : -1
+            return cpuIndex >= 0 ? proposedState.requestOff(index: cpuIndex) : -3
           }
           if result == 0 {
             return .cpuOff
@@ -1263,12 +1309,51 @@ enum VirtioMMIODeviceTree {
       try vcpu.write(HV_REG_PC, vbar &+ vectorOffset)
     }
 
+    /// Take a synchronous external data abort to EL1. This is used for host-visible data faults
+    /// that have no safe device emulation path; the faulting PC is preserved in ELR_EL1 and FAR
+    /// reports the VA supplied by Hypervisor.framework.
+    private func injectSynchronousExternalDataAbort(
+      vcpu: VCPU,
+      virtualAddress: UInt64
+    ) throws {
+      let pc = try vcpu.read(HV_REG_PC)
+      let cpsr = try vcpu.read(HV_REG_CPSR)
+      let vbar = try vcpu.readSystem(HV_SYS_REG_VBAR_EL1)
+      let sctlr = try vcpu.readSystem(HV_SYS_REG_SCTLR_EL1)
+      let pfr1 = try vcpu.readSystem(HV_SYS_REG_ID_AA64PFR1_EL1)
+      try vcpu.writeSystem(HV_SYS_REG_ELR_EL1, pc)
+      try vcpu.writeSystem(HV_SYS_REG_SPSR_EL1, cpsr)
+      try vcpu.writeSystem(HV_SYS_REG_ESR_EL1, ARMGuestSynchronousFault.externalDataAbortESR)
+      try vcpu.writeSystem(HV_SYS_REG_FAR_EL1, virtualAddress)
+      try vcpu.write(HV_REG_CPSR, ARMUndefinedInstructionEntry.pstate(
+        cpsr: cpsr, sctlr: sctlr, hasMTE: (pfr1 >> 8) & 0xF != 0))
+      try vcpu.write(HV_REG_PC, vbar &+ ARMUndefinedInstructionEntry.vectorOffset(cpsr: cpsr))
+    }
+
     /// A fault inside the RAM window MIGHT be the guest touching a page that free page reporting
     /// returned to macOS. restorePage remaps it and returns the tri-state result so the caller
     /// can distinguish a successful restore (retry the instruction) from a genuine fault (inject
     /// SError) from a restore failure (retry with escalation, then inject SError).
     private func restoreIfReleasedRAM(_ physicalAddress: UInt64) -> GuestMemory.RestorePageResult {
       memory.restorePage(guestAddress: physicalAddress)
+    }
+
+    private func retryMappedPageFault(vcpuIndex: Int, physicalAddress: UInt64) -> Bool {
+      teamCondition.withLock {
+        mappedPageFaultRetryBudget.retryAlreadyMapped(
+          vcpuIndex: vcpuIndex,
+          physicalAddress: physicalAddress
+        )
+      }
+    }
+
+    private func resolveMappedPageFault(vcpuIndex: Int, physicalAddress: UInt64) {
+      teamCondition.withLock {
+        mappedPageFaultRetryBudget.resolve(
+          vcpuIndex: vcpuIndex,
+          physicalAddress: physicalAddress
+        )
+      }
     }
 
     private func advancePC(_ vcpu: VCPU) throws {
@@ -1315,6 +1400,57 @@ enum VirtioMMIODeviceTree {
     static let features: UInt32 = 0x8400_000A
   }
 
+  /// SMCCC 1.1 discovery surface for Linux running at EL1 through HVC.
+  ///
+  /// Dory has no secure monitor and no physical SoC firmware to expose. It nevertheless answers
+  /// the standard discovery calls so Linux does not repeatedly probe an absent conduit. The three
+  /// speculation-mitigation calls are explicitly `NOT_REQUIRED`: generated guest code executes on
+  /// the host under Dory's Hypervisor.framework process boundary, not on a pass-through CPU.
+  enum SMCCC {
+    static let version: UInt32 = 0x8000_0000
+    static let architectureFeatures: UInt32 = 0x8000_0001
+    static let architectureSoCID: UInt32 = 0x8000_0002
+    static let architectureSoCID64: UInt32 = 0xC000_0002
+    static let architectureWorkaround1: UInt32 = 0x8000_8000
+    static let architectureWorkaround2: UInt32 = 0x8000_7FFF
+    static let architectureWorkaround3: UInt32 = 0x8000_3FFF
+
+    static let success: UInt64 = 0
+    static let notSupported: UInt64 = UInt64(bitPattern: -1)
+    static let notRequired: UInt64 = UInt64(bitPattern: -2)
+    static let version1_1: UInt64 = 0x0001_0001
+
+    /// Implementation-defined virtual SoC identity: `DR` (Dory) with ARM board ABI revision 1.
+    static let virtualSoCVersion: UInt64 = 0x4452_0001
+    static let virtualSoCRevision: UInt64 = 0
+
+    static func result(function: UInt32, argument: UInt64) -> UInt64 {
+      switch function {
+      case version:
+        return version1_1
+      case architectureFeatures:
+        switch UInt32(truncatingIfNeeded: argument) {
+        case version, architectureFeatures, architectureSoCID, architectureSoCID64:
+          return success
+        case architectureWorkaround1, architectureWorkaround2, architectureWorkaround3:
+          return notRequired
+        default:
+          return notSupported
+        }
+      case architectureSoCID, architectureSoCID64:
+        switch argument {
+        case 0: return virtualSoCVersion
+        case 1: return virtualSoCRevision
+        default: return notSupported
+        }
+      case architectureWorkaround1, architectureWorkaround2, architectureWorkaround3:
+        return notRequired
+      default:
+        return notSupported
+      }
+    }
+  }
+
   /// Advertised PSCI function set and CPU_SUSPEND return policy.
   ///
   /// DoryHV does not implement the complete PSCI CPU_SUSPEND suspend/resume state
@@ -1333,6 +1469,10 @@ enum VirtioMMIODeviceTree {
 
     /// PSCI_SUCCESS, encoded as 0 in X0.
     static let success: UInt64 = 0
+
+    /// PSCI_DENIED, encoded as -3 in X0. The primary CPU cannot be powered
+    /// off independently and a CPU that is not online cannot satisfy CPU_OFF.
+    static let denied: UInt64 = UInt64(bitPattern: -3)
 
     /// PSCI function IDs advertised as supported through PSCI_FEATURES.
     ///

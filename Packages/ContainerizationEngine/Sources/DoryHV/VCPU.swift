@@ -74,7 +74,7 @@ public final class VCPU {
         try writeSystem(HV_SYS_REG_ID_AA64DFR1_EL1, dfr1)
         let observed0 = try readSystem(HV_SYS_REG_ID_AA64DFR0_EL1)
         let observed1 = try readSystem(HV_SYS_REG_ID_AA64DFR1_EL1)
-        guard ARMGuestDebugPMUIdentity.advertisesNoDebugOrPMU(dfr0: observed0, dfr1: observed1) else {
+        guard ARMGuestDebugPMUIdentity.advertisesMinimalDebugWithoutPMU(dfr0: observed0, dfr1: observed1) else {
             throw VMError.bootFailure(
                 "ID_AA64DFR0/1 still advertise debug/PMU after sanitization (dfr0=0x\(String(observed0, radix: 16)), dfr1=0x\(String(observed1, radix: 16)))"
             )
@@ -110,11 +110,15 @@ public final class VCPU {
 }
 
 public enum ExceptionClass: UInt64 {
+    case floatingPointSIMD = 0x07
+    case illegalExecutionState = 0x0E
     case hvc64 = 0x16
     case smc64 = 0x17
     case systemRegisterTrap = 0x18
+    case branchTarget = 0x1C
     case instructionAbortLowerEL = 0x20
     case dataAbortLowerEL = 0x24
+    case breakpointLowerEL = 0x3C
 
     public init?(syndrome: UInt64) {
         self.init(rawValue: syndrome >> 26)

@@ -465,6 +465,13 @@ import Testing
         #expect(!info.isWrite)
     }
 
+    @Test func missingInstructionSyndromeIsNotDecodedAsMMIO() {
+        // ISV=0 supplies no reliable access width/register/write direction.
+        // Machine must inject a guest fault rather than invent side effects.
+        let info = DataAbortInfo(syndrome: 0)
+        #expect(!info.isValid)
+    }
+
     #if arch(arm64)
     @Test func exceptionClassFromSyndrome() {
         #expect(ExceptionClass(syndrome: UInt64(0x24) << 26) == .dataAbortLowerEL)
@@ -472,6 +479,10 @@ import Testing
         #expect(ExceptionClass(syndrome: UInt64(0x16) << 26) == .hvc64)
         #expect(ExceptionClass(syndrome: UInt64(0x17) << 26) == .smc64)
         #expect(ExceptionClass(syndrome: UInt64(0x18) << 26) == .systemRegisterTrap)
+        #expect(ExceptionClass(syndrome: UInt64(0x07) << 26) == .floatingPointSIMD)
+        #expect(ExceptionClass(syndrome: UInt64(0x0E) << 26) == .illegalExecutionState)
+        #expect(ExceptionClass(syndrome: UInt64(0x1C) << 26) == .branchTarget)
+        #expect(ExceptionClass(syndrome: UInt64(0x3C) << 26) == .breakpointLowerEL)
     }
     #endif
 }

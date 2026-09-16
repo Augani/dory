@@ -44,15 +44,15 @@ struct ARMPSCICPUState {
         states[index] = .on
     }
 
-    /// Mark a CPU as off via PSCI CPU_OFF.  Only an already-on CPU can be turned off;
-    /// on-pending and already-off CPUs return an error.  CPU 0 is rejected by the caller
-    /// (the primary must use SYSTEM_OFF).
+    /// Mark a CPU as off via PSCI CPU_OFF. Only an already-on secondary CPU can be
+    /// turned off; all other requests are denied by the platform (PSCI_DENIED, -3).
+    /// CPU 0 is rejected by the caller because the primary must use SYSTEM_OFF.
     mutating func requestOff(index: Int) -> Int64 {
-        guard index > 0, index < states.count else { return -1 }
+        guard index > 0, index < states.count else { return -3 }
         switch states[index] {
         case .on: break
-        case .off: return -1
-        case .onPending: return -1
+        case .off: return -3
+        case .onPending: return -3
         }
         states[index] = .off
         return 0

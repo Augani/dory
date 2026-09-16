@@ -100,12 +100,12 @@ import Testing
     @Test func cpuOffOnPrimaryIsAlwaysRejected() {
       var state = ARMPSCICPUState(cpuCount: 2)
       // CPU 0 is the primary and must never be turned off via CPU_OFF.
-      #expect(state.requestOff(index: 0) == -1)
+      #expect(state.requestOff(index: 0) == -3)
       #expect(state.affinityInfo(target: 0, lowestLevel: 0) == 0)
       // Even after a full ON cycle, index 0 is still rejected.
       #expect(state.requestOn(target: 1, entry: 0x4000_0000, executableRanges: [0x4000_0000..<0x8000_0000]) == 0)
       state.completeOn(index: 1)
-      #expect(state.requestOff(index: 0) == -1)
+      #expect(state.requestOff(index: 0) == -3)
       #expect(state.affinityInfo(target: 0, lowestLevel: 0) == 0)
     }
 
@@ -113,7 +113,7 @@ import Testing
       var state = ARMPSCICPUState(cpuCount: 4)
       // CPUs 1-3 start off; CPU_OFF on an already-off CPU is DENIED.
       for index in 1..<4 {
-        #expect(state.requestOff(index: index) == -1)
+        #expect(state.requestOff(index: index) == -3)
         #expect(state.affinityInfo(target: UInt64(index), lowestLevel: 0) == 1)
       }
     }
@@ -124,7 +124,7 @@ import Testing
       #expect(state.requestOn(target: 1, entry: 0x4000_0000, executableRanges: [0x4000_0000..<0x8000_0000]) == 0)
       #expect(state.affinityInfo(target: 1, lowestLevel: 0) == 2)
       // CPU_OFF during on-pending is DENIED; the CPU must complete ON first.
-      #expect(state.requestOff(index: 1) == -1)
+      #expect(state.requestOff(index: 1) == -3)
       // The CPU remains on-pending.
       #expect(state.affinityInfo(target: 1, lowestLevel: 0) == 2)
     }
@@ -195,6 +195,20 @@ import Testing
       let minor = returnValue & 0xFFFF
       #expect(major == 1)
       #expect(minor == 0)
+    }
+
+    @Test func smcccDiscoveryReportsVersionFeaturesVirtualSoCAndMitigationPolicy() {
+      #expect(SMCCC.result(function: SMCCC.version, argument: 0) == SMCCC.version1_1)
+      #expect(SMCCC.result(function: SMCCC.architectureFeatures, argument: UInt64(SMCCC.version)) == SMCCC.success)
+      #expect(SMCCC.result(function: SMCCC.architectureFeatures, argument: UInt64(SMCCC.architectureSoCID)) == SMCCC.success)
+      for workaround in [SMCCC.architectureWorkaround1, SMCCC.architectureWorkaround2, SMCCC.architectureWorkaround3] {
+        #expect(SMCCC.result(function: SMCCC.architectureFeatures, argument: UInt64(workaround)) == SMCCC.notRequired)
+        #expect(SMCCC.result(function: workaround, argument: 0) == SMCCC.notRequired)
+      }
+      #expect(SMCCC.result(function: SMCCC.architectureSoCID, argument: 0) == SMCCC.virtualSoCVersion)
+      #expect(SMCCC.result(function: SMCCC.architectureSoCID64, argument: 1) == SMCCC.virtualSoCRevision)
+      #expect(SMCCC.result(function: SMCCC.architectureSoCID, argument: 2) == SMCCC.notSupported)
+      #expect(SMCCC.result(function: 0xDEAD_BEEF, argument: 0) == SMCCC.notSupported)
     }
 
     // MARK: - PSCI CPU_SUSPEND policy (P2-02 item 3)

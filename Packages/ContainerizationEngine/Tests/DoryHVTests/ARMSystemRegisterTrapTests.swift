@@ -102,22 +102,32 @@ import Testing
         #expect(ARMUndefinedInstructionEntry.vectorOffset(cpsr: 0x10) == 0x600)
     }
 
-    @Test func sanitizerClearsDebugTracePMUAndSPEFromHostDFR0() {
+    @Test func externalDataAbortIsAnEL1SynchronousExternalFault() {
+        #expect(ARMGuestSynchronousFault.externalDataAbortESR == 0x9200_0010)
+        #expect((ARMGuestSynchronousFault.externalDataAbortESR >> 26) == 0x24)
+        #expect((ARMGuestSynchronousFault.externalDataAbortESR & 0x3F) == 0x10)
+    }
+
+    @Test func sanitizerPublishesArchitecturalMinimumDebugWithoutHostPMUOrTrace() {
         let host = UInt64.max
         let sanitized = ARMGuestDebugPMUIdentity.sanitizedDFR0(from: host)
-        #expect(sanitized == 0)
-        #expect(ARMGuestDebugPMUIdentity.sanitizedDFR0(from: 1 << 60) == 0)
+        #expect(sanitized == ARMGuestDebugPMUIdentity.minimalDebugDFR0)
+        #expect(ARMGuestDebugPMUIdentity.sanitizedDFR0(from: 1 << 60) == sanitized)
         #expect(ARMGuestDebugPMUIdentity.sanitizedDFR1(from: host) == 0)
-        #expect(ARMGuestDebugPMUIdentity.advertisesNoDebugOrPMU(dfr0: sanitized, dfr1: 0))
-        #expect(!ARMGuestDebugPMUIdentity.advertisesNoDebugOrPMU(dfr0: host, dfr1: 0))
-        #expect(!ARMGuestDebugPMUIdentity.advertisesNoDebugOrPMU(dfr0: 0, dfr1: 1))
+        #expect(ARMGuestDebugPMUIdentity.advertisesMinimalDebugWithoutPMU(dfr0: sanitized, dfr1: 0))
+        #expect(!ARMGuestDebugPMUIdentity.advertisesMinimalDebugWithoutPMU(dfr0: host, dfr1: 0))
+        #expect(!ARMGuestDebugPMUIdentity.advertisesMinimalDebugWithoutPMU(dfr0: 0, dfr1: 1))
         let debugOnly = UInt64(0x6)  // DebugVer v8
-        #expect(ARMGuestDebugPMUIdentity.sanitizedDFR0(from: debugOnly) == 0)
+        #expect(ARMGuestDebugPMUIdentity.sanitizedDFR0(from: debugOnly) == sanitized)
         let pmuOnly = UInt64(1) << 8
-        #expect(ARMGuestDebugPMUIdentity.sanitizedDFR0(from: pmuOnly) == 0)
+        #expect(ARMGuestDebugPMUIdentity.sanitizedDFR0(from: pmuOnly) == sanitized)
         let speOnly = UInt64(1) << 32
-        #expect(ARMGuestDebugPMUIdentity.sanitizedDFR0(from: speOnly) == 0)
+        #expect(ARMGuestDebugPMUIdentity.sanitizedDFR0(from: speOnly) == sanitized)
         let wrpAndCtx = (UInt64(3) << 20) | (UInt64(1) << 28)
-        #expect(ARMGuestDebugPMUIdentity.sanitizedDFR0(from: wrpAndCtx) == 0)
+        #expect(ARMGuestDebugPMUIdentity.sanitizedDFR0(from: wrpAndCtx) == sanitized)
+        #expect(sanitized & 0xF == 0x6) // DebugVer
+        #expect((sanitized >> 12) & 0xF == 1) // BRPs: two registers
+        #expect((sanitized >> 20) & 0xF == 1) // WRPs: two registers
+        #expect((sanitized >> 8) & 0xF == 0) // PMUVer unavailable
     }
 }
