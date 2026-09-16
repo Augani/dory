@@ -7,9 +7,18 @@ struct DoryControlPlaneArchitectureTests {
     func packageGraphForbidsUpwardControlPlaneDependencies() throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        // `swift test` owns the package's default .build lock while this test is executing.
+        // Asking its child `swift package` invocation to use that same directory deadlocks on
+        // SwiftPM's non-reentrant advisory lock, so keep this manifest-only inspection isolated.
+        let scratchPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-control-plane-graph-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratchPath) }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = ["swift", "package", "--package-path", packageRoot.path, "dump-package"]
+        process.arguments = [
+            "swift", "package", "--package-path", packageRoot.path,
+            "--scratch-path", scratchPath.path, "dump-package",
+        ]
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice

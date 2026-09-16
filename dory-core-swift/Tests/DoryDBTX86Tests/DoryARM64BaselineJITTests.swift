@@ -10356,12 +10356,18 @@ import XCTest
         var lateMutationApplied = false
         var rejectedAddress: UInt64?
         var rejectedState: DoryX86ArchitecturalState?
+        executor.codeCacheRotationPrePublicationHookForTesting = {
+          guard !lateMutationApplied else { return }
+          lateMutationApplied = true
+          program[1] = 2
+          generation = 2
+        }
 
-        // A fetch for exactly one `mov eax, imm32` is the final confirmation fetch. The
-        // condition becomes true only after this compilation has rotated the code cache. With
-        // the confirmation in its required final position, this changes both source authorities
-        // after rotation but before publication; an earlier confirmation would publish stale
-        // code and leave `lateMutationApplied` false.
+        // The hook fires immediately after the first rotation and before the required final
+        // confirmation fetch. It changes both source authorities in the critical interval;
+        // an earlier confirmation would publish stale code and leave `lateMutationApplied`
+        // false. It deliberately does not inspect executor diagnostics while execution holds
+        // the executor lock.
         for index in 0..<1_000 where executor.diagnostics.codeCacheWraps == 0 {
           let address = UInt64(0x6A00 + index * 0x10)
           var state = try DoryX86ArchitecturalState(rip: address)
@@ -10369,14 +10375,6 @@ import XCTest
           let residentBefore = executor.residentBlockCount
           let execution = try executor.execute(
             byteProvider: { count in
-              if count == program.count,
-                !lateMutationApplied,
-                executor.diagnostics.codeCacheWraps == 1
-              {
-                lateMutationApplied = true
-                program[1] = 2
-                generation = 2
-              }
               return Array(program.prefix(count))
             },
             codeGenerationProvider: { _ in generation },
@@ -10402,6 +10400,7 @@ import XCTest
         #expect(state.registers.rax == 0)
         #expect(state.rip == address)
 
+        let residentCountBeforeStablePublish = executor.residentBlockCount
         let stable = try #require(
           executor.execute(
             byteProvider: { count in Array(program.prefix(count)) },
@@ -10414,7 +10413,10 @@ import XCTest
           ))
         #expect(stable.block.tier == (optimization == .optimizing ? .optimizing : .baseline))
         #expect(state.registers.rax == 2)
-        #expect(executor.residentBlockCount == 1)
+        // Rotation retains blocks in the generation that remains executable. The stable retry
+        // must add exactly the formerly rejected address, rather than relying on a stale
+        // whole-cache count of one.
+        #expect(executor.residentBlockCount == residentCountBeforeStablePublish + 1)
       }
     #endif
   }
