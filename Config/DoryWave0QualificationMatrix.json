@@ -33,7 +33,19 @@
         "version": "26.6.2",
         "build": "25G83"
       },
-      "releaseAdmission": "A release run must use this exact OS/build or add and approve a separately frozen host class; the current macOS 27 development host is not a substitute."
+      "releaseAdmission": "A release run must bind this exact host ID and macOS 26.6.2 / 25G83 build. It is independently frozen, requires its own signed campaign authority, and is not interchangeable with another host class."
+    },
+    {
+      "id": "m2-pro-16g-macos-27.0-26a428",
+      "architecture": "arm64",
+      "model": "Mac14,10",
+      "soc": "Apple M2 Pro",
+      "memoryMiB": 16384,
+      "operatingSystem": {
+        "version": "27.0",
+        "build": "26A428"
+      },
+      "releaseAdmission": "A release run must bind this exact host ID and macOS 27.0 / 26A428 build. It is independently frozen, requires its own signed campaign authority, and is not interchangeable with another host class."
     }
   ],
   "resourceClasses": [

@@ -21,10 +21,20 @@ public struct DoryCandidateCampaignArtifact: Codable, Sendable, Equatable, Hasha
 }
 
 public struct DoryCandidateCampaignHostConstraint: Codable, Sendable, Equatable, Hashable {
+    /// Exact release-matrix host class selected for this campaign. Hardware facts
+    /// are still independently verified at daemon admission; this signed ID
+    /// prevents authorities for separately frozen matrix tuples from being
+    /// treated as interchangeable in campaign evidence.
+    public var qualificationHostClassID: String
     public var hardwareModelIdentifier: String
     public var operatingSystemBuild: String
 
-    public init(hardwareModelIdentifier: String, operatingSystemBuild: String) {
+    public init(
+        qualificationHostClassID: String,
+        hardwareModelIdentifier: String,
+        operatingSystemBuild: String
+    ) {
+        self.qualificationHostClassID = qualificationHostClassID
         self.hardwareModelIdentifier = hardwareModelIdentifier
         self.operatingSystemBuild = operatingSystemBuild
     }
@@ -79,7 +89,10 @@ public struct DoryVirtualMachineCandidateCampaignAuthorization:
 {
     public static let kind = "dev.dory.virtual-machine-candidate-campaign-authorization"
     public static let purpose = "candidate-qualification-campaign"
-    public static let schemaVersion: UInt16 = 1
+    /// Version 2 adds the signed, exact qualification host-class ID. Schema 1
+    /// authorities are intentionally not migrated because they did not bind a
+    /// distinct frozen matrix tuple and therefore cannot serve as this evidence.
+    public static let schemaVersion: UInt16 = 2
 
     public var kind: String
     public var schemaVersion: UInt16
@@ -381,6 +394,9 @@ public enum DoryVirtualMachineCandidateCampaignAuthorityResolver {
               manifest.applicationRoot == canonical(manifest.applicationRoot),
               manifest.candidateRoot == canonical(manifest.candidateRoot),
               manifest.sbomRoot == canonical(manifest.sbomRoot),
+              safeIdentifier(manifest.host.qualificationHostClassID),
+              !manifest.host.hardwareModelIdentifier.isEmpty,
+              !manifest.host.operatingSystemBuild.isEmpty,
               secureDirectory(manifest.stateRoot),
               secureDirectory(manifest.applicationRoot),
               secureDirectory(manifest.candidateRoot),

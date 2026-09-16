@@ -84,6 +84,23 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["status"], "review-pending")
 
+    def test_two_explicit_host_classes_are_reviewable(self) -> None:
+        matrix = json.loads(json.dumps(self.matrix))
+        host = json.loads(json.dumps(matrix["hostClasses"][0]))
+        host["id"] = "host-macos-27"
+        host["operatingSystem"] = {"version": "27.0", "build": "26A428"}
+        matrix["hostClasses"].append(host)
+        result = self.invoke(matrix)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["hostClasses"], ["host", "host-macos-27"])
+
+    def test_duplicate_host_id_is_rejected(self) -> None:
+        matrix = json.loads(json.dumps(self.matrix))
+        matrix["hostClasses"].append(json.loads(json.dumps(matrix["hostClasses"][0])))
+        result = self.invoke(matrix)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("host classes repeats host", result.stderr)
+
     def test_rejects_a_missing_linux_family(self) -> None:
         matrix = json.loads(json.dumps(self.matrix))
         matrix["guestCells"][1]["mediaID"] = "ubuntu-arm"

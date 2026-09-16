@@ -193,6 +193,16 @@ docs/
 !/scripts/test-prepare-virtualization-fixtures.py
 !/scripts/verify-dory-ffi-deployment-targets.py
 !/scripts/test-verify-dory-ffi-deployment-targets.py
+
+# Local-only ARM Ubuntu qualification drivers and watchdog helpers are intentionally not public
+# source until the maintainer approves their exact paths for release automation.
+/scripts/arm-ubuntu-daemon-live-gate.sh
+/scripts/test-arm-ubuntu-daemon-live-gate.sh
+/scripts/verify-arm-ubuntu-qualification-evidence.py
+/scripts/test-verify-arm-ubuntu-qualification-evidence.py
+/scripts/verify-arm-ubuntu-qualification-campaign-pair.py
+/scripts/run-containerization-engine-tests.py
+/scripts/test-run-containerization-engine-tests.py
 !/scripts/validate-wave0-qualification-matrix.py
 !/scripts/test-validate-wave0-qualification-matrix.py
 !/scripts/pc-gpu-daemon-live-gate.sh

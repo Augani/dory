@@ -250,6 +250,7 @@ struct DoryVirtualMachineCandidateCampaignAuthorizationTests {
                 sbomRoot: sbomRoot.path,
                 sbomSHA256: Self.digest(Data("sbom\n".utf8)),
                 host: DoryCandidateCampaignHostConstraint(
+                    qualificationHostClassID: "m2-pro-16g-macos-27.0-26a428",
                     hardwareModelIdentifier: "Mac14,10",
                     operatingSystemBuild: "26A5425a"
                 ),

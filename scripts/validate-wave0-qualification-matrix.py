@@ -162,18 +162,19 @@ def validate(
         if not isinstance(resource.get("workloads"), list) or not resource["workloads"]:
             fail(f"resource class {resource['id']} has no workload")
     hosts = named(matrix["hostClasses"], "host classes")
-    if len(hosts) != 1:
-        fail("Wave 0 must nominate exactly one reviewable initial host class")
-    host = next(iter(hosts.values()))
-    for key in ("architecture", "model", "soc", "releaseAdmission"):
-        string(host.get(key), f"host {key}")
-    if host["architecture"] != "arm64" or not isinstance(host.get("memoryMiB"), int) or host["memoryMiB"] < 16384:
-        fail("host class does not define the required Apple-silicon 16 GiB floor")
-    operating_system = host.get("operatingSystem")
-    if not isinstance(operating_system, dict) or set(operating_system) != {"version", "build"}:
-        fail("host class operatingSystem is incomplete")
-    string(operating_system["version"], "host operating-system version")
-    string(operating_system["build"], "host operating-system build")
+    if not 1 <= len(hosts) <= 2:
+        fail("Wave 0 must nominate one or two explicitly frozen host classes")
+    for host in hosts.values():
+        for key in ("architecture", "model", "soc", "releaseAdmission"):
+            string(host.get(key), f"host {host['id']} {key}")
+        if (host["architecture"] != "arm64" or not isinstance(host.get("memoryMiB"), int)
+                or host["memoryMiB"] < 16384):
+            fail(f"host class {host['id']} does not define the required Apple-silicon 16 GiB floor")
+        operating_system = host.get("operatingSystem")
+        if not isinstance(operating_system, dict) or set(operating_system) != {"version", "build"}:
+            fail(f"host class {host['id']} operatingSystem is incomplete")
+        string(operating_system["version"], f"host {host['id']} operating-system version")
+        string(operating_system["build"], f"host {host['id']} operating-system build")
 
     cpus = named(matrix["cpuProfiles"], "CPU profiles")
     for profile in cpus.values():
@@ -303,6 +304,7 @@ def validate(
         "status": "approved" if matrix["selectionStatus"] == "approved" and review["status"] == "approved" else "review-pending",
         "linuxFamilies": {architecture: sorted(values) for architecture, values in families.items()},
         "guestCells": len(cells),
+        "hostClasses": sorted(hosts),
         "graphicsProfiles": len(graphics),
         "matrixSHA256": sha256_file(matrix_path),
         "approvalPayloadSHA256": payload_digest,

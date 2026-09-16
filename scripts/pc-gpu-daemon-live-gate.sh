@@ -186,7 +186,7 @@ jq -e --arg candidate "$CANDIDATE" --arg app "$APP" \
   --arg state "$DATA_DRIVE/machines" '
   .kind == "dev.dory.virtual-machine-candidate-campaign-authorization"
   and .purpose == "candidate-qualification-campaign"
-  and .schemaVersion == 1
+  and .schemaVersion == 2
   and .candidateRoot == $candidate
   and .applicationRoot == $app
   and .stateRoot == $state
