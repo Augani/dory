@@ -53,13 +53,21 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
 
   init?<Context: RandomAccessCollection>(context: Context)
   where Context.Element == UInt64, Context.Index == Int {
+    let operationWord = context[
+      DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue]
     guard context.count == DoryARM64Tier1ABI.contextWordCount,
-      context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] & ~0xFFFF == 0,
-      let operation = Operation(rawValue: context[
-        DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] & 0xFF),
-      let width = DoryIRIntegerWidth(rawValue: UInt8(truncatingIfNeeded: context[
-        DoryARM64Tier1ABI.ContextWord.lazyFlagsWidth.rawValue]))
+      operationWord & ~0xFFFFFF == 0,
+      let operation = Operation(rawValue: operationWord & 0xFF)
     else { return nil }
+    let width: DoryIRIntegerWidth
+    if operation == .materialized {
+      width = .i64
+    } else {
+      guard let decoded = DoryIRIntegerWidth(
+        rawValue: UInt8(truncatingIfNeeded: operationWord >> 16))
+      else { return nil }
+      width = decoded
+    }
     self.init(
       materialized: .init(rawValue: context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue]),
       operation: operation,
@@ -76,8 +84,7 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
     precondition(context.count == DoryARM64Tier1ABI.contextWordCount)
     context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue] = materialized.rawValue
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] =
-      operation.rawValue | UInt64(count) << 8
-    context[DoryARM64Tier1ABI.ContextWord.lazyFlagsWidth.rawValue] = UInt64(width.rawValue)
+      operation.rawValue | UInt64(count) << 8 | UInt64(width.rawValue) << 16
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsResult.rawValue] = result
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource1.rawValue] = source1
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource2.rawValue] = source2
@@ -278,8 +285,6 @@ func doryARM64MaterializeLazyFlagsContext(
   context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue] = materialized
   context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] =
     DoryARM64LazyFlagsState.Operation.materialized.rawValue
-  context[DoryARM64Tier1ABI.ContextWord.lazyFlagsWidth.rawValue] =
-    UInt64(DoryIRIntegerWidth.i64.rawValue)
   context[DoryARM64Tier1ABI.ContextWord.lazyFlagsResult.rawValue] = 0
   context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource1.rawValue] = 0
   context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource2.rawValue] = 0

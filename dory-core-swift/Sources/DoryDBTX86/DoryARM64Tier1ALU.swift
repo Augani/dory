@@ -280,10 +280,9 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       Self.encodeLogical(
         .xor, is64Bit: true, left: 16, right: 17, destination: 16))
     fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
-    Self.emitImmediate(UInt64(DoryIRIntegerWidth.i8.rawValue), register: 17, into: &fragment)
-    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
     Self.emitImmediate(
-      DoryARM64LazyFlagsState.Operation.logical.rawValue,
+      DoryARM64LazyFlagsState.Operation.logical.rawValue
+        | UInt64(DoryIRIntegerWidth.i8.rawValue) << 16,
       register: 26,
       into: &fragment
     )
@@ -461,10 +460,9 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       Self.encodeLogical(
         .xor, is64Bit: true, left: 16, right: 17, destination: 16))
     fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
-    Self.emitImmediate(UInt64(DoryIRIntegerWidth.i8.rawValue), register: 17, into: &fragment)
-    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
     Self.emitImmediate(
-      DoryARM64LazyFlagsState.Operation.logical.rawValue,
+      DoryARM64LazyFlagsState.Operation.logical.rawValue
+        | UInt64(DoryIRIntegerWidth.i8.rawValue) << 16,
       register: 26,
       into: &fragment
     )
@@ -504,10 +502,9 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       Self.encodeVariableShift(
         .logicalRight, is64Bit: true, value: 16, count: 17, destination: 16))
     fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
-    Self.emitImmediate(UInt64(DoryIRIntegerWidth.i8.rawValue), register: 17, into: &fragment)
-    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
     Self.emitImmediate(
-      DoryARM64LazyFlagsState.Operation.logicalShiftRight.rawValue,
+      DoryARM64LazyFlagsState.Operation.logicalShiftRight.rawValue
+        | UInt64(DoryIRIntegerWidth.i8.rawValue) << 16,
       register: 26,
       into: &fragment
     )
@@ -549,10 +546,9 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     fragment.append(
       Self.encodeLogical(.or, is64Bit: true, left: 16, right: 17, destination: 16))
     fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
-    Self.emitImmediate(UInt64(DoryIRIntegerWidth.i16.rawValue), register: 17, into: &fragment)
-    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
     Self.emitImmediate(
-      DoryARM64LazyFlagsState.Operation.logical.rawValue,
+      DoryARM64LazyFlagsState.Operation.logical.rawValue
+        | UInt64(DoryIRIntegerWidth.i16.rawValue) << 16,
       register: 26,
       into: &fragment
     )
@@ -1600,9 +1596,8 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
         Self.encodeLogical(
           .or, is64Bit: true, left: destination, right: 16, destination: destination))
     }
-    Self.emitImmediate(UInt64(width.rawValue), register: 17, into: &fragment)
-    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
-    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    Self.emitImmediate(
+      lazyOperation.rawValue | UInt64(width.rawValue) << 16, register: 26, into: &fragment)
     fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
     words.append(contentsOf: fragment)
     return .init(origin: .binary(operation), width: width, domain: domain)
@@ -1736,9 +1731,9 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
           .or, is64Bit: true, left: destination, right: 16,
           shiftAmount: 8, destination: destination))
     }
-    Self.emitImmediate(UInt64(DoryIRIntegerWidth.i8.rawValue), register: 17, into: &fragment)
-    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
-    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    Self.emitImmediate(
+      lazyOperation.rawValue | UInt64(DoryIRIntegerWidth.i8.rawValue) << 16,
+      register: 26, into: &fragment)
     fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
     words.append(contentsOf: fragment)
     return .init(origin: .binary(operation), width: .i8, domain: domain)
@@ -1829,9 +1824,9 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     } else {
       fragment.append(Self.encodeStore64(register: destination, word: .lazyFlagsResult))
     }
-    Self.emitImmediate(UInt64(width.rawValue), register: 17, into: &fragment)
-    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
-    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    Self.emitImmediate(
+      lazyOperation.rawValue | UInt64(width.rawValue) << 16,
+      register: 26, into: &fragment)
     fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
     words.append(contentsOf: fragment)
     return .init(origin: .unary(operation), width: width, domain: domain)
@@ -1902,9 +1897,9 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       Self.encodeLogical(
         .or, is64Bit: true, left: destination, right: 16,
         shiftAmount: 8, destination: destination))
-    Self.emitImmediate(UInt64(DoryIRIntegerWidth.i8.rawValue), register: 17, into: &fragment)
-    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
-    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    Self.emitImmediate(
+      lazyOperation.rawValue | UInt64(DoryIRIntegerWidth.i8.rawValue) << 16,
+      register: 26, into: &fragment)
     fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
     words.append(contentsOf: fragment)
     return .init(origin: .unary(operation), width: .i8, domain: domain)
@@ -2041,8 +2036,6 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       fragment.append(Self.encodeMove(destination: destination, source: 16, is64Bit: true))
     }
 
-    Self.emitImmediate(UInt64(width.rawValue), register: 26, into: &fragment)
-    fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsWidth))
     let lazyOperation: DoryARM64LazyFlagsState.Operation =
       switch operation {
       case .left: .shiftLeft
@@ -2051,7 +2044,9 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       case .rotateLeft: .rotateLeft
       case .rotateRight: .rotateRight
       }
-    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    Self.emitImmediate(
+      lazyOperation.rawValue | UInt64(width.rawValue) << 16,
+      register: 26, into: &fragment)
     fragment.append(
       Self.encodeLogical(
         .or, is64Bit: true, left: 26, right: 17, shiftAmount: 8, destination: 26))
@@ -2198,12 +2193,12 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       fragment.append(Self.encodeMove(destination: destination, source: 16, is64Bit: true))
     }
 
-    Self.emitImmediate(UInt64(width.rawValue), register: 17, into: &fragment)
-    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
-    fragment.append(Self.encodeLoad64(register: 17, word: .lazyFlagsOperation))
     let lazyOperation: DoryARM64LazyFlagsState.Operation =
       operation == .left ? .rotateCarryLeft : .rotateCarryRight
-    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    Self.emitImmediate(
+      lazyOperation.rawValue | UInt64(width.rawValue) << 16,
+      register: 26, into: &fragment)
+    fragment.append(Self.encodeLoad64(register: 17, word: .lazyFlagsOperation))
     fragment.append(
       Self.encodeLogical(
         .or, is64Bit: true, left: 26, right: 17, shiftAmount: 8, destination: 26))
@@ -2377,12 +2372,12 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       fragment.append(Self.encodeMove(destination: destination, source: 16, is64Bit: true))
     }
 
-    Self.emitImmediate(UInt64(width.rawValue), register: 17, into: &fragment)
-    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
-    fragment.append(Self.encodeLoad64(register: 17, word: .lazyFlagsOperation))
     let lazyOperation: DoryARM64LazyFlagsState.Operation =
       operation == .left ? .doubleShiftLeft : .doubleShiftRight
-    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    Self.emitImmediate(
+      lazyOperation.rawValue | UInt64(width.rawValue) << 16,
+      register: 26, into: &fragment)
+    fragment.append(Self.encodeLoad64(register: 17, word: .lazyFlagsOperation))
     fragment.append(
       Self.encodeLogical(
         .or, is64Bit: true, left: 26, right: 17, shiftAmount: 8, destination: 26))

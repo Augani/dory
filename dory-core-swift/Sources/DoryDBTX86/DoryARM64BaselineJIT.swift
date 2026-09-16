@@ -8744,8 +8744,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       ? 0 : UInt64(dory_jit_atomic_compare_exchange_pair_from_context_address())
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] =
       DoryARM64LazyFlagsState.Operation.materialized.rawValue
-    context[DoryARM64Tier1ABI.ContextWord.lazyFlagsWidth.rawValue] =
-      UInt64(DoryIRIntegerWidth.i64.rawValue)
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsResult.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource1.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource2.rawValue] = 0
