@@ -172,6 +172,8 @@ docs/
 !/docs/virtualization/evidence/p00-baseline-2026-09-04/
 !/docs/virtualization/evidence/p00-baseline-2026-09-04/*.log
 !/docs/virtualization/evidence/p02-correctness-2026-09-04/
+!/docs/virtualization/evidence/readiness-2026-09-15/
+!/docs/virtualization/evidence/readiness-2026-09-15/**
 !/docs/architecture-gates/
 /docs/architecture-gates/*
 !/docs/architecture-gates/virtiofs-worker-xpc.json
