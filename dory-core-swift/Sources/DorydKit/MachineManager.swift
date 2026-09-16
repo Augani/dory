@@ -2067,7 +2067,7 @@ public final class MachineManager: @unchecked Sendable {
     ) throws -> DoryMachineStatus {
         let operationID = try Self.lifecycleOperationID(operationID, action: "create")
         try Self.validateProductCell(machine)
-        try Self.validateReleaseSupport(machine)
+        try validateReleaseSupport(machine)
         guard machine.guestFamily == .linux else {
             throw MachineManagerError.persistence("native macOS creation requires asynchronous daemon-owned platform preparation")
         }
@@ -2119,7 +2119,7 @@ public final class MachineManager: @unchecked Sendable {
     ) async throws -> DoryMachineStatus {
         let operationID = try Self.lifecycleOperationID(operationID, action: "create")
         try Self.validateProductCell(requestedMachine)
-        try Self.validateReleaseSupport(requestedMachine)
+        try validateReleaseSupport(requestedMachine)
         let controller = try creationPlanningController(productionPlanningController)
         let request = DoryMachineCreationRequest(configuration: requestedMachine, typedSettings: typedSettings,
             sandboxPolicy: nil, sourceMachineID: nil, sourceSnapshotID: nil)
@@ -21200,7 +21200,10 @@ public final class MachineManager: @unchecked Sendable {
 
     /// Public lifecycle admission follows the release policy.  Debug/bootstrap seams retain
     /// access to implementation work; normal customer creation never does.
-    private static func validateReleaseSupport(_ machine: DoryMachineConfiguration) throws {
+    private func validateReleaseSupport(_ machine: DoryMachineConfiguration) throws {
+        // Qualification bootstrap launches (debug builds, candidate campaigns) bypass the
+        // public release cell so internal correctness work is not gated by the pinned ISO.
+        guard !allowsQualificationBootstrapLaunches else { return }
         let availability = DoryReleaseSupportPolicy.availability(
             hostArchitecture: .current,
             guest: DoryGuestPlatform(
