@@ -1317,6 +1317,7 @@ private struct MachineIntegrationHealthSheet: View {
         case .sharedFolderMountStatus: "Shared-folder mount status"
         case .fileTransferPush: "Host-to-guest transfer"
         case .fileTransferPull: "Guest-to-host transfer"
+        case .openURL: "Open URL"
         case .networkIdentity: "Network identity"
         case .processLaunch: "Process launch"
         case .processInput: "Process input"
@@ -1325,6 +1326,7 @@ private struct MachineIntegrationHealthSheet: View {
         case .telemetry: "Telemetry"
         case .snapshotQuiesce: "Snapshot freeze/thaw"
         case .packageUpdate: "Tools update"
+        case .metalProbe: "Metal probe"
         }
     }
 
