@@ -36,6 +36,24 @@ final class DoryVZMacUSBMassStorageTests: XCTestCase {
         )
     }
 
+    func testBundleOwnedVirtioDataDisksBindTheConfigurationFingerprint() throws {
+        let disk = try DoryVZMacResourcePlan(
+            requestedCPUCount: 1,
+            requestedMemoryBytes: DoryVZMacResourcePlan.gibibyte,
+            requestedDiskBytes: DoryVZMacResourcePlan.minimumDiskBytes,
+            requestedDisplays: nil,
+            requestedDataDiskBytes: [DoryVZMacResourcePlan.gibibyte],
+            minimumCPUCount: 1,
+            minimumMemoryBytes: DoryVZMacResourcePlan.gibibyte,
+            maximumCPUCount: 1,
+            maximumMemoryBytes: DoryVZMacResourcePlan.gibibyte
+        ).dataDisks
+        XCTAssertNotEqual(
+            try DoryVZMacConfigurationBuilder.fingerprint(),
+            try DoryVZMacConfigurationBuilder.fingerprint(dataDisks: disk)
+        )
+    }
+
     func testRejectsEmptyImageAndDirectory() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

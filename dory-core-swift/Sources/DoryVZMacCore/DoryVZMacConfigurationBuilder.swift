@@ -5,8 +5,9 @@ import Darwin
 import Foundation
 import Virtualization
 
-public enum DoryVZMacConfigurationError: Error, Sendable, CustomStringConvertible {
+public enum DoryVZMacConfigurationError: Error, Sendable, Equatable, CustomStringConvertible {
     case invalidMACAddress(String)
+    case missingHostOnlyNetworkAttachment
     case cameraSocketUnavailable
     case integrationDisabled(String)
 
@@ -14,6 +15,8 @@ public enum DoryVZMacConfigurationError: Error, Sendable, CustomStringConvertibl
         switch self {
         case .invalidMACAddress(let address):
             "VZMac network address is invalid: \(address)"
+        case .missingHostOnlyNetworkAttachment:
+            "VZMac host-only networking requires its gvproxy-backed attachment"
         case .cameraSocketUnavailable:
             "VZMac did not expose the configured VirtIO socket device"
         case .integrationDisabled(let name):
@@ -25,6 +28,7 @@ public enum DoryVZMacConfigurationError: Error, Sendable, CustomStringConvertibl
 public enum DoryVZMacNetworkPolicy: String, Codable, Sendable, Equatable {
     case disconnected
     case sharedNAT = "shared-nat"
+    case isolated = "host-only"
 }
 
 public struct DoryVZMacAudioPolicy: Codable, Sendable, Equatable {
@@ -115,7 +119,8 @@ public enum DoryVZMacConfigurationBuilder {
         sharedDirectories: [DoryVZMacSharedDirectory] = [],
         usbMassStorage: DoryVZMacUSBMassStorage? = nil,
         devicePolicy: DoryVZMacDevicePolicy = .legacyDefault,
-        displays: [DoryVZMacDisplay]? = nil
+        displays: [DoryVZMacDisplay]? = nil,
+        dataDisks: [DoryVZMacDataDisk] = []
     ) throws -> String {
         struct SharedDirectory: Codable {
             let name: String
@@ -167,6 +172,40 @@ public enum DoryVZMacConfigurationBuilder {
             let readOnly: Bool
             let byteCount: UInt64
         }
+        struct DataDisk: Codable {
+            let fileName: String
+            let byteCount: UInt64
+        }
+        struct DataDiskDescriptor: Codable {
+            let schema: String
+            let display: String
+            let network: String
+            let audio: String
+            let input: String
+            let entropy: String
+            let cameraSocketPort: UInt32
+            let clipboard: String
+            let xhciEnabled: Bool
+            let sharedDirectories: [SharedDirectory]
+            let usbMassStorage: USBMassStorage?
+            let dataDisks: [DataDisk]
+        }
+        struct PolicyDataDiskDescriptor: Codable {
+            let schema: String
+            let display: String
+            let network: String
+            let audioInput: Bool
+            let audioOutput: Bool
+            let input: String
+            let entropy: String
+            let cameraSocketPort: UInt32?
+            let clipboard: Bool
+            let xhciEnabled: Bool
+            let directorySharing: Bool
+            let sharedDirectories: [SharedDirectory]
+            let usbMassStorage: USBMassStorage?
+            let dataDisks: [DataDisk]
+        }
         try validatePolicy(devicePolicy, sharedDirectories: sharedDirectories)
         let mappedShares = sharedDirectories
             .sorted { $0.name < $1.name }
@@ -187,7 +226,42 @@ public enum DoryVZMacConfigurationBuilder {
         let mappedUSBMassStorage = usbMassStorage.map {
             USBMassStorage(path: $0.url.path, readOnly: $0.readOnly, byteCount: $0.byteCount)
         }
-        if devicePolicy != .legacyDefault {
+        let mappedDataDisks = dataDisks.map {
+            DataDisk(fileName: $0.fileName, byteCount: $0.byteCount)
+        }
+        if !mappedDataDisks.isEmpty, devicePolicy != .legacyDefault {
+            encoded = try encoder.encode(PolicyDataDiskDescriptor(
+                schema: "dory.vzmac-configuration@5",
+                display: displayString,
+                network: devicePolicy.network.rawValue,
+                audioInput: devicePolicy.audio.inputEnabled,
+                audioOutput: devicePolicy.audio.outputEnabled,
+                input: "mac-keyboard-trackpad",
+                entropy: "virtio",
+                cameraSocketPort: devicePolicy.cameraBridgeEnabled ? 1_030 : nil,
+                clipboard: devicePolicy.clipboardEnabled,
+                xhciEnabled: xhciEnabled,
+                directorySharing: devicePolicy.directorySharingEnabled,
+                sharedDirectories: mappedShares,
+                usbMassStorage: mappedUSBMassStorage,
+                dataDisks: mappedDataDisks
+            ))
+        } else if !mappedDataDisks.isEmpty {
+            encoded = try encoder.encode(DataDiskDescriptor(
+                schema: "dory.vzmac-configuration@5",
+                display: displayString,
+                network: "virtio-nat",
+                audio: "virtio-host-input-output",
+                input: "mac-keyboard-trackpad",
+                entropy: "virtio",
+                cameraSocketPort: 1_030,
+                clipboard: "spice-bidirectional",
+                xhciEnabled: xhciEnabled,
+                sharedDirectories: mappedShares,
+                usbMassStorage: mappedUSBMassStorage,
+                dataDisks: mappedDataDisks
+            ))
+        } else if devicePolicy != .legacyDefault {
             encoded = try encoder.encode(PolicyDescriptor(
                 schema: "dory.vzmac-configuration@4",
                 display: displayString,
@@ -242,7 +316,8 @@ public enum DoryVZMacConfigurationBuilder {
         for bundle: DoryVZMacMachineBundle,
         sharedDirectories: [DoryVZMacSharedDirectory] = [],
         usbMassStorage: DoryVZMacUSBMassStorage? = nil,
-        devicePolicy: DoryVZMacDevicePolicy = .legacyDefault
+        devicePolicy: DoryVZMacDevicePolicy = .legacyDefault,
+        networkAttachment: VZNetworkDeviceAttachment? = nil
     ) throws -> VZVirtualMachineConfiguration {
         try validatePolicy(devicePolicy, sharedDirectories: sharedDirectories)
         let configuration = VZVirtualMachineConfiguration()
@@ -265,6 +340,15 @@ public enum DoryVZMacConfigurationBuilder {
         var storageDevices: [VZStorageDeviceConfiguration] = [
             VZVirtioBlockDeviceConfiguration(attachment: diskAttachment),
         ]
+        for dataDiskURL in bundle.dataDiskURLs {
+            let attachment = try VZDiskImageStorageDeviceAttachment(
+                url: dataDiskURL,
+                readOnly: false,
+                cachingMode: .automatic,
+                synchronizationMode: .full
+            )
+            storageDevices.append(VZVirtioBlockDeviceConfiguration(attachment: attachment))
+        }
         if let usbMassStorage {
             guard #available(macOS 15.0, *) else {
                 throw DoryVZMacUSBMassStorageError.requiresMacOS15
@@ -295,7 +379,8 @@ public enum DoryVZMacConfigurationBuilder {
             to: configuration,
             macAddress: bundle.manifest.macAddress,
             sharedDirectories: sharedDirectories,
-            devicePolicy: devicePolicy
+            devicePolicy: devicePolicy,
+            networkAttachment: networkAttachment
         )
         if #available(macOS 15.0, *) {
             configuration.usbControllers = [VZXHCIControllerConfiguration()]
@@ -308,7 +393,8 @@ public enum DoryVZMacConfigurationBuilder {
         to configuration: VZVirtualMachineConfiguration,
         macAddress: String,
         sharedDirectories: [DoryVZMacSharedDirectory],
-        devicePolicy: DoryVZMacDevicePolicy
+        devicePolicy: DoryVZMacDevicePolicy,
+        networkAttachment: VZNetworkDeviceAttachment? = nil
     ) throws {
         try validatePolicy(devicePolicy, sharedDirectories: sharedDirectories)
         switch devicePolicy.network {
@@ -319,6 +405,18 @@ public enum DoryVZMacConfigurationBuilder {
             }
             network.macAddress = macAddress
             network.attachment = VZNATNetworkDeviceAttachment()
+            configuration.networkDevices = [network]
+        case .isolated:
+            guard let networkAttachment,
+                  networkAttachment is VZFileHandleNetworkDeviceAttachment else {
+                throw DoryVZMacConfigurationError.missingHostOnlyNetworkAttachment
+            }
+            let network = VZVirtioNetworkDeviceConfiguration()
+            guard let macAddress = VZMACAddress(string: macAddress) else {
+                throw DoryVZMacConfigurationError.invalidMACAddress(macAddress)
+            }
+            network.macAddress = macAddress
+            network.attachment = networkAttachment
             configuration.networkDevices = [network]
         case .disconnected:
             configuration.networkDevices = []
@@ -451,6 +549,7 @@ public final class DoryVZMacRuntime {
         sharedDirectories: [DoryVZMacSharedDirectory] = [],
         usbMassStorage: DoryVZMacUSBMassStorage? = nil,
         devicePolicy: DoryVZMacDevicePolicy = .legacyDefault,
+        networkAttachment: VZNetworkDeviceAttachment? = nil,
         camera: DoryMacCameraBackend? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws {
@@ -460,14 +559,16 @@ public final class DoryVZMacRuntime {
             for: bundle,
             sharedDirectories: sharedDirectories,
             usbMassStorage: usbMassStorage,
-            devicePolicy: devicePolicy
+            devicePolicy: devicePolicy,
+            networkAttachment: networkAttachment
         )
         self.configuration = configuration
         configurationSHA256 = try DoryVZMacConfigurationBuilder.fingerprint(
             sharedDirectories: sharedDirectories,
             usbMassStorage: usbMassStorage,
             devicePolicy: devicePolicy,
-            displays: bundle.manifest.resources.displays
+            displays: bundle.manifest.resources.displays,
+            dataDisks: bundle.manifest.resources.dataDisks
         )
         virtualMachine = VZVirtualMachine(configuration: configuration)
         if devicePolicy.cameraBridgeEnabled {

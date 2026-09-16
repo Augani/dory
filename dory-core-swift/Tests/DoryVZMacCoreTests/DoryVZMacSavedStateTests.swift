@@ -55,8 +55,118 @@ final class DoryVZMacSavedStateTests: XCTestCase {
     func testReceiptRejectsUnknownSchemaAndEmptyState() throws {
         let valid = try receipt()
         try valid.validate()
+        XCTAssertNoThrow(try receipt(schema: "dory.vzmac-saved-state@3").validate())
         XCTAssertThrowsError(try receipt(schema: "dory.vzmac-saved-state@1").validate())
         XCTAssertThrowsError(try receipt(stateBytes: 0).validate())
+    }
+
+    func testVersionedSamplerBindsConfigurationAndPreservesLegacyDigest() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "dory-vzmac-sampler-tests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        let stateURL = temporaryRoot.appendingPathComponent("state.bin")
+        try Data(repeating: 0x5a, count: 2 * 1_024 * 1_024).write(to: stateURL)
+
+        let configurationA = String(repeating: "a", count: 64)
+        let configurationB = String(repeating: "b", count: 64)
+        let samplerA = try savedStateSHA256(
+            of: stateURL,
+            schema: DoryVZMacSavedStateReceipt.schema,
+            configurationSHA256: configurationA
+        )
+        let samplerB = try savedStateSHA256(
+            of: stateURL,
+            schema: DoryVZMacSavedStateReceipt.schema,
+            configurationSHA256: configurationB
+        )
+        XCTAssertNotEqual(samplerA, samplerB)
+        XCTAssertEqual(
+            try savedStateSHA256(
+                of: stateURL,
+                schema: "dory.vzmac-saved-state@3",
+                configurationSHA256: configurationA
+            ),
+            try legacySavedStateSHA256(of: stateURL)
+        )
+
+        try Data(repeating: 0x33, count: 2 * 1_024 * 1_024).write(to: stateURL)
+        XCTAssertNotEqual(
+            samplerA,
+            try savedStateSHA256(
+                of: stateURL,
+                schema: DoryVZMacSavedStateReceipt.schema,
+                configurationSHA256: configurationA
+            )
+        )
+    }
+
+    func testVersionedSamplerHasBoundedDistinctLargeStateCoverage() {
+        let mebibyte = UInt64(1_024 * 1_024)
+        let fileSize = 80 * mebibyte
+        let regions = savedStateSampleRegions(
+            fileSize: fileSize,
+            configurationSHA256: String(repeating: "a", count: 64)
+        )
+
+        XCTAssertEqual(regions.count, 66)
+        XCTAssertEqual(regions.first, .init(offset: 0, byteCount: 4 * mebibyte))
+        XCTAssertEqual(
+            regions[1],
+            .init(offset: fileSize - 4 * mebibyte, byteCount: 4 * mebibyte)
+        )
+        XCTAssertEqual(Set(regions.map(\.offset)).count, regions.count)
+        XCTAssertTrue(regions.dropFirst(2).allSatisfy { $0.byteCount == mebibyte })
+        XCTAssertLessThanOrEqual(
+            regions.reduce(UInt64(0)) { $0 + $1.byteCount },
+            72 * mebibyte
+        )
+    }
+
+    func testHostCompatibilityPreflightRejectsVersionAndBuildBeforeRestore() throws {
+        let saved = try receipt()
+        let matching = DoryVZMacSavedStateHostFacts(
+            identifierSHA256: String(repeating: "a", count: 64),
+            operatingSystemVersion: "27.0.0",
+            buildVersion: "26A5421a"
+        )
+        XCTAssertNoThrow(
+            try DoryVZMacSavedStateArtifact.validateHostCompatibility(saved, host: matching)
+        )
+
+        XCTAssertThrowsError(
+            try DoryVZMacSavedStateArtifact.validateHostCompatibility(
+                saved,
+                host: .init(
+                    identifierSHA256: matching.identifierSHA256,
+                    operatingSystemVersion: "27.1.0",
+                    buildVersion: matching.buildVersion
+                )
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? DoryVZMacSavedStateError,
+                .hostOperatingSystemVersionMismatch(saved: "27.0.0", current: "27.1.0")
+            )
+        }
+
+        XCTAssertThrowsError(
+            try DoryVZMacSavedStateArtifact.validateHostCompatibility(
+                saved,
+                host: .init(
+                    identifierSHA256: matching.identifierSHA256,
+                    operatingSystemVersion: matching.operatingSystemVersion,
+                    buildVersion: "26A5421b"
+                )
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? DoryVZMacSavedStateError,
+                .hostBuildMismatch(saved: "26A5421a", current: "26A5421b")
+            )
+        }
     }
 
     private func receipt(

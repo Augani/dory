@@ -1392,6 +1392,10 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         guard DoryMachineDisplayMode(rawValue: displayMode) != nil else {
             throw DorydCtlError.usage("--display-mode must be headless or desktop")
         }
+        let rootDiskFormat = try cursor.optionValue("--rootfs-format") ?? "raw"
+        guard DoryMachineRootDiskFormat(rawValue: rootDiskFormat) != nil else {
+            throw DorydCtlError.usage("--rootfs-format must be raw or qcow2")
+        }
         let shares = try cursor.optionValues("--share").map { try DoryMachineShareConfiguration(argument: $0) }
         let typedSettings = try parseMachineTypedSettings(cursor: &cursor, allowsClears: false)
         let sandboxPolicy = try parseMachineSandboxPolicyDictionary(cursor: &cursor)
@@ -1424,6 +1428,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
             "displayMode": displayMode,
+            "rootDiskFormat": rootDiskFormat,
         ]
         if let explicitGuestArchitecture {
             config["guestArchitecture"] = explicitGuestArchitecture.rawValue

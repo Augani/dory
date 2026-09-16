@@ -3,14 +3,28 @@ import Darwin
 import Foundation
 import Virtualization
 
+private struct DoryVZMacSystemDiskResizeJournal: Codable {
+    let previousBytes: UInt64
+    let requestedBytes: UInt64
+}
+
+private struct DoryVZMacDataDiskResizeJournal: Codable {
+    let index: Int
+    let fileName: String
+    let previousBytes: UInt64
+    let requestedBytes: UInt64
+}
+
 public enum DoryVZMacMachineBundleError: Error, Sendable, Equatable, CustomStringConvertible {
     case destinationExists(String)
     case invalidRestoreImage(String)
     case unsupportedRestoreImage(String)
     case missingSupportedConfiguration
     case cloneRequiresStoppedMachine
+    case diskResizeRequiresStoppedMachine(DoryVZMacMachineInstallationState)
     case restoreImageProvenanceMismatch(String)
     case invalidBundle(String)
+    case invalidNetworkAddress(String)
     case invalidIdentity(String)
     case filesystem(String, Int32)
 
@@ -24,9 +38,13 @@ public enum DoryVZMacMachineBundleError: Error, Sendable, Equatable, CustomStrin
             "the macOS restore image has no configuration supported by this host"
         case .cloneRequiresStoppedMachine:
             "VZMac cold clone requires an installed, stopped source machine"
+        case .diskResizeRequiresStoppedMachine(let state):
+            "VZMac disk resize requires a prepared or stopped machine, not \(state.rawValue)"
         case .restoreImageProvenanceMismatch(let detail):
             "macOS restore image provenance mismatch: \(detail)"
         case .invalidBundle(let detail): "invalid VZMac machine bundle: \(detail)"
+        case .invalidNetworkAddress(let address):
+            "macOS virtual machine network address is not a locally administered unicast MAC: \(address)"
         case .invalidIdentity(let detail): "invalid VZMac platform identity: \(detail)"
         case .filesystem(let operation, let code): "\(operation) failed with errno \(code)"
         }
@@ -141,10 +159,12 @@ public struct DoryVZMacMachineManifest: Codable, Sendable, Equatable {
 public struct DoryVZMacMachineBundle: Sendable {
     public static let manifestName = "machine.json"
     public static let diskName = "disk.img"
+    public static let dataDisksDirectoryName = "data-disks"
     public static let auxiliaryStorageName = "auxiliary-storage"
     public static let hardwareModelName = "hardware-model.bin"
     public static let machineIdentifierName = "machine-identifier.bin"
     public static let installJournalName = "install-operation.json"
+    private static let diskResizeJournalName = "system-disk-resize.json"
     public static let suspendedStateDirectoryName = "suspended-state"
     public static let maximumManifestBytes = 1_048_576
 
@@ -152,6 +172,14 @@ public struct DoryVZMacMachineBundle: Sendable {
     public let manifest: DoryVZMacMachineManifest
 
     public var diskURL: URL { rootURL.appendingPathComponent(Self.diskName) }
+    public var dataDisksDirectoryURL: URL {
+        rootURL.appendingPathComponent(Self.dataDisksDirectoryName, isDirectory: true)
+    }
+    public var dataDiskURLs: [URL] {
+        manifest.resources.dataDisks.map {
+            dataDisksDirectoryURL.appendingPathComponent($0.fileName, isDirectory: false)
+        }
+    }
     public var auxiliaryStorageURL: URL {
         rootURL.appendingPathComponent(Self.auxiliaryStorageName)
     }
@@ -163,6 +191,12 @@ public struct DoryVZMacMachineBundle: Sendable {
     }
     public var manifestURL: URL { rootURL.appendingPathComponent(Self.manifestName) }
     public var installJournalURL: URL { rootURL.appendingPathComponent(Self.installJournalName) }
+    private var diskResizeJournalURL: URL {
+        rootURL.appendingPathComponent(Self.diskResizeJournalName)
+    }
+    private func dataDiskResizeJournalURL(index: Int) -> URL {
+        rootURL.appendingPathComponent("data-disk-\(index + 1)-resize.json")
+    }
     public var suspendedStateURL: URL {
         rootURL.appendingPathComponent(Self.suspendedStateDirectoryName, isDirectory: true)
     }
@@ -173,7 +207,9 @@ public struct DoryVZMacMachineBundle: Sendable {
         restoreImageSourceURL: URL? = nil,
         requestedCPUCount: Int? = nil,
         requestedMemoryBytes: UInt64? = nil,
-        diskBytes: UInt64 = 80 * DoryVZMacResourcePlan.gibibyte
+        diskBytes: UInt64 = 80 * DoryVZMacResourcePlan.gibibyte,
+        dataDiskBytes: [UInt64] = [],
+        macAddress: String? = nil
     ) async throws -> Self {
         guard restoreImageURL.isFileURL else {
             throw DoryVZMacMachineBundleError.invalidRestoreImage("URL is not a local file")
@@ -182,6 +218,7 @@ public struct DoryVZMacMachineBundle: Sendable {
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             throw DoryVZMacMachineBundleError.destinationExists(destination.path)
         }
+        let selectedMACAddress = try Self.selectedMACAddress(macAddress)
         let restoreImage = try await VZMacOSRestoreImage.image(from: restoreImageURL)
         guard restoreImage.isSupported else {
             throw DoryVZMacMachineBundleError.unsupportedRestoreImage(restoreImage.buildVersion)
@@ -189,11 +226,22 @@ public struct DoryVZMacMachineBundle: Sendable {
         guard let requirements = restoreImage.mostFeaturefulSupportedConfiguration else {
             throw DoryVZMacMachineBundleError.missingSupportedConfiguration
         }
-        let resources = try DoryVZMacResourcePlan(
+        let baseResources = try DoryVZMacResourcePlan(
             requestedCPUCount: requestedCPUCount,
             requestedMemoryBytes: requestedMemoryBytes,
             requestedDiskBytes: diskBytes,
             requirements: requirements
+        )
+        let resources = try DoryVZMacResourcePlan(
+            requestedCPUCount: baseResources.cpuCount,
+            requestedMemoryBytes: baseResources.memoryBytes,
+            requestedDiskBytes: baseResources.diskBytes,
+            requestedDisplays: baseResources.displays,
+            requestedDataDiskBytes: dataDiskBytes,
+            minimumCPUCount: baseResources.cpuCount,
+            minimumMemoryBytes: baseResources.memoryBytes,
+            maximumCPUCount: baseResources.cpuCount,
+            maximumMemoryBytes: baseResources.memoryBytes
         )
         let parent = destination.deletingLastPathComponent()
         try requireDirectory(parent, label: "machine parent")
@@ -222,6 +270,22 @@ public struct DoryVZMacMachineBundle: Sendable {
             at: staging.appendingPathComponent(Self.diskName),
             size: resources.diskBytes
         )
+        if !resources.dataDisks.isEmpty {
+            let dataDisksDirectory = staging.appendingPathComponent(
+                Self.dataDisksDirectoryName,
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: dataDisksDirectory,
+                withIntermediateDirectories: false
+            )
+            for disk in resources.dataDisks {
+                try createSparseFile(
+                    at: dataDisksDirectory.appendingPathComponent(disk.fileName),
+                    size: disk.byteCount
+                )
+            }
+        }
         let version = restoreImage.operatingSystemVersion
         let restoreAttributes = try FileManager.default.attributesOfItem(
             atPath: restoreImageURL.path
@@ -242,7 +306,7 @@ public struct DoryVZMacMachineBundle: Sendable {
             restoreImageSHA256: try sha256(of: restoreImageURL),
             hardwareModelSHA256: sha256(of: hardwareModelData),
             machineIdentifierSHA256: sha256(of: machineIdentifierData),
-            macAddress: VZMACAddress.randomLocallyAdministered().string,
+            macAddress: selectedMACAddress,
             resources: resources
         )
         try manifest.validate()
@@ -277,7 +341,18 @@ public struct DoryVZMacMachineBundle: Sendable {
             throw DoryVZMacMachineBundleError.invalidBundle("manifest JSON cannot be decoded")
         }
         try manifest.validate()
-        let bundle = Self(rootURL: rootURL, manifest: manifest)
+        var recoveredManifest = try recoverPendingSystemDiskResize(
+            at: rootURL,
+            manifest: manifest
+        )
+        for index in recoveredManifest.resources.dataDisks.indices {
+            recoveredManifest = try recoverPendingDataDiskResize(
+                at: rootURL,
+                manifest: recoveredManifest,
+                index: index
+            )
+        }
+        let bundle = Self(rootURL: rootURL, manifest: recoveredManifest)
         for (url, name) in [
             (bundle.diskURL, Self.diskName),
             (bundle.auxiliaryStorageURL, Self.auxiliaryStorageName),
@@ -288,8 +363,21 @@ public struct DoryVZMacMachineBundle: Sendable {
         }
         let diskAttributes = try FileManager.default.attributesOfItem(atPath: bundle.diskURL.path)
         guard let diskSize = diskAttributes[.size] as? NSNumber,
-              diskSize.uint64Value == manifest.resources.diskBytes else {
+              diskSize.uint64Value == recoveredManifest.resources.diskBytes else {
             throw DoryVZMacMachineBundleError.invalidBundle("disk size does not match manifest")
+        }
+        if !recoveredManifest.resources.dataDisks.isEmpty {
+            try requireDirectory(bundle.dataDisksDirectoryURL, label: Self.dataDisksDirectoryName)
+            for (disk, url) in zip(recoveredManifest.resources.dataDisks, bundle.dataDiskURLs) {
+                try requireRegularFile(url, label: "data disk \(disk.fileName)")
+                let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                guard let size = attributes[.size] as? NSNumber,
+                      size.uint64Value == disk.byteCount else {
+                    throw DoryVZMacMachineBundleError.invalidBundle(
+                        "data disk \(disk.fileName) size does not match manifest"
+                    )
+                }
+            }
         }
         let hardwareData = try Data(contentsOf: bundle.hardwareModelURL)
         let identifierData = try Data(contentsOf: bundle.machineIdentifierURL)
@@ -356,13 +444,14 @@ public struct DoryVZMacMachineBundle: Sendable {
         }
     }
 
-    public func clone(to destination: URL) throws -> Self {
+    public func clone(to destination: URL, macAddress: String? = nil) throws -> Self {
         guard manifest.installationState == .stopped else {
             throw DoryVZMacMachineBundleError.cloneRequiresStoppedMachine
         }
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             throw DoryVZMacMachineBundleError.destinationExists(destination.path)
         }
+        let selectedMACAddress = try Self.selectedMACAddress(macAddress)
         let sourceLease = try DoryVZMacMachineLease(rootURL: rootURL)
         defer { withExtendedLifetime(sourceLease) {} }
         let parent = destination.deletingLastPathComponent()
@@ -387,6 +476,23 @@ public struct DoryVZMacMachineBundle: Sendable {
                 to: staging.appendingPathComponent(name)
             )
         }
+        if !manifest.resources.dataDisks.isEmpty {
+            let destinationDataDisks = staging.appendingPathComponent(
+                Self.dataDisksDirectoryName,
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: destinationDataDisks,
+                withIntermediateDirectories: false
+            )
+            for (disk, source) in zip(manifest.resources.dataDisks, dataDiskURLs) {
+                try requireRegularFile(source, label: "data disk \(disk.fileName)")
+                try cloneFile(
+                    from: source,
+                    to: destinationDataDisks.appendingPathComponent(disk.fileName)
+                )
+            }
+        }
         let machineIdentifierData = VZMacMachineIdentifier().dataRepresentation
         try machineIdentifierData.write(
             to: staging.appendingPathComponent(Self.machineIdentifierName),
@@ -404,7 +510,7 @@ public struct DoryVZMacMachineBundle: Sendable {
             restoreImageSHA256: manifest.restoreImageSHA256,
             hardwareModelSHA256: manifest.hardwareModelSHA256,
             machineIdentifierSHA256: sha256(of: machineIdentifierData),
-            macAddress: VZMACAddress.randomLocallyAdministered().string,
+            macAddress: selectedMACAddress,
             resources: manifest.resources
         )
         try clonedManifest.validate()
@@ -417,6 +523,128 @@ public struct DoryVZMacMachineBundle: Sendable {
         try FileManager.default.moveItem(at: staging, to: destination)
         committed = true
         return try Self.load(from: destination)
+    }
+
+    /// Enlarges the managed APFS backing image while no VZ instance can have the disk open.
+    /// Shrink is deliberately unsupported: it would require guest filesystem coordination and
+    /// could truncate live APFS container blocks. The manifest is committed only after the image
+    /// has been durably extended, so a caller never advertises capacity that the host file lacks.
+    public func growSystemDisk(to requestedDiskBytes: UInt64) throws -> Self {
+        guard manifest.installationState == .prepared || manifest.installationState == .stopped else {
+            throw DoryVZMacMachineBundleError.diskResizeRequiresStoppedMachine(
+                manifest.installationState
+            )
+        }
+        let resizedResources = try manifest.resources.growingSystemDisk(
+            to: requestedDiskBytes
+        )
+        let lease = try DoryVZMacMachineLease(rootURL: rootURL)
+        defer { withExtendedLifetime(lease) {} }
+        try requireRegularFile(diskURL, label: Self.diskName)
+        let descriptor = open(diskURL.path, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            throw DoryVZMacMachineBundleError.filesystem("open system disk for resize", errno)
+        }
+        defer { close(descriptor) }
+        var information = stat()
+        guard fstat(descriptor, &information) == 0 else {
+            throw DoryVZMacMachineBundleError.filesystem("inspect system disk for resize", errno)
+        }
+        guard (information.st_mode & S_IFMT) == S_IFREG,
+              information.st_size >= 0,
+              UInt64(information.st_size) == manifest.resources.diskBytes,
+              requestedDiskBytes <= UInt64(Int64.max) else {
+            throw DoryVZMacMachineBundleError.invalidBundle(
+                "system disk changed before resize"
+            )
+        }
+        try Self.writeSystemDiskResizeJournal(
+            DoryVZMacSystemDiskResizeJournal(
+                previousBytes: manifest.resources.diskBytes,
+                requestedBytes: requestedDiskBytes
+            ),
+            to: diskResizeJournalURL
+        )
+        guard ftruncate(descriptor, off_t(requestedDiskBytes)) == 0 else {
+            throw DoryVZMacMachineBundleError.filesystem("grow system disk", errno)
+        }
+        guard fsync(descriptor) == 0 else {
+            throw DoryVZMacMachineBundleError.filesystem("sync grown system disk", errno)
+        }
+        let updated = manifestReplacingResources(resizedResources)
+        try updated.validate()
+        try writeManifest(updated, to: manifestURL)
+        try FileManager.default.removeItem(at: diskResizeJournalURL)
+        return try Self.load(from: rootURL)
+    }
+
+    /// Enlarges one bundle-owned virtio data image while the VM is stopped. Its journal is
+    /// committed before truncation and replayed by `load(from:)`, so a crash cannot publish a
+    /// manifest capacity that is absent from the backing image (or lose a completed resize).
+    public func growDataDisk(at index: Int, to requestedDiskBytes: UInt64) throws -> Self {
+        guard manifest.installationState == .prepared || manifest.installationState == .stopped else {
+            throw DoryVZMacMachineBundleError.diskResizeRequiresStoppedMachine(
+                manifest.installationState
+            )
+        }
+        let resizedResources = try manifest.resources.growingDataDisk(
+            at: index,
+            to: requestedDiskBytes
+        )
+        let existing = manifest.resources.dataDisks[index]
+        let diskURL = dataDisksDirectoryURL.appendingPathComponent(existing.fileName)
+        let lease = try DoryVZMacMachineLease(rootURL: rootURL)
+        defer { withExtendedLifetime(lease) {} }
+        try requireRegularFile(diskURL, label: existing.fileName)
+        let descriptor = open(diskURL.path, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            throw DoryVZMacMachineBundleError.filesystem("open data disk for resize", errno)
+        }
+        defer { close(descriptor) }
+        var information = stat()
+        guard fstat(descriptor, &information) == 0 else {
+            throw DoryVZMacMachineBundleError.filesystem("inspect data disk for resize", errno)
+        }
+        guard (information.st_mode & S_IFMT) == S_IFREG,
+              information.st_size >= 0,
+              UInt64(information.st_size) == existing.byteCount,
+              requestedDiskBytes <= UInt64(Int64.max) else {
+            throw DoryVZMacMachineBundleError.invalidBundle("data disk changed before resize")
+        }
+        let journalURL = dataDiskResizeJournalURL(index: index)
+        try Self.writeDataDiskResizeJournal(
+            DoryVZMacDataDiskResizeJournal(
+                index: index,
+                fileName: existing.fileName,
+                previousBytes: existing.byteCount,
+                requestedBytes: requestedDiskBytes
+            ),
+            to: journalURL
+        )
+        guard ftruncate(descriptor, off_t(requestedDiskBytes)) == 0 else {
+            throw DoryVZMacMachineBundleError.filesystem("grow data disk", errno)
+        }
+        guard fsync(descriptor) == 0 else {
+            throw DoryVZMacMachineBundleError.filesystem("sync grown data disk", errno)
+        }
+        let updated = manifestReplacingResources(resizedResources)
+        try updated.validate()
+        try writeManifest(updated, to: manifestURL)
+        try FileManager.default.removeItem(at: journalURL)
+        return try Self.load(from: rootURL)
+    }
+
+    /// Returns either the daemon-bound address or a fresh local identity for standalone tools.
+    /// Validate before touching the destination so an invalid launch identity cannot leave a
+    /// partially prepared bundle behind.
+    static func selectedMACAddress(_ requestedAddress: String?) throws -> String {
+        let address = requestedAddress ?? VZMACAddress.randomLocallyAdministered().string
+        guard let parsed = VZMACAddress(string: address),
+              parsed.isUnicastAddress,
+              parsed.isLocallyAdministeredAddress else {
+            throw DoryVZMacMachineBundleError.invalidNetworkAddress(address)
+        }
+        return parsed.string.lowercased()
     }
 
     public func updatingInstallationState(
@@ -438,10 +666,202 @@ public struct DoryVZMacMachineBundle: Sendable {
             resources: manifest.resources
         )
         try updated.validate()
+        try writeManifest(updated, to: manifestURL)
+        return try Self.load(from: rootURL)
+    }
+
+    private func manifestReplacingResources(
+        _ resources: DoryVZMacResourcePlan
+    ) -> DoryVZMacMachineManifest {
+        DoryVZMacMachineManifest(
+            createdAt: manifest.createdAt,
+            installationState: manifest.installationState,
+            origin: manifest.origin,
+            parentMachineIdentifierSHA256: manifest.parentMachineIdentifierSHA256,
+            restoreImageBuild: manifest.restoreImageBuild,
+            restoreImageVersion: manifest.restoreImageVersion,
+            restoreImageSourceURL: manifest.restoreImageSourceURL,
+            restoreImageBytes: manifest.restoreImageBytes,
+            restoreImageSHA256: manifest.restoreImageSHA256,
+            hardwareModelSHA256: manifest.hardwareModelSHA256,
+            machineIdentifierSHA256: manifest.machineIdentifierSHA256,
+            macAddress: manifest.macAddress,
+            resources: resources
+        )
+    }
+
+    private func writeManifest(
+        _ manifest: DoryVZMacMachineManifest,
+        to destination: URL
+    ) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(updated).write(to: manifestURL, options: [.atomic])
-        return try Self.load(from: rootURL)
+        try encoder.encode(manifest).write(to: destination, options: [.atomic])
+    }
+
+    private static func writeSystemDiskResizeJournal(
+        _ journal: DoryVZMacSystemDiskResizeJournal,
+        to destination: URL
+    ) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode(journal).write(to: destination, options: [.atomic])
+    }
+
+    private static func writeDataDiskResizeJournal(
+        _ journal: DoryVZMacDataDiskResizeJournal,
+        to destination: URL
+    ) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode(journal).write(to: destination, options: [.atomic])
+    }
+
+    static func recoverPendingSystemDiskResize(
+        at rootURL: URL,
+        manifest: DoryVZMacMachineManifest
+    ) throws -> DoryVZMacMachineManifest {
+        let journalURL = rootURL.appendingPathComponent(diskResizeJournalName)
+        guard FileManager.default.fileExists(atPath: journalURL.path) else { return manifest }
+        try requireRegularFile(journalURL, label: diskResizeJournalName)
+        let journal: DoryVZMacSystemDiskResizeJournal
+        do {
+            journal = try JSONDecoder().decode(
+                DoryVZMacSystemDiskResizeJournal.self,
+                from: Data(contentsOf: journalURL, options: [.mappedIfSafe])
+            )
+        } catch {
+            throw DoryVZMacMachineBundleError.invalidBundle("system-disk resize journal is invalid")
+        }
+        guard journal.previousBytes >= DoryVZMacResourcePlan.minimumDiskBytes,
+              journal.requestedBytes > journal.previousBytes else {
+            throw DoryVZMacMachineBundleError.invalidBundle("system-disk resize journal is inconsistent")
+        }
+        let diskURL = rootURL.appendingPathComponent(diskName)
+        try requireRegularFile(diskURL, label: diskName)
+        let attributes = try FileManager.default.attributesOfItem(atPath: diskURL.path)
+        guard let size = attributes[.size] as? NSNumber else {
+            throw DoryVZMacMachineBundleError.invalidBundle("system-disk resize cannot inspect backing image")
+        }
+        let diskBytes = size.uint64Value
+        switch (manifest.resources.diskBytes, diskBytes) {
+        case (journal.previousBytes, journal.previousBytes):
+            try FileManager.default.removeItem(at: journalURL)
+            return manifest
+        case (journal.previousBytes, journal.requestedBytes):
+            let resources = try manifest.resources.growingSystemDisk(to: journal.requestedBytes)
+            let updated = DoryVZMacMachineManifest(
+                createdAt: manifest.createdAt,
+                installationState: manifest.installationState,
+                origin: manifest.origin,
+                parentMachineIdentifierSHA256: manifest.parentMachineIdentifierSHA256,
+                restoreImageBuild: manifest.restoreImageBuild,
+                restoreImageVersion: manifest.restoreImageVersion,
+                restoreImageSourceURL: manifest.restoreImageSourceURL,
+                restoreImageBytes: manifest.restoreImageBytes,
+                restoreImageSHA256: manifest.restoreImageSHA256,
+                hardwareModelSHA256: manifest.hardwareModelSHA256,
+                machineIdentifierSHA256: manifest.machineIdentifierSHA256,
+                macAddress: manifest.macAddress,
+                resources: resources
+            )
+            try updated.validate()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            try encoder.encode(updated).write(
+                to: rootURL.appendingPathComponent(manifestName),
+                options: [.atomic]
+            )
+            try FileManager.default.removeItem(at: journalURL)
+            return updated
+        case (journal.requestedBytes, journal.requestedBytes):
+            try FileManager.default.removeItem(at: journalURL)
+            return manifest
+        default:
+            throw DoryVZMacMachineBundleError.invalidBundle(
+                "system-disk resize recovery found inconsistent capacity"
+            )
+        }
+    }
+
+    static func recoverPendingDataDiskResize(
+        at rootURL: URL,
+        manifest: DoryVZMacMachineManifest,
+        index: Int
+    ) throws -> DoryVZMacMachineManifest {
+        guard manifest.resources.dataDisks.indices.contains(index) else {
+            throw DoryVZMacMachineBundleError.invalidBundle("data-disk resize journal has no matching disk")
+        }
+        let journalURL = rootURL.appendingPathComponent("data-disk-\(index + 1)-resize.json")
+        guard FileManager.default.fileExists(atPath: journalURL.path) else { return manifest }
+        try requireRegularFile(journalURL, label: journalURL.lastPathComponent)
+        let journal: DoryVZMacDataDiskResizeJournal
+        do {
+            journal = try JSONDecoder().decode(
+                DoryVZMacDataDiskResizeJournal.self,
+                from: Data(contentsOf: journalURL, options: [.mappedIfSafe])
+            )
+        } catch {
+            throw DoryVZMacMachineBundleError.invalidBundle("data-disk resize journal is invalid")
+        }
+        let disk = manifest.resources.dataDisks[index]
+        guard journal.index == index,
+              journal.fileName == disk.fileName,
+              journal.previousBytes >= DoryVZMacResourcePlan.minimumDataDiskBytes,
+              journal.requestedBytes > journal.previousBytes,
+              journal.requestedBytes.isMultiple(of: 512) else {
+            throw DoryVZMacMachineBundleError.invalidBundle("data-disk resize journal is inconsistent")
+        }
+        let diskURL = rootURL
+            .appendingPathComponent(dataDisksDirectoryName, isDirectory: true)
+            .appendingPathComponent(disk.fileName)
+        try requireRegularFile(diskURL, label: disk.fileName)
+        let attributes = try FileManager.default.attributesOfItem(atPath: diskURL.path)
+        guard let size = attributes[.size] as? NSNumber else {
+            throw DoryVZMacMachineBundleError.invalidBundle("data-disk resize cannot inspect backing image")
+        }
+        let diskBytes = size.uint64Value
+        switch (disk.byteCount, diskBytes) {
+        case (journal.previousBytes, journal.previousBytes):
+            try FileManager.default.removeItem(at: journalURL)
+            return manifest
+        case (journal.previousBytes, journal.requestedBytes):
+            let resources = try manifest.resources.growingDataDisk(
+                at: index,
+                to: journal.requestedBytes
+            )
+            let updated = DoryVZMacMachineManifest(
+                createdAt: manifest.createdAt,
+                installationState: manifest.installationState,
+                origin: manifest.origin,
+                parentMachineIdentifierSHA256: manifest.parentMachineIdentifierSHA256,
+                restoreImageBuild: manifest.restoreImageBuild,
+                restoreImageVersion: manifest.restoreImageVersion,
+                restoreImageSourceURL: manifest.restoreImageSourceURL,
+                restoreImageBytes: manifest.restoreImageBytes,
+                restoreImageSHA256: manifest.restoreImageSHA256,
+                hardwareModelSHA256: manifest.hardwareModelSHA256,
+                machineIdentifierSHA256: manifest.machineIdentifierSHA256,
+                macAddress: manifest.macAddress,
+                resources: resources
+            )
+            try updated.validate()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            try encoder.encode(updated).write(
+                to: rootURL.appendingPathComponent(manifestName),
+                options: [.atomic]
+            )
+            try FileManager.default.removeItem(at: journalURL)
+            return updated
+        case (journal.requestedBytes, journal.requestedBytes):
+            try FileManager.default.removeItem(at: journalURL)
+            return manifest
+        default:
+            throw DoryVZMacMachineBundleError.invalidBundle(
+                "data-disk resize recovery found inconsistent capacity"
+            )
+        }
     }
 }
 

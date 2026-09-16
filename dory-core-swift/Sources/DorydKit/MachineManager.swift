@@ -246,6 +246,13 @@ public enum DoryMachineBootMode: String, Sendable, Equatable, Hashable, Codable,
     case macOSRestore = "macos-restore"
 }
 
+/// Format of an imported existing root disk. The daemon converts QCOW2 at creation time and
+/// persists the resulting managed backing as raw, so no VM runner ever parses untrusted QCOW.
+public enum DoryMachineRootDiskFormat: String, Sendable, Equatable, Hashable, Codable, CaseIterable {
+    case raw
+    case qcow2
+}
+
 public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var id: String
     public var guestFamily: DoryGuestFamily
@@ -262,6 +269,10 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     /// Descriptor-backed `.dorymac` workspace containing Apple platform identity and storage.
     public var macOSMachineBundlePath: String?
     public var diskSizeBytes: UInt64?
+    public var rootDiskFormat: DoryMachineRootDiskFormat
+    /// Bundle-owned writable virtio disks for a native Mac VM. Paths are never accepted here;
+    /// the daemon derives and validates every backing file from the signed bundle manifest.
+    public var dataDiskBytes: [UInt64]
     public var memoryMB: UInt64
     public var cpuCount: Int
     public var address: String?
@@ -282,6 +293,8 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         macOSRestoreImagePath: String? = nil,
         macOSMachineBundlePath: String? = nil,
         diskSizeBytes: UInt64? = nil,
+        rootDiskFormat: DoryMachineRootDiskFormat = .raw,
+        dataDiskBytes: [UInt64] = [],
         memoryMB: UInt64 = 2048,
         cpuCount: Int = 2,
         address: String? = nil,
@@ -301,6 +314,8 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         self.macOSRestoreImagePath = macOSRestoreImagePath
         self.macOSMachineBundlePath = macOSMachineBundlePath
         self.diskSizeBytes = diskSizeBytes
+        self.rootDiskFormat = rootDiskFormat
+        self.dataDiskBytes = dataDiskBytes
         self.memoryMB = memoryMB
         self.cpuCount = cpuCount
         self.address = address
@@ -322,6 +337,8 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         case macOSRestoreImagePath
         case macOSMachineBundlePath
         case diskSizeBytes
+        case rootDiskFormat
+        case dataDiskBytes
         case memoryMB
         case cpuCount
         case address
@@ -357,6 +374,11 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
                 forKey: .macOSMachineBundlePath
             ),
             diskSizeBytes: try container.decodeIfPresent(UInt64.self, forKey: .diskSizeBytes),
+            rootDiskFormat: try container.decodeIfPresent(
+                DoryMachineRootDiskFormat.self,
+                forKey: .rootDiskFormat
+            ) ?? .raw,
+            dataDiskBytes: try container.decodeIfPresent([UInt64].self, forKey: .dataDiskBytes) ?? [],
             memoryMB: try container.decodeIfPresent(UInt64.self, forKey: .memoryMB) ?? 2048,
             cpuCount: try container.decodeIfPresent(Int.self, forKey: .cpuCount) ?? 2,
             address: try container.decodeIfPresent(String.self, forKey: .address),
@@ -388,6 +410,10 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         try container.encodeIfPresent(macOSRestoreImagePath, forKey: .macOSRestoreImagePath)
         try container.encodeIfPresent(macOSMachineBundlePath, forKey: .macOSMachineBundlePath)
         try container.encodeIfPresent(diskSizeBytes, forKey: .diskSizeBytes)
+        if rootDiskFormat != .raw { try container.encode(rootDiskFormat, forKey: .rootDiskFormat) }
+        if !dataDiskBytes.isEmpty {
+            try container.encode(dataDiskBytes, forKey: .dataDiskBytes)
+        }
         try container.encode(memoryMB, forKey: .memoryMB)
         try container.encode(cpuCount, forKey: .cpuCount)
         try container.encodeIfPresent(address, forKey: .address)
@@ -2224,7 +2250,11 @@ public final class MachineManager: @unchecked Sendable {
                 restoreImageSourceURL: restoreURL,
                 requestedCPUCount: requestedMachine.cpuCount,
                 requestedMemoryBytes: memoryBytes.partialValue,
-                diskBytes: diskBytes
+                diskBytes: diskBytes,
+                dataDiskBytes: requestedMachine.dataDiskBytes,
+                macAddress: DoryVirtualMachineNetworkInterfaceCapabilityRequest
+                    .stable(machineID: normalized.id)
+                    .macAddress
             )
             try fileManager.setAttributes(
                 [.posixPermissions: 0o700],
@@ -2241,6 +2271,7 @@ public final class MachineManager: @unchecked Sendable {
         machine.cpuCount = bundle.manifest.resources.cpuCount
         machine.memoryMB = bundle.manifest.resources.memoryBytes / 1_048_576
         machine.diskSizeBytes = bundle.manifest.resources.diskBytes
+        machine.dataDiskBytes = bundle.manifest.resources.dataDisks.map(\.byteCount)
         machine.macOSMachineBundlePath = stagedBundleURL.path
         if let creationContext {
             try creationContext.lease.publishCreationCheckpoint(
@@ -2326,6 +2357,11 @@ public final class MachineManager: @unchecked Sendable {
                 "sandbox policy is supported only for headless Linux machines"
             )
         }
+        guard machine.dataDiskBytes.isEmpty || machine.bootMode == .macOSRestore else {
+            throw MachineManagerError.persistence(
+                "bundle-owned data disks are supported only for native macOS machines"
+            )
+        }
         machine.shares = try Self.sealShareAuthorizations(machine.shares)
         try Self.validateLaunchConfiguration(machine)
         lock.lock()
@@ -2356,6 +2392,11 @@ public final class MachineManager: @unchecked Sendable {
                     throw MachineManagerError.persistence("EFI disk imports cannot also specify diskSizeBytes")
                 }
             } else {
+                guard machine.rootDiskFormat == .raw else {
+                    throw MachineManagerError.persistence(
+                        "QCOW2 root disks must name a regular source file; blank EFI disks are always raw"
+                    )
+                }
                 guard machine.installerISOPath != nil else {
                     throw MachineManagerError.persistence("a new EFI machine requires an installer ISO")
                 }
@@ -2369,6 +2410,7 @@ public final class MachineManager: @unchecked Sendable {
         case .macOSRestore:
             guard machine.guestFamily == .macOS,
                   machine.guestArchitecture == nil || machine.guestArchitecture == .arm64,
+                  machine.rootDiskFormat == .raw,
                   machine.displayMode == .desktop,
                   machine.kernelPath.isEmpty,
                   machine.rootfsPath.isEmpty,
@@ -15651,6 +15693,8 @@ public final class MachineManager: @unchecked Sendable {
     static func appendVZMacResolvedDevicePolicyArguments(
         from devices: DoryVirtualMachineDeviceCapabilityRequest,
         shares: [DoryMachineShareConfiguration] = [],
+        gvproxyPath: String? = nil,
+        portForwards: [DoryVMPortForward] = [],
         to arguments: inout [String]
     ) throws {
         let network: DoryVZMacNetworkPolicy
@@ -15659,10 +15703,32 @@ public final class MachineManager: @unchecked Sendable {
             network = .sharedNAT
         case .disconnected:
             network = .disconnected
-        case .bridged, .isolated:
+        case .isolated:
+            guard let gvproxyPath, !gvproxyPath.isEmpty else {
+                throw MachineManagerError.persistence(
+                    "native macOS VZMac host-only networking requires the daemon gvproxy"
+                )
+            }
+            network = .isolated
+            arguments.append(contentsOf: ["--gvproxy", gvproxyPath])
+        case .bridged:
             throw MachineManagerError.persistence(
                 "native macOS VZMac cannot implement \(devices.networkAttachment.rawValue) networking"
             )
+        }
+        if !portForwards.isEmpty {
+            guard devices.networkAttachment == .isolated,
+                  !portForwards.contains(where: { $0.exposure == .lan }) else {
+                throw MachineManagerError.persistence(
+                    "native macOS VZMac port forwards require host-only loopback networking"
+                )
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            arguments.append(contentsOf: [
+                "--resolved-port-forwards",
+                String(decoding: try encoder.encode(portForwards), as: UTF8.self),
+            ])
         }
         guard devices.directorySharing == !shares.isEmpty else {
             throw MachineManagerError.persistence(
@@ -15710,6 +15776,30 @@ public final class MachineManager: @unchecked Sendable {
         URL(fileURLWithPath: path).standardizedFileURL.path
             == URL(fileURLWithPath: savedStateStore.statePath(machineID: machineID))
                 .standardizedFileURL.path
+    }
+
+    /// Generic VMM arguments are for the Linux VZ helper. The native macOS desktop parser has
+    /// no global-options phase, so extract the one shared helper dependency and reject anything
+    /// else instead of making a launch depend on argument ordering.
+    static func vzMacGVProxyPath(from baseArguments: [String]) throws -> String? {
+        var result: String?
+        var index = 0
+        while index < baseArguments.count {
+            let flag = baseArguments[index]
+            guard flag == "--gvproxy" else {
+                throw MachineManagerError.persistence(
+                    "native macOS VZMac cannot consume VMM base argument \(flag)"
+                )
+            }
+            guard result == nil, index + 1 < baseArguments.count else {
+                throw MachineManagerError.persistence(
+                    "native macOS VZMac has an invalid daemon gvproxy argument"
+                )
+            }
+            result = baseArguments[index + 1]
+            index += 2
+        }
+        return result
     }
 
     private func processArguments(
@@ -15784,7 +15874,8 @@ public final class MachineManager: @unchecked Sendable {
                     "native macOS has an interrupted \(bundle.manifest.installationState.rawValue) operation that requires recovery"
                 )
             }
-            var arguments = baseArguments + [
+            let gvproxyPath = try Self.vzMacGVProxyPath(from: baseArguments)
+            var arguments = [
                 "vzmac", operation,
                 "--machine", bundlePath,
                 "--machine-id", machine.id,
@@ -15808,6 +15899,8 @@ public final class MachineManager: @unchecked Sendable {
             try Self.appendVZMacResolvedDevicePolicyArguments(
                 from: launchBinding.devices,
                 shares: machine.shares,
+                gvproxyPath: gvproxyPath,
+                portForwards: launchBinding.portForwards,
                 to: &arguments
             )
             return arguments
@@ -18521,23 +18614,23 @@ public final class MachineManager: @unchecked Sendable {
             var copy = machine
             switch machine.bootMode {
             case .linuxKernel:
-                try Self.cloneOrCopyFile(
+                try Self.importRootDisk(
                     source: machine.rootfsPath,
                     destination: rootfsDestination,
-                    requiresCopyOnWrite: cloneAuthority != nil,
-                    expectedSHA256: cloneAuthority?.rootfsSHA256,
-                    expectedByteCount: cloneAuthority?.rootfsByteCount
+                    format: machine.rootDiskFormat,
+                    cloneAuthority: cloneAuthority
                 )
+                copy.rootDiskFormat = .raw
                 try Self.cloneOrCopyFile(source: machine.kernelPath, destination: kernelDestination)
             case .efi:
                 if Self.isRegularNonemptyFile(path: machine.rootfsPath) {
-                    try Self.cloneOrCopyFile(
+                    try Self.importRootDisk(
                         source: machine.rootfsPath,
                         destination: rootfsDestination,
-                        requiresCopyOnWrite: cloneAuthority != nil,
-                        expectedSHA256: cloneAuthority?.rootfsSHA256,
-                        expectedByteCount: cloneAuthority?.rootfsByteCount
+                        format: machine.rootDiskFormat,
+                        cloneAuthority: cloneAuthority
                     )
+                    copy.rootDiskFormat = .raw
                 } else if let diskSizeBytes = machine.diskSizeBytes {
                     guard cloneAuthority == nil else {
                         throw MachineManagerError.persistence(
@@ -18547,6 +18640,9 @@ public final class MachineManager: @unchecked Sendable {
                     try Self.createPrivateSparseFile(path: rootfsDestination, sizeBytes: diskSizeBytes)
                 } else {
                     throw MachineManagerError.persistence("EFI machine is missing its disk source or size")
+                }
+                if !Self.isRegularNonemptyFile(path: machine.rootfsPath) {
+                    copy.rootDiskFormat = .raw
                 }
                 if DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) {
                     // EFI snapshot clones carry this opaque, verified bundle in the existing
@@ -18601,7 +18697,9 @@ public final class MachineManager: @unchecked Sendable {
                 guard bundle.manifest.resources.cpuCount == machine.cpuCount,
                       !memoryBytes.overflow,
                       bundle.manifest.resources.memoryBytes == memoryBytes.partialValue,
-                      bundle.manifest.resources.diskBytes == machine.diskSizeBytes else {
+                      bundle.manifest.resources.diskBytes == machine.diskSizeBytes,
+                      bundle.manifest.resources.dataDisks.map(\.byteCount)
+                        == machine.dataDiskBytes else {
                     throw MachineManagerError.persistence(
                         "native macOS bundle resources differ from workspace intent"
                     )
@@ -18617,6 +18715,36 @@ public final class MachineManager: @unchecked Sendable {
             return copy
         } catch {
             throw MachineManagerError.persistence("could not prepare artifacts for \(machine.id): \(error)")
+        }
+    }
+
+    private static func importRootDisk(
+        source: String,
+        destination: String,
+        format: DoryMachineRootDiskFormat,
+        cloneAuthority: DoryMachineCloneCreationAuthority?
+    ) throws {
+        switch format {
+        case .raw:
+            try cloneOrCopyFile(
+                source: source,
+                destination: destination,
+                requiresCopyOnWrite: cloneAuthority != nil,
+                expectedSHA256: cloneAuthority?.rootfsSHA256,
+                expectedByteCount: cloneAuthority?.rootfsByteCount
+            )
+        case .qcow2:
+            guard cloneAuthority == nil else {
+                throw MachineManagerError.persistence("QCOW2 cannot be used as a linked snapshot source")
+            }
+            do {
+                try DoryQCOW2Importer.convert(
+                    source: URL(fileURLWithPath: source, isDirectory: false),
+                    destination: URL(fileURLWithPath: destination, isDirectory: false)
+                )
+            } catch {
+                throw MachineManagerError.persistence("could not import QCOW2 root disk: \(error)")
+            }
         }
     }
 
@@ -18647,7 +18775,9 @@ public final class MachineManager: @unchecked Sendable {
             guard bundle.manifest.resources.cpuCount == machine.cpuCount,
                   !memoryBytes.overflow,
                   bundle.manifest.resources.memoryBytes == memoryBytes.partialValue,
-                  bundle.manifest.resources.diskBytes == machine.diskSizeBytes else {
+                  bundle.manifest.resources.diskBytes == machine.diskSizeBytes,
+                  bundle.manifest.resources.dataDisks.map(\.byteCount)
+                    == machine.dataDiskBytes else {
                 throw MachineManagerError.persistence(
                     "native macOS managed resources differ from workspace intent"
                 )
@@ -19168,6 +19298,9 @@ public final class MachineManager: @unchecked Sendable {
             guard bundle.diskURL.path.hasPrefix(bundlePath + "/") else {
                 throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
             }
+            guard bundle.manifest.resources.dataDisks.map(\.byteCount) == machine.dataDiskBytes else {
+                throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
+            }
             let restoreReference = Self.nativeMacOSRestoreReference(
                 machineID: machine.id,
                 manifest: bundle.manifest
@@ -19187,7 +19320,7 @@ public final class MachineManager: @unchecked Sendable {
                 machineID: machine.id,
                 restoreReference: restoreReference,
                 systemReference: systemReference,
-                resources: bundle.manifest.resources
+                manifest: bundle.manifest
             )
             let reconcileState: DoryWorkspaceLegacyProjectionReconcileState
             if definition.boot != desiredBoot {
@@ -19212,7 +19345,7 @@ public final class MachineManager: @unchecked Sendable {
                     machineID: machine.id,
                     restoreReference: restoreReference,
                     systemReference: systemReference,
-                    resources: bundle.manifest.resources
+                    manifest: bundle.manifest
                 )
                 try workspaceRepository.replace(
                     definition,
@@ -19235,7 +19368,17 @@ public final class MachineManager: @unchecked Sendable {
                         reference: systemReference,
                         path: bundle.diskURL.path
                     ),
-                ],
+                ] + zip(bundle.manifest.resources.dataDisks, bundle.dataDiskURLs).map { disk, path in
+                    DoryMachineConfigurationArtifactBinding(
+                        role: .dataDisk,
+                        reference: Self.nativeMacOSDataDiskReference(
+                            machineID: machine.id,
+                            manifest: bundle.manifest,
+                            disk: disk
+                        ),
+                        path: path.path
+                    )
+                },
                 migrationFactsData: try Self.canonicalDefinitionData(definition),
                 runtimeMachine: machine,
                 isNative: true,
@@ -19451,6 +19594,19 @@ public final class MachineManager: @unchecked Sendable {
             machineID: machine.id,
             manifest: bundle.manifest
         )
+        let dataStorage = bundle.manifest.resources.dataDisks.enumerated().map { index, disk in
+            DoryVMStorageAttachment(
+                id: "data-\(index + 1)",
+                role: .data,
+                artifact: Self.nativeMacOSDataDiskReference(
+                    machineID: machine.id,
+                    manifest: bundle.manifest,
+                    disk: disk
+                ),
+                source: .userProvided,
+                capacityBytes: disk.byteCount
+            )
+        }
         let guest = DoryGuestPlatform(family: .macOS, architecture: .arm64)
         let platform = try DoryVirtualizationPlatformResolver.resolve(
             DoryVirtualizationResolutionRequest(
@@ -19491,7 +19647,7 @@ public final class MachineManager: @unchecked Sendable {
                 artifact: systemReference,
                 source: .userProvided,
                 capacityBytes: resources.diskBytes
-            )],
+            )] + dataStorage,
             networkMode: .sharedNAT,
             displays: displays,
             audio: DoryVMAudioConfiguration(inputEnabled: true, outputEnabled: true),
@@ -19542,6 +19698,19 @@ public final class MachineManager: @unchecked Sendable {
             namespace: "macos-machine",
             machineID: machineID,
             role: "system-disk",
+            digest: manifest.machineIdentifierSHA256
+        )
+    }
+
+    private static func nativeMacOSDataDiskReference(
+        machineID: String,
+        manifest: DoryVZMacMachineManifest,
+        disk: DoryVZMacDataDisk
+    ) -> DoryVMResolverReference {
+        stableManagedArtifactReference(
+            namespace: "macos-machine",
+            machineID: machineID,
+            role: "data-disk:\(disk.fileName):\(disk.byteCount)",
             digest: manifest.machineIdentifierSHA256
         )
     }
@@ -19601,11 +19770,25 @@ public final class MachineManager: @unchecked Sendable {
         machineID: String,
         restoreReference: DoryVMResolverReference,
         systemReference: DoryVMResolverReference,
-        resources: DoryVZMacResourcePlan
+        manifest: DoryVZMacMachineManifest
     ) throws {
+        let resources = manifest.resources
+        let expectedDataStorage = resources.dataDisks.enumerated().map { index, disk in
+            DoryVMStorageAttachment(
+                id: "data-\(index + 1)",
+                role: .data,
+                artifact: nativeMacOSDataDiskReference(
+                    machineID: machineID,
+                    manifest: manifest,
+                    disk: disk
+                ),
+                source: .userProvided,
+                capacityBytes: disk.byteCount
+            )
+        }
         guard definition.identity.id == machineID,
               definition.guest == DoryGuestPlatform(family: .macOS, architecture: .arm64),
-              definition.storage.count == 1,
+              definition.storage.count == 1 + expectedDataStorage.count,
               let system = definition.storage.first,
               system.id == "system",
               system.role == .system,
@@ -19613,6 +19796,7 @@ public final class MachineManager: @unchecked Sendable {
               system.source == .userProvided,
               !system.readOnly,
               system.capacityBytes == resources.diskBytes,
+              Array(definition.storage.dropFirst()) == expectedDataStorage,
               definition.resources.virtualCPUCount == UInt64(resources.cpuCount),
               definition.resources.memoryBytes == resources.memoryBytes,
               definition.resources.diskBytes == resources.diskBytes,
@@ -21769,7 +21953,9 @@ public final class MachineManager: @unchecked Sendable {
                       bundle.manifest.resources.cpuCount == machine.cpuCount,
                       !memoryBytes.overflow,
                       bundle.manifest.resources.memoryBytes == memoryBytes.partialValue,
-                      bundle.manifest.resources.diskBytes == machine.diskSizeBytes else {
+                      bundle.manifest.resources.diskBytes == machine.diskSizeBytes,
+                      bundle.manifest.resources.dataDisks.map(\.byteCount)
+                        == machine.dataDiskBytes else {
                     continue
                 }
             } else {

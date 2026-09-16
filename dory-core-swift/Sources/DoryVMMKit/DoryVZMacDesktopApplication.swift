@@ -65,6 +65,10 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
     public var controlSocketPath: String?
     public var handoffSocketPath: String?
     public var reconnectIdentity: DoryRuntimeReconnectLaunchIdentity?
+    /// Only admitted for a managed host-only launch. The daemon resolves this path rather than
+    /// allowing a guest definition to choose an executable.
+    public var gvproxyPath: String?
+    public var portForwards: [DoryVMPortForward]
 
     public init(
         operation: DoryVZMacDesktopOperation,
@@ -81,7 +85,9 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
         stateDirectoryURL: URL? = nil,
         controlSocketPath: String? = nil,
         handoffSocketPath: String? = nil,
-        reconnectIdentity: DoryRuntimeReconnectLaunchIdentity? = nil
+        reconnectIdentity: DoryRuntimeReconnectLaunchIdentity? = nil,
+        gvproxyPath: String? = nil,
+        portForwards: [DoryVMPortForward] = []
     ) {
         self.operation = operation
         self.machineBundleURL = machineBundleURL.standardizedFileURL
@@ -98,6 +104,8 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
         self.controlSocketPath = controlSocketPath
         self.handoffSocketPath = handoffSocketPath
         self.reconnectIdentity = reconnectIdentity
+        self.gvproxyPath = gvproxyPath.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        self.portForwards = portForwards
     }
 
     public var hasManagedLifecycleContract: Bool {
@@ -129,6 +137,11 @@ public enum DoryVZMacDesktopArgumentError: Error, Sendable, Equatable, CustomStr
     case duplicateShareTag(String)
     case managedDirectoryShareMismatch
     case managedCameraUnsupported
+    case hostOnlyNetworkRequiresManagedLifecycle
+    case hostOnlyNetworkRequiresGVProxy
+    case gvproxyUnexpected
+    case invalidPortForwards
+    case portForwardsRequireHostOnlyNetwork
 
     public var description: String {
         switch self {
@@ -160,6 +173,16 @@ public enum DoryVZMacDesktopArgumentError: Error, Sendable, Equatable, CustomStr
             "managed VZMac directory-sharing policy does not match its authorized shares"
         case .managedCameraUnsupported:
             "managed VZMac launch cannot enable the unsupported host-camera bridge"
+        case .hostOnlyNetworkRequiresManagedLifecycle:
+            "VZMac host-only networking requires the daemon-managed lifecycle contract"
+        case .hostOnlyNetworkRequiresGVProxy:
+            "VZMac host-only networking requires a daemon-resolved gvproxy"
+        case .gvproxyUnexpected:
+            "--gvproxy is accepted only for VZMac host-only networking"
+        case .invalidPortForwards:
+            "--resolved-port-forwards is not a valid VZMac port-forward contract"
+        case .portForwardsRequireHostOnlyNetwork:
+            "VZMac port forwards require host-only networking"
         }
     }
 }
@@ -205,7 +228,8 @@ public func parseDoryVZMacDesktopArguments(
             "--machine", "--ipsw", "--guest-tools", "--usb-disk", "--machine-id",
             "--operation-id", "--state-dir", "--control-sock", "--handoff-sock",
             "--restore-state", "--network", "--audio-input", "--audio-output", "--clipboard",
-            "--directory-sharing", "--camera",
+            "--directory-sharing", "--camera", "--gvproxy",
+            "--resolved-port-forwards",
             DoryRuntimeReconnectContract.fileDescriptorArgument,
         ].contains(flag) else {
             throw DoryVZMacDesktopArgumentError.unknownArgument(flag)
@@ -356,6 +380,35 @@ public func parseDoryVZMacDesktopArguments(
             || managedValuesPresent.allSatisfy({ !$0 }) else {
         throw DoryVZMacDesktopArgumentError.incompleteManagedLifecycleContract
     }
+    let gvproxyPath = try values["--gvproxy"].map {
+        try absoluteFileURL($0, flag: "--gvproxy", isDirectory: false).path
+    }
+    let portForwards: [DoryVMPortForward]
+    if let rawPortForwards = values["--resolved-port-forwards"] {
+        do {
+            portForwards = try JSONDecoder().decode(
+                [DoryVMPortForward].self,
+                from: Data(rawPortForwards.utf8)
+            )
+        } catch {
+            throw DoryVZMacDesktopArgumentError.invalidPortForwards
+        }
+    } else {
+        portForwards = []
+    }
+    if networkPolicy == .isolated {
+        guard managedValuesPresent.allSatisfy({ $0 }) else {
+            throw DoryVZMacDesktopArgumentError.hostOnlyNetworkRequiresManagedLifecycle
+        }
+        guard gvproxyPath != nil else {
+            throw DoryVZMacDesktopArgumentError.hostOnlyNetworkRequiresGVProxy
+        }
+    } else if gvproxyPath != nil {
+        throw DoryVZMacDesktopArgumentError.gvproxyUnexpected
+    }
+    if !portForwards.isEmpty, networkPolicy != .isolated {
+        throw DoryVZMacDesktopArgumentError.portForwardsRequireHostOnlyNetwork
+    }
     if let reconnectIdentity {
         guard reconnectIdentity.machineID == machineID,
               reconnectIdentity.operationID
@@ -391,7 +444,9 @@ public func parseDoryVZMacDesktopArguments(
         stateDirectoryURL: stateDirectoryURL,
         controlSocketPath: controlSocketPath,
         handoffSocketPath: handoffSocketPath,
-        reconnectIdentity: reconnectIdentity
+        reconnectIdentity: reconnectIdentity,
+        gvproxyPath: gvproxyPath,
+        portForwards: portForwards
     )
 }
 
@@ -548,6 +603,7 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
     private let arguments: DoryVZMacDesktopArguments
     private let adapter: DoryVZMacAdapter
     private let window: NSWindow
+    private var secondaryDisplayWindows: [NSWindow] = []
     private var terminalError: Error?
     private var stopRequested = false
     private var controlServer: DoryVZMacControlServer?
@@ -563,7 +619,10 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
             usbDiskURL: arguments.usbDiskURL,
             usbDiskReadOnly: arguments.usbDiskReadOnly,
             shares: arguments.shares,
-            devicePolicy: arguments.devicePolicy
+            devicePolicy: arguments.devicePolicy,
+            gvproxyPath: arguments.gvproxyPath,
+            networkStateDirectoryURL: arguments.stateDirectoryURL,
+            portForwards: arguments.portForwards
         )) { message in
             FileHandle.standardError.write(Data("dory-vmm VZMac: \(message)\n".utf8))
         }
@@ -581,6 +640,20 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
         window.center()
         super.init()
         window.delegate = self
+        secondaryDisplayWindows = adapter.displayViews.dropFirst().enumerated().map { index, view in
+            let secondary = NSWindow(
+                contentRect: NSRect(origin: .zero, size: contentSize),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            secondary.contentView = view
+            secondary.minSize = NSSize(width: 640, height: 400)
+            secondary.tabbingMode = .disallowed
+            secondary.title = "\(machineName) — macOS Display \(index + 2)"
+            secondary.delegate = self
+            return secondary
+        }
         adapter.onObservation = { [weak self] observation in
             self?.observe(observation)
         }
@@ -592,6 +665,7 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
         application.delegate = self
         window.title = initialTitle
         window.makeKeyAndOrderFront(nil)
+        secondaryDisplayWindows.forEach { $0.makeKeyAndOrderFront(nil) }
         application.activate()
         installViewMenu()
         Task { @MainActor [weak self] in
@@ -689,6 +763,7 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
     private func finish() {
         controlServer?.stop()
         controlServer = nil
+        adapter.stopHostOnlyNetwork()
         application.stop(nil)
         if let event = NSEvent.otherEvent(
             with: .applicationDefined,
@@ -912,6 +987,7 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         window.makeKeyAndOrderFront(nil)
+        secondaryDisplayWindows.forEach { $0.makeKeyAndOrderFront(nil) }
         return true
     }
 
@@ -927,6 +1003,10 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === window else {
+            sender.orderOut(nil)
+            return false
+        }
         if adapter.observation.state == .running {
             sender.orderOut(nil)
             requestStop()

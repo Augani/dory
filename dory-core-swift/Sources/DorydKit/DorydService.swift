@@ -2629,6 +2629,11 @@ private extension DoryMachineConfiguration {
         guard let bootMode = DoryMachineBootMode(rawValue: rawBootMode) else {
             throw MachineManagerError.persistence("unsupported machine boot mode: \(rawBootMode)")
         }
+        let rawRootDiskFormat = dictionary.optionalString("rootDiskFormat")
+            ?? DoryMachineRootDiskFormat.raw.rawValue
+        guard let rootDiskFormat = DoryMachineRootDiskFormat(rawValue: rawRootDiskFormat) else {
+            throw MachineManagerError.persistence("unsupported root disk format: \(rawRootDiskFormat)")
+        }
         self.init(
             id: try dictionary.requiredString("id"),
             guestFamily: try dictionary.optionalString("guestFamily").map {
@@ -2654,6 +2659,8 @@ private extension DoryMachineConfiguration {
             macOSRestoreImagePath: dictionary.optionalString("macOSRestoreImagePath"),
             macOSMachineBundlePath: dictionary.optionalString("macOSMachineBundlePath"),
             diskSizeBytes: try dictionary.optionalUInt64("diskSizeBytes"),
+            rootDiskFormat: rootDiskFormat,
+            dataDiskBytes: try dictionary.optionalUInt64Array("dataDiskBytes") ?? [],
             memoryMB: try dictionary.optionalUInt64("memoryMB") ?? 2048,
             cpuCount: try dictionary.optionalInt("cpuCount") ?? 2,
             address: dictionary.optionalString("address"),
@@ -2968,6 +2975,24 @@ private extension NSDictionary {
             return int
         }
         throw XPCRemoteConfigError.invalid(key)
+    }
+
+    func optionalUInt64Array(_ key: String) throws -> [UInt64]? {
+        guard let values = self[key] else { return nil }
+        guard let array = values as? [Any] else {
+            throw XPCRemoteConfigError.invalid(key)
+        }
+        return try array.enumerated().map { index, value in
+            if let number = value as? NSNumber {
+                let integer = number.int64Value
+                guard integer >= 0 else { throw XPCRemoteConfigError.invalid("\(key)[\(index)]") }
+                return UInt64(integer)
+            }
+            if let string = value as? String, let integer = UInt64(string) {
+                return integer
+            }
+            throw XPCRemoteConfigError.invalid("\(key)[\(index)]")
+        }
     }
 
     func optionalInt(_ key: String) throws -> Int? {

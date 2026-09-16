@@ -192,7 +192,9 @@ struct DoryMachineCreationPublication: Codable, Sendable, Equatable {
         if expected.guestFamily == .macOS {
             guard let native, native.manifest.resources.cpuCount == native.configuration.cpuCount,
                   native.manifest.resources.memoryBytes / 1_048_576 == native.configuration.memoryMB,
-                  native.manifest.resources.diskBytes == native.configuration.diskSizeBytes else {
+                  native.manifest.resources.diskBytes == native.configuration.diskSizeBytes,
+                  native.manifest.resources.dataDisks.map(\.byteCount)
+                    == native.configuration.dataDiskBytes else {
                 throw MachineManagerError.persistence("native creation has no exact prepared platform")
             }
             try native.manifest.validate()
@@ -200,6 +202,7 @@ struct DoryMachineCreationPublication: Codable, Sendable, Equatable {
             preparedIntent.cpuCount = native.configuration.cpuCount
             preparedIntent.memoryMB = native.configuration.memoryMB
             preparedIntent.diskSizeBytes = native.configuration.diskSizeBytes
+            preparedIntent.dataDiskBytes = native.configuration.dataDiskBytes
             preparedIntent.macOSMachineBundlePath = creation.stagingDirectory + "/Machine.dorymac"
             guard native.configuration == preparedIntent else {
                 throw MachineManagerError.persistence("native preparation changed caller intent")
@@ -207,6 +210,7 @@ struct DoryMachineCreationPublication: Codable, Sendable, Equatable {
             expected.cpuCount = native.configuration.cpuCount
             expected.memoryMB = native.configuration.memoryMB
             expected.diskSizeBytes = native.configuration.diskSizeBytes
+            expected.dataDiskBytes = native.configuration.dataDiskBytes
             expected.guestArchitecture = .arm64
             expected.macOSRestoreImagePath = creation.machineDirectory + "/Restore.ipsw"
             expected.macOSMachineBundlePath = creation.machineDirectory + "/Machine.dorymac"
@@ -215,6 +219,10 @@ struct DoryMachineCreationPublication: Codable, Sendable, Equatable {
             expected.kernelPath = creation.machineDirectory + "/kernel"
             expected.rootfsPath = creation.machineDirectory + "/rootfs.ext4"
             expected.diskSizeBytes = nil
+            // QCOW2 is an import-only source format. The managed root disk published to a
+            // machine workspace is always raw, so persisted launch intent cannot later
+            // reinterpret or reopen the caller-owned source image.
+            expected.rootDiskFormat = .raw
             if expected.installerISOPath != nil { expected.installerISOPath = creation.machineDirectory + "/installer.iso" }
         }
         if let snapshot = creation.snapshot, let evidence = snapshot.artifactEvidence {

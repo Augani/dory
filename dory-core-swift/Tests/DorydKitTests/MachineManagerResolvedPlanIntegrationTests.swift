@@ -116,6 +116,43 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("native VZMac host-only launch binds only the daemon gvproxy")
+    func nativeVZMacHostOnlyLaunchBindsDaemonGVProxy() throws {
+        var arguments: [String] = []
+        var devices = DoryVirtualMachineDeviceCapabilityRequest(networkAttachment: .isolated)
+        devices.clipboardPolicy = .disabled
+
+        try MachineManager.appendVZMacResolvedDevicePolicyArguments(
+            from: devices,
+            gvproxyPath: "/Applications/Dory.app/Contents/Helpers/gvproxy",
+            portForwards: [DoryVMPortForward(
+                id: "ssh",
+                hostPort: 22_222,
+                guestPort: 22
+            )],
+            to: &arguments
+        )
+
+        #expect(arguments.contains("--network"))
+        #expect(arguments.contains("host-only"))
+        #expect(arguments.contains("--gvproxy"))
+        #expect(arguments.contains("/Applications/Dory.app/Contents/Helpers/gvproxy"))
+        #expect(arguments.contains("--resolved-port-forwards"))
+    }
+
+    @Test("native VZMac extracts only the daemon gvproxy base argument")
+    func nativeVZMacGVProxyBaseArgumentIsStrictlyScoped() throws {
+        #expect(try MachineManager.vzMacGVProxyPath(
+            from: ["--gvproxy", "/Applications/Dory.app/Contents/Helpers/gvproxy"]
+        ) == "/Applications/Dory.app/Contents/Helpers/gvproxy")
+        #expect(throws: MachineManagerError.self) {
+            try MachineManager.vzMacGVProxyPath(from: ["--gvproxy"])
+        }
+        #expect(throws: MachineManagerError.self) {
+            try MachineManager.vzMacGVProxyPath(from: ["--publish-host", "127.0.0.1"])
+        }
+    }
+
     @Test("native VZMac launch emits only its resolved shared-directory authority")
     func nativeVZMacLaunchEmitsResolvedShareAuthority() throws {
         let share = DoryMachineShareConfiguration(

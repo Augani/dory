@@ -49,6 +49,7 @@ public enum DoryMachineConfigurationLegacyBootContract: String, Codable, Sendabl
 public enum DoryMachineConfigurationArtifactRole: String, Codable, Sendable, Equatable, Hashable {
     case kernel
     case systemDisk = "system-disk"
+    case dataDisk = "data-disk"
     case installerISO = "installer-iso"
 }
 

@@ -1,3 +1,4 @@
+import DoryCore
 import DoryVZMacCore
 import DorydKit
 import DoryOperations
@@ -48,6 +49,7 @@ public struct DoryVZMacAdapterObservation: Sendable, Equatable {
 public enum DoryVZMacAdapterError: Error, Sendable, Equatable, CustomStringConvertible {
     case transitionInProgress
     case invalidState(expected: [DoryVZMacAdapterState], actual: DoryVZMacAdapterState)
+    case missingHostOnlyNetworkInputs
 
     public var description: String {
         switch self {
@@ -55,6 +57,8 @@ public enum DoryVZMacAdapterError: Error, Sendable, Equatable, CustomStringConve
             "another VZMac lifecycle transition is already in progress"
         case .invalidState(let expected, let actual):
             "VZMac is \(actual.rawValue); expected \(expected.map(\.rawValue).joined(separator: " or "))"
+        case .missingHostOnlyNetworkInputs:
+            "VZMac host-only networking requires a daemon-owned gvproxy and state directory"
         }
     }
 }
@@ -71,6 +75,14 @@ public struct DoryVZMacAdapterConfiguration: Sendable, Equatable {
     /// User-selected directory roots already admitted by the daemon for this launch.
     public let shares: [DoryMachineShareConfiguration]
     public let devicePolicy: DoryVZMacDevicePolicy
+    /// The daemon resolves this executable; it is consumed only when the exact device policy
+    /// asks for host-only networking.
+    public let gvproxyPath: String?
+    /// Per-machine daemon state root. The adapter creates and owns only its network leaf here.
+    public let networkStateDirectoryURL: URL?
+    /// Resolved daemon port mappings. They are meaningful only for the gvproxy-backed host-only
+    /// attachment and are never inferred from a machine bundle.
+    public let portForwards: [DoryVMPortForward]
 
     public init(
         machineBundleURL: URL,
@@ -78,7 +90,10 @@ public struct DoryVZMacAdapterConfiguration: Sendable, Equatable {
         usbDiskURL: URL? = nil,
         usbDiskReadOnly: Bool = true,
         shares: [DoryMachineShareConfiguration] = [],
-        devicePolicy: DoryVZMacDevicePolicy = .legacyDefault
+        devicePolicy: DoryVZMacDevicePolicy = .legacyDefault,
+        gvproxyPath: String? = nil,
+        networkStateDirectoryURL: URL? = nil,
+        portForwards: [DoryVMPortForward] = []
     ) {
         self.machineBundleURL = machineBundleURL.standardizedFileURL
         self.guestToolsURL = guestToolsURL?.standardizedFileURL
@@ -90,30 +105,74 @@ public struct DoryVZMacAdapterConfiguration: Sendable, Equatable {
             return normalized
         }
         self.devicePolicy = devicePolicy
+        self.gvproxyPath = gvproxyPath.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        self.networkStateDirectoryURL = networkStateDirectoryURL?.standardizedFileURL
+        self.portForwards = portForwards
     }
 }
 
 /// Production Virtualization.framework adapter for native ARM64 macOS guests.
 ///
-/// The adapter owns the exclusive machine lease, VZ runtime, one supported Mac display, camera
-/// bridge, lifecycle serialization, and truthful state projection. It deliberately does not own an
-/// NSWindow: Dory Desktop embeds `displayView` in its normal window/presentation boundary.
+/// The adapter owns the exclusive machine lease, VZ runtime, every persisted Mac display, camera
+/// bridge, lifecycle serialization, and truthful state projection. It deliberately does not own
+/// NSWindows: Dory Desktop embeds `displayViews` in its presentation boundary.
 @MainActor
 public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelegate {
-    public nonisolated static let maximumGuestDisplayCount = 1
+    public nonisolated static let maximumGuestDisplayCount = DoryVZMacResourcePlan.maximumDisplayCount
 
     public let runtime: DoryVZMacRuntime
+    /// One view per persisted graphics display. Virtualization.framework binds each view to a
+    /// distinct guest display when the same VM has several display configurations.
+    public let displayViews: [VZVirtualMachineView]
+    /// Compatibility alias for callers that intentionally present only the primary display.
     public let displayView: VZVirtualMachineView
     public private(set) var observation: DoryVZMacAdapterObservation
     public var onObservation: (@MainActor @Sendable (DoryVZMacAdapterObservation) -> Void)?
 
     private var transitionInProgress = false
+    /// Retained for the whole VM lifetime so its file descriptor, child process, and cleanup
+    /// cannot outlive the VZ network device that consumes them.
+    private let gvproxyNetwork: DoryVMMGVProxyNetwork?
 
     public init(
         configuration: DoryVZMacAdapterConfiguration,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws {
         let bundle = try DoryVZMacMachineBundle.load(from: configuration.machineBundleURL)
+        let gvproxyNetwork: DoryVMMGVProxyNetwork?
+        if configuration.devicePolicy.network == .isolated {
+            guard let gvproxyPath = configuration.gvproxyPath,
+                  let stateDirectoryURL = configuration.networkStateDirectoryURL else {
+                throw DoryVZMacAdapterError.missingHostOnlyNetworkInputs
+            }
+            guard !configuration.portForwards.contains(where: { $0.exposure == .lan }),
+                  let resolvedPortForwards = PublishedPortForwardPlan.resolvedForwards(
+                    configuration.portForwards,
+                    guestIP: "192.168.127.2"
+                  ) else {
+                throw DoryVZMachineError.validation(
+                    "VZMac host-only networking accepts only valid loopback port forwards"
+                )
+            }
+            gvproxyNetwork = try DoryVMMGVProxyNetwork(
+                gvproxyPath: gvproxyPath,
+                stateDirectory: stateDirectoryURL
+                    .appendingPathComponent("vzmac-network", isDirectory: true).path,
+                networkAttachment: .isolated,
+                networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest(
+                    macAddress: bundle.manifest.macAddress
+                ),
+                resolvedPortForwards: resolvedPortForwards
+            )
+        } else {
+            guard configuration.portForwards.isEmpty else {
+                throw DoryVZMachineError.validation(
+                    "VZMac port forwards require the gvproxy-backed host-only network"
+                )
+            }
+            gvproxyNetwork = nil
+        }
+        self.gvproxyNetwork = gvproxyNetwork
         var sharedDirectories = try configuration.shares.map { share in
             try DoryVZMacSharedDirectory(
                 name: share.tag,
@@ -136,17 +195,32 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
             sharedDirectories: sharedDirectories,
             usbMassStorage: usbMassStorage,
             devicePolicy: configuration.devicePolicy,
+            networkAttachment: gvproxyNetwork?.attachment,
             log: log
         )
-        displayView = VZVirtualMachineView()
-        displayView.virtualMachine = runtime.virtualMachine
-        displayView.capturesSystemKeys = true
-        displayView.automaticallyReconfiguresDisplay = true
+        let virtualMachine = runtime.virtualMachine
+        let displayCount = bundle.manifest.resources.displays.count
+        let displayViews = (0..<displayCount).map { _ in
+            let view = VZVirtualMachineView()
+            view.virtualMachine = virtualMachine
+            view.capturesSystemKeys = true
+            view.automaticallyReconfiguresDisplay = true
+            return view
+        }
+        guard let displayView = displayViews.first else {
+            throw DoryVZMachineError.validation("VZMac requires at least one graphics display")
+        }
+        self.displayViews = displayViews
+        self.displayView = displayView
         observation = DoryVZMacAdapterObservation(
             state: Self.initialState(for: bundle.manifest.installationState)
         )
         super.init()
         runtime.virtualMachine.delegate = self
+    }
+
+    func stopHostOnlyNetwork() {
+        gvproxyNetwork?.stop()
     }
 
     public func install(

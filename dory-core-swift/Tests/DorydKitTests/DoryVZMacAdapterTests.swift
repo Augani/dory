@@ -78,7 +78,10 @@ final class DoryVZMacAdapterTests: XCTestCase {
         XCTAssertEqual(configuration.usbDiskURL?.path, "/tmp/removable.img")
         XCTAssertFalse(configuration.usbDiskReadOnly)
         XCTAssertEqual(configuration.shares.first?.hostPath, "/tmp/project")
-        XCTAssertEqual(DoryVZMacAdapter.maximumGuestDisplayCount, 1)
+        XCTAssertEqual(
+            DoryVZMacAdapter.maximumGuestDisplayCount,
+            DoryVZMacResourcePlan.maximumDisplayCount
+        )
     }
 
     func testInvalidStateErrorNamesExpectedAndActualStates() {

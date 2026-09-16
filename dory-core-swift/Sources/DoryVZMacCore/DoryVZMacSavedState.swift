@@ -9,6 +9,8 @@ public enum DoryVZMacSavedStateError: Error, Sendable, Equatable, CustomStringCo
     case destinationExists(String)
     case invalidArtifact(String)
     case hostMismatch
+    case hostOperatingSystemVersionMismatch(saved: String, current: String)
+    case hostBuildMismatch(saved: String, current: String)
     case machineIdentityMismatch
     case filesystem(String, Int32)
 
@@ -19,6 +21,10 @@ public enum DoryVZMacSavedStateError: Error, Sendable, Equatable, CustomStringCo
         case .destinationExists(let path): "VZMac saved-state destination exists: \(path)"
         case .invalidArtifact(let detail): "invalid VZMac saved-state artifact: \(detail)"
         case .hostMismatch: "VZMac saved state belongs to a different physical Mac"
+        case let .hostOperatingSystemVersionMismatch(saved, current):
+            "VZMac saved state requires macOS \(saved); this host is running \(current). Discard the saved state and cold boot."
+        case let .hostBuildMismatch(saved, current):
+            "VZMac saved state requires macOS build \(saved); this host is running \(current). Discard the saved state and cold boot."
         case .machineIdentityMismatch: "VZMac saved state does not match this machine identity"
         case .filesystem(let operation, let code): "\(operation) failed with errno \(code)"
         }
@@ -26,7 +32,11 @@ public enum DoryVZMacSavedStateError: Error, Sendable, Equatable, CustomStringCo
 }
 
 public struct DoryVZMacSavedStateReceipt: Codable, Sendable, Equatable {
-    public static let schema = "dory.vzmac-saved-state@3"
+    public static let schema = "dory.vzmac-saved-state@4"
+    /// @3 used three small fixed samples. It remains loadable so an app update
+    /// does not strand an otherwise valid local suspended machine; new saves
+    /// always use @4's configuration-keyed bounded sampler.
+    static let legacySchema = "dory.vzmac-saved-state@3"
 
     public let schema: String
     public let createdAt: String
@@ -64,7 +74,7 @@ public struct DoryVZMacSavedStateReceipt: Codable, Sendable, Equatable {
     }
 
     public func validate() throws {
-        guard schema == Self.schema,
+        guard [Self.legacySchema, Self.schema].contains(schema),
               ISO8601DateFormatter().date(from: createdAt) != nil,
               !hostOperatingSystemVersion.isEmpty,
               !hostBuildVersion.isEmpty,
@@ -125,18 +135,7 @@ public struct DoryVZMacSavedStateArtifact: Sendable {
             throw DoryVZMacSavedStateError.invalidArtifact("receipt JSON cannot be decoded")
         }
         try receipt.validate()
-        guard receipt.hostIdentifierSHA256 == (try currentHostIdentifierSHA256()) else {
-            throw DoryVZMacSavedStateError.hostMismatch
-        }
-        // Host-build preflight: a saved state created on a different macOS build
-        // may contain incompatible VZ state blobs. Reject the restore rather than
-        // letting the guest see a corrupted device tree.
-        let currentBuild = hostBuildVersion()
-        guard receipt.hostBuildVersion == currentBuild else {
-            throw DoryVZMacSavedStateError.invalidArtifact(
-                "host build mismatch: saved on \(receipt.hostBuildVersion), running \(currentBuild)"
-            )
-        }
+        try validateHostCompatibility(receipt, host: try currentHostFacts())
         guard receipt.hardwareModelSHA256 == bundle.manifest.hardwareModelSHA256,
               receipt.machineIdentifierSHA256 == bundle.manifest.machineIdentifierSHA256 else {
             throw DoryVZMacSavedStateError.machineIdentityMismatch
@@ -150,11 +149,46 @@ public struct DoryVZMacSavedStateArtifact: Sendable {
         let stateAttributes = try FileManager.default.attributesOfItem(atPath: stateURL.path)
         guard let stateBytes = stateAttributes[.size] as? NSNumber,
               stateBytes.uint64Value == receipt.stateBytes,
-              try savedStateSHA256(of: stateURL) == receipt.stateSHA256 else {
+              try savedStateSHA256(
+                  of: stateURL,
+                  schema: receipt.schema,
+                  configurationSHA256: receipt.configurationSHA256
+              ) == receipt.stateSHA256 else {
             throw DoryVZMacSavedStateError.invalidArtifact("state size or SHA-256 differs")
         }
         return Self(rootURL: rootURL, receipt: receipt)
     }
+
+    /// VZ machine-state blobs are tied to both the physical machine and the exact
+    /// OS build. Keep this preflight independent of file I/O so callers and tests
+    /// receive a typed discard-and-cold-boot error before Virtualization.framework
+    /// is asked to restore an incompatible state blob.
+    static func validateHostCompatibility(
+        _ receipt: DoryVZMacSavedStateReceipt,
+        host: DoryVZMacSavedStateHostFacts
+    ) throws {
+        guard receipt.hostIdentifierSHA256 == host.identifierSHA256 else {
+            throw DoryVZMacSavedStateError.hostMismatch
+        }
+        guard receipt.hostOperatingSystemVersion == host.operatingSystemVersion else {
+            throw DoryVZMacSavedStateError.hostOperatingSystemVersionMismatch(
+                saved: receipt.hostOperatingSystemVersion,
+                current: host.operatingSystemVersion
+            )
+        }
+        guard receipt.hostBuildVersion == host.buildVersion else {
+            throw DoryVZMacSavedStateError.hostBuildMismatch(
+                saved: receipt.hostBuildVersion,
+                current: host.buildVersion
+            )
+        }
+    }
+}
+
+struct DoryVZMacSavedStateHostFacts: Sendable, Equatable {
+    let identifierSHA256: String
+    let operatingSystemVersion: String
+    let buildVersion: String
 }
 
 func makeSavedStateReceipt(
@@ -176,7 +210,11 @@ func makeSavedStateReceipt(
         machineIdentifierSHA256: bundle.manifest.machineIdentifierSHA256,
         configurationSHA256: configurationSHA256,
         stateBytes: stateBytes.uint64Value,
-        stateSHA256: try savedStateSHA256(of: stateURL)
+        stateSHA256: try savedStateSHA256(
+            of: stateURL,
+            schema: DoryVZMacSavedStateReceipt.schema,
+            configurationSHA256: configurationSHA256
+        )
     )
     try receipt.validate()
     return receipt
@@ -203,6 +241,15 @@ private func currentHostIdentifierSHA256() throws -> String {
     return savedStateSHA256(of: Data(value.utf8))
 }
 
+private func currentHostFacts() throws -> DoryVZMacSavedStateHostFacts {
+    let operatingSystem = ProcessInfo.processInfo.operatingSystemVersion
+    return try DoryVZMacSavedStateHostFacts(
+        identifierSHA256: currentHostIdentifierSHA256(),
+        operatingSystemVersion: "\(operatingSystem.majorVersion).\(operatingSystem.minorVersion).\(operatingSystem.patchVersion)",
+        buildVersion: hostBuildVersion()
+    )
+}
+
 private func hostBuildVersion() -> String {
     var size = 0
     guard sysctlbyname("kern.osversion", nil, &size, nil, 0) == 0, size > 1 else {
@@ -220,27 +267,106 @@ private func savedStateSHA256(of data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
-private func savedStateSHA256(of url: URL) throws -> String {
-    // Sampled digest: for large saved-state files (potentially several GB), a full
-    // SHA256 scan is prohibitively slow. Instead, sample three fixed regions —
-    // head (first 4KB), middle (4KB at midpoint), and tail (last 4KB) — plus the
-    // file size. This detects accidental corruption and truncation while keeping
-    // the digest O(1) regardless of file size. The sampling positions depend only
-    // on the file size, so the same file always produces the same digest.
+struct DoryVZMacSavedStateSampleRegion: Sendable, Equatable {
+    let offset: UInt64
+    let byteCount: UInt64
+}
+
+/// Returns the bounded, deterministic @4 sample layout without opening the state
+/// file. Keeping this separate makes the coverage contract testable: at most
+/// 72 MiB is read (two 4 MiB edges and 64 1 MiB interior windows).
+func savedStateSampleRegions(
+    fileSize: UInt64,
+    configurationSHA256: String
+) -> [DoryVZMacSavedStateSampleRegion] {
+    guard fileSize > 0 else { return [] }
+    let edgeBytes: UInt64 = 4 * 1_024 * 1_024
+    let interiorBytes: UInt64 = 1 * 1_024 * 1_024
+    var regions: [DoryVZMacSavedStateSampleRegion] = [
+        .init(offset: 0, byteCount: min(edgeBytes, fileSize)),
+    ]
+    if fileSize > edgeBytes {
+        regions.append(.init(offset: fileSize - edgeBytes, byteCount: edgeBytes))
+    }
+    guard fileSize > interiorBytes else { return regions }
+
+    let maximumOffset = fileSize - interiorBytes
+    var selected = Set(regions.map(\.offset))
+    // A tiny file may have fewer than 64 distinct byte-aligned interiors.
+    // Otherwise, re-key a colliding candidate until all 64 are distinct.
+    let interiorCount = Int(min(UInt64(64), maximumOffset + 1))
+    for index in 0..<interiorCount {
+        var attempt = 0
+        while true {
+            let seed = Data("\(configurationSHA256)\0\(fileSize)\0\(index)\0\(attempt)".utf8)
+            let digest = SHA256.hash(data: seed)
+            let value = digest.prefix(MemoryLayout<UInt64>.size).reduce(UInt64(0)) {
+                ($0 << 8) | UInt64($1)
+            }
+            let offset = value % (maximumOffset + 1)
+            if selected.insert(offset).inserted {
+                regions.append(.init(offset: offset, byteCount: interiorBytes))
+                break
+            }
+            attempt += 1
+        }
+    }
+    return regions
+}
+
+func savedStateSHA256(
+    of url: URL,
+    schema: String,
+    configurationSHA256: String
+) throws -> String {
+    if schema == DoryVZMacSavedStateReceipt.legacySchema {
+        return try legacySavedStateSHA256(of: url)
+    }
+    guard schema == DoryVZMacSavedStateReceipt.schema else {
+        throw DoryVZMacSavedStateError.invalidArtifact("saved-state digest schema is unsupported")
+    }
+    // A full digest of a multi-GiB VZ state delays resume for seconds. @4 instead
+    // binds the configuration and file size to 72 MiB of deterministic samples:
+    // 4 MiB from each end plus 64 configuration-keyed 1 MiB interior regions.
+    // Configuration-keyed positions make a corrupt state less able to predict and
+    // avoid the sampled regions, while keeping validation bounded and repeatable.
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
     let fileSize = try handle.seekToEnd()
     guard fileSize > 0 else { return savedStateSHA256(of: Data()) }
 
     var hasher = SHA256()
-    // Bind the file size into the digest so truncation is detected.
+    hasher.update(data: Data("dory.vzmac-saved-state-sampler@4\0\(configurationSHA256)\0".utf8))
     hasher.update(data: withUnsafeBytes(of: fileSize.littleEndian) { Data($0) })
 
-    let sampleSize: UInt64 = 4 * 1_024  // 4KB per sample
+    for region in savedStateSampleRegions(
+        fileSize: fileSize,
+        configurationSHA256: configurationSHA256
+    ) {
+        hasher.update(data: withUnsafeBytes(of: region.offset.littleEndian) { Data($0) })
+        hasher.update(data: withUnsafeBytes(of: region.byteCount.littleEndian) { Data($0) })
+        try handle.seek(toOffset: region.offset)
+        let chunk = try handle.read(upToCount: Int(region.byteCount))
+        guard let chunk, UInt64(chunk.count) == region.byteCount else {
+            throw DoryVZMacSavedStateError.invalidArtifact("saved state changed while sampling")
+        }
+        hasher.update(data: chunk)
+    }
+    return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+}
+
+func legacySavedStateSHA256(of url: URL) throws -> String {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    let fileSize = try handle.seekToEnd()
+    guard fileSize > 0 else { return savedStateSHA256(of: Data()) }
+    var hasher = SHA256()
+    hasher.update(data: withUnsafeBytes(of: fileSize.littleEndian) { Data($0) })
+    let sampleSize: UInt64 = 4 * 1_024
     let sampleOffsets: [UInt64] = [
-        0,                                                          // head
-        fileSize > 2 * sampleSize ? (fileSize - sampleSize) / 2 : 0, // middle
-        fileSize > sampleSize ? fileSize - sampleSize : 0,           // tail
+        0,
+        fileSize > 2 * sampleSize ? (fileSize - sampleSize) / 2 : 0,
+        fileSize > sampleSize ? fileSize - sampleSize : 0,
     ]
     for offset in sampleOffsets {
         try handle.seek(toOffset: offset)

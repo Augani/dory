@@ -141,9 +141,17 @@ public final class DoryVirtioFileBlockStorage: DoryVirtioBlockStorage, @unchecke
   public func flush() throws {
     guard !readOnly else { return }
     try lock.withLock {
-      while fsync(descriptor) != 0 {
+      // A virtio FLUSH is a guest durability barrier, not merely a request to
+      // hand dirty pages to the host drive cache. On macOS F_FULLFSYNC is the
+      // durable operation; fsync() alone may return before the device cache is
+      // committed. Treat an unsupported full flush as an I/O error rather than
+      // falsely acknowledging a barrier to the guest.
+      while fcntl(descriptor, F_FULLFSYNC, 0) != 0 {
         guard errno == EINTR else {
-          throw DoryVirtioFileBlockStorageError.systemCall(operation: "fsync", code: errno)
+          throw DoryVirtioFileBlockStorageError.systemCall(
+            operation: "fcntl(F_FULLFSYNC)",
+            code: errno
+          )
         }
       }
     }

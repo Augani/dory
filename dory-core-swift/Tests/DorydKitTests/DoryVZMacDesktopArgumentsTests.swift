@@ -1,4 +1,5 @@
 import Darwin
+import DoryOperations
 @testable import DorydKit
 import Foundation
 import XCTest
@@ -79,6 +80,15 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
         try authority.withBorrowedDescriptor {
             guard dup2($0, target) == target else { throw POSIXError(.EBADF) }
         }
+        let portForwards = [DoryVMPortForward(
+            id: "ssh",
+            hostPort: 22_222,
+            guestPort: 22
+        )]
+        let portForwardJSON = String(
+            decoding: try JSONEncoder().encode(portForwards),
+            as: UTF8.self
+        )
         let arguments = try parseDoryVZMacDesktopArguments([
             "run",
             "--machine", "/tmp/test.dorymac",
@@ -88,6 +98,9 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
             "--control-sock", "/tmp/runtime/c.sock",
             "--handoff-sock", "/tmp/runtime/h.sock",
             "--runtime-reconnect-fd", String(target),
+            "--network", "host-only",
+            "--gvproxy", "/tmp/gvproxy",
+            "--resolved-port-forwards", portForwardJSON,
         ])
 
         XCTAssertTrue(arguments.hasManagedLifecycleContract)
@@ -101,6 +114,9 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
         XCTAssertEqual(arguments.handoffSocketPath, "/tmp/runtime/h.sock")
         XCTAssertEqual(arguments.reconnectIdentity, identity)
         XCTAssertFalse(arguments.devicePolicy.cameraBridgeEnabled)
+        XCTAssertEqual(arguments.devicePolicy.network, .isolated)
+        XCTAssertEqual(arguments.gvproxyPath, "/tmp/gvproxy")
+        XCTAssertEqual(arguments.portForwards, portForwards)
 
         XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
             "run",
@@ -367,6 +383,23 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
                 error as? DoryVZMacDesktopArgumentError,
                 .invalidNetworkPolicy("bridged")
             )
+        }
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
+            "run",
+            "--machine", "/tmp/test.dorymac",
+            "--network", "host-only",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DoryVZMacDesktopArgumentError,
+                .hostOnlyNetworkRequiresManagedLifecycle
+            )
+        }
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
+            "run",
+            "--machine", "/tmp/test.dorymac",
+            "--gvproxy", "/tmp/gvproxy",
+        ])) { error in
+            XCTAssertEqual(error as? DoryVZMacDesktopArgumentError, .gvproxyUnexpected)
         }
         XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
             "run",

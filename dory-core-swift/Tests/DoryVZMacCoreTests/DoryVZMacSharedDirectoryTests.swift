@@ -113,6 +113,23 @@ final class DoryVZMacSharedDirectoryTests: XCTestCase {
         XCTAssertFalse(report.hasClipboard)
     }
 
+    func testHostOnlyPolicyRejectsAnyAttachmentOtherThanGVProxy() {
+        let configuration = VZVirtualMachineConfiguration()
+        let policy = DoryVZMacDevicePolicy(network: .isolated)
+
+        XCTAssertThrowsError(try DoryVZMacConfigurationBuilder.applyDevicePolicy(
+            to: configuration,
+            macAddress: "02:00:5e:10:20:30",
+            sharedDirectories: [],
+            devicePolicy: policy
+        )) { error in
+            XCTAssertEqual(
+                error as? DoryVZMacConfigurationError,
+                .missingHostOnlyNetworkAttachment
+            )
+        }
+    }
+
     func testRejectsConfiguredShareWhenDirectorySharingDisabled() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
