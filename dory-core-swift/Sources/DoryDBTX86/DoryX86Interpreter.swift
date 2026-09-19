@@ -339,7 +339,31 @@ public struct DoryX86Interpreter: Sendable {
           }
         }
         if instruction.prefixes.lock {
-          try atomicCoordinator.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state) { operationState in
+            if operation != .compare, operation != .test,
+              case .memory(let memoryOperand) = destination,
+              !isMemory(source)
+            {
+              let width = operandWidth(destination)
+              let completed = try executeAtomicScalarMemoryUpdate(
+                memoryOperand,
+                instruction: instruction,
+                state: &operationState,
+                memory: executionMemory
+              ) { lhs, candidate in
+                let rhs = try read(
+                  source,
+                  instruction: instruction,
+                  state: candidate,
+                  memory: executionMemory
+                )
+                return executeALU(
+                  operation, lhs: lhs, rhs: rhs, width: width, flags: &candidate.rflags)
+              }
+              if completed { return }
+            }
+            try execute(&operationState)
+          }
         } else {
           try execute(&state)
         }
@@ -381,7 +405,39 @@ public struct DoryX86Interpreter: Sendable {
           )
         }
         if instruction.prefixes.lock {
-          try atomicCoordinator.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state) { operationState in
+            if case .memory(let memoryOperand) = operand {
+              let width = operandWidth(operand)
+              let completed = try executeAtomicScalarMemoryUpdate(
+                memoryOperand,
+                instruction: instruction,
+                state: &operationState,
+                memory: executionMemory
+              ) { value, candidate in
+                switch operation {
+                case .increment:
+                  let carry = candidate.rflags.contains(.carry)
+                  let result = executeALU(
+                    .add, lhs: value, rhs: 1, width: width, flags: &candidate.rflags)
+                  setFlag(.carry, carry, in: &candidate.rflags)
+                  return result
+                case .decrement:
+                  let carry = candidate.rflags.contains(.carry)
+                  let result = executeALU(
+                    .subtract, lhs: value, rhs: 1, width: width, flags: &candidate.rflags)
+                  setFlag(.carry, carry, in: &candidate.rflags)
+                  return result
+                case .bitwiseNot:
+                  return ~value & mask(width)
+                case .negate:
+                  return executeALU(
+                    .subtract, lhs: 0, rhs: value, width: width, flags: &candidate.rflags)
+                }
+              }
+              if completed { return }
+            }
+            try execute(&operationState)
+          }
         } else {
           try execute(&state)
         }
@@ -565,7 +621,58 @@ public struct DoryX86Interpreter: Sendable {
           )
         }
         if isMemory(lhs) || isMemory(rhs) {
-          try atomicCoordinator.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state) { operationState in
+            let completed: Bool
+            if case .memory(let memoryOperand) = lhs, !isMemory(rhs) {
+              completed = try executeAtomicScalarMemoryUpdate(
+                memoryOperand,
+                instruction: instruction,
+                state: &operationState,
+                memory: executionMemory
+              ) { observed, candidate in
+                let replacement = try read(
+                  rhs,
+                  instruction: instruction,
+                  state: candidate,
+                  memory: executionMemory
+                )
+                try write(
+                  observed,
+                  to: rhs,
+                  instruction: instruction,
+                  state: &candidate,
+                  memory: executionMemory
+                )
+                return replacement
+              }
+            } else if case .memory(let memoryOperand) = rhs, !isMemory(lhs) {
+              completed = try executeAtomicScalarMemoryUpdate(
+                memoryOperand,
+                instruction: instruction,
+                state: &operationState,
+                memory: executionMemory
+              ) { observed, candidate in
+                let replacement = try read(
+                  lhs,
+                  instruction: instruction,
+                  state: candidate,
+                  memory: executionMemory
+                )
+                try write(
+                  observed,
+                  to: lhs,
+                  instruction: instruction,
+                  state: &candidate,
+                  memory: executionMemory
+                )
+                return replacement
+              }
+            } else {
+              completed = false
+            }
+            if completed { return }
+            try execute(&operationState)
+          }
         } else {
           try execute(&state)
         }
@@ -620,7 +727,57 @@ public struct DoryX86Interpreter: Sendable {
           }
         }
         if instruction.prefixes.lock {
-          try atomicCoordinator.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state) { operationState in
+            if case .memory(let memoryOperand) = destination, !isMemory(source) {
+              try validateCompareExchangeMemory(
+                memoryOperand,
+                byteCount: memoryOperand.width.byteCount,
+                instruction: instruction,
+                state: operationState
+              )
+              if let location = try atomicScalarMemoryLocation(
+                memoryOperand,
+                instruction: instruction,
+                state: operationState,
+                memory: executionMemory
+              ) {
+                let width = operandWidth(destination)
+                let accumulator = operationState.registers.rax & location.mask
+                let sourceValue = try read(
+                  source,
+                  instruction: instruction,
+                  state: operationState,
+                  memory: executionMemory
+                )
+                if let observed = try location.memory.compareExchangeScalar(
+                  at: location.address,
+                  expected: accumulator,
+                  desired: sourceValue,
+                  byteCount: location.byteCount
+                ) {
+                  let destinationValue = observed & location.mask
+                  _ = executeALU(
+                    .compare,
+                    lhs: accumulator,
+                    rhs: destinationValue,
+                    width: width,
+                    flags: &operationState.rflags
+                  )
+                  if accumulator != destinationValue {
+                    try writeAccumulator(
+                      destinationValue,
+                      width: width,
+                      instruction: instruction,
+                      state: &operationState,
+                      memory: executionMemory
+                    )
+                  }
+                  return
+                }
+              }
+            }
+            try execute(&operationState)
+          }
         } else {
           try execute(&state)
         }
@@ -655,7 +812,41 @@ public struct DoryX86Interpreter: Sendable {
             memory: executionMemory)
         }
         if instruction.prefixes.lock {
-          try atomicCoordinator.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state) { operationState in
+            if case .memory(let memoryOperand) = destination, !isMemory(source) {
+              let width = operandWidth(destination)
+              let completed = try executeAtomicScalarMemoryUpdate(
+                memoryOperand,
+                instruction: instruction,
+                state: &operationState,
+                memory: executionMemory
+              ) { destinationValue, candidate in
+                let sourceValue = try read(
+                  source,
+                  instruction: instruction,
+                  state: candidate,
+                  memory: executionMemory
+                )
+                let result = executeALU(
+                  .add,
+                  lhs: destinationValue,
+                  rhs: sourceValue,
+                  width: width,
+                  flags: &candidate.rflags
+                )
+                try write(
+                  destinationValue,
+                  to: source,
+                  instruction: instruction,
+                  state: &candidate,
+                  memory: executionMemory
+                )
+                return result
+              }
+              if completed { return }
+            }
+            try execute(&operationState)
+          }
         } else {
           try execute(&state)
         }
@@ -888,7 +1079,46 @@ public struct DoryX86Interpreter: Sendable {
           )
         }
         if instruction.prefixes.lock {
-          try atomicCoordinator.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state) { operationState in
+            if !doubleQuadword {
+              try validateCompareExchangeMemory(
+                destination,
+                byteCount: 8,
+                instruction: instruction,
+                state: operationState
+              )
+              if let location = try atomicScalarMemoryLocation(
+                destination,
+                byteCount: 8,
+                instruction: instruction,
+                state: operationState,
+                memory: executionMemory
+              ), location.byteCount == 8 {
+                let expected =
+                  UInt64(UInt32(truncatingIfNeeded: operationState.registers.rax))
+                  | UInt64(UInt32(truncatingIfNeeded: operationState.registers.rdx)) << 32
+                let desired =
+                  UInt64(UInt32(truncatingIfNeeded: operationState.registers.rbx))
+                  | UInt64(UInt32(truncatingIfNeeded: operationState.registers.rcx)) << 32
+                if let observed = try location.memory.compareExchangeScalar(
+                  at: location.address,
+                  expected: expected,
+                  desired: desired,
+                  byteCount: 8
+                ) {
+                  let equal = observed == expected
+                  setFlag(.zero, equal, in: &operationState.rflags)
+                  if !equal {
+                    operationState.registers.rax = UInt64(UInt32(truncatingIfNeeded: observed))
+                    operationState.registers.rdx = UInt64(
+                      UInt32(truncatingIfNeeded: observed >> 32))
+                  }
+                  return
+                }
+              }
+            }
+            try execute(&operationState)
+          }
         } else {
           try execute(&state)
         }
@@ -7213,6 +7443,84 @@ public struct DoryX86Interpreter: Sendable {
     )
   }
 
+  /// Resolves one naturally aligned locked scalar operand into the memory implementation's
+  /// host-atomic domain. Returning nil is a side-effect-free decline; callers retain the
+  /// coordinator-serialized fallback for unaligned, split, MMIO, and adapter-backed operands.
+  private func atomicScalarMemoryLocation(
+    _ operand: DoryX86MemoryOperand,
+    byteCount requestedByteCount: Int? = nil,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> (
+    memory: any DoryX86AtomicScalarMemory,
+    address: UInt64,
+    byteCount: Int,
+    mask: UInt64
+  )? {
+    guard let atomicMemory = memory as? any DoryX86AtomicScalarMemory else { return nil }
+    let byteCount = requestedByteCount ?? operand.width.byteCount
+    let address = effectiveAddress(operand, instruction: instruction, state: state)
+    guard address & UInt64(byteCount - 1) == 0 else { return nil }
+    try validateSegmentAccess(
+      operand,
+      byteCount: byteCount,
+      write: true,
+      instruction: instruction,
+      state: state
+    )
+    try validateAlignmentCheck(
+      address: address,
+      byteCount: byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: byteCount),
+      write: true,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    try memory.validateWrite(at: address, byteCount: byteCount)
+    let valueMask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
+    return (atomicMemory, address, byteCount, valueMask)
+  }
+
+  /// Executes an aligned locked scalar update with a compare/exchange loop. The architectural
+  /// state produced for a losing attempt is discarded, so flags and registers describe only the
+  /// value replaced by the successful transaction.
+  private func executeAtomicScalarMemoryUpdate(
+    _ operand: DoryX86MemoryOperand,
+    instruction: DoryX86DecodedInstruction,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory,
+    update: (UInt64, inout DoryX86ArchitecturalState) throws -> UInt64
+  ) throws -> Bool {
+    guard
+      let location = try atomicScalarMemoryLocation(
+        operand, instruction: instruction, state: state, memory: memory)
+    else { return false }
+
+    // Starting with an arbitrary expected value avoids a separate load. A failed
+    // comparison returns the exact current value for the next attempt.
+    var expected: UInt64 = 0
+    while true {
+      var candidate = state
+      let desired = try update(expected, &candidate) & location.mask
+      guard
+        let observed = try location.memory.compareExchangeScalar(
+          at: location.address,
+          expected: expected,
+          desired: desired,
+          byteCount: location.byteCount
+        )
+      else { return false }
+      let current = observed & location.mask
+      if current == expected {
+        state = candidate
+        return true
+      }
+      expected = current
+    }
+  }
+
   private func alignmentAccessWritesOperand(
     _ memoryOperand: DoryX86MemoryOperand,
     instruction: DoryX86DecodedInstruction
@@ -7415,6 +7723,36 @@ public struct DoryX86Interpreter: Sendable {
         // element can lie outside the ModRM operand's first word, so preflight
         // that exact element before observing backing data or changing CF.
         try memory.validateWrite(at: address, byteCount: width.byteCount)
+      }
+      if instruction.prefixes.lock, operation != .test,
+        address & UInt64(width.byteCount - 1) == 0,
+        let atomicMemory = memory as? any DoryX86AtomicScalarMemory
+      {
+        var expected: UInt64 = 0
+        while true {
+          let bit = UInt64(1) << UInt64(bitOffset)
+          let desired: UInt64 =
+            switch operation {
+            case .test: expected
+            case .set: expected | bit
+            case .reset: expected & ~bit
+            case .complement: expected ^ bit
+            }
+          guard
+            let observed = try atomicMemory.compareExchangeScalar(
+              at: address,
+              expected: expected,
+              desired: desired,
+              byteCount: width.byteCount
+            )
+          else { break }
+          let current = observed & mask(width)
+          if current == expected {
+            setFlag(.carry, current & bit != 0, in: &state.rflags)
+            return
+          }
+          expected = current
+        }
       }
       let value = fromLittleEndian(try memory.read(at: address, byteCount: width.byteCount))
       let bit = UInt64(1) << UInt64(bitOffset)

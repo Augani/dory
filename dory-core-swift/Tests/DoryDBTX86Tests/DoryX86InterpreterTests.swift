@@ -2178,6 +2178,88 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(readQuadword(memory, at: 0xD080) == UInt64(iterations))
   }
 
+  @Test func alignedLockedScalarFamiliesUseAtomicMemoryTransactions() throws {
+    struct OperationCase {
+      let name: String
+      let bytes: [UInt8]
+      let initial: UInt64
+      let registers: DoryX86GeneralRegisters
+    }
+    let codeAddress: UInt64 = 0x1000
+    let dataAddress: UInt64 = 0x2000
+    let cases: [OperationCase] = [
+      .init(
+        name: "ADD",
+        bytes: [0xF0, 0x48, 0x01, 0x06],
+        initial: 5,
+        registers: .init(rax: 2, rsi: dataAddress)
+      ),
+      .init(
+        name: "INC",
+        bytes: [0xF0, 0x48, 0xFF, 0x06],
+        initial: 5,
+        registers: .init(rsi: dataAddress)
+      ),
+      .init(
+        name: "XCHG",
+        bytes: [0x48, 0x87, 0x06],
+        initial: 5,
+        registers: .init(rax: 9, rsi: dataAddress)
+      ),
+      .init(
+        name: "CMPXCHG",
+        bytes: [0xF0, 0x48, 0x0F, 0xB1, 0x1E],
+        initial: 5,
+        registers: .init(rax: 5, rbx: 9, rsi: dataAddress)
+      ),
+      .init(
+        name: "XADD",
+        bytes: [0xF0, 0x48, 0x0F, 0xC1, 0x06],
+        initial: 5,
+        registers: .init(rax: 2, rsi: dataAddress)
+      ),
+      .init(
+        name: "BTS",
+        bytes: [0xF0, 0x48, 0x0F, 0xAB, 0x06],
+        initial: 0,
+        registers: .init(rax: 3, rsi: dataAddress)
+      ),
+      .init(
+        name: "CMPXCHG8B",
+        bytes: [0xF0, 0x0F, 0xC7, 0x0E],
+        initial: 0x2222_2222_1111_1111,
+        registers: .init(
+          rax: 0x1111_1111,
+          rcx: 0x4444_4444,
+          rdx: 0x2222_2222,
+          rbx: 0x3333_3333,
+          rsi: dataAddress
+        )
+      ),
+    ]
+
+    for testCase in cases {
+      let memory = try AtomicTransactionRecordingMemory(
+        codeAddress: codeAddress,
+        code: testCase.bytes,
+        dataAddress: dataAddress,
+        initialValue: testCase.initial
+      )
+      var state = try DoryX86ArchitecturalState(
+        registers: testCase.registers,
+        rip: codeAddress
+      )
+      let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+      guard case .retired = result else {
+        Issue.record("\(testCase.name) did not retire")
+        continue
+      }
+      #expect(memory.atomicCallCount > 0, "\(testCase.name) bypassed the atomic transaction")
+      #expect(memory.dataReadCount == 0, "\(testCase.name) performed a separate data read")
+      #expect(memory.dataWriteCount == 0, "\(testCase.name) performed a separate data write")
+    }
+  }
+
   @Test func repeatStringsHonorCountDirectionAndStopConditions() throws {
     let program: [UInt8] = [
       0xF3, 0xA4,  // rep movsb
@@ -3231,6 +3313,67 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
         $0 | UInt64($1.element) << UInt64($1.offset * 8)
       }
     }
+  }
+}
+
+private final class AtomicTransactionRecordingMemory: DoryX86AtomicScalarMemory,
+  @unchecked Sendable
+{
+  private let backing: DoryX86ByteArrayMemory
+  private let dataAddress: UInt64
+  private let lock = NSLock()
+  private var recordedAtomicCalls = 0
+  private var recordedDataReads = 0
+  private var recordedDataWrites = 0
+
+  init(codeAddress: UInt64, code: [UInt8], dataAddress: UInt64, initialValue: UInt64) throws {
+    backing = try DoryX86ByteArrayMemory(baseAddress: codeAddress, byteCount: 0x2000)
+    self.dataAddress = dataAddress
+    try backing.write(at: codeAddress, bytes: code)
+    try backing.writeScalar(at: dataAddress, value: initialValue, byteCount: 8)
+  }
+
+  var atomicCallCount: Int { lock.withLock { recordedAtomicCalls } }
+  var dataReadCount: Int { lock.withLock { recordedDataReads } }
+  var dataWriteCount: Int { lock.withLock { recordedDataWrites } }
+
+  func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    try backing.instructionBytes(at: address, maximumCount: maximumCount)
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    if address == dataAddress { lock.withLock { recordedDataReads += 1 } }
+    return try backing.read(at: address, byteCount: byteCount)
+  }
+
+  func validateRead(at address: UInt64, byteCount: Int) throws {
+    try backing.validateRead(at: address, byteCount: byteCount)
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    if address == dataAddress { lock.withLock { recordedDataWrites += 1 } }
+    try backing.write(at: address, bytes: bytes)
+  }
+
+  func validateWrite(at address: UInt64, byteCount: Int) throws {
+    try backing.validateWrite(at: address, byteCount: byteCount)
+  }
+
+  func synchronize() { backing.synchronize() }
+
+  func compareExchangeScalar(
+    at address: UInt64,
+    expected: UInt64,
+    desired: UInt64,
+    byteCount: Int
+  ) throws -> UInt64? {
+    lock.withLock { recordedAtomicCalls += 1 }
+    return try backing.compareExchangeScalar(
+      at: address,
+      expected: expected,
+      desired: desired,
+      byteCount: byteCount
+    )
   }
 }
 
