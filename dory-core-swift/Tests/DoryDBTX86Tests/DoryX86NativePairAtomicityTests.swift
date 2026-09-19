@@ -6,12 +6,13 @@ import Testing
 
 @testable import DoryDBTX86
 
-// These probes deliberately hold the process-wide interpreter/native atomic gate while a worker
-// attempts the matching native helper. Running the probes concurrently can starve the worker pool
-// with gate owners and produce a test-created deadlock rather than exercise guest atomicity.
+// These probes deliberately hold one machine's interpreter/native atomic coordinator while a
+// worker attempts the matching native helper. Running the probes concurrently can starve the
+// worker pool with coordinator owners and produce a test-created deadlock rather than exercise
+// guest atomicity.
 @Suite(.serialized) struct DoryX86NativePairAtomicityTests {
   @Test(arguments: [1, 2, 4, 8] as [UInt32])
-  func scalarNativeHelpersWaitForInterpreterAtomicGate(byteCount: UInt32) throws {
+  func scalarNativeHelpersWaitForOwningMachineCoordinator(byteCount: UInt32) throws {
     #if arch(arm64)
       let fixture = try PairAtomicityFixture()
       let offset: UInt64 = 0x100
@@ -23,19 +24,19 @@ import Testing
         let completed = DispatchGroup()
         let result = ScalarAtomicResult()
         completed.enter()
-        try DoryX86AtomicGate.shared.withLock {
+        try fixture.coordinator.withLock {
           Thread.detachNewThread {
             result.run(helper, fixture: fixture, offset: offset, byteCount: byteCount, probe: probe)
             completed.leave()
           }
           try #require(try probe.waitUntilBlocked(timeout: .now() + 2),
-            "\(helper) did not block inside its native invocation")
+            "\(helper) did not block on the owning machine's coordinator")
           // Admission requires a kernel-observed wait inside the invocation, not
           // merely a worker scheduled (or descheduled) just before the helper call.
           #expect(completed.wait(timeout: .now()) == .timedOut,
-            "\(helper) completed while the interpreter atomic gate was held")
+            "\(helper) completed while the owning machine's coordinator was held")
           #expect(fixture.memory.load(fromByteOffset: Int(offset), as: UInt64.self) == 0x35,
-            "\(helper) changed memory before acquiring the interpreter atomic gate")
+            "\(helper) changed memory before acquiring the owning machine's coordinator")
         }
         try #require(completed.wait(timeout: .now() + 2) == .success)
         #expect(result.status == DORY_JIT_ATOMIC_RESOLUTION_SUCCESS.rawValue)
@@ -47,7 +48,7 @@ import Testing
     #endif
   }
 
-  @Test func rejectedScalarNativeOperandsDoNotWaitForInterpreterAtomicGate() throws {
+  @Test func rejectedScalarNativeOperandsDoNotWaitForMachineCoordinator() throws {
     #if arch(arm64)
       let fixture = try PairAtomicityFixture()
       fixture.memory.storeBytes(of: UInt64(0x35), toByteOffset: 0x100, as: UInt64.self)
@@ -63,14 +64,14 @@ import Testing
           let completed = DispatchGroup()
           let result = ScalarAtomicResult()
           completed.enter()
-          try DoryX86AtomicGate.shared.withLock {
+          try fixture.coordinator.withLock {
             Thread.detachNewThread {
               result.run(helper, fixture: fixture, offset: offset, byteCount: byteCount)
               completed.leave()
             }
             // Rejected operands must return even while this thread owns the gate.
             try #require(completed.wait(timeout: .now() + 2) == .success,
-              "\(helper) waited for the gate on a rejected operand")
+              "\(helper) waited for the coordinator on a rejected operand")
           }
           #expect(result.status == status)
           #expect(result.observed == UInt64.max)
@@ -78,6 +79,28 @@ import Testing
           #expect(fixture.memory.load(fromByteOffset: 0xFF8, as: UInt64.self) == 0x35)
         }
       }
+    #endif
+  }
+
+  @Test func independentMachineCoordinatorsDoNotSerializeOneAnother() throws {
+    #if arch(arm64)
+      let firstMachine = try PairAtomicityFixture()
+      let secondMachine = try PairAtomicityFixture()
+      secondMachine.memory.storeBytes(of: UInt64(0x35), toByteOffset: 0x100, as: UInt64.self)
+      let completed = DispatchGroup()
+      let result = ScalarAtomicResult()
+      completed.enter()
+      try firstMachine.coordinator.withLock {
+        Thread.detachNewThread {
+          result.run(.exchange, fixture: secondMachine, offset: 0x100, byteCount: 8)
+          completed.leave()
+        }
+        try #require(completed.wait(timeout: .now() + 2) == .success,
+          "an independent virtual machine waited for another machine's coordinator")
+      }
+      #expect(result.status == DORY_JIT_ATOMIC_RESOLUTION_SUCCESS.rawValue)
+      #expect(result.observed == 0x35)
+      #expect(secondMachine.memory.load(fromByteOffset: 0x100, as: UInt64.self) == 0x12)
     #endif
   }
 
@@ -287,7 +310,7 @@ private final class ScalarAtomicGateProbe: @unchecked Sendable {
 
 // The writer is real generated AArch64 code, independent of C/Swift alias or
 // data-race optimization assumptions. It uses ordinary acquire/release scalar
-// accesses, never dory_jit_atomic_lock or any locked-RMW helper. On a mismatch
+// accesses, never the machine coordinator or any locked-RMW helper. On a mismatch
 // the old two-load/two-store CMPXCHG16B helper can restore an obsolete low half
 // between the writer's STLR and LDAR. A single hardware CAS cannot do so.
 private final class PairAtomicityFixture: @unchecked Sendable {
@@ -297,6 +320,7 @@ private final class PairAtomicityFixture: @unchecked Sendable {
 
   let memory: UnsafeMutableRawPointer
   let context: UnsafeMutablePointer<UInt64>
+  let coordinator = DoryX86AtomicCoordinator()
   let stop: UnsafeMutablePointer<UInt8>
   let writeCount: UnsafeMutablePointer<UInt64>
   private let tlb: OpaquePointer
@@ -349,6 +373,7 @@ private final class PairAtomicityFixture: @unchecked Sendable {
     context[DoryJITExecutableRegion.hostAddressSpaceByteCountWordIndex] = 4096
     context[DoryJITExecutableRegion.tlbAddressSpaceGenerationWordIndex] = 1
     context[DoryJITExecutableRegion.tlbStorageWordIndex] = UInt64(UInt(bitPattern: tlb))
+    context[DoryJITExecutableRegion.atomicCoordinatorWordIndex] = coordinator.opaqueReference
     // Page zero, address-space generation one: the production resolver's exact tag.
     precondition(dory_jit_tlb_fill(tlb, DORY_JIT_TLB_ACCESS_WRITE, 0, 1,
       UInt64(UInt(bitPattern: memory))) == 0)

@@ -5565,6 +5565,8 @@ import XCTest
       let instructionAddress: UInt64 = 0x2000
 
       for (caseIndex, testCase) in cases.enumerated() {
+        let coordinator = DoryX86AtomicCoordinator()
+        let interpreter = DoryX86Interpreter(atomicCoordinator: coordinator)
         let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()) * 3)
         try physical.writeScalar(at: memoryAddress, value: testCase.initial, byteCount: 8)
         try physical.write(at: instructionAddress, bytes: testCase.bytes)
@@ -5574,7 +5576,10 @@ import XCTest
           rflags: testCase.flags
         )
         let executors = try (0..<workerCount).map { _ in
-          try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+          try DoryARM64BaselineExecutor(
+            maximumCodeBytes: 4_096,
+            atomicCoordinator: coordinator
+          )
         }
         let memories = (0..<workerCount).map { _ in
           DoryX86TranslatedMemory(
@@ -5590,7 +5595,7 @@ import XCTest
             for _ in 0..<iterationsPerWorker {
               var state = initialState
               if worker == 0 {
-                guard case .retired = DoryX86Interpreter().step(
+                guard case .retired = interpreter.step(
                   state: &state,
                   memory: physical,
                   mode: .long64
@@ -5628,11 +5633,16 @@ import XCTest
       }
 
       let exchangeBytes: [UInt8] = [0x48, 0x87, 0x0A]
+      let exchangeCoordinator = DoryX86AtomicCoordinator()
+      let exchangeInterpreter = DoryX86Interpreter(atomicCoordinator: exchangeCoordinator)
       let exchangeMemory = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()) * 3)
       try exchangeMemory.writeScalar(at: memoryAddress, value: 0, byteCount: 8)
       try exchangeMemory.write(at: instructionAddress, bytes: exchangeBytes)
       let exchangeExecutors = try (0..<workerCount).map { _ in
-        try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+        try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4_096,
+          atomicCoordinator: exchangeCoordinator
+        )
       }
       let exchangeContextState = try DoryX86ArchitecturalState()
       let exchangeResults = ConcurrentAtomicLitmusResults()
@@ -5650,7 +5660,7 @@ import XCTest
               rip: instructionAddress
             )
             if worker == 0 {
-              guard case .retired = DoryX86Interpreter().step(
+              guard case .retired = exchangeInterpreter.step(
                 state: &state,
                 memory: exchangeMemory,
                 mode: .long64
@@ -5703,6 +5713,8 @@ import XCTest
       let instructionAddress: UInt64 = 0x2000
 
       for (caseIndex, testCase) in cases.enumerated() {
+        let coordinator = DoryX86AtomicCoordinator()
+        let interpreter = DoryX86Interpreter(atomicCoordinator: coordinator)
         let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()) * 3)
         try physical.writeScalar(at: memoryAddress, value: 0, byteCount: 8)
         if testCase.byteCount == 16 {
@@ -5710,7 +5722,10 @@ import XCTest
         }
         try physical.write(at: instructionAddress, bytes: testCase.bytes)
         let executors = try (0..<workerCount).map { _ in
-          try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+          try DoryARM64BaselineExecutor(
+            maximumCodeBytes: 4_096,
+            atomicCoordinator: coordinator
+          )
         }
         let results = ConcurrentAtomicLitmusResults()
 
@@ -5730,7 +5745,7 @@ import XCTest
               rflags: [.reservedOne]
             )
             if worker == 0 {
-              guard case .retired = DoryX86Interpreter().step(
+              guard case .retired = interpreter.step(
                 state: &state,
                 memory: physical,
                 mode: .long64

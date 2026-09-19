@@ -31,10 +31,6 @@ _Static_assert(__atomic_always_lock_free(2, 0), "16-bit JIT atomics must be lock
 _Static_assert(__atomic_always_lock_free(4, 0), "32-bit JIT atomics must be lock-free");
 _Static_assert(__atomic_always_lock_free(8, 0), "64-bit JIT atomics must be lock-free");
 
-// This gate serializes cooperating interpreter and native locked-helper paths.
-// Native helpers retain host atomics for observers that do not acquire this mutex.
-static pthread_mutex_t dory_jit_atomic_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 uint8_t dory_jit_pending_work_load_acquire(const uint8_t *value) {
     return atomic_load_explicit((const _Atomic uint8_t *)value, memory_order_acquire);
 }
@@ -884,12 +880,11 @@ uintptr_t dory_jit_tlb_resolve_from_context_address(void) {
     return resolver.address;
 }
 
-void dory_jit_atomic_lock(void) {
-    (void)pthread_mutex_lock(&dory_jit_atomic_mutex);
-}
-
-void dory_jit_atomic_unlock(void) {
-    (void)pthread_mutex_unlock(&dory_jit_atomic_mutex);
+static void *dory_jit_atomic_coordinator_from_context(const uint64_t *context) {
+    if (context == NULL) {
+        return NULL;
+    }
+    return (void *)(uintptr_t)context[DORY_JIT_ATOMIC_COORDINATOR_CONTEXT_WORD];
 }
 
 static uint64_t dory_jit_atomic_compare_exchange(
@@ -987,14 +982,18 @@ int dory_jit_atomic_compare_exchange_from_context(
         return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
     }
 
-    dory_jit_atomic_lock();
+    void *coordinator = dory_jit_atomic_coordinator_from_context(context);
+    if (coordinator == NULL) {
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
+    dory_x86_atomic_coordinator_lock(coordinator);
     *observed_out = dory_jit_atomic_compare_exchange(
         (void *)(uintptr_t)resolution.host_address,
         expected,
         desired,
         byte_count
     );
-    dory_jit_atomic_unlock();
+    dory_x86_atomic_coordinator_unlock(coordinator);
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
 
@@ -1083,13 +1082,17 @@ int dory_jit_atomic_exchange_from_context(
         return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
     }
 
-    dory_jit_atomic_lock();
+    void *coordinator = dory_jit_atomic_coordinator_from_context(context);
+    if (coordinator == NULL) {
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
+    dory_x86_atomic_coordinator_lock(coordinator);
     *observed_out = dory_jit_atomic_exchange(
         (void *)(uintptr_t)resolution.host_address,
         value,
         byte_count
     );
-    dory_jit_atomic_unlock();
+    dory_x86_atomic_coordinator_unlock(coordinator);
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
 
@@ -1177,13 +1180,17 @@ int dory_jit_atomic_fetch_add_from_context(
         return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
     }
 
-    dory_jit_atomic_lock();
+    void *coordinator = dory_jit_atomic_coordinator_from_context(context);
+    if (coordinator == NULL) {
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
+    dory_x86_atomic_coordinator_lock(coordinator);
     *observed_out = dory_jit_atomic_fetch_add(
         (void *)(uintptr_t)resolution.host_address,
         value,
         byte_count
     );
-    dory_jit_atomic_unlock();
+    dory_x86_atomic_coordinator_unlock(coordinator);
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
 
@@ -1293,14 +1300,18 @@ int dory_jit_atomic_rmw_from_context(
         return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
     }
 
-    dory_jit_atomic_lock();
+    void *coordinator = dory_jit_atomic_coordinator_from_context(context);
+    if (coordinator == NULL) {
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
+    dory_x86_atomic_coordinator_lock(coordinator);
     *observed_out = dory_jit_atomic_rmw(
         (void *)(uintptr_t)resolution.host_address,
         value,
         byte_count,
         operation
     );
-    dory_jit_atomic_unlock();
+    dory_x86_atomic_coordinator_unlock(coordinator);
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
 
@@ -1360,7 +1371,11 @@ int dory_jit_atomic_compare_exchange_pair_from_context(
     }
 #endif
 
-    dory_jit_atomic_lock();
+    void *coordinator = dory_jit_atomic_coordinator_from_context(context);
+    if (coordinator == NULL) {
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
+    dory_x86_atomic_coordinator_lock(coordinator);
     if (byte_count == 8) {
         const uint64_t expected =
             (uint64_t)(uint32_t)values->expected_low |
@@ -1404,7 +1419,7 @@ int dory_jit_atomic_compare_exchange_pair_from_context(
         values->observed_high = (uint64_t)(observed >> 64);
     }
 #endif
-    dory_jit_atomic_unlock();
+    dory_x86_atomic_coordinator_unlock(coordinator);
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
 

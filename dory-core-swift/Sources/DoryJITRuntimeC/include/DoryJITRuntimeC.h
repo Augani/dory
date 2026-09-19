@@ -272,8 +272,10 @@ int dory_jit_tlb_resolve_from_context(
     dory_jit_tlb_resolution *resolution_out
 );
 uintptr_t dory_jit_tlb_resolve_from_context_address(void);
-void dory_jit_atomic_lock(void);
-void dory_jit_atomic_unlock(void);
+enum { DORY_JIT_ATOMIC_COORDINATOR_CONTEXT_WORD = 95 };
+// Implemented by DoryDBTX86. The context word is an unretained, executor-owned Swift object.
+void dory_x86_atomic_coordinator_lock(void *coordinator);
+void dory_x86_atomic_coordinator_unlock(void *coordinator);
 int dory_jit_atomic_compare_exchange_from_context(
     const uint64_t *context,
     void *memory_context,

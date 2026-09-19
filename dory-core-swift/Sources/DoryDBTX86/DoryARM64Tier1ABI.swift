@@ -130,6 +130,9 @@ enum DoryARM64Tier1ABI {
     /// Selected by each generated memory-bearing block on entry so a raw chain target does not
     /// inherit the dispatcher entry block's replay policy.
     case requiresRestartableMemoryReads
+    /// Unretained `DoryX86AtomicCoordinator` reference, installed only for the duration of a
+    /// memory-capable native dispatch. This is append-only so every prior ABI word stays stable.
+    case atomicCoordinator
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }

@@ -5206,12 +5206,14 @@ struct DoryJITMemoryCapabilities {
   let scalarMemory: (any DoryX86ScalarMemory)?
   let restartableScalarMemory: (any DoryX86RestartableScalarMemory)?
   let atomicScalarMemory: (any DoryX86AtomicScalarMemory)?
+  let atomicCoordinator: DoryX86AtomicCoordinator
 
-  init(memory: any DoryX86Memory) {
+  init(memory: any DoryX86Memory, atomicCoordinator: DoryX86AtomicCoordinator) {
     self.memory = memory
     scalarMemory = memory as? any DoryX86ScalarMemory
     restartableScalarMemory = memory as? any DoryX86RestartableScalarMemory
     atomicScalarMemory = memory as? any DoryX86AtomicScalarMemory
+    self.atomicCoordinator = atomicCoordinator
   }
 }
 
@@ -5375,7 +5377,7 @@ private let doryJITMemoryCompareExchange: dory_jit_memory_compare_exchange_funct
   }
   do {
     guard
-      let observed = try DoryX86AtomicGate.shared.withLock({
+      let observed = try context.pointee.capabilities.atomicCoordinator.withLock({
         try atomicMemory.compareExchangeScalar(
           at: address,
           expected: expected,
@@ -5426,6 +5428,8 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
   public static let atomicRMWWordIndex = DoryARM64Tier1ABI.ContextWord.atomicRMW.rawValue
   public static let atomicCompareExchangePairWordIndex =
     DoryARM64Tier1ABI.ContextWord.atomicCompareExchangePair.rawValue
+  public static let atomicCoordinatorWordIndex =
+    DoryARM64Tier1ABI.ContextWord.atomicCoordinator.rawValue
   public static let ibtcEntriesBaseWordIndex =
     DoryARM64Tier1ABI.ContextWord.ibtcEntriesBase.rawValue
   public static let ibtcEntryMaskWordIndex = DoryARM64Tier1ABI.ContextWord.ibtcEntryMask.rawValue
@@ -5498,14 +5502,16 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     at offset: Int,
     context: inout [UInt64],
     memory: (any DoryX86Memory)? = nil,
-    requiresRestartableReads: Bool = false
+    requiresRestartableReads: Bool = false,
+    atomicCoordinator: DoryX86AtomicCoordinator = .init()
   ) throws -> DoryJITExitCode {
     try context.withUnsafeMutableBufferPointer { buffer in
       try execute(
         at: offset,
         context: buffer,
         memory: memory,
-        requiresRestartableReads: requiresRestartableReads
+        requiresRestartableReads: requiresRestartableReads,
+        atomicCoordinator: atomicCoordinator
       )
     }
   }
@@ -5514,12 +5520,15 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     at offset: Int,
     context: UnsafeMutableBufferPointer<UInt64>,
     memory: (any DoryX86Memory)? = nil,
-    requiresRestartableReads: Bool = false
+    requiresRestartableReads: Bool = false,
+    atomicCoordinator: DoryX86AtomicCoordinator = .init()
   ) throws -> DoryJITExitCode {
     try executePrepared(
       at: offset,
       context: context,
-      memoryCapabilities: memory.map { DoryJITMemoryCapabilities(memory: $0) },
+      memoryCapabilities: memory.map {
+        DoryJITMemoryCapabilities(memory: $0, atomicCoordinator: atomicCoordinator)
+      },
       requiresRestartableReads: requiresRestartableReads
     )
   }
@@ -5564,6 +5573,8 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
       requiresRestartableReads ? 1 : 0
     context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointActive.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRegisterMask.rawValue] = 0
+    context[Self.atomicCoordinatorWordIndex] =
+      memoryCapabilities?.atomicCoordinator.opaqueReference ?? 0
     if let memoryCapabilities {
       var memoryContext = DoryJITMemoryCallbackContext(
         capabilities: memoryCapabilities,
@@ -6227,6 +6238,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   }
 
   public let maximumCodeBytes: Int
+  public let atomicCoordinator: DoryX86AtomicCoordinator
   private let lock = NSLock()
   private let decoder: DoryX86Decoder
   private let cpuProfileIdentifier: String
@@ -6324,12 +6336,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     rawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions = [],
     optimization: DoryARM64JITOptimization = .baseline,
     optimizer: DoryIROptimizer = .init(),
-    tracksInterpreterFallback: Bool = false
+    tracksInterpreterFallback: Bool = false,
+    atomicCoordinator: DoryX86AtomicCoordinator = .init()
   ) throws {
     guard (32...52).contains(physicalAddressBits) else {
       throw DoryX86StateError.invalidPhysicalAddressBits(physicalAddressBits)
     }
     self.maximumCodeBytes = max(4_096, maximumCodeBytes)
+    self.atomicCoordinator = atomicCoordinator
     self.decoder = decoder
     self.cpuProfileIdentifier = cpuProfileIdentifier
     self.physicalAddressBits = physicalAddressBits
@@ -6863,7 +6877,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       // A raw link can enter a memory-bearing target even when the dispatcher entry block has no
       // callbacks. Keep one callback authority alive for the complete native chain so such a
       // target can report and recover its exact faulting instruction.
-      let memoryCapabilities = memory.map { DoryJITMemoryCapabilities(memory: $0) }
+      let memoryCapabilities = memory.map {
+        DoryJITMemoryCapabilities(memory: $0, atomicCoordinator: atomicCoordinator)
+      }
       return try executionContextStorage.withBuffer { context in
         try withUnsafeTemporaryAllocation(
           of: UInt64.self,
@@ -7450,7 +7466,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         let execution = try region.executePreparedWithRecovery(
           at: resident.offset,
           context: context,
-          memoryCapabilities: memory.map { DoryJITMemoryCapabilities(memory: $0) },
+          memoryCapabilities: memory.map {
+            DoryJITMemoryCapabilities(memory: $0, atomicCoordinator: atomicCoordinator)
+          },
           requiresRestartableReads: resident.block.requiresRestartableMemoryReads,
           translationTLB: translationTLB
         )
@@ -8820,6 +8838,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointActive.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRegisterMask.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.requiresRestartableMemoryReads.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.atomicCoordinator.rawValue] = 0
   }
 
   private func recordLazyFlagMaterializations(

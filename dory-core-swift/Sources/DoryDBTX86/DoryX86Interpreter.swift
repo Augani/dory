@@ -52,22 +52,71 @@ public enum DoryX86InterpreterResult: Codable, Sendable, Hashable {
   case exception(DoryX86Exception)
 }
 
+/// Machine-scoped serialization authority shared by every interpreter and JIT vCPU that can
+/// access the same guest memory. Distinct virtual machines never contend on this coordinator.
+public final class DoryX86AtomicCoordinator: @unchecked Sendable {
+  private let lock = NSLock()
+
+  public init() {}
+
+  func withLock<Result>(_ operation: () throws -> Result) rethrows -> Result {
+    lock.lock()
+    defer { lock.unlock() }
+    return try operation()
+  }
+
+  func withLock<State, Result>(
+    state: inout State,
+    _ operation: (inout State) throws -> Result
+  ) rethrows -> Result {
+    lock.lock()
+    defer { lock.unlock() }
+    return try operation(&state)
+  }
+
+  var opaqueReference: UInt64 {
+    UInt64(UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque()))
+  }
+
+  fileprivate func lockForNativeHelper() { lock.lock() }
+  fileprivate func unlockForNativeHelper() { lock.unlock() }
+}
+
+/// C atomic helpers receive this unretained reference through the live JIT execution context.
+/// The owning executor retains the coordinator for longer than every native dispatch.
+@_cdecl("dory_x86_atomic_coordinator_lock")
+public func doryX86AtomicCoordinatorLock(_ opaque: UnsafeMutableRawPointer?) {
+  guard let opaque else { return }
+  Unmanaged<DoryX86AtomicCoordinator>.fromOpaque(opaque).takeUnretainedValue()
+    .lockForNativeHelper()
+}
+
+@_cdecl("dory_x86_atomic_coordinator_unlock")
+public func doryX86AtomicCoordinatorUnlock(_ opaque: UnsafeMutableRawPointer?) {
+  guard let opaque else { return }
+  Unmanaged<DoryX86AtomicCoordinator>.fromOpaque(opaque).takeUnretainedValue()
+    .unlockForNativeHelper()
+}
+
 public struct DoryX86Interpreter: Sendable {
   public let profile: DoryX86CPUProfile
   public let decoder: DoryX86Decoder
   public let processorID: UInt32
   public let logicalProcessorCount: UInt16
+  public let atomicCoordinator: DoryX86AtomicCoordinator
 
   public init(
     profile: DoryX86CPUProfile = .compatibleV1,
     decoder: DoryX86Decoder = .init(),
     processorID: UInt32 = 0,
-    logicalProcessorCount: UInt16 = 1
+    logicalProcessorCount: UInt16 = 1,
+    atomicCoordinator: DoryX86AtomicCoordinator = .init()
   ) {
     self.profile = profile
     self.decoder = decoder
     self.processorID = processorID
     self.logicalProcessorCount = max(1, logicalProcessorCount)
+    self.atomicCoordinator = atomicCoordinator
   }
 
   public func step(
@@ -290,7 +339,7 @@ public struct DoryX86Interpreter: Sendable {
           }
         }
         if instruction.prefixes.lock {
-          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state, execute)
         } else {
           try execute(&state)
         }
@@ -332,7 +381,7 @@ public struct DoryX86Interpreter: Sendable {
           )
         }
         if instruction.prefixes.lock {
-          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state, execute)
         } else {
           try execute(&state)
         }
@@ -516,7 +565,7 @@ public struct DoryX86Interpreter: Sendable {
           )
         }
         if isMemory(lhs) || isMemory(rhs) {
-          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state, execute)
         } else {
           try execute(&state)
         }
@@ -571,7 +620,7 @@ public struct DoryX86Interpreter: Sendable {
           }
         }
         if instruction.prefixes.lock {
-          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state, execute)
         } else {
           try execute(&state)
         }
@@ -606,7 +655,7 @@ public struct DoryX86Interpreter: Sendable {
             memory: executionMemory)
         }
         if instruction.prefixes.lock {
-          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state, execute)
         } else {
           try execute(&state)
         }
@@ -622,7 +671,7 @@ public struct DoryX86Interpreter: Sendable {
           )
         }
         if instruction.prefixes.lock {
-          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state, execute)
         } else {
           try execute(&state)
         }
@@ -839,7 +888,7 @@ public struct DoryX86Interpreter: Sendable {
           )
         }
         if instruction.prefixes.lock {
-          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+          try atomicCoordinator.withLock(state: &state, execute)
         } else {
           try execute(&state)
         }
@@ -3609,7 +3658,7 @@ public struct DoryX86Interpreter: Sendable {
         // Serialize the descriptor check and busy-byte store against other locked
         // interpreter operations. Ordinary selector-operand reads stay explicit.
         let loaded = task
-          ? try DoryX86AtomicGate.shared.withLock(state: &state, load)
+          ? try atomicCoordinator.withLock(state: &state, load)
           : try load(&state)
         if task { state.tr = loaded } else { state.ldtr = loaded }
       case .readModelSpecificRegister:
@@ -9588,29 +9637,6 @@ public struct DoryX86Interpreter: Sendable {
         linearAddress: address
       )
     }
-  }
-}
-
-/// Serializes x86 locked read-modify-write instructions across interpreter and native DBT paths.
-/// Callers must acquire this gate before entering memory implementation locks.
-final class DoryX86AtomicGate: @unchecked Sendable {
-  static let shared = DoryX86AtomicGate()
-
-  private init() {}
-
-  func withLock<Result>(_ operation: () throws -> Result) rethrows -> Result {
-    dory_jit_atomic_lock()
-    defer { dory_jit_atomic_unlock() }
-    return try operation()
-  }
-
-  func withLock<State, Result>(
-    state: inout State,
-    _ operation: (inout State) throws -> Result
-  ) rethrows -> Result {
-    dory_jit_atomic_lock()
-    defer { dory_jit_atomic_unlock() }
-    return try operation(&state)
   }
 }
 

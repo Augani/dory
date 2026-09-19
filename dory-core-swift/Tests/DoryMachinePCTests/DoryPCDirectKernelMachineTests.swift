@@ -14,6 +14,22 @@ import Testing
     #expect(!options.contains(.shadowReturnStack))
   }
 
+  @Test func atomicCoordinatorIsSharedWithinOneMachineAndIsolatedAcrossMachines() throws {
+    let injected = DoryX86AtomicCoordinator()
+    let first = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 4,
+      interpreter: .init(atomicCoordinator: injected),
+      executionTier: .optimizingJIT
+    )
+    let second = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+
+    #expect(first.atomicCoordinator === injected)
+    #expect(first.interpreters.allSatisfy { $0.atomicCoordinator === injected })
+    #expect(second.atomicCoordinator !== injected)
+    #expect(second.interpreter.atomicCoordinator === second.atomicCoordinator)
+  }
+
   @Test(arguments: [UInt64(2), 3, 5])
   func hostWorkersOverlapOnFrozenRegistersAndJoinAtGlobalBudget(budget: UInt64) throws {
     let machine = try workerMachine(clock: .hostMonotonic { 0 })

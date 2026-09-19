@@ -210,7 +210,7 @@ import Testing
     #expect(device.accesses == 0)
   }
 
-  @Test func lockedNativeCompareExchangeSharesGateAcrossTranslatedBusViews() throws {
+  @Test func lockedNativeCompareExchangeSharesMachineCoordinatorAcrossTranslatedBusViews() throws {
     #if arch(arm64)
       let ram = try GateProbeRAM(
         backing: DoryX86MmapMemory(byteCount: 0x20_000),
@@ -237,7 +237,12 @@ import Testing
       let nativeInitial = try machineState(rip: codeLinear, data: dataLinear, expected: 0, desired: 1)
       let interpreterInitial = try machineState(
         rip: codeLinear, data: dataLinear, expected: 1, desired: 2)
-      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let coordinator = DoryX86AtomicCoordinator()
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        atomicCoordinator: coordinator
+      )
+      let interpreter = DoryX86Interpreter(atomicCoordinator: coordinator)
 
       ram.blockNextAtomicCompareExchange()
       let unguardedAtomicDone = DispatchSemaphore(value: 0)
@@ -290,7 +295,7 @@ import Testing
       DispatchQueue.global().async {
         var interpreterState = interpreterInitial
         interpreterStarted.signal()
-        let result = DoryX86Interpreter().step(
+        let result = interpreter.step(
           state: &interpreterState, memory: interpreterMemory, mode: .long64)
         interpreterResult.set((interpreterState, result))
         interpreterDone.signal()
@@ -307,7 +312,7 @@ import Testing
       #expect(nativeExecution?.block.requiresMemoryCallbacks == true)
       #expect(nativeExecution?.block.guestInstructionCount == 1)
       if case .retired = interpreterOutcome {} else {
-        Issue.record("interpreter locked CMPXCHG did not retire after native gate release")
+        Issue.record("interpreter locked CMPXCHG did not retire after coordinator release")
       }
       #expect(try ram.backing.readScalar(at: 0x9000, byteCount: 4) == 2)
       #expect(nativeState.rflags.contains(.zero))

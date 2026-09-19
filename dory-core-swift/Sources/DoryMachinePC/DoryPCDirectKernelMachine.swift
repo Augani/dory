@@ -604,6 +604,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let powerController: DoryPCPowerController
   public let pagingUnit: DoryX86PagingUnit
   public let pagingUnits: [DoryX86PagingUnit]
+  /// Serialization authority shared by every vCPU execution engine in this machine.
+  /// A distinct machine receives a distinct coordinator unless its caller explicitly shares one.
+  public let atomicCoordinator: DoryX86AtomicCoordinator
   public let interpreter: DoryX86Interpreter
   public let interpreters: [DoryX86Interpreter]
   public let bootLayout: DoryPCPVHBootLayout
@@ -744,9 +747,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     guard interpreter.profile.virtualTSCFrequencyHz > 0 else {
       throw DoryPCMachineError.invalidTSCFrequency(interpreter.profile.virtualTSCFrequencyHz)
     }
+    let machineAtomicCoordinator = interpreter.atomicCoordinator
     self.processorCount = processorCount
     self.executionTier = executionTier
     self.jitWriteCoherencePolicy = jitWriteCoherencePolicy
+    atomicCoordinator = machineAtomicCoordinator
     self.optimizingJITWarmupDispatches = optimizingJITWarmupDispatches
     self.clockSource = clockSource
     self.instrumentationEnabled = instrumentationEnabled
@@ -776,7 +781,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             tier1Enabled: baselineJITTier1Enabled,
             rawTargetPredictionOptions: baselineJITRawTargetPredictionOptions,
             optimization: .baseline,
-            tracksInterpreterFallback: true
+            tracksInterpreterFallback: true,
+            atomicCoordinator: machineAtomicCoordinator
           )
         }
       }
@@ -797,7 +803,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             profile: interpreter.profile,
             rawTargetPredictionOptions: baselineJITRawTargetPredictionOptions,
             optimization: .optimizing,
-            tracksInterpreterFallback: true
+            tracksInterpreterFallback: true,
+            atomicCoordinator: machineAtomicCoordinator
           )
         }
       }
@@ -1009,7 +1016,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         profile: interpreter.profile,
         decoder: interpreter.decoder,
         processorID: UInt32($0),
-        logicalProcessorCount: UInt16(processorCount)
+        logicalProcessorCount: UInt16(processorCount),
+        atomicCoordinator: machineAtomicCoordinator
       )
     }
     self.interpreter = interpreters[0]

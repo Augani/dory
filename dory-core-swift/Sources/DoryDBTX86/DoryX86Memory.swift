@@ -111,9 +111,9 @@ public protocol DoryX86RestartableScalarMemory: DoryX86Memory {
   func readRestartableScalar(at address: UInt64, byteCount: Int) throws -> UInt64?
 }
 
-/// Optional path for x86 locked scalar read-modify-write operations. The caller must hold
-/// DoryX86AtomicGate.shared so interpreter and native locked instructions share one
-/// architectural serialization point before entering memory-owned locks. Implementations must
+/// Optional path for x86 locked scalar read-modify-write operations. The caller must hold the
+/// owning machine's `DoryX86AtomicCoordinator` so interpreter and native locked instructions
+/// share one architectural serialization point before entering memory-owned locks. Implementations must
 /// validate the complete write cycle before reading, serialize the compare and destination
 /// write under one memory-owned critical section, and return the observed destination value.
 /// Returning nil declines native execution before touching MMIO or unsupported memory.

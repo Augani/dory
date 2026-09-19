@@ -187,7 +187,7 @@ public final class DoryX86JITTLB: @unchecked Sendable {
       byteCount > 0, byteCount <= Int(UInt32.max)
     else { return .fallback }
     var callback = DoryJITMemoryCallbackContext(
-      capabilities: .init(memory: memory),
+      capabilities: .init(memory: memory, atomicCoordinator: .init()),
       requiresRestartableReads: false,
       translationTLB: nil
     )

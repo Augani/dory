@@ -98,7 +98,7 @@ import Testing
         try region.executePreparedWithRecovery(
           at: 0,
           context: buffer,
-          memoryCapabilities: .init(memory: memory),
+          memoryCapabilities: .init(memory: memory, atomicCoordinator: .init()),
           requiresRestartableReads: false
         )
       }
@@ -751,7 +751,7 @@ import Testing
           try region.executePreparedWithRecovery(
             at: 0,
             context: $0,
-            memoryCapabilities: .init(memory: translated),
+            memoryCapabilities: .init(memory: translated, atomicCoordinator: .init()),
             requiresRestartableReads: compiled.requiresRestartableMemoryReads,
             translationTLB: tlb
           )
@@ -810,7 +810,7 @@ import Testing
         try region.executePreparedWithRecovery(
           at: 0,
           context: $0,
-          memoryCapabilities: .init(memory: translated),
+          memoryCapabilities: .init(memory: translated, atomicCoordinator: .init()),
           requiresRestartableReads: compiled.requiresRestartableMemoryReads,
           translationTLB: tlb
         )

@@ -35,7 +35,7 @@ boundaries implicitly.
 
 ## Stable vCPU context
 
-The context is an array of 95 little-endian `UInt64` words. It is not a Swift
+The context is an array of 96 little-endian `UInt64` words. It is not a Swift
 struct ABI. The word layout is:
 
 | Words | Contents |
@@ -58,12 +58,21 @@ struct ABI. The word layout is:
 | 74 | generated BLR return PC for an architectural inline-TLB page fault |
 | 75...93 | active memory-write checkpoint, exact GPR mask, entry RFLAGS, and RAX...R15 images |
 | 94 | block-local restartable-read policy selected before the first memory callback |
+| 95 | unretained pointer to the owning machine's atomic coordinator |
 
 The context pointer remains stable for a dispatch. TLB bases and helper
 addresses are derived from it; generated code must not retain them beyond that
 dispatch. New words append at the end so an older index never changes meaning.
 Any persisted machine state contains architectural fields, not these host
 pointers.
+
+Word 95 is valid only during a native dispatch. The executor retains the
+coordinator, writes its stable object address before entering generated code,
+and clears the word while populating a fresh architectural context. Native
+atomic helpers reject a missing coordinator rather than silently falling back
+to a process-global lock. Every interpreter and executor that can access one
+machine's RAM receives the same coordinator; independent machines use distinct
+coordinators and therefore cannot create cross-VM head-of-line blocking.
 
 The dispatcher clears words 54...58 for ordinary single-block calls. Before a
 native-chain call it sets word 54, publishes the instruction budget in word 55,
@@ -278,8 +287,9 @@ value of zero makes a mismatch supply the real byte without a separate read;
 only the successful comparison writes memory. The old byte, immediate one, and
 new byte then publish a width-eight logical lazy record. Callback failure leaves
 that descriptor clear and causes the executor checkpoint to retry through the
-interpreter. The callback shares the process-wide x86 atomic gate, so mixed
-interpreter/tier-1 vCPUs remain single-copy. Every other byte immediate, source
+interpreter. The callback shares the owning machine's x86 atomic coordinator,
+so mixed interpreter/tier-1 vCPUs remain single-copy without serializing other
+virtual machines. Every other byte immediate, source
 kind, width, and atomic ALU operation remains outside tier 1. Linux lists this
 measured instruction in `.smp_locks` and replaces its `0xf0` lock prefix with a
 `0x3e` DS prefix when booting the uniprocessor guest. Tier 1 therefore also
