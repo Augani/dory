@@ -10113,6 +10113,31 @@ import XCTest
     #expect(words[DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex] == 0)
   }
 
+  @Test func translatedMemoryDoesNotExposeDirectHostRAMWithoutRangeAuthority() throws {
+    let coordinatedMemory = try BoundedDirectSpanMemory()
+    let memory = UncoordinatedDirectSpanMemory(backing: coordinatedMemory)
+    let translatedMemory = DoryX86TranslatedMemory(
+      physicalMemory: memory,
+      pagingUnit: DoryX86PagingUnit(),
+      context: .init(state: .reset(), mode: .real16)
+    )
+    #expect(memory.hostAddressSpaceBase != 0)
+    #expect(memory.hostAddressSpaceByteCount > 0)
+    #expect(translatedMemory.hostAddressSpaceBase == 0)
+    #expect(translatedMemory.hostAddressSpaceByteCount == 0)
+
+    var words = [UInt64](repeating: .max, count: DoryJITExecutableRegion.contextWordCount)
+    words.withUnsafeMutableBufferPointer { context in
+      DoryARM64BaselineExecutor.populateExecutionContext(
+        context,
+        from: .reset(),
+        memory: translatedMemory
+      )
+    }
+    #expect(words[DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex] == 0)
+    #expect(words[DoryJITExecutableRegion.hostAddressSpaceByteCountWordIndex] == 0)
+  }
+
   @Test func executionContextCarriesPerAccessTLBBasesAndGeneration() throws {
     let tlb = try DoryX86JITTLB(entryCount: 1_024)
     let memory = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
@@ -11513,10 +11538,11 @@ private final class FaultingBulkMemory: DoryX86BulkMemory, @unchecked Sendable {
 /// regressions observable without a host fault; callback data is separate so accidental direct
 /// reads and writes cannot masquerade as a successful fallback.
 private final class BoundedDirectSpanMemory: DoryX86ScalarMemory,
-  DoryX86DirectHostAddressSpaceMemory, @unchecked Sendable
+  DoryX86DirectHostAddressSpaceMemory, DoryX86RangeCoordinatedMemory, @unchecked Sendable
 {
   let direct: DoryX86MmapMemory
   let callbacks: DoryX86ByteArrayMemory
+  let memoryAccessCoordinator: DoryX86MemoryAccessCoordinator
   let hostAddressSpaceByteCount = 0x100
   var hostAddressSpaceBase: UInt64 { direct.hostAddressSpaceBase }
   private(set) var directRequests = 0
@@ -11524,8 +11550,13 @@ private final class BoundedDirectSpanMemory: DoryX86ScalarMemory,
   private(set) var scalarWrites = 0
 
   init() throws {
-    direct = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
-    callbacks = try DoryX86ByteArrayMemory(byteCount: 0x200)
+    memoryAccessCoordinator = DoryX86MemoryAccessCoordinator()
+    direct = try DoryX86MmapMemory(
+      validatingByteCount: Int(getpagesize()),
+      memoryAccessCoordinator: memoryAccessCoordinator)
+    callbacks = try DoryX86ByteArrayMemory(
+      byteCount: 0x200,
+      memoryAccessCoordinator: memoryAccessCoordinator)
     try direct.write(at: 0, bytes: Array(repeating: 0xA5, count: 0x200))
     try callbacks.write(at: 0, bytes: Array(repeating: 0x5A, count: 0x200))
   }
@@ -11538,6 +11569,12 @@ private final class BoundedDirectSpanMemory: DoryX86ScalarMemory,
       UInt64(byteCount) <= UInt64(hostAddressSpaceByteCount) - address
     else { return nil }
     return address
+  }
+
+  func memoryAccessRanges(
+    at address: UInt64, byteCount: Int, access: DoryX86MemoryAccessKind
+  ) throws -> [Range<UInt64>]? {
+    try direct.memoryAccessRanges(at: address, byteCount: byteCount, access: access)
   }
 
   func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
@@ -11560,6 +11597,37 @@ private final class BoundedDirectSpanMemory: DoryX86ScalarMemory,
   func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
     scalarWrites += 1
     try callbacks.writeScalar(at: address, value: value, byteCount: byteCount)
+  }
+}
+
+/// Type-erases the backing's range authority while retaining a direct host window. Translated
+/// memory must refuse to publish that window because generated accesses could otherwise bypass
+/// every cooperating ordinary and locked access.
+private final class UncoordinatedDirectSpanMemory: DoryX86Memory,
+  DoryX86DirectHostAddressSpaceMemory, @unchecked Sendable
+{
+  let backing: BoundedDirectSpanMemory
+  var hostAddressSpaceBase: UInt64 { backing.hostAddressSpaceBase }
+  var hostAddressSpaceByteCount: Int { backing.hostAddressSpaceByteCount }
+
+  init(backing: BoundedDirectSpanMemory) { self.backing = backing }
+
+  func hostAddressSpaceOffset(
+    at address: UInt64, byteCount: Int, access: DoryX86MemoryAccessKind
+  ) -> UInt64? {
+    backing.hostAddressSpaceOffset(at: address, byteCount: byteCount, access: access)
+  }
+
+  func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    try backing.instructionBytes(at: address, maximumCount: maximumCount)
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    try backing.read(at: address, byteCount: byteCount)
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    try backing.write(at: address, bytes: bytes)
   }
 }
 

@@ -40,6 +40,7 @@ import Testing
 private final class InvalidConfigurationRAM: DoryX86PhysicalRAM, @unchecked Sendable {
   let baseAddress: UInt64
   let byteCount: Int
+  let memoryAccessCoordinator = DoryX86MemoryAccessCoordinator()
   private(set) var accesses = 0
 
   init(baseAddress: UInt64, byteCount: Int) {
@@ -56,4 +57,7 @@ private final class InvalidConfigurationRAM: DoryX86PhysicalRAM, @unchecked Send
   func copyForwardNonoverlapping(
     from sourceAddress: UInt64, to destinationAddress: UInt64, maximumByteCount: Int
   ) throws -> Int? { accesses += 1; return nil }
+  func memoryAccessRanges(
+    at address: UInt64, byteCount: Int, access: DoryX86MemoryAccessKind
+  ) throws -> [Range<UInt64>]? { accesses += 1; return nil }
 }

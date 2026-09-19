@@ -232,7 +232,7 @@ public protocol DoryX86BulkMemory: DoryX86Memory {
 /// Both `DoryX86ByteArrayMemory` and `DoryX86MmapMemory` conform.
 public protocol DoryX86PhysicalRAM:
   DoryX86Memory, DoryX86ScalarMemory, DoryX86RestartableScalarMemory,
-  DoryX86CodeGenerationMemory, DoryX86BulkMemory
+  DoryX86CodeGenerationMemory, DoryX86BulkMemory, DoryX86RangeCoordinatedMemory
 {
   var baseAddress: UInt64 { get }
   var byteCount: Int { get }

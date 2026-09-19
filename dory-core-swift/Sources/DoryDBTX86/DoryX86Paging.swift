@@ -810,11 +810,13 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   private var context: DoryX86PagingContext
 
   public var hostAddressSpaceBase: UInt64 {
-    (physicalMemory as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceBase ?? 0
+    guard rangeCoordinatedPhysicalMemory != nil else { return 0 }
+    return (physicalMemory as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceBase ?? 0
   }
 
   public var hostAddressSpaceByteCount: Int {
-    (physicalMemory as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceByteCount ?? 0
+    guard rangeCoordinatedPhysicalMemory != nil else { return 0 }
+    return (physicalMemory as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceByteCount ?? 0
   }
 
   public init(

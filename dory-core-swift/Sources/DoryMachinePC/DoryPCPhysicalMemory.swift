@@ -128,7 +128,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   public let ram: any DoryX86PhysicalRAM
-  private let rangeCoordinatedRAM: (any DoryX86RangeCoordinatedMemory)?
+  private let rangeCoordinatedRAM: any DoryX86RangeCoordinatedMemory
   public let memoryAccessCoordinator: DoryX86MemoryAccessCoordinator
 
   public var hostAddressSpaceBase: UInt64 {
@@ -191,9 +191,8 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
         mmioHoleStart: mmioHoleStart, above4GRAMStart: above4GRAMStart)
     }
     self.ram = ram
-    rangeCoordinatedRAM = ram as? any DoryX86RangeCoordinatedMemory
-    memoryAccessCoordinator =
-      (ram as? any DoryX86RangeCoordinatedMemory)?.memoryAccessCoordinator ?? .init()
+    rangeCoordinatedRAM = ram
+    memoryAccessCoordinator = ram.memoryAccessCoordinator
     self.mmioHoleStart = mmioHoleStart
     self.above4GRAMStart = above4GRAMStart
     self.diagnosticsEnabled = diagnosticsEnabled
@@ -521,7 +520,6 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     guard byteCount > 0 else { return nil }
     if try resolve(address: address, byteCount: byteCount, access: access) != nil { return nil }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: access)
-    guard let rangeCoordinatedRAM else { return nil }
     return try rangeCoordinatedRAM.memoryAccessRanges(
       at: resolved.backingAddress,
       byteCount: byteCount,

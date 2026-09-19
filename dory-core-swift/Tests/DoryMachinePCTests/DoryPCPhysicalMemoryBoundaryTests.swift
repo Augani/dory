@@ -1,4 +1,5 @@
 import DoryDBTX86
+import DoryVirtio
 import Foundation
 import Testing
 
@@ -74,6 +75,71 @@ import Testing
     #expect(ram.protectedTranslatedCodePageCount == 0)
     #expect(try bus.read(at: 0x100, byteCount: 1) == [0xCC])
     #expect(try bus.codeGeneration(at: 0x100, byteCount: 1) != generation)
+  }
+
+  @Test(arguments: [false, true])
+  func virtioDMAUsesTheMachineBackingRangeAuthority(mmap: Bool) throws {
+    let ram = try backing(mmap: mmap)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
+    bus.seal()
+    let dma: any DoryVirtioGuestMemory = bus
+    let ranges = try #require(
+      try bus.memoryAccessRanges(at: 0x100, byteCount: 8, access: .write))
+    let exclusive = bus.memoryAccessCoordinator.acquireExclusive(ranges: ranges)
+
+    let overlappingStarted = DispatchSemaphore(value: 0)
+    let overlappingFinished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      overlappingStarted.signal()
+      try! dma.validate(at: 0x100, byteCount: 8, deviceWillWrite: true)
+      try! dma.write(at: 0x100, bytes: Array(repeating: 0xA5, count: 8))
+      overlappingFinished.signal()
+    }
+    overlappingStarted.wait()
+
+    let disjointFinished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      try! dma.validate(at: 0x200, byteCount: 8, deviceWillWrite: true)
+      try! dma.write(at: 0x200, bytes: Array(repeating: 0x5A, count: 8))
+      disjointFinished.signal()
+    }
+    #expect(disjointFinished.wait(timeout: .now() + 2) == .success)
+    #expect(overlappingFinished.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
+
+    exclusive.release()
+    #expect(overlappingFinished.wait(timeout: .now() + 2) == .success)
+    #expect(try ram.read(at: 0x100, byteCount: 8) == Array(repeating: 0xA5, count: 8))
+    #expect(try ram.read(at: 0x200, byteCount: 8) == Array(repeating: 0x5A, count: 8))
+  }
+
+  @Test func protectedCodeDMAWaitsForRangeAuthorityBeforeInvalidatingAndWriting() throws {
+    let ram = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
+    bus.seal()
+    let dma: any DoryVirtioGuestMemory = bus
+    try bus.write(at: 0x180, bytes: [0x90])
+    let generation = try #require(try bus.codeGeneration(at: 0x180, byteCount: 1))
+    _ = try bus.protectTranslatedCode(at: 0x180, byteCount: 1)
+    let ranges = try #require(
+      try bus.memoryAccessRanges(at: 0x180, byteCount: 1, access: .write))
+    let exclusive = bus.memoryAccessCoordinator.acquireExclusive(ranges: ranges)
+    let started = DispatchSemaphore(value: 0)
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      started.signal()
+      try! dma.validate(at: 0x180, byteCount: 1, deviceWillWrite: true)
+      try! dma.write(at: 0x180, bytes: [0xCC])
+      finished.signal()
+    }
+    started.wait()
+    #expect(finished.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
+    #expect(try bus.codeGeneration(at: 0x180, byteCount: 1) == generation)
+    #expect(try bus.read(at: 0x180, byteCount: 1) == [0x90])
+
+    exclusive.release()
+    #expect(finished.wait(timeout: .now() + 2) == .success)
+    #expect(try bus.codeGeneration(at: 0x180, byteCount: 1) != generation)
+    #expect(try bus.read(at: 0x180, byteCount: 1) == [0xCC])
   }
 
   @Test(arguments: [false, true])
@@ -450,6 +516,9 @@ private final class BoundaryCountingRAM: DoryX86PhysicalRAM, @unchecked Sendable
   let backing: any DoryX86PhysicalRAM
   var baseAddress: UInt64 { backing.baseAddress }
   var byteCount: Int { backing.byteCount }
+  var memoryAccessCoordinator: DoryX86MemoryAccessCoordinator {
+    backing.memoryAccessCoordinator
+  }
   private let lock = NSLock()
   private var counts = (reads: 0, readValidations: 0, writeValidations: 0)
   var readCalls: Int { lock.withLock { counts.reads } }
@@ -487,12 +556,20 @@ private final class BoundaryCountingRAM: DoryX86PhysicalRAM, @unchecked Sendable
     try backing.copyForwardNonoverlapping(
       from: sourceAddress, to: destinationAddress, maximumByteCount: maximumByteCount)
   }
+  func memoryAccessRanges(
+    at address: UInt64, byteCount: Int, access: DoryX86MemoryAccessKind
+  ) throws -> [Range<UInt64>]? {
+    try backing.memoryAccessRanges(at: address, byteCount: byteCount, access: access)
+  }
 }
 
 private final class GateProbeRAM: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory, @unchecked Sendable {
   let backing: any DoryX86PhysicalRAM & DoryX86AtomicScalarMemory
   var baseAddress: UInt64 { backing.baseAddress }
   var byteCount: Int { backing.byteCount }
+  var memoryAccessCoordinator: DoryX86MemoryAccessCoordinator {
+    backing.memoryAccessCoordinator
+  }
   private let lock = NSLock()
   private let probedAddressRange: Range<UInt64>
   private var shouldBlockAtomic = false
@@ -598,6 +675,11 @@ private final class GateProbeRAM: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory,
   ) throws -> Int? {
     try backing.copyForwardNonoverlapping(
       from: sourceAddress, to: destinationAddress, maximumByteCount: maximumByteCount)
+  }
+  func memoryAccessRanges(
+    at address: UInt64, byteCount: Int, access: DoryX86MemoryAccessKind
+  ) throws -> [Range<UInt64>]? {
+    try backing.memoryAccessRanges(at: address, byteCount: byteCount, access: access)
   }
 }
 
