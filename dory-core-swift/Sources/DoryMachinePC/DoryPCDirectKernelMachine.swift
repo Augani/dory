@@ -627,6 +627,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   /// them through the execution gate and must rendezvous every submitted slice before returning.
   private let vcpuRuntime: DoryPCVCPURuntime
   private let pendingWorkWake = DoryPCPendingWorkWake()
+  private let translationInvalidationCoordinator: DoryPCTranslationInvalidationCoordinator
   // `run` reserves the execution gate while transferring ownership to dedicated workers.
   // No mutex remains held during guest execution. Observability must not
   // contend for that lock: a lifecycle telemetry request is served on another queue while the VM
@@ -652,6 +653,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   // it cannot affect architectural behavior or cache correctness.
   private var jitHotness = [JITHotnessEntry](repeating: .init(), count: 1 << 16)
   private let translatedMemories: [DoryX86TranslatedMemory]
+  private var reconciledPagingInvalidationSequences: [UInt64]
   private var interpreterInstructionCount: UInt64 = 0
   private var baselineJITInstructionCount: UInt64 = 0
   private var baselineJITBlockCount: UInt64 = 0
@@ -762,6 +764,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       processorCount: processorCount,
       instrumentationEnabled: instrumentationEnabled
     )
+    translationInvalidationCoordinator = .init(processorCount: processorCount)
+    reconciledPagingInvalidationSequences = .init(repeating: 0, count: processorCount)
     publishedHostExecutionDiagnostics = .init(
       enabled: instrumentationEnabled,
       runCalls: 0,
@@ -1347,6 +1351,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       }
       var completed: UInt64 = 0
       while completed < maximumInstructions {
+        reconcilePendingPageTableWrites()
         let pendingWorkGeneration = pendingWorkWake.snapshot()
         if let stop = powerStop(instructionCount: completed) { return stop }
         if instrumentationEnabled {
@@ -1480,6 +1485,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           }
           pendingWorkWake.setDispatchThread(Thread.current)
         }
+        reconcileTranslationInvalidations(afterExecuting: processor)
         completed += execution.instructionCount
         recordExecution(execution)
         if instrumentationEnabled {
@@ -1856,15 +1862,86 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     let jitBlockCount: UInt64
   }
 
+  /// Publishes page-table writes that did not themselves execute an architectural invalidation.
+  /// The execution gate has rendezvoused every submitted worker before this method is called, so
+  /// applying and acknowledging the global flush here is synchronous with respect to every vCPU.
+  func reconcilePendingPageTableWrites() {
+    guard translatedMemories.first?.consumePendingPageTableWrite() == true else { return }
+    publishTranslationInvalidation(
+      sourceProcessor: nil,
+      sourceAlreadyInvalidated: false,
+      linearAddress: nil)
+  }
+
+  /// Imports one vCPU's architectural paging invalidation and acknowledges it on every remote
+  /// paging unit and native TLB before the coordinator can dispatch another guest access.
+  func reconcileTranslationInvalidations(afterExecuting processor: Int) {
+    guard pagingUnits.indices.contains(processor) else { return }
+    if translatedMemories[processor].consumePendingPageTableWrite() {
+      publishTranslationInvalidation(
+        sourceProcessor: nil,
+        sourceAlreadyInvalidated: false,
+        linearAddress: nil)
+      return
+    }
+    let snapshot = pagingUnits[processor].invalidationSnapshot
+    let previous = reconciledPagingInvalidationSequences[processor]
+    guard snapshot.sequence != previous else { return }
+    let next = previous.addingReportingOverflow(1)
+    let linearAddress =
+      !next.overflow && next.partialValue == snapshot.sequence
+      ? snapshot.linearAddress : nil
+    publishTranslationInvalidation(
+      sourceProcessor: processor,
+      sourceAlreadyInvalidated: true,
+      linearAddress: linearAddress)
+  }
+
+  var translationInvalidationDiagnostics:
+    DoryPCTranslationInvalidationCoordinator.Diagnostics
+  {
+    translationInvalidationCoordinator.diagnostics
+  }
+
+  private func publishTranslationInvalidation(
+    sourceProcessor: Int?,
+    sourceAlreadyInvalidated: Bool,
+    linearAddress: UInt64?
+  ) {
+    let publication = translationInvalidationCoordinator.publish(linearAddress: linearAddress)
+    for processor in pagingUnits.indices {
+      guard let pending = translationInvalidationCoordinator.pending(for: processor) else {
+        continue
+      }
+      if !sourceAlreadyInvalidated || processor != sourceProcessor {
+        if let linearAddress = pending.linearAddress {
+          pagingUnits[processor].invalidate(linearAddress: linearAddress)
+        } else {
+          pagingUnits[processor].invalidateAll()
+        }
+      }
+      if baselineJITs.indices.contains(processor) {
+        baselineJITs[processor].synchronizeTranslationCache(with: pagingUnits[processor])
+      }
+      if optimizingJITs.indices.contains(processor) {
+        optimizingJITs[processor].synchronizeTranslationCache(with: pagingUnits[processor])
+      }
+      translationInvalidationCoordinator.acknowledge(
+        processor: processor,
+        generation: pending.generation)
+    }
+    translationInvalidationCoordinator.wait(for: publication)
+    reconciledPagingInvalidationSequences = pagingUnits.map {
+      $0.invalidationSnapshot.sequence
+    }
+  }
+
   private func execute(
     processor: Int,
     state: inout DoryX86ArchitecturalState,
     maximumInstructions: UInt64,
     jitInstructionBudget: Int?
   ) throws -> ProcessorExecution {
-    if translatedMemories[processor].consumePendingPageTableWrite() {
-      for pagingUnit in pagingUnits { pagingUnit.invalidateAll() }
-    }
     let mode = executionMode(state)
     var deoptimizedPrefix: DoryARM64ExecutionSummary?
     var attemptedJIT: DoryARM64BaselineExecutor?
