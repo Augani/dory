@@ -34,6 +34,8 @@ public struct DoryARM64RawTargetPredictionOptions: OptionSet, Sendable, Hashable
   public static let directChain: Self = [.legacyDirectChain, .tier1DirectChain]
   public static let indirectBranchTargetCache = Self(rawValue: 1 << 2)
   public static let shadowReturnStack = Self(rawValue: 1 << 3)
+  /// Enables every raw host-address predictor for bounded engineering experiments. This is not a
+  /// production default: combined direct sources have reproduced guest corruption in Linux.
   public static let all: Self = [.directChain, .indirectBranchTargetCache, .shadowReturnStack]
 }
 
@@ -381,7 +383,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.byteOffset
   private static let chainLastGuestRIPOffset =
     DoryARM64Tier1ABI.ContextWord.chainLastGuestRIP.byteOffset
-  private static let ibtcEntriesBaseOffset = DoryARM64Tier1ABI.ContextWord.ibtcEntriesBase.byteOffset
+  private static let ibtcEntriesBaseOffset = DoryARM64Tier1ABI.ContextWord.ibtcEntriesBase
+    .byteOffset
   private static let ibtcEntryMaskOffset = DoryARM64Tier1ABI.ContextWord.ibtcEntryMask.byteOffset
   private static let ibtcGenerationOffset = DoryARM64Tier1ABI.ContextWord.ibtcGeneration.byteOffset
   private static let ibtcInlineHitsOffset = DoryARM64Tier1ABI.ContextWord.ibtcInlineHits.byteOffset
@@ -538,7 +541,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         emitMemoryEpilogue(into: &words)
       }
     }
-    let chainSlots = hasChainSlots
+    let chainSlots =
+      hasChainSlots
       ? emitChainSlots(for: block.terminator, into: &words)
       : []
     if case .returnFromCall(let popBytes) = block.terminator, hasIndirectChain {
@@ -5306,9 +5310,10 @@ private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address
   let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
   guard !context.pointee.failed else { return 0 }
   do {
-    let requiresRestartableReads = context.pointee.executionContext.map {
-      $0[DoryARM64Tier1ABI.ContextWord.requiresRestartableMemoryReads.rawValue] != 0
-    } ?? context.pointee.requiresRestartableReads
+    let requiresRestartableReads =
+      context.pointee.executionContext.map {
+        $0[DoryARM64Tier1ABI.ContextWord.requiresRestartableMemoryReads.rawValue] != 0
+      } ?? context.pointee.requiresRestartableReads
     if requiresRestartableReads {
       guard let restartableScalarMemory = context.pointee.capabilities.restartableScalarMemory,
         let value = try restartableScalarMemory.readRestartableScalar(
@@ -5764,7 +5769,9 @@ public struct DoryARM64InterpreterFallbackCounters: Codable, Sendable, Hashable 
       guard let rhs = $1.site else { return false }
       if lhs.guestRIP != rhs.guestRIP { return lhs.guestRIP < rhs.guestRIP }
       if lhs.addressSpaceID != rhs.addressSpaceID { return lhs.addressSpaceID < rhs.addressSpaceID }
-      if lhs.executionMode != rhs.executionMode { return lhs.executionMode.rawValue < rhs.executionMode.rawValue }
+      if lhs.executionMode != rhs.executionMode {
+        return lhs.executionMode.rawValue < rhs.executionMode.rawValue
+      }
       if lhs.privilegeLevel != rhs.privilegeLevel { return lhs.privilegeLevel < rhs.privilegeLevel }
       if lhs.pagingEnabled != rhs.pagingEnabled { return !lhs.pagingEnabled }
       return lhs.declineReason.rawValue < rhs.declineReason.rawValue
@@ -5780,17 +5787,20 @@ public struct DoryARM64InterpreterFallbackCounters: Codable, Sendable, Hashable 
 
   /// Missing sites are regressions too: cache eviction must never erase executed-work evidence.
   public func hasRegression(since start: Self) -> Bool {
-    let endCounts = Dictionary(work.map { ($0.site, $0.retiredInstructions) }, uniquingKeysWith: max)
+    let endCounts = Dictionary(
+      work.map { ($0.site, $0.retiredInstructions) }, uniquingKeysWith: max)
     return start.work.contains { endCounts[$0.site, default: 0] < $0.retiredInstructions }
   }
 
   public func delta(since start: Self) -> Self? {
     guard !hasRegression(since: start) else { return nil }
-    let startCounts = Dictionary(start.work.map { ($0.site, $0.retiredInstructions) }, uniquingKeysWith: max)
-    return .init(work: work.compactMap {
-      let count = $0.retiredInstructions - startCounts[$0.site, default: 0]
-      return count > 0 ? .init(site: $0.site, retiredInstructions: count) : nil
-    })
+    let startCounts = Dictionary(
+      start.work.map { ($0.site, $0.retiredInstructions) }, uniquingKeysWith: max)
+    return .init(
+      work: work.compactMap {
+        let count = $0.retiredInstructions - startCounts[$0.site, default: 0]
+        return count > 0 ? .init(site: $0.site, retiredInstructions: count) : nil
+      })
   }
 }
 
@@ -6533,8 +6543,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     lock.withLock {
       let victims = residentSlots.compactMap { slot -> LookupKey? in
         guard let slot, slot.key.addressSpaceID == addressSpaceID else { return nil }
-        let blockRange = slot.key.guestStart..<(
-          slot.key.guestStart &+ UInt64(slot.resident.block.guestByteCount))
+        let blockRange =
+          slot.key.guestStart..<(slot.key.guestStart &+ UInt64(slot.resident.block.guestByteCount))
         return blockRange.overlaps(guestRange) ? slot.key : nil
       }
       for key in victims { removeResident(for: key) }
@@ -6567,8 +6577,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     privilegeLevel: UInt8
   ) -> UInt64 {
     let pagingPrivilegeLevel = privilegeLevel & 3
-    guard currentTLBAddressSpaceID != addressSpaceID
-      || currentTLBPrivilegeLevel != pagingPrivilegeLevel
+    guard
+      currentTLBAddressSpaceID != addressSpaceID
+        || currentTLBPrivilegeLevel != pagingPrivilegeLevel
     else { return translationTLBGeneration }
     if currentTLBAddressSpaceID != nil {
       if translationTLBGeneration == DoryX86JITTLB.maximumAddressSpaceGeneration {
@@ -6744,22 +6755,24 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     if failedContext[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointActive.rawValue] != 0 {
       recoveredContext[DoryARM64Tier1ABI.ContextWord.rflags.rawValue] =
         failedContext[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRFlags.rawValue]
-      let registerMask = UInt16(truncatingIfNeeded:
-        failedContext[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRegisterMask.rawValue])
+      let registerMask = UInt16(
+        truncatingIfNeeded:
+          failedContext[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRegisterMask.rawValue])
       let checkpointBase = DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRAX.rawValue
       for registerIndex in 0..<16 where registerMask & (UInt16(1) << registerIndex) != 0 {
         recoveredContext[registerIndex] = failedContext[checkpointBase + registerIndex]
       }
     }
     guard
-      let chainInstructionCount = Int(exactly:
-        failedContext[DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue]),
-      let chainBlockCount = Int(exactly:
-        failedContext[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue])
+      let chainInstructionCount = Int(
+        exactly:
+          failedContext[DoryARM64Tier1ABI.ContextWord.chainRetiredInstructions.rawValue]),
+      let chainBlockCount = Int(
+        exactly:
+          failedContext[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue])
     else { return nil }
     for index in context.indices
-    where index != DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue
-    {
+    where index != DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue {
       context[index] = recoveredContext[index]
     }
     context[DoryARM64Tier1ABI.ContextWord.rip.rawValue] = metadata.guestRIP
@@ -6875,10 +6888,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           )
           var completed = 0
           var blockCount = 0
-          guard let tracePhysicalStart = resolvePhysicalStart(
-            at: guestStart,
-            using: physicalRIPProvider
-          ) else { return nil }
+          guard
+            let tracePhysicalStart = resolvePhysicalStart(
+              at: guestStart,
+              using: physicalRIPProvider
+            )
+          else { return nil }
           let traceKey = makeLookupKey(
             guestStart: guestStart,
             physicalStart: tracePhysicalStart,
@@ -7097,8 +7112,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                   // first instruction (for example flags computed before a rejected RMW store).
                   // Its exact entry state is the dispatcher checkpoint.
                   for index in context.indices
-                  where index != DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue
-                  {
+                  where index != DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue {
                     context[index] = checkpoint[index]
                   }
                 }
@@ -7116,8 +7130,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 )
               }
               for index in context.indices
-              where index != DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue
-              {
+              where index != DoryARM64Tier1ABI.ContextWord.pendingWork.rawValue {
                 context[index] = checkpoint[index]
               }
               guard completed > 0 else { return nil }
@@ -7483,10 +7496,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   ) throws -> ResidentBlock? {
     let compilationInstructionBudget = min(
       maximumInstructions, Self.maximumResidentInstructionBudget)
-    guard let physicalStart = resolvePhysicalStart(
-      at: guestStart,
-      using: physicalRIPProvider
-    ) else { return nil }
+    guard
+      let physicalStart = resolvePhysicalStart(
+        at: guestStart,
+        using: physicalRIPProvider
+      )
+    else { return nil }
     let key = makeLookupKey(
       guestStart: guestStart,
       physicalStart: physicalStart,
@@ -7552,9 +7567,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }
     func reportDecline(_ reason: DoryARM64CompilationDeclineReason) {
       guard tier1Enabled else { return }
-      onCompilationDecline?(.init(
-        guestRIP: guestStart, executionMode: mode, addressSpaceID: addressSpaceID,
-        privilegeLevel: key.privilegeLevel, pagingEnabled: key.pagingEnabled, declineReason: reason))
+      onCompilationDecline?(
+        .init(
+          guestRIP: guestStart, executionMode: mode, addressSpaceID: addressSpaceID,
+          privilegeLevel: key.privilegeLevel, pagingEnabled: key.pagingEnabled,
+          declineReason: reason))
     }
     if let entry = negativeCacheHit(
       for: negativeKey,
@@ -7656,12 +7673,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     codeCacheWrapCount &+= 1
   }
 
-#if DEBUG
-  /// Narrow test seam for source-authority validation immediately after a generation rotates.
-  /// The hook is called while executor state is locked, so it must not query the executor; tests
-  /// use it only to mutate their independent byte/generation source before final confirmation.
-  internal var codeCacheRotationPrePublicationHookForTesting: (() -> Void)?
-#endif
+  #if DEBUG
+    /// Narrow test seam for source-authority validation immediately after a generation rotates.
+    /// The hook is called while executor state is locked, so it must not query the executor; tests
+    /// use it only to mutate their independent byte/generation source before final confirmation.
+    internal var codeCacheRotationPrePublicationHookForTesting: (() -> Void)?
+  #endif
 
   private func compileResident(
     key: LookupKey,
@@ -7802,7 +7819,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     } else {
       tier1Compiled = nil
     }
-    let compiled = tier1Compiled
+    let compiled =
+      tier1Compiled
       ?? emitter.compile(
         block,
         tier: optimization == .optimizing ? .optimizing : .baseline,
@@ -7830,22 +7848,25 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
     let activeRange = codeCacheGenerationRange(activeCodeCacheGeneration)
-    let rotatesCodeCache = codeCacheGenerationNextOffsets[activeCodeCacheGeneration]
+    let rotatesCodeCache =
+      codeCacheGenerationNextOffsets[activeCodeCacheGeneration]
       > activeRange.upperBound - byteCount
     if rotatesCodeCache {
       rotateCodeCacheGeneration()
     }
-#if DEBUG
-    if rotatesCodeCache { codeCacheRotationPrePublicationHookForTesting?() }
-#endif
+    #if DEBUG
+      if rotatesCodeCache { codeCacheRotationPrePublicationHookForTesting?() }
+    #endif
     // Cache rotation can run arbitrary resident-retirement plumbing while guest/device code is
     // still mutable. Keep this exact-byte and generation check as the final authority before
     // generated bytes, the code-cache offset, or resident visibility can change.
-    guard let sourceValidation = try validateResidentCompilationSource(
-      guestBytes,
-      byteProvider: byteProvider,
-      codeGenerationProvider: codeGenerationProvider
-    ) else { return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil) }
+    guard
+      let sourceValidation = try validateResidentCompilationSource(
+        guestBytes,
+        byteProvider: byteProvider,
+        codeGenerationProvider: codeGenerationProvider
+      )
+    else { return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil) }
     let offset = codeCacheGenerationNextOffsets[activeCodeCacheGeneration]
     try region.publish(compiled, at: offset)
     codeCacheGenerationNextOffsets[activeCodeCacheGeneration] += byteCount
@@ -8440,11 +8461,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       chainTargetSourceShapeRejectionCount &+= 1
       return
     }
-    guard admitRuntimeChainTarget(
-      from: source,
-      to: target,
-      memoryCallbacksAvailable: memoryCallbacksAvailable
-    ) else { return }
+    guard
+      admitRuntimeChainTarget(
+        from: source,
+        to: target,
+        memoryCallbacksAvailable: memoryCallbacksAvailable
+      )
+    else { return }
     if let existing = source.outgoingLinks[slot.machineWordIndex] {
       if existing.target === target {
         chainTargetAcceptCount &+= 1
@@ -8478,11 +8501,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       chainTargetSourceShapeRejectionCount &+= 1
       return
     }
-    guard admitRuntimeChainTarget(
-      from: source,
-      to: target,
-      memoryCallbacksAvailable: memoryCallbacksAvailable
-    ) else { return }
+    guard
+      admitRuntimeChainTarget(
+        from: source,
+        to: target,
+        memoryCallbacksAvailable: memoryCallbacksAvailable
+      )
+    else { return }
     guard let hostAddress = region.entryAddress(at: target.offset) else {
       chainTargetPublicationRejectionCount &+= 1
       return

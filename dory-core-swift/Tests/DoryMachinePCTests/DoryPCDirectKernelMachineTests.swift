@@ -1,10 +1,18 @@
+import DoryDBTX86
 import Foundation
 import Testing
-import DoryDBTX86
 
 @testable import DoryMachinePC
 
 @Suite struct DoryPCDirectKernelMachineTests {
+  @Test func productionPredictorDefaultExcludesRejectedCombinedSources() {
+    let options = DoryPCDirectKernelMachine.defaultRawTargetPredictionOptions
+    #expect(options == .tier1DirectChain)
+    #expect(!options.contains(.legacyDirectChain))
+    #expect(!options.contains(.indirectBranchTargetCache))
+    #expect(!options.contains(.shadowReturnStack))
+  }
+
   @Test(arguments: [UInt64(2), 3, 5])
   func hostWorkersOverlapOnFrozenRegistersAndJoinAtGlobalBudget(budget: UInt64) throws {
     let machine = try workerMachine(clock: .hostMonotonic { 0 })
@@ -39,12 +47,16 @@ import DoryDBTX86
   }
 
   @Test(arguments: [DoryPCPowerAction.powerOff, .reset])
-  func powerStopsOverlappingWorkersAndFrozenFetchSurvivesRAMChange(action: DoryPCPowerAction) throws {
+  func powerStopsOverlappingWorkersAndFrozenFetchSurvivesRAMChange(action: DoryPCPowerAction) throws
+  {
     let machine = try workerMachine(clock: .hostMonotonic { 0 })
     let probe = HostWorkerProbe(hold: true)
     machine.observeWorkers { probe.observe($0) }
     let run = HaltedMachineRun(machine: machine, maximumInstructions: 20)
-    defer { probe.release(); machine.powerController.request(.powerOff) }
+    defer {
+      probe.release()
+      machine.powerController.request(.powerOff)
+    }
     try #require(probe.arrived.wait(timeout: .now() + 2) == .success)
     // Both vCPUs have fetched and parked inside their concurrent execution boundaries.
     // Their memory adapters are frozen, so these writes cannot change either admitted MOV.
@@ -52,8 +64,10 @@ import DoryDBTX86
     try machine.memory.write(at: 0x8000, bytes: [0x0F, 0x0B])
     machine.powerController.request(action)
     probe.release()
-    #expect(try run.finish() == (action == .reset
-      ? .reset(instructionCount: 2) : .poweredOff(instructionCount: 2)))
+    #expect(
+      try run.finish()
+        == (action == .reset
+          ? .reset(instructionCount: 2) : .poweredOff(instructionCount: 2)))
     #expect(machine.state(forProcessor: 0)?.registers.rax == 1)
     #expect(machine.state(forProcessor: 1)?.registers.rax == 2)
     #expect(probe.snapshot().active == 0)
@@ -67,16 +81,20 @@ import DoryDBTX86
     let probe = HostWorkerProbe(hold: true)
     machine.observeWorkers { probe.observe($0) }
     let run = HaltedMachineRun(machine: machine, maximumInstructions: 4)
-    defer { probe.release(); machine.powerController.request(.powerOff) }
+    defer {
+      probe.release()
+      machine.powerController.request(.powerOff)
+    }
     try #require(probe.arrived.wait(timeout: .now() + 2) == .success)
     try machine.multiprocessorController.handleInterruptCommand(
       sourceAPICID: 0, high: 1 << 24, low: 5 << 8)
     try machine.multiprocessorController.handleInterruptCommand(
       sourceAPICID: 0, high: 1 << 24, low: 6 << 8 | 9)
     #expect(machine.multiprocessorController.drainEvents(forAPICID: 0).isEmpty)
-    #expect(machine.multiprocessorController.snapshot().pendingEvents == [
-      .initialize(apicID: 1), .startup(apicID: 1, vector: 9),
-    ])
+    #expect(
+      machine.multiprocessorController.snapshot().pendingEvents == [
+        .initialize(apicID: 1), .startup(apicID: 1, vector: 9),
+      ])
     probe.release()
     #expect(try run.finish() == .instructionBudget(4))
     #expect(machine.state(forProcessor: 0)?.registers.rax == 1)
@@ -120,7 +138,7 @@ import DoryDBTX86
     let mode: DoryX86ExecutionMode = is32Bit ? .protected32 : .protected16
     let code: [UInt8] = isMove ? (is32Bit ? [0xB8, 1, 2, 3, 4] : [0xB8, 1, 2]) : [0x90]
     var initial = try #require(machine.state)
-    initial.rip = 0x10100 // Protected16 also uses the interpreter's 32-bit fetch offset mask.
+    initial.rip = 0x10100  // Protected16 also uses the interpreter's 32-bit fetch offset mask.
     initial.registers.rax = 0x1234
     initial.cs.base = 0x17_0000
     initial.cs.attributes = is32Bit ? 0xC09B : 0x009B
@@ -140,7 +158,9 @@ import DoryDBTX86
     }
     #expect(valid.rip == initial.rip + UInt64(code.count))
 
-    for invalidity in ["notPresent", "systemSegment", "notExecutable", "offsetBeyondLimit", "spanBeyondLimit"] {
+    for invalidity in [
+      "notPresent", "systemSegment", "notExecutable", "offsetBeyondLimit", "spanBeyondLimit",
+    ] {
       var invalid = initial
       switch invalidity {
       case "notPresent": invalid.cs.attributes &= ~UInt16(0x80)
@@ -173,16 +193,20 @@ import DoryDBTX86
       memoryBytes: 2 * 1024 * 1024, processorCount: 2,
       clockSource: .hostMonotonic { 0 })
     // Load a byte-granular code descriptor, then jump to its base at 0x180000.
-    try machine.load(kernel: makeELF(code: [
-      0x0F, 0x01, 0x15, 0x00, 0x00, 0x08, 0x00, // lgdt [0x80000]
-      0xEA, 0, 0, 0, 0, 8, 0, // jmp 8:0
-    ]), commandLine: "x")
+    try machine.load(
+      kernel: makeELF(code: [
+        0x0F, 0x01, 0x15, 0x00, 0x00, 0x08, 0x00,  // lgdt [0x80000]
+        0xEA, 0, 0, 0, 0, 8, 0,  // jmp 8:0
+      ]), commandLine: "x")
     try machine.memory.write(at: 0x80000, bytes: [0x0F, 0, 0, 0x20, 8, 0])
-    try machine.memory.write(at: 0x82000, bytes: [
-      0, 0, 0, 0, 0, 0, 0, 0,
-      isMove ? 1 : 0, 0, 0, 0, 0x18, 0x9B, 0x40, 0,
-    ])
-    try machine.memory.write(at: 0x180000,
+    try machine.memory.write(
+      at: 0x82000,
+      bytes: [
+        0, 0, 0, 0, 0, 0, 0, 0,
+        isMove ? 1 : 0, 0, 0, 0, 0x18, 0x9B, 0x40, 0,
+      ])
+    try machine.memory.write(
+      at: 0x180000,
       bytes: isMove ? [0xB8, 1, 2, 3, 4] : [0x90, 0x90])
     // For NOP, retire the byte at the limit so the next fetch starts beyond it.
     let setupBudget: UInt64 = isMove ? 2 : 3
@@ -231,7 +255,8 @@ import DoryDBTX86
   }
 
   @Test(arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT], [UInt64(2), 3, 5])
-  func nativeWorkersOverlapFrozenRegistersAndJoin(tier: DoryPCExecutionTier, budget: UInt64) throws {
+  func nativeWorkersOverlapFrozenRegistersAndJoin(tier: DoryPCExecutionTier, budget: UInt64) throws
+  {
     #if arch(arm64)
       let machine = try nativeWorkerMachine(tier: tier)
       let before = machine.executionStatistics
@@ -250,8 +275,9 @@ import DoryDBTX86
       #expect(machine.state(forProcessor: 1)?.registers.rax == 2)
       let after = machine.executionStatistics
       #expect(after.interpreterInstructions == before.interpreterInstructions)
-      #expect(after.baselineJITInstructions + after.optimizingJITInstructions
-        - before.baselineJITInstructions - before.optimizingJITInstructions == budget)
+      #expect(
+        after.baselineJITInstructions + after.optimizingJITInstructions
+          - before.baselineJITInstructions - before.optimizingJITInstructions == budget)
       if tier == .optimizingJIT {
         #expect(after.optimizingJITInstructions - before.optimizingJITInstructions == budget)
       }
@@ -275,18 +301,25 @@ import DoryDBTX86
     #endif
   }
 
-  @Test(arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT], ["pending", "timer", "ipi", "startup"])
-  func nativeOverlapExitsForTargetedWorkAndResumes(tier: DoryPCExecutionTier, source: String) throws {
+  @Test(
+    arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT],
+    ["pending", "timer", "ipi", "startup"])
+  func nativeOverlapExitsForTargetedWorkAndResumes(tier: DoryPCExecutionTier, source: String) throws
+  {
     #if arch(arm64)
       let machine = try nativeWorkerMachine(tier: tier)
-      let entries = (machine.baselineJITDiagnostics?.nativeDispatcherEntries ?? 0)
+      let entries =
+        (machine.baselineJITDiagnostics?.nativeDispatcherEntries ?? 0)
         + (machine.optimizingJITDiagnostics?.nativeDispatcherEntries ?? 0)
       try machine.memory.write(at: 0xA000, bytes: [0xB8, 3, 0])
       let probe = HostWorkerProbe(hold: true)
       machine.observeWorkers { probe.observe($0) }
       try machine.localAPICs[1].configureSpuriousVector(0xFF, softwareEnabled: true)
       let run = HaltedMachineRun(machine: machine, maximumInstructions: 2)
-      defer { probe.release(); machine.powerController.request(.powerOff) }
+      defer {
+        probe.release()
+        machine.powerController.request(.powerOff)
+      }
       try #require(probe.arrived.wait(timeout: .now() + 2) == .success)
       // Both owning executors have passed their Swift pending check and are fetching frozen
       // bytes. Publish to AP's atomic pending byte before its generated entry poll executes.
@@ -322,7 +355,8 @@ import DoryDBTX86
         #expect(machine.state(forProcessor: 1)?.rip == 0x9000)
         #expect(machine.localAPICs[1].snapshot().interruptRequest.contains(0x30))
       }
-      let finalEntries = (machine.baselineJITDiagnostics?.nativeDispatcherEntries ?? 0)
+      let finalEntries =
+        (machine.baselineJITDiagnostics?.nativeDispatcherEntries ?? 0)
         + (machine.optimizingJITDiagnostics?.nativeDispatcherEntries ?? 0)
       // Two native entries for the overlapping pair, then one serial BSP instruction.
       #expect(finalEntries - entries == 3)
@@ -341,7 +375,10 @@ import DoryDBTX86
       let probe = HostWorkerProbe(hold: true)
       machine.observeWorkers { probe.observe($0) }
       let run = HaltedMachineRun(machine: machine, maximumInstructions: 2)
-      defer { probe.release(); machine.powerController.request(.powerOff) }
+      defer {
+        probe.release()
+        machine.powerController.request(.powerOff)
+      }
       try #require(probe.arrived.wait(timeout: .now() + 2) == .success)
       try machine.memory.write(at: 0x10_0000, bytes: [0x0F, 0x0B])
       try machine.memory.write(at: 0x9000, bytes: [0x0F, 0x0B])
@@ -356,7 +393,8 @@ import DoryDBTX86
     #endif
   }
 
-  @Test(arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT],
+  @Test(
+    arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT],
     [DoryPCPowerAction.powerOff, .reset])
   func nativeOverlapPowerExitJoinsWithoutRetiringFrozenWork(
     tier: DoryPCExecutionTier, action: DoryPCPowerAction
@@ -368,12 +406,17 @@ import DoryDBTX86
         let probe = HostWorkerProbe(hold: true)
         machine.observeWorkers { probe.observe($0) }
         let run = HaltedMachineRun(machine: machine, maximumInstructions: 20)
-        defer { probe.release(); machine.powerController.request(.powerOff) }
+        defer {
+          probe.release()
+          machine.powerController.request(.powerOff)
+        }
         try #require(probe.arrived.wait(timeout: .now() + 2) == .success)
         machine.powerController.request(action)
         probe.release()
-        #expect(try run.finish() == (action == .reset
-          ? .reset(instructionCount: 0) : .poweredOff(instructionCount: 0)))
+        #expect(
+          try run.finish()
+            == (action == .reset
+              ? .reset(instructionCount: 0) : .poweredOff(instructionCount: 0)))
         let result = probe.snapshot()
         #expect(result.nativeRetirements[0] == [0])
         #expect(result.nativeRetirements[1] == [0])
@@ -388,11 +431,13 @@ import DoryDBTX86
     #endif
   }
 
-  @Test(arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT],
+  @Test(
+    arguments: [DoryPCExecutionTier.baselineJIT, .optimizingJIT],
     ["memory", "branch", "exception", "deterministic"])
   func nativeDangerousShapesStaySerial(tier: DoryPCExecutionTier, shape: String) throws {
     #if arch(arm64)
-      let machine = try nativeWorkerMachine(tier: tier,
+      let machine = try nativeWorkerMachine(
+        tier: tier,
         clock: shape == "deterministic" ? .deterministic : .hostMonotonic { 0 })
       switch shape {
       case "memory": try machine.memory.write(at: 0x10_0000, bytes: [0xA1, 1, 0x90, 0, 0])
@@ -410,7 +455,9 @@ import DoryDBTX86
         }
         #expect(count == 0)
         #expect(machine.state(forProcessor: 1)?.rip == 0x9000)
-      } else { #expect(stop == .instructionBudget(2)) }
+      } else {
+        #expect(stop == .instructionBudget(2))
+      }
       #expect(probe.snapshot().maximumActive == 1)
       #expect(probe.snapshot().nativeRetirements.isEmpty)
       #expect(probe.snapshot().active == 0)
@@ -427,16 +474,20 @@ import DoryDBTX86
       clockSource: clock, instrumentationEnabled: true)
     try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
     try machine.memory.write(at: 0x6006, bytes: [0x0F, 0, 0, 0x62, 0, 0])
-    try machine.memory.write(at: 0x6200, bytes: [
-      0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0, 0, 0, 0x9B, 0xCF, 0,
-    ])
-    try machine.memory.write(at: 0x8000, bytes: [
-      0x66, 0x0F, 0x01, 0x16, 6, 0x60, // lgdt [0x6006]
-      0x66, 0x0F, 0x20, 0xC0, // mov eax,cr0
-      0x66, 0x83, 0xC8, 1, // or eax,1
-      0x66, 0x0F, 0x22, 0xC0, // mov cr0,eax
-      0x66, 0xEA, 0, 0x90, 0, 0, 8, 0, // jmp 8:0x9000 (flat protected32)
-    ])
+    try machine.memory.write(
+      at: 0x6200,
+      bytes: [
+        0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0, 0, 0, 0x9B, 0xCF, 0,
+      ])
+    try machine.memory.write(
+      at: 0x8000,
+      bytes: [
+        0x66, 0x0F, 0x01, 0x16, 6, 0x60,  // lgdt [0x6006]
+        0x66, 0x0F, 0x20, 0xC0,  // mov eax,cr0
+        0x66, 0x83, 0xC8, 1,  // or eax,1
+        0x66, 0x0F, 0x22, 0xC0,  // mov cr0,eax
+        0x66, 0xEA, 0, 0x90, 0, 0, 8, 0,  // jmp 8:0x9000 (flat protected32)
+      ])
     try machine.multiprocessorController.handleInterruptCommand(
       sourceAPICID: 0, high: 1 << 24, low: 6 << 8 | 8)
     for step in 0..<10 {
@@ -521,13 +572,16 @@ import DoryDBTX86
     case "hostPowerOff": machine.powerController.request(.powerOff)
     case "hostReset": machine.powerController.request(.reset)
     case "pmPowerOff":
-      try machine.ioBus.write(port: DoryPCPowerController.pm1ControlPort,
+      try machine.ioBus.write(
+        port: DoryPCPowerController.pm1ControlPort,
         value: UInt32(DoryPCPowerController.softOffSleepType << 10 | 1 << 13), width: .word)
     default:
-      try machine.ioBus.write(port: DoryPCPowerController.resetPort,
+      try machine.ioBus.write(
+        port: DoryPCPowerController.resetPort,
         value: UInt32(DoryPCPowerController.resetValue), width: .byte)
     }
-    let expected: DoryPCMachineStop = source == "hostReset" || source == "resetPort"
+    let expected: DoryPCMachineStop =
+      source == "hostReset" || source == "resetPort"
       ? .reset(instructionCount: 1) : .poweredOff(instructionCount: 1)
     #expect(try run.finish() == expected)
   }
@@ -538,10 +592,13 @@ import DoryDBTX86
       memoryBytes: 2 * 1024 * 1024, clockSource: .hostMonotonic)
     var code = [UInt8](repeating: 0x90, count: 0x109)
     // lidt [0x80000]; lgdt [0x80006]; sti; hlt
-    code.replaceSubrange(0..<16, with: [
-      0x0F, 0x01, 0x1D, 0, 0, 8, 0, 0x0F, 0x01, 0x15, 6, 0, 8, 0, 0xFB, 0xF4,
-    ])
-    code.replaceSubrange(0x100..<0x109,
+    code.replaceSubrange(
+      0..<16,
+      with: [
+        0x0F, 0x01, 0x1D, 0, 0, 8, 0, 0x0F, 0x01, 0x15, 6, 0, 8, 0, 0xFB, 0xF4,
+      ])
+    code.replaceSubrange(
+      0x100..<0x109,
       with: [0xB0, UInt8(ascii: "W"), 0xBA, 0xF8, 0x03, 0, 0, 0xEE, 0xF4])
     try machine.load(kernel: makeELF(code: code), commandLine: "x")
     try installProtectedTables(machine: machine, vector: source == "nmi" ? 2 : 0x30)
@@ -576,7 +633,8 @@ import DoryDBTX86
       memoryBytes: 2 * 1024 * 1024, processorCount: 2,
       clockSource: signalBeforeWait ? .hostMonotonic { clock.sample() } : .hostMonotonic)
     try machine.load(kernel: makeELF(code: [0xF4]), commandLine: "x")
-    try machine.memory.write(at: 0x8000,
+    try machine.memory.write(
+      at: 0x8000,
       bytes: [0xB0, UInt8(ascii: "A"), 0xBA, 0xF8, 0x03, 0xEE, 0xF4])
     let run = HaltedMachineRun(machine: machine, maximumInstructions: 5)
     defer {
@@ -603,7 +661,7 @@ import DoryDBTX86
   @Test func deterministicHaltWithMaskedPendingPICDoesNotSpinOrInventTicks() throws {
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
     try machine.load(kernel: makeELF(code: [0xFB, 0xF4]), commandLine: "x")
-    try machine.legacyPIC.raise(irq: 0) // reset mask keeps this pending but undeliverable
+    try machine.legacyPIC.raise(irq: 0)  // reset mask keeps this pending but undeliverable
     #expect(try machine.runOnDedicatedStack(maximumInstructions: 8) == .halted(instructionCount: 2))
     #expect(machine.state?.tsc == 200)
     #expect(machine.legacyPIC.snapshot().masterRequest == 1)
@@ -613,13 +671,14 @@ import DoryDBTX86
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
     let timeline = DoryPCBootTimeline()
     machine.serial.observeBoot(with: timeline)
-    var code: [UInt8] = [0xBA, 0xF8, 0x03, 0, 0] // mov edx, 0x3f8
-    for byte in "Linux version ".utf8 { code += [0xB0, byte, 0xEE] } // mov al; out dx, al
+    var code: [UInt8] = [0xBA, 0xF8, 0x03, 0, 0]  // mov edx, 0x3f8
+    for byte in "Linux version ".utf8 { code += [0xB0, byte, 0xEE] }  // mov al; out dx, al
     code.append(0xF4)
     try machine.load(kernel: makeELF(code: code), commandLine: "x")
     _ = try machine.runOnDedicatedStack(maximumInstructions: 100)
     #expect(timeline.snapshot().events.last?.milestone == .kernel)
-    #expect(String(decoding: machine.serial.drainTransmittedBytes(), as: UTF8.self) == "Linux version ")
+    #expect(
+      String(decoding: machine.serial.drainTransmittedBytes(), as: UTF8.self) == "Linux version ")
   }
 
   @Test func diagnosticInstructionBytesFollowTheLoadedProcessor() throws {
@@ -630,7 +689,8 @@ import DoryDBTX86
     let entry = try #require(machine.state?.rip)
     #expect(try machine.memoryBytes(atLinearAddress: entry, maximumCount: 2) == [0x90, 0xF4])
     #expect(try machine.memoryBytes(atLinearAddress: entry, maximumCount: 0) == [])
-    #expect(try machine.memoryBytes(forProcessor: 1, atLinearAddress: entry, maximumCount: 1) == nil)
+    #expect(
+      try machine.memoryBytes(forProcessor: 1, atLinearAddress: entry, maximumCount: 1) == nil)
     #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
     #expect(try machine.instructionBytes(maximumCount: 1) == [0xF4])
     #expect(try machine.instructionBytes(maximumCount: 0) == [])
@@ -685,7 +745,8 @@ import DoryDBTX86
     try machine.physicalMemory.write(at: 0xFEE0_0310, bytes: [0, 0, 0, 1])
     try machine.physicalMemory.write(at: 0xFEE0_0300, bytes: [8, 6, 0, 0])
 
-    #expect(try machine.runOnDedicatedStack(maximumInstructions: 16) == .halted(instructionCount: 5))
+    #expect(
+      try machine.runOnDedicatedStack(maximumInstructions: 16) == .halted(instructionCount: 5))
     #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "A")])
     #expect(machine.state(forProcessor: 1)?.cs.base == 0x8000)
     let snapshots = machine.processorExecutionSnapshots
@@ -719,7 +780,9 @@ import DoryDBTX86
       bootLayout: layout
     )
     try faulting.load(kernel: makeELF(code: [0x0F, 0x0B]), commandLine: "x")
-    guard case .exception(let exception, let count) = try faulting.runOnDedicatedStack(maximumInstructions: 1)
+    guard
+      case .exception(let exception, let count) = try faulting.runOnDedicatedStack(
+        maximumInstructions: 1)
     else {
       Issue.record("expected invalid opcode")
       return
@@ -748,7 +811,7 @@ import DoryDBTX86
         0x66, 0x0F, 0x20, 0xC0,  // mov eax,cr0
         0x66, 0x83, 0xC8, 0x01,  // or eax,1
         0x66, 0x0F, 0x22, 0xC0,  // mov cr0,eax
-        0x0F, 0x0B, 0xF4,        // ud2; hlt
+        0x0F, 0x0B, 0xF4,  // ud2; hlt
       ]
     )
     try machine.physicalMemory.write(at: 0xFEE0_0310, bytes: [0, 0, 0, 1])
@@ -795,7 +858,8 @@ import DoryDBTX86
         commandLine: "x"
       )
 
-      #expect(try machine.runOnDedicatedStack(maximumInstructions: 8) == .halted(instructionCount: 3))
+      #expect(
+        try machine.runOnDedicatedStack(maximumInstructions: 8) == .halted(instructionCount: 3))
       #expect(machine.state?.registers.rax == 3)
       #expect(machine.executionStatistics.baselineJITInstructions == 3)
       #expect(machine.executionStatistics.baselineJITBlocks == 1)
@@ -983,7 +1047,8 @@ import DoryDBTX86
         commandLine: "x"
       )
 
-      #expect(try machine.runOnDedicatedStack(maximumInstructions: 8) == .halted(instructionCount: 4))
+      #expect(
+        try machine.runOnDedicatedStack(maximumInstructions: 8) == .halted(instructionCount: 4))
       #expect(machine.state?.registers.rax == 1)
       #expect(machine.state?.registers.rbx == 3)
       #expect(machine.executionStatistics.optimizingJITInstructions == 0)
@@ -1013,14 +1078,16 @@ import DoryDBTX86
         commandLine: "x"
       )
 
-      #expect(try machine.runOnDedicatedStack(maximumInstructions: 16) == .halted(instructionCount: 5))
+      #expect(
+        try machine.runOnDedicatedStack(maximumInstructions: 16) == .halted(instructionCount: 5))
       #expect(machine.state?.registers.rbx == 3)
       #expect(machine.executionStatistics.baselineJITInstructions == 5)
       #expect(machine.executionStatistics.baselineJITBlocks == 1)
       #expect(machine.executionStatistics.interpreterInstructions == 0)
-      #expect(machine.processorExecutionSnapshots.dropFirst().allSatisfy {
-        $0.lifecycle == .waitingForStartup
-      })
+      #expect(
+        machine.processorExecutionSnapshots.dropFirst().allSatisfy {
+          $0.lifecycle == .waitingForStartup
+        })
     #endif
   }
 
@@ -1072,7 +1139,8 @@ import DoryDBTX86
         commandLine: "x"
       )
 
-      #expect(try machine.runOnDedicatedStack(maximumInstructions: 16) == .halted(instructionCount: 7))
+      #expect(
+        try machine.runOnDedicatedStack(maximumInstructions: 16) == .halted(instructionCount: 7))
       #expect(machine.state?.registers.rax == 400)
       #expect(machine.state?.tsc == 700)
     }
@@ -1272,9 +1340,10 @@ import DoryDBTX86
     // An AP waiting for its own STARTUP remains in the architectural reset
     // state; servicing APIC 1's mailbox must not alter it to APIC 2's vector.
     #expect(snapshots[2].state?.cs.base == 0xFFFF_0000)
-    #expect(machine.multiprocessorController.drainEvents(forAPICID: 2) == [
-      .startup(apicID: 2, vector: 9)
-    ])
+    #expect(
+      machine.multiprocessorController.drainEvents(forAPICID: 2) == [
+        .startup(apicID: 2, vector: 9)
+      ])
   }
 
   @Test func pitClockScalesIdenticallyAcrossExecutionTiers() throws {
@@ -1318,7 +1387,8 @@ import DoryDBTX86
           commandLine: "x"
         )
 
-        #expect(try machine.runOnDedicatedStack(maximumInstructions: 4) == .halted(instructionCount: 2))
+        #expect(
+          try machine.runOnDedicatedStack(maximumInstructions: 4) == .halted(instructionCount: 2))
         #expect(try machine.memory.read(at: 0x100, byteCount: 4) == [1, 0, 0, 0])
         #expect(machine.executionStatistics.interpreterInstructions == 1)
       }
@@ -1356,7 +1426,8 @@ import DoryDBTX86
       ]
       try machine.load(kernel: makeELF(code: code), commandLine: "x")
 
-      #expect(try machine.runOnDedicatedStack(maximumInstructions: 32) == .halted(instructionCount: 13))
+      #expect(
+        try machine.runOnDedicatedStack(maximumInstructions: 32) == .halted(instructionCount: 13))
       #expect(try machine.ioBus.read(port: 0x61, width: .byte) & 0x01 == 1)
     }
   }
@@ -1385,7 +1456,8 @@ import DoryDBTX86
       ]
       try machine.load(kernel: makeELF(code: code), commandLine: "x")
 
-      #expect(try machine.runOnDedicatedStack(maximumInstructions: 16) == .halted(instructionCount: 6))
+      #expect(
+        try machine.runOnDedicatedStack(maximumInstructions: 16) == .halted(instructionCount: 6))
       let state = try #require(machine.state)
       #expect(state.registers.rax & 0xFF == 0xFF)
       #expect(!state.rflags.contains(.zero))
@@ -1420,7 +1492,10 @@ import DoryDBTX86
         )
         try machine.memory.write(at: 0x80000, bytes: [0x83, 0x00, 0x00, 0x00])
 
-        guard case .exception(let exception, _) = try machine.runOnDedicatedStack(maximumInstructions: 16) else {
+        guard
+          case .exception(let exception, _) = try machine.runOnDedicatedStack(
+            maximumInstructions: 16)
+        else {
           Issue.record("expected page fault")
           continue
         }
@@ -1614,28 +1689,36 @@ import DoryDBTX86
     for (timer, legacy, pin) in [(0, true, 2), (1, true, 8), (0, false, 0)] {
       let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
       var code = [UInt8](repeating: 0x90, count: 0x109)
-      code.replaceSubrange(0..<16, with: [
-        0x0F, 0x01, 0x1D, 0, 0, 8, 0, // LIDT [0x80000]
-        0x0F, 0x01, 0x15, 6, 0, 8, 0, // LGDT [0x80006]
-        0xFB, 0xF4, // STI; HLT
-      ])
-      code.replaceSubrange(0x100..<0x109, with: [
-        0xB0, UInt8(ascii: "H"), 0xBA, 0xF8, 0x03, 0, 0, 0xEE, 0xF4,
-      ])
+      code.replaceSubrange(
+        0..<16,
+        with: [
+          0x0F, 0x01, 0x1D, 0, 0, 8, 0,  // LIDT [0x80000]
+          0x0F, 0x01, 0x15, 6, 0, 8, 0,  // LGDT [0x80006]
+          0xFB, 0xF4,  // STI; HLT
+        ])
+      code.replaceSubrange(
+        0x100..<0x109,
+        with: [
+          0xB0, UInt8(ascii: "H"), 0xBA, 0xF8, 0x03, 0, 0, 0xEE, 0xF4,
+        ])
       try machine.load(kernel: makeELF(code: code), commandLine: "x")
       try installProtectedTables(machine: machine, vector: 0x30)
       try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
-      try machine.ioAPIC.configure(pin: pin,
+      try machine.ioAPIC.configure(
+        pin: pin,
         route: .init(vector: 0x30, destinationAPICID: 0, masked: false))
       #expect(machine.legacyPIC.snapshot().masterMask == 0xFF)
       #expect(machine.legacyPIC.snapshot().slaveMask == 0xFF)
-      try machine.physicalMemory.writeScalar(at: 0xFED0_0100 + UInt64(timer * 0x20),
+      try machine.physicalMemory.writeScalar(
+        at: 0xFED0_0100 + UInt64(timer * 0x20),
         value: (1 << 2), byteCount: 8)
-      try machine.physicalMemory.writeScalar(at: 0xFED0_0108 + UInt64(timer * 0x20),
+      try machine.physicalMemory.writeScalar(
+        at: 0xFED0_0108 + UInt64(timer * 0x20),
         value: 10, byteCount: 8)
       try machine.physicalMemory.writeScalar(at: 0xFED0_0010, value: legacy ? 3 : 1, byteCount: 8)
-      #expect(try machine.runOnDedicatedStack(maximumInstructions: 16, exceptionPolicy: .deliver)
-        == .halted(instructionCount: 8))
+      #expect(
+        try machine.runOnDedicatedStack(maximumInstructions: 16, exceptionPolicy: .deliver)
+          == .halted(instructionCount: 8))
       #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "H")])
       #expect(machine.executionStatistics.deliveredMaskableInterrupts == 1)
       #expect(machine.executionStatistics.deliveredNonMaskableInterrupts == 0)
@@ -1649,11 +1732,13 @@ import DoryDBTX86
   @Test func nativeQuantumStopsAtHPETLegacyDeadlineWhenOnlyGSI2CanDeliver() throws {
     #if arch(arm64)
       for tier: DoryPCExecutionTier in [.baselineJIT, .optimizingJIT] {
-        let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024,
+        let machine = try DoryPCDirectKernelMachine(
+          memoryBytes: 2 * 1024 * 1024,
           executionTier: tier, baselineJITMaximumCodeBytes: 16 * 1024)
         try machine.load(kernel: makeELF(code: [0xFB, 0xEB, 0xFE]), commandLine: "x")
         try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
-        try machine.ioAPIC.configure(pin: 2,
+        try machine.ioAPIC.configure(
+          pin: 2,
           route: .init(vector: 0x30, destinationAPICID: 0, masked: false))
         try machine.physicalMemory.writeScalar(at: 0xFED0_0100, value: 1 << 2, byteCount: 8)
         try machine.physicalMemory.writeScalar(at: 0xFED0_0108, value: 5, byteCount: 8)
@@ -1836,10 +1921,16 @@ private final class HostWorkerProbe: @unchecked Sendable {
       maximumActive = max(maximumActive, active)
     case .frozenInstructionFetch, .nativeInstructionFetch:
       parallelEntries += 1
-      if parallelEntries == 2 { arrived.signal(); condition.broadcast() }
+      if parallelEntries == 2 {
+        arrived.signal()
+        condition.broadcast()
+      }
       let deadline = Date(timeIntervalSinceNow: 2)
       while parallelEntries < 2 || (hold && !released) {
-        if !condition.wait(until: deadline) { timedOut = true; break }
+        if !condition.wait(until: deadline) {
+          timedOut = true
+          break
+        }
       }
     case .nativeInstructionExit(let processor, let retired):
       nativeRetirements[processor, default: []].append(retired)
@@ -1860,7 +1951,8 @@ private final class HostWorkerProbe: @unchecked Sendable {
   func snapshot() -> Snapshot {
     condition.lock()
     defer { condition.unlock() }
-    return .init(distinctThreads: Set(threads.values).count, maximumActive: maximumActive,
+    return .init(
+      distinctThreads: Set(threads.values).count, maximumActive: maximumActive,
       active: active, stopped: stopped, executions: order.count, order: order, timedOut: timedOut,
       nativeRetirements: nativeRetirements)
   }

@@ -261,10 +261,9 @@ public protocol DoryX86TranslatedCodeLifetimeMemory: DoryX86CodeGenerationMemory
 }
 
 /// Chooses how generated stores preserve coherence with resident guest-code translations.
-/// Production PC machines retain checked callbacks until host-page protection has passed the
-/// complete UEFI and ordinary-guest qualification campaign. The protected mode is an explicit
-/// optimization experiment: direct JIT mappings are permitted only while translated code pages
-/// are revoked read-only and invalidated before the first subsequent store.
+/// Direct JIT mappings are permitted only while translated code pages are revoked read-only and
+/// invalidated before the first subsequent store. Checked callbacks remain the conservative
+/// diagnostic fallback; every product runner records its selected policy explicitly.
 public enum DoryX86JITWriteCoherencePolicy: String, Codable, Sendable {
   case checkedCallbacks = "checked-callbacks"
   case protectedHostPages = "protected-host-pages"
@@ -348,7 +347,8 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     try self.init(baseAddress: baseAddress, bytes: bytes, allocator: .system)
   }
 
-  convenience init(baseAddress: UInt64 = 0, bytes: [UInt8], allocator: DoryX86HeapAllocator) throws {
+  convenience init(baseAddress: UInt64 = 0, bytes: [UInt8], allocator: DoryX86HeapAllocator) throws
+  {
     try self.init(baseAddress: baseAddress, byteCount: bytes.count, allocator: allocator)
     bytes.withUnsafeBufferPointer { source in
       storage.baseAddress!.update(from: source.baseAddress!, count: source.count)
@@ -374,7 +374,8 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     self.baseAddress = baseAddress
     self.byteCount = byteCount
     self.allocator = allocator
-    storage = .init(start: pointer.bindMemory(to: UInt8.self, capacity: byteCount), count: byteCount)
+    storage = .init(
+      start: pointer.bindMemory(to: UInt8.self, capacity: byteCount), count: byteCount)
   }
 
   deinit {
@@ -435,7 +436,8 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
     bytes.withUnsafeBufferPointer { source in
-      storage.baseAddress!.advanced(by: offset).update(from: source.baseAddress!, count: source.count)
+      storage.baseAddress!.advanced(by: offset).update(
+        from: source.baseAddress!, count: source.count)
     }
     markCodePagesWritten(offset: offset, byteCount: bytes.count)
   }

@@ -113,6 +113,8 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     establishes x86-64-v2/v3, hardware, hypervisor or release qualification.
     --tier1 defaults to enabled and controls tier-one admission in the baseline compiler;
     disabled is retained only for matched engineering measurements.
+    Only tier1-direct-chain has retained repeated Linux guest acceptance. Other predictor modes,
+    including all, are explicit engineering experiments and cannot close a qualification gate.
     --stress-io-directory creates a fresh 32 MiB diagnostic disk and a bounded Ethernet
     peer, with no connection to host networking. It requires --diagnostics and exactly
     io.block_flush_reopen plus io.ethernet_frame_roundtrip. The new disk is retained;

@@ -366,7 +366,8 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     negativeGenerationMismatches = sum(\.negativeGenerationMismatches)
     negativeEntryCount = sum(\.negativeEntryCount)
     let fallbackSources = sources.compactMap(\.confirmedInterpreterFallback)
-    confirmedInterpreterFallback = fallbackSources.count == sources.count
+    confirmedInterpreterFallback =
+      fallbackSources.count == sources.count
       ? .init(work: fallbackSources.flatMap(\.work)) : nil
     negativeCacheHotSites = Array(
       sources.flatMap(\.negativeCacheHotSites)
@@ -533,6 +534,12 @@ public enum DoryPCExceptionPolicy: Sendable, Hashable {
 
 /// Deterministic direct-kernel DoryPC machine shared by interpreter and translated execution tiers.
 public final class DoryPCDirectKernelMachine: @unchecked Sendable {
+  /// The only raw-target boundary with retained repeated PVH acceptance. Legacy direct sources,
+  /// the IBTC and the shadow-return stack remain explicit experiments after the combined-source
+  /// configuration reproduced guest memory corruption and an unbounded native quantum.
+  public static let defaultRawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions =
+    .tier1DirectChain
+
   private enum HostTimeCategory {
     case processorEvent
     case clockAdvancement
@@ -712,7 +719,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     executionTier: DoryPCExecutionTier = .interpreter,
     baselineJITMaximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
     baselineJITTier1Enabled: Bool = true,
-    baselineJITRawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions = .all,
+    baselineJITRawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions =
+      DoryPCDirectKernelMachine.defaultRawTargetPredictionOptions,
     jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy = .protectedHostPages,
     optimizingJITWarmupDispatches: UInt8 = 8,
     clockSource: DoryPCClockSource = .deterministic,
@@ -754,44 +762,46 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       ? max(4_096, baselineJITMaximumCodeBytes / 4)
       : baselineJITMaximumCodeBytes
     let perProcessorBaselineCodeBytes = max(4_096, baselineCodeBytes / processorCount)
-    let createdBaselineJITs: [DoryARM64BaselineExecutor] = switch executionTier {
-    case .interpreter:
-      []
-    case .baselineJIT, .optimizingJIT:
-      try (0..<processorCount).map { _ in
-        try DoryARM64BaselineExecutor(
-          maximumCodeBytes: perProcessorBaselineCodeBytes,
-          decoder: interpreter.decoder,
-          cpuProfileIdentifier: interpreter.profile.identifier,
-          physicalAddressBits: interpreter.profile.physicalAddressBits,
-          profile: interpreter.profile,
-          tier1Enabled: baselineJITTier1Enabled,
-          rawTargetPredictionOptions: baselineJITRawTargetPredictionOptions,
-          optimization: .baseline,
-          tracksInterpreterFallback: true
-        )
+    let createdBaselineJITs: [DoryARM64BaselineExecutor] =
+      switch executionTier {
+      case .interpreter:
+        []
+      case .baselineJIT, .optimizingJIT:
+        try (0..<processorCount).map { _ in
+          try DoryARM64BaselineExecutor(
+            maximumCodeBytes: perProcessorBaselineCodeBytes,
+            decoder: interpreter.decoder,
+            cpuProfileIdentifier: interpreter.profile.identifier,
+            physicalAddressBits: interpreter.profile.physicalAddressBits,
+            profile: interpreter.profile,
+            tier1Enabled: baselineJITTier1Enabled,
+            rawTargetPredictionOptions: baselineJITRawTargetPredictionOptions,
+            optimization: .baseline,
+            tracksInterpreterFallback: true
+          )
+        }
       }
-    }
     baselineJITs = createdBaselineJITs
     let optimizingCodeBytes = max(4_096, baselineJITMaximumCodeBytes * 3 / 4)
     let perProcessorOptimizingCodeBytes = max(4_096, optimizingCodeBytes / processorCount)
-    let createdOptimizingJITs: [DoryARM64BaselineExecutor] = switch executionTier {
-    case .interpreter, .baselineJIT:
-      []
-    case .optimizingJIT:
-      try (0..<processorCount).map { _ in
-        try DoryARM64BaselineExecutor(
-          maximumCodeBytes: perProcessorOptimizingCodeBytes,
-          decoder: interpreter.decoder,
-          cpuProfileIdentifier: interpreter.profile.identifier,
-          physicalAddressBits: interpreter.profile.physicalAddressBits,
-          profile: interpreter.profile,
-          rawTargetPredictionOptions: baselineJITRawTargetPredictionOptions,
-          optimization: .optimizing,
-          tracksInterpreterFallback: true
-        )
+    let createdOptimizingJITs: [DoryARM64BaselineExecutor] =
+      switch executionTier {
+      case .interpreter, .baselineJIT:
+        []
+      case .optimizingJIT:
+        try (0..<processorCount).map { _ in
+          try DoryARM64BaselineExecutor(
+            maximumCodeBytes: perProcessorOptimizingCodeBytes,
+            decoder: interpreter.decoder,
+            cpuProfileIdentifier: interpreter.profile.identifier,
+            physicalAddressBits: interpreter.profile.physicalAddressBits,
+            profile: interpreter.profile,
+            rawTargetPredictionOptions: baselineJITRawTargetPredictionOptions,
+            optimization: .optimizing,
+            tracksInterpreterFallback: true
+          )
+        }
       }
-    }
     optimizingJITs = createdOptimizingJITs
     firmwareConfiguration = DoryPCFirmwareConfiguration(
       totalRAMBytes: UInt64(memoryBytes),
@@ -860,8 +870,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     let requestPendingWorkForAllProcessors: @Sendable () -> Void = {
       [createdBaselineJITs, createdOptimizingJITs, pendingWorkWake] in
-      createdBaselineJITs.forEach { $0.requestPendingWork() }
-      createdOptimizingJITs.forEach { $0.requestPendingWork() }
+      for jit in createdBaselineJITs { jit.requestPendingWork() }
+      for jit in createdOptimizingJITs { jit.requestPendingWork() }
       pendingWorkWake.signal()
     }
     localAPICs = (0..<processorCount).map { processor in
@@ -1309,20 +1319,22 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       defer {
         // Every return and throw joins every worker before publishing or releasing the gate.
         // A sticky stop wakes an empty mailbox as well as a worker finishing bounded work.
-        workers.forEach { $0.stopFreeRun() }
-        workers.forEach { $0.requestStop() }
-        workers.forEach { $0.stopAndJoin() }
+        for worker in workers { worker.stopFreeRun() }
+        for worker in workers { worker.requestStop() }
+        for worker in workers { worker.stopAndJoin() }
         // The free-running job is the only mailbox job at shutdown. Observe its completion so a
         // future change cannot accidentally conceal a worker-side failure after the join.
         for completion in freeRunCompletions { _ = try? completion.wait() }
         for worker in workers {
           saturatingAdd(worker.executionCPUNanoseconds, to: &hostThreadCPUTime.totalNanoseconds)
           saturatingAdd(worker.eventCPUNanoseconds, to: &hostThreadCPUTime.totalNanoseconds)
-          saturatingAdd(worker.executionCPUNanoseconds, to: &hostThreadCPUTime.processorExecutionNanoseconds)
-          saturatingAdd(worker.eventCPUNanoseconds, to: &hostThreadCPUTime.processorEventNanoseconds)
+          saturatingAdd(
+            worker.executionCPUNanoseconds, to: &hostThreadCPUTime.processorExecutionNanoseconds)
+          saturatingAdd(
+            worker.eventCPUNanoseconds, to: &hostThreadCPUTime.processorEventNanoseconds)
         }
         recordTotalHostTime(since: runTimeSample)
-        physicalMemories.forEach { $0.publishDiagnostics() }
+        for memory in physicalMemories { memory.publishDiagnostics() }
         publishExecutionStatistics()
         publishHostExecutionDiagnostics()
       }
@@ -1365,8 +1377,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         if let interruptStop { return interruptStop }
         // Every pending controller and lifecycle source has crossed the dispatcher boundary. A
         // later device edge sets the byte again and is observed at the next native block entry.
-        baselineJITs.forEach { $0.clearPendingWork() }
-        optimizingJITs.forEach { $0.clearPendingWork() }
+        for jit in baselineJITs { jit.clearPendingWork() }
+        for jit in optimizingJITs { jit.clearPendingWork() }
         guard let processor = nextRunnableProcessor() else {
           let resumed: Bool
           if instrumentationEnabled {
@@ -1555,7 +1567,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     lock.withLock { workerObserver = observer }
   }
 
-  private enum WorkerError: Error { case inconsistentFrozenInstruction, inconsistentNativeInstruction }
+  private enum WorkerError: Error {
+    case inconsistentFrozenInstruction, inconsistentNativeInstruction
+  }
 
   struct ParallelInstruction: Sendable {
     let processor: Int
@@ -1591,7 +1605,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           else { return nil }
           jit = selected
         }
-        return .init(processor: processor, state: state,
+        return .init(
+          processor: processor, state: state,
           mode: mode, memory: frozen, jit: jit)
       }
       let plan = try workers[processor].awaitFreeRunAdmission()
@@ -1637,8 +1652,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     // Paging, branches, memory operands, system state and IO always rendezvous.
     let frozen = DoryPCFrozenInstructionMemory(address: address, bytes: instruction.bytes)
     var candidate = state
-    guard case .retired = interpreters[processor].step(
-      state: &candidate, memory: frozen, mode: mode)
+    guard
+      case .retired = interpreters[processor].step(
+        state: &candidate, memory: frozen, mode: mode)
     else { return nil }
     return frozen
   }
@@ -1673,13 +1689,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         // accounting report the resident size on this exit, even though nothing retired.
         let count = execution.exitCode == .pendingWork ? 0 : UInt64(execution.guestInstructionCount)
         observer?(.nativeInstructionExit(plan.processor, retired: count))
-        return .init(result: execution.exitCode == .pendingWork ? .yielded : .retired,
+        return .init(
+          result: execution.exitCode == .pendingWork ? .yielded : .retired,
           instructionCount: count, jitTier: execution.tier, jitInstructionCount: count,
           interpreterInstructionCount: 0, jitBlockCount: count)
       }
       if jit.hasPendingWork {
         observer?(.nativeInstructionExit(plan.processor, retired: 0))
-        return .init(result: .yielded, instructionCount: 0, jitTier: nil,
+        return .init(
+          result: .yielded, instructionCount: 0, jitTier: nil,
           jitInstructionCount: 0, interpreterInstructionCount: 0, jitBlockCount: 0)
       }
       // A resident larger than this budget or a compiler decline still has the identical
@@ -1693,7 +1711,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     let result = interpreters[plan.processor].step(
       state: &plan.state.value, memory: memory, mode: plan.mode)
     guard case .retired = result else { throw WorkerError.inconsistentFrozenInstruction }
-    return .init(result: .retired, instructionCount: 1, jitTier: nil,
+    return .init(
+      result: .retired, instructionCount: 1, jitTier: nil,
       jitInstructionCount: 0, interpreterInstructionCount: 1, jitBlockCount: 0)
   }
 
