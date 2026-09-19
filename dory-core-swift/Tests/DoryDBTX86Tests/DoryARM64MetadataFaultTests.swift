@@ -190,6 +190,7 @@ import Testing
         let executor = try DoryARM64BaselineExecutor(
           maximumCodeBytes: 16 * 1024,
           tier1Enabled: tier1Enabled,
+          rawTargetPredictionOptions: [.directChain],
           optimization: optimization
         )
         let memory = try ToggleReadFaultMemory(byteCount: 0x100)

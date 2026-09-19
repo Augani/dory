@@ -12,6 +12,27 @@ let doryVZMacQualificationInfoPlist =
   packageRoot
   .appendingPathComponent("Sources/dory-vzmac-qualification/Info.plist").path
 
+// SwiftPM builds every test target before applying --filter. DorydKitTests intentionally uses
+// debug-only construction hooks, so the optimized x86 qualification graph omits that unrelated
+// target instead of compiling those hooks into the production modules under test.
+let x86OptimizedQualification =
+  ProcessInfo.processInfo.environment["DORY_X86_OPTIMIZED_QUALIFICATION"] == "1"
+let dorydKitTestTargets: [Target] = x86OptimizedQualification
+  ? []
+  : [
+    .testTarget(
+      name: "DorydKitTests",
+      dependencies: [
+        "DorydKit",
+        "DoryCore",
+        "DoryRendererWorkerWireContracts",
+        "DoryVMMKit",
+        "DoryVZMacCore",
+        "DoryVMContracts",
+      ]
+    )
+  ]
+
 let package = Package(
   name: "dory-core-swift",
   platforms: [.macOS(.v14)],
@@ -541,16 +562,5 @@ let package = Package(
       name: "DoryOperationsTests",
       dependencies: ["DoryOperations", "DoryCore", "DoryFirmware", "DoryVMContracts"]
     ),
-    .testTarget(
-      name: "DorydKitTests",
-      dependencies: [
-        "DorydKit",
-        "DoryCore",
-        "DoryRendererWorkerWireContracts",
-        "DoryVMMKit",
-        "DoryVZMacCore",
-        "DoryVMContracts",
-      ]
-    ),
-  ]
+  ] + dorydKitTestTargets
 )

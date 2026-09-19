@@ -10353,6 +10353,7 @@ import XCTest
     #endif
   }
 
+  #if DEBUG
   @Test func publicationValidationRejectsLateMutationAfterCodeCacheRotation() throws {
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
@@ -10429,6 +10430,7 @@ import XCTest
       }
     #endif
   }
+  #endif
 
   @Test func publicationValidationRejectsGenerationOnlyChangeBeforePublication() throws {
     #if arch(arm64)
