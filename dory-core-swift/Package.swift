@@ -101,6 +101,10 @@ let package = Package(
       name: "dory-pc-tier-qualification",
       targets: ["dory-pc-tier-qualification"]
     ),
+    .executable(
+      name: "dory-pc-x86-fixture-importer",
+      targets: ["dory-pc-x86-fixture-importer"]
+    ),
     .executable(name: "dory-x86-generation-benchmark", targets: ["dory-x86-generation-benchmark"]),
     .executable(name: "dory-x86-throughput-benchmark", targets: ["dory-x86-throughput-benchmark"]),
     .executable(
@@ -410,6 +414,10 @@ let package = Package(
     ),
     .executableTarget(
       name: "dory-pc-tier-qualification",
+      dependencies: ["DoryPCQualification"]
+    ),
+    .executableTarget(
+      name: "dory-pc-x86-fixture-importer",
       dependencies: ["DoryPCQualification"]
     ),
     // Phase 4 conformance helper. It checks every instruction emitted in linked x86 firmware
