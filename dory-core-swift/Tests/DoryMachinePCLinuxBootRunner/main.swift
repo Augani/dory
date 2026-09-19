@@ -2,6 +2,7 @@ import Darwin
 import Dispatch
 import DoryDBTX86
 import DoryMachinePC
+import DoryPCQualification
 import Foundation
 
 /// The watchdog uses a cached record, never the VM lock. A stalled machine.run() cannot
@@ -14,7 +15,8 @@ private final class PVHRunnerSession: @unchecked Sendable {
 
   init(configuration: PVHRunnerConfiguration) {
     record = .init(configuration: configuration)
-    timer.schedule(deadline: .now() + .seconds(Int(configuration.wallSeconds)), leeway: .milliseconds(1))
+    timer.schedule(
+      deadline: .now() + .seconds(Int(configuration.wallSeconds)), leeway: .milliseconds(1))
     timer.setEventHandler { [weak self] in self?.finish(.wallBudget) }
     timer.resume()
   }
@@ -32,7 +34,8 @@ private final class PVHRunnerSession: @unchecked Sendable {
     // paths cannot race to emit contradictory outcomes. No VM method is called here.
     lock.lock()
     record.elapsedNanoseconds = elapsedNanoseconds
-    let outcome = record.elapsedNanoseconds >= record.configuration.wallSeconds * 1_000_000_000
+    let outcome =
+      record.elapsedNanoseconds >= record.configuration.wallSeconds * 1_000_000_000
       ? PVHRunOutcome.wallBudget : requestedOutcome
     record.outcome = outcome
     record.stage = "finished"
@@ -42,13 +45,16 @@ private final class PVHRunnerSession: @unchecked Sendable {
     encoder.outputFormatting = [.sortedKeys]
     if let path = record.configuration.diagnostics {
       do {
-        let data = try encoder.encode(record)
+        var data = try encoder.encode(record)
+        data.append(10)
         // Every retained collection/string has its own limit; keep an independent output ceiling.
         guard data.count <= 1 << 20 else { throw PVHRunnerError("Diagnostic record exceeds 1 MiB") }
-        try data.write(to: URL(fileURLWithPath: path), options: .withoutOverwriting)
+        try PVHReceiptPublisher.publish(data, to: path)
       } catch {
         code = code == 124 ? 124 : 1
-        let message = "Cannot publish diagnostic receipt: " + String(String(describing: error).prefix(512)) + "\n"
+        let message =
+          "Cannot publish diagnostic receipt: " + String(String(describing: error).prefix(512))
+          + "\n"
         try? FileHandle.standardError.write(contentsOf: Data(message.utf8))
       }
     }
@@ -61,6 +67,10 @@ private final class PVHRunnerSession: @unchecked Sendable {
       let retiredInstructions: UInt64
       let elapsedNanoseconds: UInt64
       let guestReceiptSeen: Bool
+      let fixtureManifestSHA256: String
+      let runnerSHA256: String?
+      let sourceCommit: String
+      let sourceTreeDirty: Bool
       let kernelSHA256: String
       let kernelBuildID: String?
       let initrdSHA256: String
@@ -70,6 +80,10 @@ private final class PVHRunnerSession: @unchecked Sendable {
       runID: record.configuration.runID, passed: outcome.passed && code == 0,
       reason: outcome.reason, exitCode: code, retiredInstructions: record.retiredInstructions,
       elapsedNanoseconds: record.elapsedNanoseconds, guestReceiptSeen: record.guestReceipt != nil,
+      fixtureManifestSHA256: record.configuration.fixtureManifestSHA256,
+      runnerSHA256: record.runnerExecutable?.sha256,
+      sourceCommit: record.configuration.sourceCommit,
+      sourceTreeDirty: record.configuration.sourceTreeDirty,
       kernelSHA256: record.configuration.kernelSHA256, kernelBuildID: record.kernel?.elfBuildID,
       initrdSHA256: record.configuration.initrdSHA256, error: record.error
     )
@@ -95,14 +109,29 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
     if let path = configuration.diagnostics, FileManager.default.fileExists(atPath: path) {
       throw PVHRunnerError("Diagnostic output already exists; use a new file for this run")
     }
-    let kernel = try PVHPinnedInput.read(path: configuration.kernel, sha256: configuration.kernelSHA256)
+    let manifestInput = try PVHPinnedInput.read(
+      path: configuration.fixtureManifest,
+      sha256: configuration.fixtureManifestSHA256,
+      maximumBytes: DoryPCX86QualificationFixtureImporter.maximumManifestBytes)
+    let fixtureManifest = try DoryPCX86QualificationFixtureManifest.decodeAndValidate(
+      manifestInput.data)
+    record.fixtureManifest = manifestInput.identity
+    guard let executableURL = Bundle.main.executableURL else {
+      throw PVHRunnerError("Cannot resolve the running executable")
+    }
+    record.runnerExecutable = try PVHPinnedInput.measure(path: executableURL.path)
+    session.publish(record)
+    let kernel = try PVHPinnedInput.read(
+      path: configuration.kernel, sha256: configuration.kernelSHA256)
     let kernelImage = try DoryPCPVHKernelImage(data: kernel.data)
     let metadata = PVHELFMetadata(validatedImage: kernelImage)
-    record.kernel = .init(
+    let kernelIdentity = PVHArtifactIdentity(
       path: kernel.identity.path, sha256: kernel.identity.sha256,
       byteCount: kernel.identity.byteCount, elfBuildID: metadata.buildID)
+    record.kernel = kernelIdentity
     session.publish(record)
-    let initrd = try PVHPinnedInput.read(path: configuration.initrd, sha256: configuration.initrdSHA256)
+    let initrd = try PVHPinnedInput.read(
+      path: configuration.initrd, sha256: configuration.initrdSHA256)
     record.initrd = initrd.identity
     session.publish(record)
     var symbols: PVHSymbolMap?
@@ -111,6 +140,11 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
       symbols = try PVHSymbolMap(data: input.data)
       record.symbols = input.identity
     }
+    try PVHQualificationFixtureBinding.validate(
+      manifest: fixtureManifest,
+      kernel: kernelIdentity,
+      initrd: initrd.identity,
+      symbols: record.symbols)
     record.stage = "loading-machine"
     session.publish(record)
     var pciFunctions: [any DoryPCPCIFunction] = []
@@ -123,11 +157,13 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
       stressBlock = storage
       let peer = PVHStressNetworkPeer(runID: runID)
       stressNetwork = peer
-      let network = try DoryPCVirtioNetworkPCIDevice(address: .init(bus: 0, device: 4, function: 0),
+      let network = try DoryPCVirtioNetworkPCIDevice(
+        address: .init(bus: 0, device: 4, function: 0),
         initialBARAddress: 0xD000_2000, backend: peer, macAddress: [0x02, 0xD0, 0x52, 0, 0, 1])
       stressNetworkDevice = network
       pciFunctions = [
-        try DoryPCVirtioBlockPCIDevice(address: .init(bus: 0, device: 2, function: 0),
+        try DoryPCVirtioBlockPCIDevice(
+          address: .init(bus: 0, device: 2, function: 0),
           initialBARAddress: 0xD000_0000, storage: storage, identifier: "dory-io-stress"),
         network,
       ]
@@ -136,12 +172,17 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
     }
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: configuration.memoryMiB * 1024 * 1024,
+      processorCount: configuration.processorCount,
       initialRTCDate: Date(timeIntervalSince1970: 0),
       pciFunctions: pciFunctions,
-      interpreter: .init(profile: configuration.effectiveCPUProfile), executionTier: configuration.tier,
+      interpreter: .init(profile: configuration.effectiveCPUProfile),
+      executionTier: configuration.tier,
       baselineJITTier1Enabled: configuration.effectiveTier1Enabled,
+      baselineJITRawTargetPredictionOptions: configuration.rawTargetPrediction.options,
+      jitWriteCoherencePolicy: configuration.jitWriteCoherencePolicy,
       clockSource: .deterministic)
-    try machine.load(kernel: kernel.data, initrd: Array(initrd.data), commandLine: configuration.commandLine)
+    try machine.load(
+      kernel: kernel.data, initrd: Array(initrd.data), commandLine: configuration.commandLine)
     record.stage = "running"
     record.state = machine.state
     session.publish(record)
@@ -156,18 +197,24 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
       let quantum = min(1000, configuration.maximumInstructions - record.retiredInstructions)
       let stop = try machine.run(maximumInstructions: quantum, exceptionPolicy: .deliver)
       let retired = PVHStopSnapshot.instructionCount(stop)
-      guard retired <= quantum else { throw PVHRunnerError("Machine returned more instructions than requested") }
+      guard retired <= quantum else {
+        throw PVHRunnerError("Machine returned more instructions than requested")
+      }
       record.retiredInstructions += retired
       console.consume(
-        machine.serial.drainTransmittedBytes(), runID: configuration.runID, workloads: configuration.workloads)
+        machine.serial.drainTransmittedBytes(), runID: configuration.runID,
+        workloads: configuration.workloads)
       record.guestReceipt = console.receipt
       record.consoleBytes = console.totalBytes
       record.consoleTail = String(decoding: console.tail, as: UTF8.self)
       let state = machine.state
-      let symbol = state.flatMap { metadata.symbolAddress(state: $0) }.flatMap { symbols?.nearest(to: $0) }
-      record.lastExits.append(.init(
-        stop: stop, totalInstructions: record.retiredInstructions,
-        elapsedNanoseconds: session.elapsedNanoseconds, state: state, nearestSymbol: symbol))
+      let symbol = state.flatMap { metadata.symbolAddress(state: $0) }.flatMap {
+        symbols?.nearest(to: $0)
+      }
+      record.lastExits.append(
+        .init(
+          stop: stop, totalInstructions: record.retiredInstructions,
+          elapsedNanoseconds: session.elapsedNanoseconds, state: state, nearestSymbol: symbol))
       if record.lastExits.count > 16 { record.lastExits.removeFirst(record.lastExits.count - 16) }
       record.state = state
       record.executionStatistics = machine.executionStatistics
@@ -177,7 +224,8 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
         if let sample = jitSampler.sampleIfDue(
           retiredInstructions: record.retiredInstructions,
           elapsedNanoseconds: session.elapsedNanoseconds,
-          terminal: outcome != nil || record.retiredInstructions >= configuration.maximumInstructions,
+          terminal: outcome != nil
+            || record.retiredInstructions >= configuration.maximumInstructions,
           baseline: { machine.baselineJITDiagnostics.map(PVHJITCacheSnapshot.init) },
           optimizing: { machine.optimizingJITDiagnostics.map(PVHJITCacheSnapshot.init) }
         ) {
@@ -196,24 +244,29 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
           }
           guard let device = stressNetworkDevice,
             device.networkDevice.pendingReceiveCount == 0,
-            device.networkDevice.droppedReceiveCount == 0 else {
+            device.networkDevice.droppedReceiveCount == 0
+          else {
             throw PVHRunnerError("Stress network has pending or dropped receive frames")
           }
           let block = try stressBlock.verifyAfterPoweroff()
-          let network = try stressNetwork.verifyCompletion(guestFrames: measured.frames,
+          let network = try stressNetwork.verifyCompletion(
+            guestFrames: measured.frames,
             guestBytes: measured.bytes, guestElapsedNanoseconds: measured.elapsedNanoseconds)
           record.stressIO = .init(block: block, network: network)
           session.publish(record)
         }
         session.finish(outcome)
       }
-      guard retired > 0 else { throw PVHRunnerError("Machine made no progress within an instruction quantum") }
+      guard retired > 0 else {
+        throw PVHRunnerError("Machine made no progress within an instruction quantum")
+      }
     }
     session.finish(.instructionBudget)
   } catch {
     record.stressIO = stressSnapshot()
     session.publish(record)
-    session.finish(.init(passed: false, reason: "fixture-or-runner-error", exitCode: 1), error: error)
+    session.finish(
+      .init(passed: false, reason: "fixture-or-runner-error", exitCode: 1), error: error)
   }
 }
 
@@ -225,7 +278,8 @@ if arguments == ["--help"] {
 do {
   run(try PVHRunnerConfiguration(arguments: arguments))
 } catch {
-  let message = String(String(describing: error).prefix(1024)) + "\nUse --help for required options.\n"
+  let message =
+    String(String(describing: error).prefix(1024)) + "\nUse --help for required options.\n"
   try? FileHandle.standardError.write(contentsOf: Data(message.utf8))
   Darwin.exit(2)
 }

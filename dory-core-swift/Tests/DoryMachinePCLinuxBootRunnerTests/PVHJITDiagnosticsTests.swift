@@ -152,8 +152,18 @@ import Testing
       "--memory-mib", "512", "--max-instructions", "3000000", "--wall-seconds", "10",
       "--run-id", "fe154770-27f1-4d31-93b5-790932bdf83c", "--workload", "file-io",
       "--diagnostics", "/receipt.json",
+      "--fixture-manifest", "/fixture-manifest.json", "--fixture-manifest-sha256",
+      String(repeating: "f", count: 64), "--source-commit", String(repeating: "c", count: 40),
+      "--source-tree", "clean", "--host-class", "apple-m2-pro", "--processor-count", "1",
+      "--jit-write-policy", "protected-host-pages", "--raw-target-prediction", "all",
     ])
     var record = PVHDiagnosticRecord(configuration: configuration)
+    record.fixtureManifest = .init(
+      path: "/fixture-manifest.json", sha256: String(repeating: "f", count: 64),
+      byteCount: 1024, elfBuildID: nil)
+    record.runnerExecutable = .init(
+      path: "/runner", sha256: String(repeating: "e", count: 64),
+      byteCount: 2048, elfBuildID: nil)
     var sampler = PVHJITDiagnosticsSampler(enabled: true)
     record.jitDiagnostics = sampler.sampleIfDue(
       retiredInstructions: 1_000_000, elapsedNanoseconds: 100, terminal: false,
@@ -175,6 +185,9 @@ import Testing
     #expect(decoded.jitDiagnostics?.sampleElapsedNanoseconds == 100)
     #expect(decoded.jitDiagnostics?.baseline?.cumulativeCounters["compiledBlocks"] == 5)
     #expect(decoded.jitDiagnostics?.observationScope.contains("older sample") == true)
+    #expect(decoded.schemaVersion == 2)
+    #expect(decoded.fixtureManifest?.sha256 == String(repeating: "f", count: 64))
+    #expect(decoded.runnerExecutable?.sha256 == String(repeating: "e", count: 64))
   }
 
   @Test func diagnosticReceiptsRejectTamperedDeclaredScopeAndIdentity() throws {
@@ -185,11 +198,15 @@ import Testing
       "--memory-mib", "512", "--max-instructions", "3000000", "--wall-seconds", "10",
       "--run-id", "fe154770-27f1-4d31-93b5-790932bdf83c", "--workload", "file-io",
       "--diagnostics", "/receipt.json",
+      "--fixture-manifest", "/fixture-manifest.json", "--fixture-manifest-sha256",
+      String(repeating: "f", count: 64), "--source-commit", String(repeating: "c", count: 40),
+      "--source-tree", "clean", "--host-class", "apple-m2-pro", "--processor-count", "1",
+      "--jit-write-policy", "protected-host-pages", "--raw-target-prediction", "all",
     ])
     let record = PVHDiagnosticRecord(configuration: configuration)
     let recordData = try JSONEncoder().encode(record)
     for (key, value) in [
-      ("schemaVersion", 2 as Any),
+      ("schemaVersion", 1 as Any),
       ("kind", "dev.dory.other-diagnostic" as Any),
       ("releaseQualified", true as Any),
       ("guestClock", "host-monotonic" as Any),
@@ -210,7 +227,8 @@ import Testing
     var sampleObject = try #require(
       JSONSerialization.jsonObject(with: JSONEncoder().encode(sample)) as? [String: Any])
     sampleObject["observationScope"] = "cumulative data from every cache incarnation"
-    let tamperedSample = try JSONSerialization.data(withJSONObject: sampleObject, options: [.sortedKeys])
+    let tamperedSample = try JSONSerialization.data(
+      withJSONObject: sampleObject, options: [.sortedKeys])
     #expect(throws: DecodingError.self) {
       try JSONDecoder().decode(PVHJITDiagnosticSample.self, from: tamperedSample)
     }

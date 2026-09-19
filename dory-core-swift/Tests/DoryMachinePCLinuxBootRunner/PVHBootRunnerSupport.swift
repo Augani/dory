@@ -2,6 +2,7 @@ import CryptoKit
 import Darwin
 import DoryDBTX86
 import DoryMachinePC
+import DoryPCQualification
 import Foundation
 
 struct PVHRunnerError: Error, CustomStringConvertible {
@@ -27,6 +28,28 @@ enum PVHRunnerCPUProfile: String, Codable, CaseIterable, Sendable {
   }
 }
 
+enum PVHRunnerRawTargetPrediction: String, Codable, CaseIterable, Sendable {
+  case none
+  case legacyDirectChain = "legacy-direct-chain"
+  case tier1DirectChain = "tier1-direct-chain"
+  case directChain = "direct-chain"
+  case indirectBranchTargetCache = "indirect-branch-target-cache"
+  case shadowReturnStack = "shadow-return-stack"
+  case all
+
+  var options: DoryARM64RawTargetPredictionOptions {
+    switch self {
+    case .none: []
+    case .legacyDirectChain: .legacyDirectChain
+    case .tier1DirectChain: .tier1DirectChain
+    case .directChain: .directChain
+    case .indirectBranchTargetCache: .indirectBranchTargetCache
+    case .shadowReturnStack: .shadowReturnStack
+    case .all: .all
+    }
+  }
+}
+
 struct PVHRunnerConfiguration: Codable, Sendable {
   let kernel: String
   let kernelSHA256: String
@@ -48,6 +71,15 @@ struct PVHRunnerConfiguration: Codable, Sendable {
   // the historical profile; every new command-line configuration records its choice.
   let cpuProfile: PVHRunnerCPUProfile?
   let stressIODirectory: String?
+  // Schema-v2 receipts cannot represent an execution whose candidate identity is implicit.
+  let fixtureManifest: String
+  let fixtureManifestSHA256: String
+  let sourceCommit: String
+  let sourceTreeDirty: Bool
+  let hostClass: String
+  let processorCount: Int
+  let jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy
+  let rawTargetPrediction: PVHRunnerRawTargetPrediction
 
   var effectiveCPUProfile: DoryX86CPUProfile { (cpuProfile ?? .compatibleV1).profile }
   var effectiveTier1Enabled: Bool { tier1Enabled ?? true }
@@ -62,9 +94,16 @@ struct PVHRunnerConfiguration: Codable, Sendable {
       --max-instructions N --wall-seconds N --run-id UUID --workload NAME [--workload NAME ...] \
       [--diagnostics /absolute/result.json] [--symbols /absolute/System.map --symbols-sha256 HEX] \
       [--cpu-profile dory.x86_64.compat-v1|dory.x86_64.intel-compatible-v1] \
-      [--stress-io-directory /absolute/new-directory]
+      [--stress-io-directory /absolute/new-directory] \
+      --fixture-manifest /absolute/manifest.json --fixture-manifest-sha256 HEX \
+      --source-commit HEX --source-tree clean|dirty --host-class SAFE-ID --processor-count N \
+      --jit-write-policy protected-host-pages|checked-callbacks \
+      --raw-target-prediction none|legacy-direct-chain|tier1-direct-chain|direct-chain|indirect-branch-target-cache|shadow-return-stack|all
 
-    Every input is explicit; no fixture search or download occurs. Limits: 2..524288 MiB,
+    Every input is explicit; no fixture search or download occurs. The fixture manifest must bind
+    the supplied kernel, initrd and optional symbols by role, digest and byte count. Source state,
+    host class, vCPU count, write-coherence policy and predictor configuration are mandatory for
+    every new run. Limits: 2..524288 MiB, 1..255 processors,
     1..1000000000000 instructions, 1..3600 wall seconds. The wall budget includes file checks
     and VM initialization. --diagnostics opts into a bounded state/exit/console-tail receipt,
     with JIT cache counters sampled every 1,000,000 retired instructions and at normal termination.
@@ -92,6 +131,8 @@ struct PVHRunnerConfiguration: Codable, Sendable {
       "kernel", "kernel-sha256", "initrd", "initrd-sha256", "command-line", "tier",
       "memory-mib", "max-instructions", "wall-seconds", "run-id", "workload", "diagnostics",
       "symbols", "symbols-sha256", "cpu-profile", "stress-io-directory", "tier1",
+      "fixture-manifest", "fixture-manifest-sha256", "source-commit", "source-tree",
+      "host-class", "processor-count", "jit-write-policy", "raw-target-prediction",
     ]
     var values: [String: String] = [:]
     var requestedWorkloads: [String] = []
@@ -138,6 +179,40 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     kernelSHA256 = try digest("kernel-sha256")
     initrd = try absolutePath("initrd")
     initrdSHA256 = try digest("initrd-sha256")
+    fixtureManifest = try absolutePath("fixture-manifest")
+    fixtureManifestSHA256 = try digest("fixture-manifest-sha256")
+    let commit = try required("source-commit")
+    guard [40, 64].contains(commit.utf8.count),
+      commit.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+    else { throw PVHRunnerError("--source-commit requires lowercase Git object hex") }
+    sourceCommit = commit
+    switch try required("source-tree") {
+    case "clean": sourceTreeDirty = false
+    case "dirty": sourceTreeDirty = true
+    default: throw PVHRunnerError("--source-tree must be clean or dirty")
+    }
+    let selectedHostClass = try required("host-class")
+    guard (1...128).contains(selectedHostClass.utf8.count),
+      selectedHostClass.utf8.allSatisfy({
+        (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
+          || [45, 46, 95].contains($0)
+      })
+    else { throw PVHRunnerError("--host-class requires a bounded ASCII identifier") }
+    hostClass = selectedHostClass
+    guard let selectedProcessorCount = Int(try required("processor-count")),
+      (1...255).contains(selectedProcessorCount)
+    else { throw PVHRunnerError("--processor-count must be 1...255") }
+    processorCount = selectedProcessorCount
+    guard
+      let selectedWritePolicy = DoryX86JITWriteCoherencePolicy(
+        rawValue: try required("jit-write-policy"))
+    else { throw PVHRunnerError("Unsupported --jit-write-policy") }
+    jitWriteCoherencePolicy = selectedWritePolicy
+    guard
+      let selectedPrediction = PVHRunnerRawTargetPrediction(
+        rawValue: try required("raw-target-prediction"))
+    else { throw PVHRunnerError("Unsupported --raw-target-prediction") }
+    rawTargetPrediction = selectedPrediction
     guard
       let selectedProfile = PVHRunnerCPUProfile(
         rawValue: values["cpu-profile"] ?? PVHRunnerCPUProfile.compatibleV1.rawValue)
@@ -213,7 +288,7 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     }
     // A diagnostic output must never replace one of the pinned inputs.
     if let diagnostics,
-      [kernel, initrd, symbols].compactMap({ $0 }).contains(where: {
+      [kernel, initrd, symbols, fixtureManifest].compactMap({ $0 }).contains(where: {
         URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath()
           == URL(fileURLWithPath: diagnostics).standardizedFileURL.resolvingSymlinksInPath()
       })
@@ -235,6 +310,23 @@ struct PVHPinnedInput {
   let identity: PVHArtifactIdentity
 
   static func read(path: String, sha256: String, maximumBytes: Int = 512 << 20) throws -> Self {
+    try inspect(
+      path: path, expectedSHA256: sha256, maximumBytes: maximumBytes, retainData: true)
+  }
+
+  static func measure(path: String, maximumBytes: Int = 512 << 20) throws -> PVHArtifactIdentity {
+    try inspect(
+      path: path, expectedSHA256: nil, maximumBytes: maximumBytes, retainData: false
+    ).identity
+  }
+
+  private static func inspect(
+    path: String,
+    expectedSHA256: String?,
+    maximumBytes: Int,
+    retainData: Bool
+  ) throws -> Self {
+    guard maximumBytes > 0 else { throw PVHRunnerError("Input byte bound must be positive") }
     let descriptor = path.withCString {
       Darwin.open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
     }
@@ -249,29 +341,113 @@ struct PVHPinnedInput {
         "Input must be a nonempty regular file within \(maximumBytes) bytes: \(path)")
     }
     var data = Data()
+    var byteCount = 0
     var hasher = SHA256()
     while let chunk = try handle.read(upToCount: 65536), !chunk.isEmpty {
-      guard chunk.count <= maximumBytes - data.count else {
+      guard byteCount <= maximumBytes, chunk.count <= maximumBytes - byteCount else {
         throw PVHRunnerError("Input grew beyond its bound: \(path)")
       }
-      data.append(chunk)
+      byteCount += chunk.count
+      if retainData { data.append(chunk) }
       hasher.update(data: chunk)
     }
     var final = stat()
     guard fstat(descriptor, &final) == 0, initial.st_size == final.st_size,
-      final.st_size == data.count,
+      final.st_size == byteCount,
       initial.st_mtimespec.tv_sec == final.st_mtimespec.tv_sec,
       initial.st_mtimespec.tv_nsec == final.st_mtimespec.tv_nsec,
       initial.st_ctimespec.tv_sec == final.st_ctimespec.tv_sec,
       initial.st_ctimespec.tv_nsec == final.st_ctimespec.tv_nsec
     else { throw PVHRunnerError("Input changed during verification: \(path)") }
     let actual = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    guard actual == sha256 else {
+    guard expectedSHA256 == nil || actual == expectedSHA256 else {
       throw PVHRunnerError("SHA-256 mismatch for required input: \(path)")
     }
     return .init(
       data: data,
-      identity: .init(path: path, sha256: actual, byteCount: data.count, elfBuildID: nil))
+      identity: .init(path: path, sha256: actual, byteCount: byteCount, elfBuildID: nil))
+  }
+}
+
+struct PVHQualificationFixtureBinding {
+  static func validate(
+    manifest: DoryPCX86QualificationFixtureManifest,
+    kernel: PVHArtifactIdentity,
+    initrd: PVHArtifactIdentity,
+    symbols: PVHArtifactIdentity?
+  ) throws {
+    guard manifest.purpose == .pvhSmoke || manifest.purpose == .combined else {
+      throw PVHRunnerError("Fixture manifest purpose does not authorize PVH execution")
+    }
+    try validate(kernel, as: .pvhKernel, in: manifest)
+    try validate(initrd, as: .pvhInitrd, in: manifest)
+    if let symbols { try validate(symbols, as: .pvhSymbols, in: manifest) }
+  }
+
+  private static func validate(
+    _ identity: PVHArtifactIdentity,
+    as role: DoryPCX86QualificationFixtureManifest.Artifact.Role,
+    in manifest: DoryPCX86QualificationFixtureManifest
+  ) throws {
+    guard let artifact = manifest.artifacts.first(where: { $0.role == role }) else {
+      throw PVHRunnerError("Fixture manifest does not declare \(role.rawValue)")
+    }
+    guard artifact.sha256 == identity.sha256,
+      artifact.byteCount == UInt64(identity.byteCount)
+    else {
+      throw PVHRunnerError("Fixture manifest identity mismatch for \(role.rawValue)")
+    }
+  }
+}
+
+enum PVHReceiptPublisher {
+  static func publish(_ data: Data, to path: String) throws {
+    guard !data.isEmpty else { throw PVHRunnerError("Diagnostic receipt is empty") }
+    let url = URL(fileURLWithPath: path)
+    let parent = url.deletingLastPathComponent()
+    let name = url.lastPathComponent
+    guard !name.isEmpty, name != ".", name != "..", !name.utf8.contains(0) else {
+      throw PVHRunnerError("Invalid diagnostic receipt file name")
+    }
+    let directory = Darwin.open(
+      parent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+    guard directory >= 0 else { throw PVHRunnerError("Cannot open diagnostic receipt directory") }
+    defer { Darwin.close(directory) }
+    let temporary = ".dory-pvh-receipt-\(UUID().uuidString.lowercased())"
+    let descriptor = openat(
+      directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o644)
+    guard descriptor >= 0 else {
+      throw PVHRunnerError("Cannot create temporary diagnostic receipt")
+    }
+    defer {
+      Darwin.close(descriptor)
+      _ = unlinkat(directory, temporary, 0)
+    }
+    try data.withUnsafeBytes { bytes in
+      guard let base = bytes.baseAddress else {
+        throw PVHRunnerError("Diagnostic receipt is empty")
+      }
+      var offset = 0
+      while offset < bytes.count {
+        let written = Darwin.write(descriptor, base.advanced(by: offset), bytes.count - offset)
+        if written < 0 {
+          if errno == EINTR { continue }
+          throw PVHRunnerError("Cannot write diagnostic receipt")
+        }
+        guard written > 0 else { throw PVHRunnerError("Short diagnostic receipt write") }
+        offset += written
+      }
+    }
+    guard fsync(descriptor) == 0 else {
+      throw PVHRunnerError("Cannot synchronize diagnostic receipt")
+    }
+    guard linkat(directory, temporary, directory, name, 0) == 0 else {
+      if errno == EEXIST { throw PVHRunnerError("Diagnostic receipt already exists") }
+      throw PVHRunnerError("Cannot publish diagnostic receipt")
+    }
+    guard fsync(directory) == 0 else {
+      throw PVHRunnerError("Cannot synchronize diagnostic receipt directory")
+    }
   }
 }
 
@@ -734,7 +910,8 @@ struct PVHJITDiagnosticSample: Codable, Sendable {
     }
     sampleInstructionCount = try container.decode(UInt64.self, forKey: .sampleInstructionCount)
     sampleElapsedNanoseconds = try container.decode(UInt64.self, forKey: .sampleElapsedNanoseconds)
-    sampleIntervalInstructions = try container.decode(UInt64.self, forKey: .sampleIntervalInstructions)
+    sampleIntervalInstructions = try container.decode(
+      UInt64.self, forKey: .sampleIntervalInstructions)
     observationScope = decodedScope
     baseline = try container.decodeIfPresent(PVHJITCacheSnapshot.self, forKey: .baseline)
     optimizing = try container.decodeIfPresent(PVHJITCacheSnapshot.self, forKey: .optimizing)
@@ -770,7 +947,7 @@ struct PVHJITDiagnosticsSampler {
 }
 
 struct PVHDiagnosticRecord: Codable, Sendable {
-  static let schemaVersionValue = 1
+  static let schemaVersionValue = 2
   static let kindValue = "dev.dory.pvh-boot-diagnostic"
   static let guestClockValue = "deterministic"
   static let observationScopeValue =
@@ -784,6 +961,8 @@ struct PVHDiagnosticRecord: Codable, Sendable {
   let guestClock: String
   let observationScope: String
   var stage = "verifying-inputs"
+  var fixtureManifest: PVHArtifactIdentity?
+  var runnerExecutable: PVHArtifactIdentity?
   var kernel: PVHArtifactIdentity?
   var initrd: PVHArtifactIdentity?
   var symbols: PVHArtifactIdentity?
@@ -813,9 +992,9 @@ struct PVHDiagnosticRecord: Codable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case schemaVersion, kind, releaseQualified, configuration, hostOS, guestClock, observationScope
-    case stage, kernel, initrd, symbols, retiredInstructions, elapsedNanoseconds, lastExits, state
-    case executionStatistics, jitDiagnostics, stressIO, timerInterruptState, consoleTail, consoleBytes
-    case guestReceipt, outcome, error
+    case stage, fixtureManifest, runnerExecutable, kernel, initrd, symbols, retiredInstructions
+    case elapsedNanoseconds, lastExits, state, executionStatistics, jitDiagnostics, stressIO
+    case timerInterruptState, consoleTail, consoleBytes, guestReceipt, outcome, error
   }
 
   init(from decoder: any Decoder) throws {
@@ -856,6 +1035,10 @@ struct PVHDiagnosticRecord: Codable, Sendable {
     guestClock = decodedGuestClock
     observationScope = decodedObservationScope
     stage = try container.decode(String.self, forKey: .stage)
+    fixtureManifest = try container.decodeIfPresent(
+      PVHArtifactIdentity.self, forKey: .fixtureManifest)
+    runnerExecutable = try container.decodeIfPresent(
+      PVHArtifactIdentity.self, forKey: .runnerExecutable)
     kernel = try container.decodeIfPresent(PVHArtifactIdentity.self, forKey: .kernel)
     initrd = try container.decodeIfPresent(PVHArtifactIdentity.self, forKey: .initrd)
     symbols = try container.decodeIfPresent(PVHArtifactIdentity.self, forKey: .symbols)
@@ -863,10 +1046,13 @@ struct PVHDiagnosticRecord: Codable, Sendable {
     elapsedNanoseconds = try container.decode(UInt64.self, forKey: .elapsedNanoseconds)
     lastExits = try container.decode([PVHStopSnapshot].self, forKey: .lastExits)
     state = try container.decodeIfPresent(DoryX86ArchitecturalState.self, forKey: .state)
-    executionStatistics = try container.decodeIfPresent(DoryPCExecutionStatistics.self, forKey: .executionStatistics)
-    jitDiagnostics = try container.decodeIfPresent(PVHJITDiagnosticSample.self, forKey: .jitDiagnostics)
+    executionStatistics = try container.decodeIfPresent(
+      DoryPCExecutionStatistics.self, forKey: .executionStatistics)
+    jitDiagnostics = try container.decodeIfPresent(
+      PVHJITDiagnosticSample.self, forKey: .jitDiagnostics)
     stressIO = try container.decodeIfPresent(PVHStressIOSnapshot.self, forKey: .stressIO)
-    timerInterruptState = try container.decodeIfPresent(PVHTimerInterruptSnapshot.self, forKey: .timerInterruptState)
+    timerInterruptState = try container.decodeIfPresent(
+      PVHTimerInterruptSnapshot.self, forKey: .timerInterruptState)
     consoleTail = try container.decode(String.self, forKey: .consoleTail)
     consoleBytes = try container.decode(UInt64.self, forKey: .consoleBytes)
     guestReceipt = try container.decodeIfPresent(PVHGuestReceipt.self, forKey: .guestReceipt)

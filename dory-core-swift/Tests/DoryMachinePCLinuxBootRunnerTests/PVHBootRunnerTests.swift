@@ -1,4 +1,5 @@
 import CryptoKit
+import DoryPCQualification
 import Foundation
 import Testing
 
@@ -16,6 +17,13 @@ import Testing
     #expect(configuration.maximumInstructions == 10000)
     #expect(configuration.tier1Enabled == true)
     #expect(configuration.effectiveTier1Enabled)
+    #expect(configuration.fixtureManifest == "/fixture-manifest.json")
+    #expect(configuration.sourceCommit == String(repeating: "c", count: 40))
+    #expect(configuration.sourceTreeDirty == false)
+    #expect(configuration.hostClass == "apple-m2-pro")
+    #expect(configuration.processorCount == 1)
+    #expect(configuration.jitWriteCoherencePolicy == .protectedHostPages)
+    #expect(configuration.rawTargetPrediction == .all)
     #expect(configuration.diagnostics == nil)
     #expect(throws: PVHRunnerError.self) { _ = try PVHRunnerConfiguration(arguments: []) }
     #expect(throws: PVHRunnerError.self) {
@@ -53,6 +61,11 @@ import Testing
       ("--wall-seconds", "0"), ("--wall-seconds", "3601"), ("--wall-seconds", "nan"),
       ("--run-id", "reused-name"), ("--tier", "unknown"), ("--command-line", "x\0y"),
       ("--command-line", "dory.pvh_run_id=already-present"),
+      ("--fixture-manifest", "relative.json"), ("--fixture-manifest-sha256", "bad"),
+      ("--source-commit", String(repeating: "C", count: 40)), ("--source-tree", "maybe"),
+      ("--host-class", "host class"), ("--processor-count", "0"),
+      ("--processor-count", "256"), ("--jit-write-policy", "unsafe"),
+      ("--raw-target-prediction", "host"),
     ] {
       #expect(throws: PVHRunnerError.self) {
         _ = try PVHRunnerConfiguration(arguments: arguments(replacing: option, with: value))
@@ -67,16 +80,21 @@ import Testing
     #expect(throws: PVHRunnerError.self) {
       _ = try PVHRunnerConfiguration(arguments: arguments() + ["--diagnostics", "/kernel"])
     }
+    #expect(throws: PVHRunnerError.self) {
+      _ = try PVHRunnerConfiguration(
+        arguments: arguments() + ["--diagnostics", "/fixture-manifest.json"])
+    }
   }
 
-  @Test func CPUProfileChoiceIsExplicitAndIndependentOfExecutionTier() throws {
+  @Test func cpuProfileChoiceIsExplicitAndIndependentOfExecutionTier() throws {
     let legacy = try PVHRunnerConfiguration(arguments: arguments())
     #expect(legacy.cpuProfile == .compatibleV1)
     #expect(legacy.effectiveCPUProfile == PVHRunnerCPUProfile.compatibleV1.profile)
     for tier in ["interpreter", "baseline-jit", "optimizing-jit"] {
       for choice in PVHRunnerCPUProfile.allCases {
-        let configuration = try PVHRunnerConfiguration(arguments:
-          arguments(replacing: "--tier", with: tier) + ["--cpu-profile", choice.rawValue])
+        let configuration = try PVHRunnerConfiguration(
+          arguments:
+            arguments(replacing: "--tier", with: tier) + ["--cpu-profile", choice.rawValue])
         #expect(configuration.effectiveCPUProfile == choice.profile)
         let data = try JSONEncoder().encode(configuration)
         let decoded = try JSONDecoder().decode(PVHRunnerConfiguration.self, from: data)
@@ -90,10 +108,11 @@ import Testing
       }
     }
     #expect(throws: PVHRunnerError.self) {
-      _ = try PVHRunnerConfiguration(arguments: arguments() + [
-        "--cpu-profile", PVHRunnerCPUProfile.compatibleV1.rawValue,
-        "--cpu-profile", PVHRunnerCPUProfile.intelCompatibleV1.rawValue,
-      ])
+      _ = try PVHRunnerConfiguration(
+        arguments: arguments() + [
+          "--cpu-profile", PVHRunnerCPUProfile.compatibleV1.rawValue,
+          "--cpu-profile", PVHRunnerCPUProfile.intelCompatibleV1.rawValue,
+        ])
     }
   }
 
@@ -108,13 +127,15 @@ import Testing
     let data = try JSONEncoder().encode(legacy)
     var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     object.removeValue(forKey: "cpuProfile")
-    let historical = try JSONDecoder().decode(PVHRunnerConfiguration.self,
+    let historical = try JSONDecoder().decode(
+      PVHRunnerConfiguration.self,
       from: JSONSerialization.data(withJSONObject: object))
     #expect(historical.cpuProfile == nil)
     #expect(historical.effectiveCPUProfile == legacy.effectiveCPUProfile)
     object["cpuProfile"] = "host"
     #expect(throws: DecodingError.self) {
-      _ = try JSONDecoder().decode(PVHRunnerConfiguration.self,
+      _ = try JSONDecoder().decode(
+        PVHRunnerConfiguration.self,
         from: JSONSerialization.data(withJSONObject: object))
     }
   }
@@ -128,6 +149,7 @@ import Testing
     try bytes.write(to: file)
     let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
     #expect(try PVHPinnedInput.read(path: file.path, sha256: hash).data == bytes)
+    #expect(try PVHPinnedInput.measure(path: file.path, maximumBytes: 4).sha256 == hash)
     #expect(throws: PVHRunnerError.self) {
       _ = try PVHPinnedInput.read(path: file.path, sha256: String(repeating: "0", count: 64))
     }
@@ -135,7 +157,8 @@ import Testing
       _ = try PVHPinnedInput.read(path: file.path, sha256: hash, maximumBytes: 3)
     }
     #expect(throws: PVHRunnerError.self) {
-      _ = try PVHPinnedInput.read(path: directory.appendingPathComponent("missing").path, sha256: hash)
+      _ = try PVHPinnedInput.read(
+        path: directory.appendingPathComponent("missing").path, sha256: hash)
     }
     #expect(throws: PVHRunnerError.self) {
       _ = try PVHPinnedInput.read(path: directory.path, sha256: hash)
@@ -146,16 +169,71 @@ import Testing
       _ = try PVHPinnedInput.read(path: symlink.path, sha256: hash)
     }
     try Data([4, 3, 2, 1]).write(to: file)
-    #expect(throws: PVHRunnerError.self) { _ = try PVHPinnedInput.read(path: file.path, sha256: hash) }
+    #expect(throws: PVHRunnerError.self) {
+      _ = try PVHPinnedInput.read(path: file.path, sha256: hash)
+    }
+  }
+
+  @Test func fixtureManifestMustBindEveryExecutedPVHArtifact() throws {
+    let kernel = identity(path: "/kernel", hash: "a", bytes: 4)
+    let initrd = identity(path: "/initrd", hash: "b", bytes: 5)
+    let symbols = identity(path: "/symbols", hash: "d", bytes: 6)
+    let manifest = qualificationManifest(artifacts: [
+      artifact(.pvhKernel, hash: "a", bytes: 4),
+      artifact(.pvhInitrd, hash: "b", bytes: 5),
+      artifact(.pvhSymbols, hash: "d", bytes: 6),
+    ])
+    try PVHQualificationFixtureBinding.validate(
+      manifest: manifest, kernel: kernel, initrd: initrd, symbols: symbols)
+    #expect(throws: PVHRunnerError.self) {
+      try PVHQualificationFixtureBinding.validate(
+        manifest: manifest, kernel: self.identity(path: "/kernel", hash: "a", bytes: 3),
+        initrd: initrd, symbols: symbols)
+    }
+    #expect(throws: PVHRunnerError.self) {
+      try PVHQualificationFixtureBinding.validate(
+        manifest: self.qualificationManifest(artifacts: [
+          self.artifact(.pvhKernel, hash: "a", bytes: 4),
+          self.artifact(.pvhInitrd, hash: "b", bytes: 5),
+        ]), kernel: kernel, initrd: initrd, symbols: symbols)
+    }
+    let installerOnly = DoryPCX86QualificationFixtureManifest(
+      catalogID: "installer", purpose: .uefiInstaller,
+      producer: manifest.producer, artifacts: manifest.artifacts)
+    #expect(throws: PVHRunnerError.self) {
+      try PVHQualificationFixtureBinding.validate(
+        manifest: installerOnly, kernel: kernel, initrd: initrd, symbols: nil)
+    }
+  }
+
+  @Test func diagnosticReceiptPublicationIsDurableAndNeverReplaces() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let receipt = directory.appendingPathComponent("receipt.json")
+    try PVHReceiptPublisher.publish(Data("first\n".utf8), to: receipt.path)
+    #expect(try Data(contentsOf: receipt) == Data("first\n".utf8))
+    #expect(throws: PVHRunnerError.self) {
+      try PVHReceiptPublisher.publish(Data("second\n".utf8), to: receipt.path)
+    }
+    #expect(try Data(contentsOf: receipt) == Data("first\n".utf8))
   }
 
   @Test func receiptMustMatchRunIDAndExactSuccessfulWorkloads() throws {
     var capture = PVHConsoleCapture()
     for receipt in [
-      PVHGuestReceipt(schemaVersion: 1, doryPVHBoot: "userspace-ready", runID: UUID().uuidString, workloadsPassed: true, workloads: workloads),
-      PVHGuestReceipt(schemaVersion: 1, doryPVHBoot: "userspace-ready", runID: runID, workloadsPassed: false, workloads: workloads),
-      PVHGuestReceipt(schemaVersion: 1, doryPVHBoot: "userspace-ready", runID: runID, workloadsPassed: true, workloads: ["exec-fork"]),
-      PVHGuestReceipt(schemaVersion: 2, doryPVHBoot: "userspace-ready", runID: runID, workloadsPassed: true, workloads: workloads),
+      PVHGuestReceipt(
+        schemaVersion: 1, doryPVHBoot: "userspace-ready", runID: UUID().uuidString,
+        workloadsPassed: true, workloads: workloads),
+      PVHGuestReceipt(
+        schemaVersion: 1, doryPVHBoot: "userspace-ready", runID: runID, workloadsPassed: false,
+        workloads: workloads),
+      PVHGuestReceipt(
+        schemaVersion: 1, doryPVHBoot: "userspace-ready", runID: runID, workloadsPassed: true,
+        workloads: ["exec-fork"]),
+      PVHGuestReceipt(
+        schemaVersion: 2, doryPVHBoot: "userspace-ready", runID: runID, workloadsPassed: true,
+        workloads: workloads),
     ] {
       capture.consume(try line(receipt), runID: runID, workloads: workloads)
       #expect(capture.receipt == nil)
@@ -182,15 +260,20 @@ import Testing
   }
 
   @Test func successRequiresBothReceiptAndCleanPoweroff() throws {
-    let withoutReceipt = try #require(PVHRunOutcome.terminal(stop: .poweredOff(instructionCount: 9), receiptSeen: false))
+    let withoutReceipt = try #require(
+      PVHRunOutcome.terminal(stop: .poweredOff(instructionCount: 9), receiptSeen: false))
     #expect(!withoutReceipt.passed)
     #expect(withoutReceipt.exitCode != 0)
-    let success = try #require(PVHRunOutcome.terminal(stop: .poweredOff(instructionCount: 9), receiptSeen: true))
+    let success = try #require(
+      PVHRunOutcome.terminal(stop: .poweredOff(instructionCount: 9), receiptSeen: true))
     #expect(success.passed)
     #expect(success.exitCode == 0)
     #expect(PVHRunOutcome.terminal(stop: .instructionBudget(1000), receiptSeen: true) == nil)
-    #expect(PVHRunOutcome.terminal(stop: .halted(instructionCount: 9), receiptSeen: true)?.passed == false)
-    #expect(PVHRunOutcome.terminal(stop: .reset(instructionCount: 9), receiptSeen: true)?.passed == false)
+    #expect(
+      PVHRunOutcome.terminal(stop: .halted(instructionCount: 9), receiptSeen: true)?.passed == false
+    )
+    #expect(
+      PVHRunOutcome.terminal(stop: .reset(instructionCount: 9), receiptSeen: true)?.passed == false)
     #expect(PVHRunOutcome.wallBudget.exitCode == 124)
     #expect(!PVHRunOutcome.instructionBudget.passed)
   }
@@ -199,66 +282,136 @@ import Testing
     #expect(PVHStopSnapshot.instructionCount(.instructionBudget(1000)) == 1000)
     #expect(PVHStopSnapshot.instructionCount(.poweredOff(instructionCount: 7)) == 7)
     #expect(PVHStopSnapshot.instructionCount(.halted(instructionCount: 5)) == 5)
-    #expect(PVHStopSnapshot.instructionCount(.exception(
-      .init(kind: .invalidOpcode, vector: 6, instructionPointer: 0x100000), instructionCount: 3)) == 3)
+    #expect(
+      PVHStopSnapshot.instructionCount(
+        .exception(
+          .init(kind: .invalidOpcode, vector: 6, instructionPointer: 0x100000), instructionCount: 3)
+      ) == 3)
   }
 
   @Test func faultEvidenceAndBuildIDComeFromTheActualImageAndStop() throws {
     let fault = PVHStopSnapshot(
-      stop: .exception(.init(kind: .pageFault, vector: 14, errorCode: 2,
-        instructionPointer: 0x100002, linearAddress: 0x300000), instructionCount: 3),
+      stop: .exception(
+        .init(
+          kind: .pageFault, vector: 14, errorCode: 2,
+          instructionPointer: 0x100002, linearAddress: 0x300000), instructionCount: 3),
       totalInstructions: 1003, elapsedNanoseconds: 50, state: nil, nearestSymbol: nil)
     #expect(fault.fault?.linearAddress == 0x300000)
     #expect(fault.instructionCount == 3)
     #expect(fault.totalInstructions == 1003)
     var data = Data(repeating: 0, count: 0x204)
     func write(_ value: UInt64, _ offset: Int, _ count: Int) {
-      for index in 0..<count { data[offset + index] = UInt8(truncatingIfNeeded: value >> (index * 8)) }
+      for index in 0..<count {
+        data[offset + index] = UInt8(truncatingIfNeeded: value >> (index * 8))
+      }
     }
     data.replaceSubrange(0..<7, with: [0x7F, 0x45, 0x4C, 0x46, 2, 1, 1])
-    write(2, 16, 2); write(0x3E, 18, 2); write(1, 20, 4)
-    write(64, 32, 8); write(64, 52, 2); write(56, 54, 2); write(2, 56, 2)
-    write(1, 0x40, 4); write(5, 0x44, 4); write(0x200, 0x48, 8)
-    write(0xFFFF_FFFF_8100_0000, 0x50, 8); write(0x100000, 0x58, 8)
-    write(4, 0x60, 8); write(4, 0x68, 8)
-    write(4, 0x78, 4); write(0x180, 0x80, 8); write(40, 0x98, 8)
-    write(4, 0x180, 4); write(4, 0x184, 4); write(0x12, 0x188, 4)
+    write(2, 16, 2)
+    write(0x3E, 18, 2)
+    write(1, 20, 4)
+    write(64, 32, 8)
+    write(64, 52, 2)
+    write(56, 54, 2)
+    write(2, 56, 2)
+    write(1, 0x40, 4)
+    write(5, 0x44, 4)
+    write(0x200, 0x48, 8)
+    write(0xFFFF_FFFF_8100_0000, 0x50, 8)
+    write(0x100000, 0x58, 8)
+    write(4, 0x60, 8)
+    write(4, 0x68, 8)
+    write(4, 0x78, 4)
+    write(0x180, 0x80, 8)
+    write(40, 0x98, 8)
+    write(4, 0x180, 4)
+    write(4, 0x184, 4)
+    write(0x12, 0x188, 4)
     data.replaceSubrange(0x18C..<0x190, with: [0x58, 0x65, 0x6E, 0])
     write(0x100000, 0x190, 4)
-    write(4, 0x194, 4); write(4, 0x198, 4); write(3, 0x19C, 4)
+    write(4, 0x194, 4)
+    write(4, 0x198, 4)
+    write(3, 0x19C, 4)
     data.replaceSubrange(0x1A0..<0x1A8, with: [0x47, 0x4E, 0x55, 0, 0xAA, 0xBB, 0xCC, 0xDD])
     let metadata = try PVHELFMetadata(validatedImage: .init(data: data))
     #expect(metadata.buildID == "aabbccdd")
-    #expect(try metadata.symbolAddress(state: .init(
-      rip: 0x100002, cs: .init(base: 0), control: .init(cr0: 0x11))) == 0xFFFF_FFFF_8100_0002)
+    #expect(
+      try metadata.symbolAddress(
+        state: .init(
+          rip: 0x100002, cs: .init(base: 0), control: .init(cr0: 0x11))) == 0xFFFF_FFFF_8100_0002)
   }
 
   @Test func symbolLookupIsBoundedOptionalAndNeverInventsAddressMasks() throws {
-    let symbols = try PVHSymbolMap(data: Data("ffffffff81000000 T startup\nffffffff81000100 t second\nffffffff81000200 D data\n".utf8))
+    let symbols = try PVHSymbolMap(
+      data: Data(
+        "ffffffff81000000 T startup\nffffffff81000100 t second\nffffffff81000200 D data\n".utf8))
     #expect(symbols.nearest(to: 0x100000) == nil)
     #expect(symbols.nearest(to: 0xFFFF_FFFF_8100_0104)?.name == "second")
     #expect(symbols.nearest(to: 0xFFFF_FFFF_8100_0104)?.offset == 4)
-    #expect(throws: PVHRunnerError.self) { _ = try PVHSymbolMap(data: Data("not a map at all".utf8)) }
+    #expect(throws: PVHRunnerError.self) {
+      _ = try PVHSymbolMap(data: Data("not a map at all".utf8))
+    }
     #expect(throws: PVHRunnerError.self) { _ = try PVHSymbolMap(data: Data("1000 D data\n".utf8)) }
   }
 
-  private func arguments(replacing option: String? = nil, with replacement: String = "") -> [String] {
+  private func arguments(replacing option: String? = nil, with replacement: String = "") -> [String]
+  {
     var values = [
       "--kernel", "/kernel", "--kernel-sha256", String(repeating: "a", count: 64),
       "--initrd", "/initrd", "--initrd-sha256", String(repeating: "b", count: 64),
       "--command-line", "console=ttyS0 rdinit=/init", "--tier", "interpreter",
       "--memory-mib", "512", "--max-instructions", "10000", "--wall-seconds", "10",
       "--run-id", runID, "--workload", "exec-fork", "--workload", "file-io",
+      "--fixture-manifest", "/fixture-manifest.json", "--fixture-manifest-sha256",
+      String(repeating: "f", count: 64), "--source-commit", String(repeating: "c", count: 40),
+      "--source-tree", "clean", "--host-class", "apple-m2-pro", "--processor-count", "1",
+      "--jit-write-policy", "protected-host-pages", "--raw-target-prediction", "all",
     ]
     if let option, let index = values.firstIndex(of: option) { values[index + 1] = replacement }
     return values
   }
 
   private func validLine() throws -> [UInt8] {
-    try line(.init(schemaVersion: 1, doryPVHBoot: "userspace-ready", runID: runID, workloadsPassed: true, workloads: workloads))
+    try line(
+      .init(
+        schemaVersion: 1, doryPVHBoot: "userspace-ready", runID: runID, workloadsPassed: true,
+        workloads: workloads))
   }
 
   private func line(_ receipt: PVHGuestReceipt) throws -> [UInt8] {
     Array(try JSONEncoder().encode(receipt)) + [10]
+  }
+
+  private func identity(path: String, hash: Character, bytes: Int) -> PVHArtifactIdentity {
+    .init(
+      path: path, sha256: String(repeating: String(hash), count: 64),
+      byteCount: bytes, elfBuildID: nil)
+  }
+
+  private func artifact(
+    _ role: DoryPCX86QualificationFixtureManifest.Artifact.Role,
+    hash: Character,
+    bytes: UInt64
+  ) -> DoryPCX86QualificationFixtureManifest.Artifact {
+    .init(
+      role: role, importFileName: role.rawValue,
+      sha256: String(repeating: String(hash), count: 64), byteCount: bytes,
+      sourceURL: "https://example.invalid/source",
+      sourceArtifactSHA256: String(repeating: "e", count: 64),
+      licenseSPDX: "MIT", derivation: "test")
+  }
+
+  private func qualificationManifest(
+    artifacts: [DoryPCX86QualificationFixtureManifest.Artifact]
+  ) -> DoryPCX86QualificationFixtureManifest {
+    .init(
+      catalogID: "test-pvh", purpose: .pvhSmoke,
+      producer: .init(
+        builderSHA256: String(repeating: "1", count: 64),
+        recipeSHA256: String(repeating: "2", count: 64),
+        toolchainIdentitySHA256: String(repeating: "3", count: 64),
+        toolchainDescription: "test toolchain", environmentKind: .hostToolchain,
+        environmentIdentitySHA256: String(repeating: "4", count: 64),
+        environmentDescription: "test environment"),
+      artifacts: artifacts)
   }
 }
