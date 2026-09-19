@@ -1,0 +1,163 @@
+# Dory x86 SMP memory and translation contract
+
+Status: **normative target; release qualification incomplete**
+
+This document defines the guest-visible contract that the translated x86 PC runtime must satisfy
+before free-running SMP can become a supported configuration. It also records which parts are
+implemented today. Passing an individual unit test or booting a guest does not weaken any rule
+below.
+
+## Scope and terms
+
+The contract applies to every vCPU execution tier, ordinary RAM, page-table walks, instruction
+fetch, device DMA, and shared-memory adapters in one `DoryPCDirectKernelMachine`. MMIO ordering is
+defined by each device boundary, but crossing MMIO may not weaken the ordering of surrounding RAM
+accesses.
+
+- **Program order** is the architectural order of one x86 vCPU after faults and restartable
+  instruction progress are resolved.
+- **Global memory order** is the single order in which stores and locked operations become visible
+  to all vCPUs and coherent devices.
+- **Single-copy atomic** means no observer can see a torn value for an architecturally atomic
+  access.
+- **Machine-scoped** means one authority is shared by all execution engines that can reach one
+  machine's RAM. Independent virtual machines must not contend on that authority.
+- A **publication boundary** is a release operation paired with an acquire observation. A Swift
+  mutex is not, by itself, proof for generated code that bypasses that mutex.
+
+## Required guest-visible behavior
+
+### Ordinary RAM
+
+The runtime must implement x86 TSO, not the weaker host Arm memory model:
+
+1. Loads remain ordered with older loads.
+2. Stores remain ordered with older loads and older stores.
+3. A load may pass an older store only as permitted by x86 store-buffer semantics; it must observe
+   the youngest older same-address store.
+4. Stores become visible in one multicopy-atomic order. Two observers may not disagree on the
+   order of two stores after both have observed either store.
+5. Naturally aligned 1-, 2-, 4-, and 8-byte loads and stores are single-copy atomic. Wider and
+   unaligned ordinary accesses receive only the atomicity guaranteed by x86.
+
+Generated Arm loads/stores, Swift callback accesses, interpreter accesses, and device RAM accesses
+must participate in this same model. It is invalid to rely on a lock used only by Swift while
+generated code accesses the same allocation directly.
+
+### Locked operations
+
+Every valid x86 `LOCK` operation and every implicitly locked memory `XCHG` must:
+
+- be indivisible with respect to ordinary and locked accesses from every vCPU and coherent device;
+- occupy one total order shared by all locked operations in the machine;
+- act as a full fence for older and younger loads and stores; and
+- retain precise fault behavior: no register, flag, memory, or generation side effect may escape a
+  failing preflight.
+
+Aligned natural-width operations should use lock-free host atomics when the host proves them
+lock-free. A machine-scoped fallback is permitted for an unaligned, split-page, split-cache-line,
+or 16-byte operation only when ordinary accesses to the affected bytes are also excluded or made
+atomic. Merely serializing locked helpers with each other is insufficient.
+
+The machine's `DoryX86AtomicCoordinator` is the ownership boundary for fallback coordination. The
+interpreter and every JIT executor for one machine share it through the append-only JIT context.
+Different machines use different coordinators. The coordinator may not become a process-global
+performance or failure domain.
+
+### Fences and serializing boundaries
+
+- `MFENCE` joins all prior loads/stores before all later loads/stores.
+- `SFENCE` joins all prior stores before all later stores.
+- `LFENCE` joins all prior loads before all later loads and retains the architectural execution
+  barrier behavior selected by Dory's CPU profile.
+- Locked instructions provide the full-fence behavior above without requiring an adjacent fence.
+- MMIO callbacks, interrupt delivery, and device notification must use an explicit ordering
+  boundary where the device model depends on prior RAM writes.
+
+### Page tables and TLBs
+
+A page-table write is an ordinary memory write until the guest executes the architecturally
+required invalidation or control-register operation. Once that invalidation retires:
+
+1. the initiating vCPU must not reuse an older translation;
+2. every targeted remote vCPU must observe a newer address-space generation before it can retire a
+   later access using the invalidated translation; and
+3. a recycled translation-cache entry must never regain authority through generation wrap,
+   address-space reuse, or code-cache reuse.
+
+Free-running SMP therefore requires a generation publication protocol plus acknowledgement or an
+equivalent epoch/hazard scheme. Invalidating only when a worker happens to return to a coordinator
+is not sufficient.
+
+### DMA and shared mappings
+
+Device DMA reads observe CPU stores after the device's notification/order boundary. DMA writes are
+published before completion interrupts or used-ring updates become visible to a vCPU. A device or
+shared-mapping adapter that can modify bytes backing translated code must call
+`invalidateTranslatedCodeGenerations(in:)` before reusing or exposing that backing. The range is
+validated completely before generation or protection state changes.
+
+DMA into page tables participates in the same translation invalidation rules; a device completion
+cannot silently make stale native TLB entries authoritative.
+
+### Self-modifying code and instruction fetch
+
+Instruction fetch may use a resident translation only while all of these remain true:
+
+- its exact guest bytes or generation token still match;
+- its address-space, privilege, paging, and code-protection generations match; and
+- no CPU, DMA, or shared-mapping write has obtained authority to modify an overlapping guest code
+  page without first revoking that translation.
+
+Guest code pages are 4 KiB even when the host allocation/protection granule is larger. Revoking one
+host page must invalidate every tracked guest code page that overlaps it. A writer publishes the
+new bytes before a later fetch can accept the new generation. An old block may finish only under a
+documented epoch/hazard rule that prevents its storage from being recycled while executable.
+
+## Current implementation boundary
+
+As of 2026-09-19:
+
+| Area | Implemented | Still required before SMP acceptance |
+| --- | --- | --- |
+| Machine ownership | One `DoryX86AtomicCoordinator` is injected into all interpreters and baseline/optimizing executors for a PC machine; independent machines are isolated. | Extend the same ownership into the persistent vCPU runtime and any future tier. |
+| Native aligned locked operations | The C helpers use lock-free sequentially consistent 1/2/4/8-byte host atomics; aligned 16-byte CAS is admitted only when the host proves it lock-free. Swift byte-array/mmap scalar RAM accesses use the same atomic domain. | Extend the range authority below to every ordinary/DMA/shared access that can overlap a split or non-lock-free transaction. |
+| Mixed interpreter/JIT locked operations | Aligned 1/2/4/8-byte interpreter ALU, unary, XCHG, CMPXCHG, XADD, bit-test/update, and CMPXCHG8B forms use host compare/exchange transactions shared with native JIT helpers. Cross-tier winner and RMW tests pass. | Provide a real stop-the-world or byte-range authority for unaligned/cache-line-split/page-split operations and interpreter CMPXCHG16B; ordinary accesses to the affected bytes must participate. |
+| Ordinary scalar RAM | Every direct Arm load and store is followed by conservative `DMB ISH`; aligned 1/2/4/8-byte Swift byte-array/mmap loads and stores use host atomics. Callback accesses retain memory-owned synchronization. | Prove the complete load/load, load/store, store/store, and store/load TSO mapping for every emitter, callback, bulk/string, DMA, and replay path. Remove conservatism only with litmus and inspection authority. |
+| TLB invalidation | Address-space generations, page-write tracking, and per-executor invalidation exist. | Add remote-vCPU generation publication and acknowledgement that works while workers remain free-running. |
+| CPU SMC | Checked callbacks and protected host pages advance guest code generations; byte revalidation protects publication. | Add concurrent cross-vCPU mutation/fetch tests and code-storage epoch retirement. |
+| DMA SMC | Physical-memory DMA validation and checked translated-code lifetime invalidation exist. | Audit every DMA/shared-memory writer and add concurrent DMA/page-table/code mutation campaigns. |
+| Scheduling | Host workers exist and native blocks poll per-vCPU pending-work bytes. | Workers are currently created per `run` and rendezvous with the coordinator for each admitted slice; sustained shared-memory SMP is not yet admitted. |
+| Qualification | Instruction inspection covers the direct barriers; focused debug mixed-tier atomic tests pass; the optimized x86/PC/firmware/runner graph executes. | Run the complete tier-pair TSO/atomic/TLB/DMA/SMC matrix on persistent workers at 1, 2, and 4 vCPUs and retain exact-candidate receipts. |
+
+## Mandatory qualification matrix
+
+The release campaign must exercise interpreter/interpreter, interpreter/baseline,
+interpreter/optimizing, baseline/baseline, baseline/optimizing, and optimizing/optimizing pairs at
+1, 2, and 4 vCPUs under both checked-callback and protected-host-page policies where applicable.
+Each cell records source, binary, host, profile, policy, predictor set, and fixture hashes.
+
+At minimum, the campaign must include:
+
+- Store Buffering: record `r0 = 0 && r1 = 0` after `x=1; r0=y` / `y=1; r1=x` as
+  **permitted** x86 Store→Load relaxation (the outcome is not required from a conservative runtime).
+- Load Buffering: forbid `r0 = 1 && r1 = 1` after `r0=y; x=1` / `r1=x; y=1`.
+- Message Passing: observing the publication flag forbids observing stale payload.
+- IRIW: observers may not disagree on the order of independent stores.
+- Locked increment/exchange/CMPXCHG families mixed with ordinary aligned readers and writers.
+- Unaligned, cache-line-split, and page-split locked operands, including faulting second pages.
+- `MFENCE`, `SFENCE`, `LFENCE`, and locked-operation fence substitutions.
+- Page-table rewrite plus local and remote invalidation under native TLB hits.
+- CPU and DMA code mutation while another vCPU repeatedly executes the affected page.
+- Code-cache rotation while another vCPU holds a direct, IBTC, or shadow-return target.
+
+Outcome counters must be deterministic where the architecture forbids an outcome; stress duration
+alone is not authority. Inspection tests must additionally prove that every generated memory path
+contains the intended Arm ordering primitive or calls a qualified helper. Any new emitter or memory
+fast path is denied until it is present in both inspections and litmus cells.
+
+## Activation rule
+
+The public x86 Linux gate remains closed until every “still required” row above has code, tests, and
+exact-candidate receipts. A machine-scoped coordinator removes cross-VM contention; it does not by
+itself qualify free-running SMP or x86 TSO.
