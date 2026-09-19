@@ -1,0 +1,64 @@
+#!/bin/sh
+# Guest PID 1 adapter only. Never execute this init on the development host.
+if [ "$$" -ne 1 ]; then
+    printf '%s\n' 'This diagnostic init must run as guest PID 1.' >&2
+    exit 2
+fi
+PATH=/bin
+export PATH
+BB=/bin/busybox
+set -f
+umask 077
+if [ "$("$BB" uname -sm)" != 'Linux x86_64' ]; then
+    printf '%s\n' 'DORY_P02_BOOT_ERROR {"schemaVersion":1,"name":"bootstrap.platform","status":"fail","runUUID":null}'
+    exit 2
+fi
+
+poweroff_guest() {
+    # Exactly one normal Linux POWER_OFF request. Returning is a failure, not a loop.
+    "$BB" poweroff -f
+    printf '%s\n' 'DORY_P02_BOOT_ERROR {"schemaVersion":1,"name":"shutdown.returned","status":"fail","runUUID":null}'
+    exit 1
+}
+
+fail_guest() {
+    printf 'DORY_P02_BOOT_ERROR {"schemaVersion":1,"name":"%s","status":"fail","runUUID":null}\n' "$1"
+    poweroff_guest
+}
+
+publish_workload_output() {
+    receipt_publication_started=no
+    if [ "$1" -ne 0 ]; then
+        "$BB" sed -n '/^DORY_P02_RESULT /p' "$2"
+        return 1
+    fi
+    output_bytes=$("$BB" wc -c < "$2") || return 1
+    output_bytes=${output_bytes#"${output_bytes%%[![:space:]]*}"}
+    output_bytes=${output_bytes%"${output_bytes##*[![:space:]]}"}
+    case "$output_bytes" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$output_bytes" -gt 0 ] && [ "$output_bytes" -le 16384 ] || return 1
+    "$BB" sync || return 1
+    receipt_publication_started=yes
+    "$BB" cat "$2"
+}
+
+# The C child independently validates the bounded command line and canonical UUID
+# before changing limits, signals, processes or files. No shell-provided UUID is trusted.
+"$BB" mount -t proc proc /proc || fail_guest bootstrap.proc
+"$BB" mount -t devtmpfs devtmpfs /dev || fail_guest bootstrap.dev
+"$BB" mount -t sysfs sysfs /sys || fail_guest bootstrap.sys
+"$BB" mount -t tmpfs -o size=8m,mode=0700 tmpfs /run || fail_guest bootstrap.run
+
+# Delay publishing the child's receipt until its exit status and final sync pass.
+# The child caps all of its regular-file output at 256 KiB via RLIMIT_FSIZE.
+/bin/p02-userspace-stress --run > /run/stress-output 2>&1
+workload_status=$?
+if ! publish_workload_output "$workload_status" /run/stress-output; then
+    [ "$receipt_publication_started" = no ] && fail_guest stress.output_gate
+    # A partially published receipt must never be followed by successful poweroff.
+    printf '%s\n' 'DORY_P02_BOOT_ERROR {"schemaVersion":1,"name":"stress.output_delivery","status":"fail","runUUID":null}'
+    exit 1
+fi
+poweroff_guest

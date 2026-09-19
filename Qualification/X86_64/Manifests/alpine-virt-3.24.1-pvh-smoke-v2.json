@@ -1,0 +1,47 @@
+{
+  "architecture": "x86_64",
+  "artifacts": [
+    {
+      "byteCount": 39274268,
+      "derivation": "Exact ELF64 kernel produced by bounded gzip-member extraction from boot/vmlinuz-virt in the pinned Alpine ISO.",
+      "importFileName": "x86_64-vmlinux",
+      "licenseSPDX": "GPL-2.0-only",
+      "role": "pvh-kernel",
+      "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+      "sourceArtifactSHA256": "e73a6241bd5f3c5c2d4d38c02cc52c378c0415a7c888bd292066bf36e0f41a39",
+      "sourceURL": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-virt-3.24.1-x86_64.iso"
+    },
+    {
+      "byteCount": 1482752,
+      "derivation": "Deterministic uncompressed newc archive assembled from the pinned BusyBox and musl files plus the repository-owned PID 1 workload; names, metadata, device nodes, inodes and padding are normalized.",
+      "importFileName": "x86_64-p02-minimal-userspace-v2.cpio",
+      "licenseSPDX": "(GPL-2.0-only AND MIT AND GPL-3.0-only)",
+      "role": "pvh-initrd",
+      "sha256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+      "sourceArtifactSHA256": "e73a6241bd5f3c5c2d4d38c02cc52c378c0415a7c888bd292066bf36e0f41a39",
+      "sourceURL": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-virt-3.24.1-x86_64.iso"
+    },
+    {
+      "byteCount": 6391693,
+      "derivation": "Exact boot/System.map-6.18.35-0-virt member extracted from the pinned Alpine ISO for diagnostic symbol annotation only.",
+      "importFileName": "x86_64-System.map-6.18.35",
+      "licenseSPDX": "GPL-2.0-only",
+      "role": "pvh-symbols",
+      "sha256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+      "sourceArtifactSHA256": "e73a6241bd5f3c5c2d4d38c02cc52c378c0415a7c888bd292066bf36e0f41a39",
+      "sourceURL": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-virt-3.24.1-x86_64.iso"
+    }
+  ],
+  "catalogID": "alpine-virt-3.24.1-x86_64-p02-minimal-v2",
+  "producer": {
+    "builderSHA256": "37a9a274e969a683384f42c1eb9673eee7aeac4fd1556084c92235ea7661e132",
+    "environmentDescription": "Qualification/X86_64/Environments/macos-27.2-arm64-xcode-27.0.json",
+    "environmentIdentitySHA256": "33614057899904e587cc88b7f3ed7d8aca1619ae91a3adffd69980dba5e6add2",
+    "environmentKind": "host-toolchain",
+    "recipeSHA256": "52b01dc00c935064e09bc006955aa27e5a8895a8a660fc16dbe4376fa289bbb6",
+    "toolchainDescription": "Qualification/X86_64/Toolchains/pvh-smoke-python-3.10.13-bsdtar-3.5.3.json",
+    "toolchainIdentitySHA256": "ceb07c7a477530d4e0466d4babb177790d9094e92b7405bf8795e3341620254b"
+  },
+  "purpose": "pvh-smoke",
+  "schema": "dev.dory.pc-x86-qualification-fixtures@1"
+}

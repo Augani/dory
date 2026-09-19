@@ -1,0 +1,17 @@
+{
+  "schema": "dev.dory.x86-qualification-host-environment@1",
+  "purpose": "pvh-fixture-production-and-local-qualification",
+  "hostArchitecture": "arm64",
+  "operatingSystem": {
+    "name": "macOS",
+    "version": "27.2",
+    "build": "26B5086k"
+  },
+  "xcode": {
+    "version": "27.0",
+    "build": "27A266a",
+    "sdk": "27.0"
+  },
+  "containment": "host-toolchain",
+  "qualificationLimit": "This identity binds the observed host environment; it is not a claim of cross-host reproducibility or release qualification."
+}

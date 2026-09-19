@@ -1,0 +1,20 @@
+[Unit]
+Description=Dory bounded systemd userspace diagnostic
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+SuccessAction=poweroff
+FailureAction=poweroff
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/bin/busybox sh /usr/lib/dory/diagnostic-workload
+ExecStartPost=/bin/busybox sh /usr/lib/dory/diagnostic-receipt
+TimeoutStartSec=30s
+TimeoutStopSec=5s
+Restart=no
+StandardInput=null
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/console

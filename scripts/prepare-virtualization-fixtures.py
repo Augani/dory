@@ -20,7 +20,10 @@ import zlib
 
 
 CATALOG = Path(__file__).resolve().parent.parent / "Config/DoryVirtualizationGuestCandidates.json"
-DIAGNOSTIC_DIRECTORY = Path(__file__).resolve().parent.parent / "guest/diagnostics/p02-minimal-userspace"
+QUALIFICATION_FIXTURE_DIRECTORY = (
+    Path(__file__).resolve().parent.parent / "Qualification/X86_64/Fixtures"
+)
+DIAGNOSTIC_DIRECTORY = QUALIFICATION_FIXTURE_DIRECTORY / "p02-minimal-userspace"
 GLIBC_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-glibc-userspace")
 SYSTEMD_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-systemd-userspace")
 STRESS_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-userspace-stress")

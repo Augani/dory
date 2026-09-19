@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-minimal-userspace",
+  "architecture": "x86_64",
+  "artifactID": "alpine-virt-3.24.1-x86_64",
+  "sourceFilename": "x86_64-initramfs-virt",
+  "sourceSHA256": "4caf09640385525632f0a54dfeabd08b5bf5ceeb2b7d63e888fb858b7b3fa006",
+  "maximumExpandedBytes": 33554432,
+  "kernelFilename": "x86_64-vmlinux",
+  "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+  "initSHA256": "2fff09875bd5de4d30622d582aaac09eb23e2eef90b1c9591b163cbfcadf7f5d",
+  "members": {
+    "usr/bin/busybox": "01a989eb4d1d04b0d146c790ac536abd88f374ec74a2e110c58910b840d42045",
+    "usr/lib/ld-musl-x86_64.so.1": "38d022ce7425ff105ccfb53598f606e6e5f5f0a34bfbc793d65e6f34c9d72806"
+  },
+  "outputFilename": "x86_64-p02-minimal-userspace-v2.cpio",
+  "outputSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+  "upstreamUserspace": {
+    "busybox": "1.37.0 (2026-01-10 15:38:28 UTC)",
+    "libc": "musl 1.2.6-r2",
+    "busyboxELFInterpreter": "/lib/ld-musl-x86_64.so.1",
+    "busyboxELFNeeded": [
+      "libc.musl-x86_64.so.1"
+    ]
+  },
+  "expectedResults": [
+    "bootstrap.filesystems",
+    "syscall.identity",
+    "process.creation_exec_wait",
+    "memory.allocation_copy",
+    "signal.handler_return",
+    "timer.sleep_elapsed",
+    "filesystem.write_read_sync",
+    "shutdown.request"
+  ],
+  "acceptance": "Fresh caller UUID from dory.pvh_run_id in every result; seven pass results, zero failures, one matching unprefixed runner receipt; shutdown.request is requested only and requires independent host ACPI S5 evidence. No build-only qualification.",
+  "limitations": [
+    "BusyBox/musl only; no glibc, systemd or general-purpose distribution qualification.",
+    "Shell process isolation and exec/wait semantics; exact fork/clone/vfork syscall choice is not traced.",
+    "64 KiB shell allocation/copy only; no malloc/mmap stress or exhaustion contract.",
+    "USR1 handler and sleep/uptime only; no complete signal or timer syscall coverage.",
+    "Writable tmpfs only; no block filesystem persistence qualification."
+  ],
+  "runnerProtocol": {
+    "commandLineUUIDKey": "dory.pvh_run_id",
+    "receipt": "unprefixed JSON line",
+    "schemaVersion": 1,
+    "doryPVHBoot": "userspace-ready",
+    "runID": "exact command-line UUID",
+    "workloadsPassed": "true only when all seven named checks passed",
+    "workloads": "exact seven expectedResults names except shutdown.request",
+    "hostCompletion": "independent ACPI S5 poweredOff exit required"
+  }
+}

@@ -1,0 +1,28 @@
+#!/bin/sh
+# Guest-only ExecStartPost: systemd waits for the oneshot main process to exit successfully.
+# shellcheck source=guest/diagnostics/p02-systemd-userspace/common
+. /usr/lib/dory/diagnostic-common
+
+validate_completion_record() {
+    [ "$completed_uuid" = "$run_uuid" ] && [ "$completed_invocation" = "$INVOCATION_ID" ] || return 1
+    [ "$passed" = 7 ] && [ "$failed" = 0 ] && [ -z "$extra" ] || return 1
+    case "$completed_pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$completed_pid" -gt 1 ] && [ "$completed_pid" -ne "$$" ]
+}
+
+emit_runner_receipt() {
+    printf '{"schemaVersion":1,"doryPVHBoot":"userspace-ready","runID":"%s","workloadsPassed":true,"workloads":["bootstrap.filesystems","syscall.identity","process.creation_exec_wait","memory.allocation_copy","signal.handler_return","timer.sleep_elapsed","filesystem.write_read_sync","systemd.service_supervision"]}\n' "$run_uuid"
+}
+
+read -r completed_uuid completed_invocation completed_pid passed failed extra < /run/dory/completed || boot_error
+validate_completion_record || boot_error
+# PID 1 must have reaped the successful ExecStart process before this separate command.
+[ ! -e "/proc/$completed_pid" ] || boot_error
+"$BB" rm /run/dory/completed || boot_error
+"$BB" sync || boot_error
+
+printf 'DORY_P02_RESULT {"schemaVersion":1,"kind":"userspace-result","runUUID":"%s","name":"systemd.service_supervision","status":"pass","detail":"PID 1 reaped successful oneshot ExecStart and launched ExecStartPost in the same invocation and cgroup"}\n' "$run_uuid"
+printf 'DORY_P02_SUMMARY {"schemaVersion":1,"kind":"userspace-summary","runUUID":"%s","status":"pass","passed":8,"failed":0,"shutdownExpected":"acpi-s5"}\n' "$run_uuid"
+printf 'DORY_P02_RESULT {"schemaVersion":1,"kind":"userspace-result","runUUID":"%s","name":"shutdown.request","status":"requested","detail":"service exit lets PID 1 enqueue its normal poweroff.target transaction"}\n' "$run_uuid"
+emit_runner_receipt
+exit 0

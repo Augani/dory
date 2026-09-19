@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-userspace-io-stress",
+  "architecture": "x86_64",
+  "artifactID": "alpine-virt-3.24.1-x86_64",
+  "source": {
+    "filename": "x86_64-initramfs-virt",
+    "sha256": "4caf09640385525632f0a54dfeabd08b5bf5ceeb2b7d63e888fb858b7b3fa006"
+  },
+  "kernel": {
+    "filename": "x86_64-vmlinux",
+    "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8"
+  },
+  "maximumExpandedBytes": 33554432,
+  "members": {
+    "usr/bin/busybox": "01a989eb4d1d04b0d146c790ac536abd88f374ec74a2e110c58910b840d42045",
+    "usr/lib/ld-musl-x86_64.so.1": "38d022ce7425ff105ccfb53598f606e6e5f5f0a34bfbc793d65e6f34c9d72806",
+    "usr/lib/modules/6.18.35-0-virt/kernel/drivers/block/virtio_blk.ko": "2229ae30e4205a9ddb57ffb242517c1108f9ddb31fc481ca5d68f1335637cd5f",
+    "usr/lib/modules/6.18.35-0-virt/kernel/net/core/failover.ko": "0515e4062176bdb30b6e90e98c8ce7c34056da3969892eb6457dd90be1734167",
+    "usr/lib/modules/6.18.35-0-virt/kernel/drivers/net/net_failover.ko": "7a96f35ee688156e44583627144496cce1803e1c1490d2a03850dbf78c73f0b6",
+    "usr/lib/modules/6.18.35-0-virt/kernel/drivers/net/virtio_net.ko": "64924824bd3c079e78824610bf568186be17362552f899b87217caaae54310c7",
+    "usr/lib/modules/6.18.35-0-virt/kernel/net/packet/af_packet.ko": "b28eb4e5a18d1c9071c3111dd0836ffcad5b2e6d1188a9343c5bb142f9687fe3"
+  },
+  "localFiles": {
+    "stress.c": {
+      "bytes": 14601,
+      "sha256": "272b0d1a94d916572d5f0e2680f3e61ba12614d2eb449d23077589c6e203d45d"
+    },
+    "Makefile": {
+      "bytes": 601,
+      "sha256": "0ca8db0c09d9ae15225077c5a4af03745d2f7d4bc26c5767110b27de7dc78a78"
+    },
+    "init": {
+      "bytes": 3842,
+      "sha256": "3bc80218652d81080e91bf5844a28dbe1d5e7257f5a708b9fcfb2d2a849bc6d9"
+    }
+  },
+  "buildMetadataSHA256": "58c7bdf268ce381b3a4c21fe00f5ce2a2af215e7e08ca05135f8817437ef3385",
+  "outputFilename": "x86_64-p02-userspace-io-stress-v1.cpio",
+  "outputSHA256": "cbd5f9a8716052abfe710da732b70e6a2e8b038c7603387e943787b051578a35",
+  "outputBytes": 2114560,
+  "requiredWorkloads": [
+    "io.block_flush_reopen",
+    "io.ethernet_frame_roundtrip"
+  ],
+  "moduleLoadOrder": [
+    "lib/modules/6.18.35-0-virt/kernel/drivers/block/virtio_blk.ko",
+    "lib/modules/6.18.35-0-virt/kernel/net/core/failover.ko",
+    "lib/modules/6.18.35-0-virt/kernel/drivers/net/net_failover.ko",
+    "lib/modules/6.18.35-0-virt/kernel/drivers/net/virtio_net.ko",
+    "lib/modules/6.18.35-0-virt/kernel/net/packet/af_packet.ko"
+  ],
+  "moduleRelease": "6.18.35-0-virt",
+  "moduleVermagic": "6.18.35-0-virt SMP preempt mod_unload modversions ",
+  "builtinTransport": [
+    "PCI",
+    "PCI_MSI",
+    "virtio",
+    "virtio_ring",
+    "virtio_pci_modern_dev",
+    "virtio_pci_legacy_dev",
+    "virtio_pci"
+  ],
+  "ioContract": {
+    "block": {
+      "device": "/dev/vda",
+      "deviceBytes": 33554432,
+      "offset": 1048576,
+      "bytes": 131072,
+      "rounds": 8,
+      "pattern": "(i*37+(i>>8))&255 for zero-based i within region",
+      "minimumHostFlushes": 1,
+      "hostReopenedFileVerificationRequired": true
+    },
+    "ethernet": {
+      "interface": "eth0",
+      "etherType": 34997,
+      "guestMAC": "02:d0:52:00:00:01",
+      "peerMAC": "02:d0:52:00:00:02",
+      "frameBytes": 1024,
+      "dataBytes": 980,
+      "minimumFrames": 4096,
+      "maximumFrames": 16384,
+      "minimumElapsedNanoseconds": 5000000000,
+      "maximumElapsedNanoseconds": 30000000000,
+      "maximumIrrelevantFrames": 64,
+      "maximumOutstandingFrames": 1,
+      "receiptField": "ioNetwork",
+      "bytesAccounting": "frames*1024, full Ethernet frames, not TX+RX doubled",
+      "reply": "Only swap source and destination MACs; all other bytes unchanged"
+    }
+  },
+  "acceptance": "Fresh matching UUID; both C IO workloads pass; child exit0 and sync before publication; exact guest ioNetwork vs host accepted/delivered frame counters; >=1 actual block flush and independently reopened backing-file bytes; ACPI S5 poweroff",
+  "limitations": [
+    "No guest execution by preparer",
+    "Raw block/backend test does not establish physical-media durability or filesystem recovery",
+    "Isolated Ethernet peer uses no host network/socket; no TCP/IP or external connectivity qualification",
+    "Existing seven-workload stress-v1 fixture remains separate and unchanged"
+  ]
+}

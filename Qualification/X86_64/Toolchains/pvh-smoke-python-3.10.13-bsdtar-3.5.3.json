@@ -1,0 +1,19 @@
+{
+  "schema": "dev.dory.x86-qualification-toolchain@1",
+  "purpose": "deterministic-pvh-fixture-production",
+  "python": {
+    "implementation": "CPython",
+    "version": "3.10.13",
+    "zlibCompileVersion": "1.2.12",
+    "zlibRuntimeVersion": "1.2.12"
+  },
+  "archiveReader": {
+    "name": "bsdtar",
+    "version": "3.5.3",
+    "libarchiveVersion": "3.7.4",
+    "zlibVersion": "1.2.12",
+    "liblzmaVersion": "5.4.3",
+    "bzip2Version": "1.0.8"
+  },
+  "outputContract": "The producer verifies every upstream and derived SHA-256. Diagnostic newc output uses producer-owned deterministic serialization and does not depend on archive-writer metadata."
+}

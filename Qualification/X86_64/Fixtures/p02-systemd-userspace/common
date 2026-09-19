@@ -1,0 +1,33 @@
+# Shared guest-only context validation. Sourced by the two systemd service commands.
+PATH=/bin:/sbin
+export PATH
+BB=/bin/busybox
+set -f
+umask 077
+
+boot_error() {
+    printf '%s\n' 'DORY_P02_BOOT_ERROR {"schemaVersion":1,"name":"systemd.service-context","status":"fail","runUUID":null}' >&2
+    exit 1
+}
+
+# Neither command is an init replacement: the pinned systemd ELF must be their parent.
+[ "$$" -gt 1 ] && [ "$PPID" -eq 1 ] || boot_error
+[ "$("$BB" readlink /proc/1/exe)" = /usr/lib/systemd/systemd ] || boot_error
+printf '%s\n' "$INVOCATION_ID" | "$BB" grep -Eq '^[0-9a-f]{32}$' || boot_error
+"$BB" grep -Fxq '0::/system.slice/dory-diagnostic.service' "/proc/$$/cgroup" || boot_error
+
+read -r command_line < /proc/cmdline || boot_error
+run_uuid=
+uuid_count=0
+for argument in $command_line; do
+    case "$argument" in
+        dory.pvh_run_id=*)
+            run_uuid=${argument#dory.pvh_run_id=}
+            uuid_count=$((uuid_count + 1))
+            ;;
+    esac
+done
+if [ "$uuid_count" -ne 1 ] || ! printf '%s\n' "$run_uuid" | "$BB" grep -Eq \
+    '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+    boot_error
+fi

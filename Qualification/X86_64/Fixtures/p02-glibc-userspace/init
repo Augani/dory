@@ -1,0 +1,151 @@
+#!/bin/sh
+# P02 diagnostic PID 1. This file must never be run as a host workload.
+if [ "$$" -ne 1 ]; then
+    printf '%s\n' 'This diagnostic init must run as guest PID 1.' >&2
+    exit 2
+fi
+PATH=/bin:/sbin
+export PATH
+BB=/bin/busybox
+set -f
+umask 077
+
+emit_runner_receipt() {
+    workloads_passed=false
+    workloads='[]'
+    if [ "$passed" -eq 7 ] && [ "$failed" -eq 0 ]; then
+        workloads_passed=true
+        workloads='["bootstrap.filesystems","syscall.identity","process.creation_exec_wait","memory.allocation_copy","signal.handler_return","timer.sleep_elapsed","filesystem.write_read_sync"]'
+    fi
+    printf '{"schemaVersion":1,"doryPVHBoot":"userspace-ready","runID":"%s","workloadsPassed":%s,"workloads":%s}\n' \
+        "$run_uuid" "$workloads_passed" "$workloads"
+}
+
+stop_guest() {
+    "$BB" sync
+    /sbin/poweroff
+    printf '%s\n' 'DORY_P02_BOOT_ERROR {"schemaVersion":1,"name":"shutdown.returned","status":"fail"}'
+    while :; do "$BB" sleep 60; done
+}
+
+if ! "$BB" mount -t proc proc /proc; then
+    printf '%s\n' 'DORY_P02_BOOT_ERROR {"schemaVersion":1,"name":"bootstrap.proc","status":"fail","runUUID":null}'
+    stop_guest
+fi
+read -r command_line < /proc/cmdline
+run_uuid=
+uuid_count=0
+for argument in $command_line; do
+    case "$argument" in
+        dory.pvh_run_id=*)
+            run_uuid=${argument#dory.pvh_run_id=}
+            uuid_count=$((uuid_count + 1))
+            ;;
+    esac
+done
+if [ "$uuid_count" -ne 1 ] || ! printf '%s\n' "$run_uuid" | "$BB" grep -Eq \
+    '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+    printf '%s\n' 'DORY_P02_BOOT_ERROR {"schemaVersion":1,"name":"bootstrap.run-uuid","status":"fail","runUUID":null}'
+    stop_guest
+fi
+
+passed=0
+failed=0
+record() {
+    name=$1
+    status=$2
+    detail=$3
+    [ "$status" = pass ] && passed=$((passed + 1))
+    [ "$status" = fail ] && failed=$((failed + 1))
+    # Names/details below are fixed ASCII; run_uuid is restricted to canonical hex above.
+    printf 'DORY_P02_RESULT {"schemaVersion":1,"kind":"userspace-result","runUUID":"%s","name":"%s","status":"%s","detail":"%s"}\n' \
+        "$run_uuid" "$name" "$status" "$detail"
+}
+
+setup_status=pass
+"$BB" mount -t devtmpfs devtmpfs /dev || setup_status=fail
+"$BB" mount -t sysfs sysfs /sys || setup_status=fail
+"$BB" mount -t tmpfs -o size=8m tmpfs /run || setup_status=fail
+record bootstrap.filesystems "$setup_status" 'proc, devtmpfs, sysfs and bounded tmpfs mounts'
+
+architecture=$("$BB" uname -m)
+if [ "$architecture" = x86_64 ] && [ -r /proc/1/stat ]; then
+    record syscall.identity pass 'glibc dynamic loader, uname and procfs PID 1 read'
+else
+    record syscall.identity fail 'unexpected architecture or missing PID 1 procfs record'
+fi
+
+fork_snapshot=parent
+(
+    fork_snapshot=child
+    exec "$BB" sh -c '
+        [ "$1" = "$2" ] || exit 24
+        [ "$$" -gt 1 ] || exit 25
+        printf "%s\n" "$$" > /run/dory-child.pid || exit 26
+        exit 23
+    ' diagnostic-child "$run_uuid" "$run_uuid"
+) &
+child=$!
+wait "$child"
+child_status=$?
+child_pid=
+read -r child_pid < /run/dory-child.pid
+if [ "$child_status" -eq 23 ] && [ "$child_pid" = "$child" ] && [ "$fork_snapshot" = parent ]; then
+    record process.creation_exec_wait pass 'isolated subshell, exec of glibc BusyBox, child PID and wait status'
+else
+    record process.creation_exec_wait fail 'child execution, independent shell variable or wait status differs'
+fi
+
+payload=0123456789abcdef
+iteration=0
+while [ "$iteration" -lt 12 ]; do
+    payload=$payload$payload
+    iteration=$((iteration + 1))
+done
+if [ "${#payload}" -eq 65536 ]; then
+    record memory.allocation_copy pass '65536-byte shell heap string allocated and copied'
+else
+    record memory.allocation_copy fail 'shell heap string size differs'
+fi
+
+signal_seen=no
+trap 'signal_seen=yes' USR1
+"$BB" kill -USR1 1
+if [ "$signal_seen" = yes ]; then
+    record signal.handler_return pass 'USR1 handler delivered to PID 1 and returned to shell'
+else
+    record signal.handler_return fail 'USR1 handler was not observed'
+fi
+trap - USR1
+
+before=$("$BB" awk '{print int($1 * 100)}' /proc/uptime)
+"$BB" sleep 1
+sleep_status=$?
+after=$("$BB" awk '{print int($1 * 100)}' /proc/uptime)
+elapsed=0
+case "$before:$after" in
+    *[!0-9:]*|:*|*:) ;;
+    *) elapsed=$((after - before)) ;;
+esac
+if [ "$sleep_status" -eq 0 ] && [ "$elapsed" -ge 90 ]; then
+    record timer.sleep_elapsed pass 'one-second sleep and monotonic procfs elapsed time'
+else
+    record timer.sleep_elapsed fail 'sleep failed or elapsed time advanced less than 900ms'
+fi
+
+file_status=pass
+printf '%s' "$payload" > /run/dory-data || file_status=fail
+"$BB" cat /run/dory-data > /run/dory-copy || file_status=fail
+"$BB" cmp /run/dory-data /run/dory-copy || file_status=fail
+read_back=$("$BB" cat /run/dory-copy)
+[ "$read_back" = "$payload" ] || file_status=fail
+"$BB" sync || file_status=fail
+record filesystem.write_read_sync "$file_status" 'tmpfs 65536-byte write, separate read/copy, content comparison and sync'
+
+summary=pass
+[ "$failed" -eq 0 ] || summary=fail
+printf 'DORY_P02_SUMMARY {"schemaVersion":1,"kind":"userspace-summary","runUUID":"%s","status":"%s","passed":%s,"failed":%s,"shutdownExpected":"acpi-s5"}\n' \
+    "$run_uuid" "$summary" "$passed" "$failed"
+record shutdown.request requested 'sync followed by Linux POWER_OFF; host must independently observe ACPI S5'
+emit_runner_receipt
+stop_guest
