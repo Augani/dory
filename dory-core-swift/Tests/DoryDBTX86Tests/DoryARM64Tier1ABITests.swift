@@ -44,6 +44,7 @@ import DoryJITRuntimeC
   @Test func stableContextLayoutMatchesTheExecutableBaselineBoundary() {
     #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<96))
     #expect(DoryARM64Tier1ABI.contextWordCount == DoryJITExecutableRegion.contextWordCount)
+    #expect(DoryARM64Tier1ABI.contextWordCount == DORY_JIT_CONTEXT_WORD_COUNT)
     #expect(DoryARM64Tier1ABI.ContextWord.hostAddressSpaceBase.rawValue
       == DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex)
     #expect(DoryARM64Tier1ABI.ContextWord.readTLBBase.rawValue

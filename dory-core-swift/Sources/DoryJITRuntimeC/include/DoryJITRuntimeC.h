@@ -10,6 +10,11 @@ typedef struct dory_jit_block_cache dory_jit_block_cache;
 typedef struct dory_jit_ibtc dory_jit_ibtc;
 typedef struct dory_jit_shadow_return_stack dory_jit_shadow_return_stack;
 
+enum {
+    DORY_JIT_ATOMIC_COORDINATOR_CONTEXT_WORD = 95,
+    DORY_JIT_CONTEXT_WORD_COUNT = 96
+};
+
 #if defined(__aarch64__)
 // Test-only host ABI oracle. No production execution path calls these probes.
 // Captures are caller-owned, never recovered from a generated function's frame.
@@ -21,7 +26,8 @@ typedef struct dory_jit_test_abi_snapshot {
     uint64_t arguments[6];     // x0...x5
     uint64_t pc;
     uint64_t platform;         // x18, observed only
-    uint64_t context[95];      // populated at target entry and synchronize callback
+    uint64_t context[DORY_JIT_CONTEXT_WORD_COUNT];
+                                // populated at target entry and synchronize callback
 } dory_jit_test_abi_snapshot;
 
 // The generated entry receives exactly the usual six Darwin ABI arguments.
@@ -272,7 +278,6 @@ int dory_jit_tlb_resolve_from_context(
     dory_jit_tlb_resolution *resolution_out
 );
 uintptr_t dory_jit_tlb_resolve_from_context_address(void);
-enum { DORY_JIT_ATOMIC_COORDINATOR_CONTEXT_WORD = 95 };
 // Implemented by DoryDBTX86. The context word is an unretained, executor-owned Swift object.
 void dory_x86_atomic_coordinator_lock(void *coordinator);
 void dory_x86_atomic_coordinator_unlock(void *coordinator);

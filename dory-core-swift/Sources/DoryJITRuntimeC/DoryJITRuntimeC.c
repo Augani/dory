@@ -1449,7 +1449,12 @@ _Static_assert(offsetof(dory_jit_test_abi_snapshot, arguments) == 104, "probe ar
 _Static_assert(offsetof(dory_jit_test_abi_snapshot, pc) == 152, "probe PC offset");
 _Static_assert(offsetof(dory_jit_test_abi_snapshot, platform) == 160, "probe x18 offset");
 _Static_assert(offsetof(dory_jit_test_abi_snapshot, context) == 168, "probe context offset");
-_Static_assert(sizeof(dory_jit_test_abi_snapshot) == 928, "probe record size");
+_Static_assert(
+    sizeof(((dory_jit_test_abi_snapshot *)0)->context) / sizeof(uint64_t) ==
+        DORY_JIT_CONTEXT_WORD_COUNT,
+    "probe context word count"
+);
+_Static_assert(sizeof(dory_jit_test_abi_snapshot) == 936, "probe record size");
 
 // x16 points to independent caller-owned storage. No stores to generated frames.
 #define DORY_TEST_ABI_CAPTURE \
@@ -1524,7 +1529,7 @@ void dory_jit_test_abi_synchronize(void *capture) {
         "ldr x9, [x28, x10, lsl #3]\n"
         "str x9, [x16, x10, lsl #3]\n"
         "add x10, x10, #1\n"
-        "cmp x10, #95\n"
+        "cmp x10, #96\n"
         "b.ne 1b\n"
         "ret\n"
     );
