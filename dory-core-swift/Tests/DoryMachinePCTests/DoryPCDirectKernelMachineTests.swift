@@ -5,10 +5,11 @@ import Testing
 @testable import DoryMachinePC
 
 @Suite struct DoryPCDirectKernelMachineTests {
-  @Test func productionPredictorDefaultExcludesRejectedCombinedSources() {
+  @Test func productionPredictorDefaultDisablesRejectedRawTargets() {
     let options = DoryPCDirectKernelMachine.defaultRawTargetPredictionOptions
-    #expect(options == .tier1DirectChain)
+    #expect(options.isEmpty)
     #expect(!options.contains(.legacyDirectChain))
+    #expect(!options.contains(.tier1DirectChain))
     #expect(!options.contains(.indirectBranchTargetCache))
     #expect(!options.contains(.shadowReturnStack))
   }

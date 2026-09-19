@@ -34,8 +34,9 @@ public struct DoryARM64RawTargetPredictionOptions: OptionSet, Sendable, Hashable
   public static let directChain: Self = [.legacyDirectChain, .tier1DirectChain]
   public static let indirectBranchTargetCache = Self(rawValue: 1 << 2)
   public static let shadowReturnStack = Self(rawValue: 1 << 3)
-  /// Enables every raw host-address predictor for bounded engineering experiments. This is not a
-  /// production default: combined direct sources have reproduced guest corruption in Linux.
+  /// Enables every raw host-address predictor for bounded engineering experiments. Current-source
+  /// Linux qualification has reproduced non-returning native slices with both the combined set and
+  /// tier-one direct chaining, so callers must opt in explicitly and must not treat this as safe.
   public static let all: Self = [.directChain, .indirectBranchTargetCache, .shadowReturnStack]
 }
 
@@ -6320,7 +6321,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     profile: DoryX86CPUProfile = .compatibleV1,
     emitter: DoryARM64BaselineEmitter = .init(),
     tier1Enabled: Bool = false,
-    rawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions = .all,
+    rawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions = [],
     optimization: DoryARM64JITOptimization = .baseline,
     optimizer: DoryIROptimizer = .init(),
     tracksInterpreterFallback: Bool = false
@@ -7151,14 +7152,19 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               usesGeneratedChainAccounting
               ? context[DoryARM64Tier1ABI.ContextWord.chainRetiredBlocks.rawValue] : 0
             context[DoryARM64Tier1ABI.ContextWord.chainEnabled.rawValue] = 0
-            if usesGeneratedChainAccounting, exit == .pendingWork {
+            if exit == .pendingWork {
               pendingWorkExitCount &+= 1
               pendingWorkMaximumRetiredInstructionCount = max(
                 pendingWorkMaximumRetiredInstructionCount,
-                generatedInstructionCount
+                usesGeneratedChainAccounting ? generatedInstructionCount : 0
               )
             }
-            if usesGeneratedChainAccounting, generatedBlockCount == 0, exit == .pendingWork {
+            // The entry poll precedes the first guest instruction even when raw chaining is
+            // disabled and generated chain accounting is consequently inactive. Do not let the
+            // ordinary single-block fallback below manufacture one retired instruction.
+            if exit == .pendingWork,
+              !usesGeneratedChainAccounting || generatedBlockCount == 0
+            {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               guard completed > 0 else { return nil }
               chainedRetiredInstructionCount &+= UInt64(completed)

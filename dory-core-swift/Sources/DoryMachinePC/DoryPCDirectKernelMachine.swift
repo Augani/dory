@@ -534,11 +534,10 @@ public enum DoryPCExceptionPolicy: Sendable, Hashable {
 
 /// Deterministic direct-kernel DoryPC machine shared by interpreter and translated execution tiers.
 public final class DoryPCDirectKernelMachine: @unchecked Sendable {
-  /// The only raw-target boundary with retained repeated PVH acceptance. Legacy direct sources,
-  /// the IBTC and the shadow-return stack remain explicit experiments after the combined-source
-  /// configuration reproduced guest memory corruption and an unbounded native quantum.
-  public static let defaultRawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions =
-    .tier1DirectChain
+  /// Raw host-address prediction is an explicit engineering experiment. Exact-candidate PVH
+  /// repeats have reproduced non-returning native slices with both the combined configuration and
+  /// tier-one direct chaining; production execution therefore keeps every raw predictor disabled.
+  public static let defaultRawTargetPredictionOptions: DoryARM64RawTargetPredictionOptions = []
 
   private enum HostTimeCategory {
     case processorEvent

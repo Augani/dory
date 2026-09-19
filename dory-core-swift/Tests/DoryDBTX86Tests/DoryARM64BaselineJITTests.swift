@@ -793,7 +793,8 @@ import XCTest
         var bytes: [UInt8] = [0xFF, 0xC0, 0xEB, 0, 0xFF, 0xC0, 0xEB, 0, 0xF4]
         let executor = try DoryARM64BaselineExecutor(
           maximumCodeBytes: 16 * 1024,
-          tier1Enabled: tier1Enabled
+          tier1Enabled: tier1Enabled,
+          rawTargetPredictionOptions: .directChain
         )
         func run() throws -> (DoryARM64ExecutionSummary, DoryX86ArchitecturalState, UInt64) {
           var state = try DoryX86ArchitecturalState(rip: base)
@@ -977,7 +978,10 @@ import XCTest
       let bytes: [UInt8] = [0xFF, 0xC0, 0xEB, 0, 0xFF, 0xC0, 0xEB, 0, 0xF4]
       let memory = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
       try memory.write(at: base, bytes: bytes)
-      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024)
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        rawTargetPredictionOptions: .directChain
+      )
       var byteFetchCount = 0
 
       func run() throws -> DoryX86ArchitecturalState {
@@ -1479,6 +1483,7 @@ import XCTest
         let executor = try DoryARM64BaselineExecutor(
           maximumCodeBytes: 16 * 1024,
           tier1Enabled: tier1Enabled,
+          rawTargetPredictionOptions: .directChain,
           optimization: optimization
         )
         let memory = try SelectiveRestartableMemory(
@@ -1568,6 +1573,7 @@ import XCTest
         let executor = try DoryARM64BaselineExecutor(
           maximumCodeBytes: 16 * 1024,
           tier1Enabled: tier1Enabled,
+          rawTargetPredictionOptions: .directChain,
           optimization: optimization
         )
         let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
