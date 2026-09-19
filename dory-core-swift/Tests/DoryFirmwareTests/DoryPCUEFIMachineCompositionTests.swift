@@ -27,7 +27,7 @@ import Testing
     )
 
     #expect(composed.machine.state == fixture.plan.initialCPUState)
-    #expect(composed.machine.jitWriteCoherencePolicy == .checkedCallbacks)
+    #expect(composed.machine.jitWriteCoherencePolicy == .protectedHostPages)
     #expect(composed.variableBridge.baseAddress == DoryPCV1ABI.firmwareVariableBase)
     #expect(composed.firmwareFlash.baseAddress == DoryPCV1ABI.firmwareCodeBase)
     #expect(composed.isaBridge.pciAddress == DoryPCV1ABI.isaBridgePCIAddress)
