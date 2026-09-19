@@ -89,6 +89,45 @@ private func readManifest(_ url: URL) throws -> Data {
   return data
 }
 
+private func publishReceipt(_ data: Data, to url: URL) throws {
+  let parent = url.deletingLastPathComponent()
+  let name = url.lastPathComponent
+  guard !name.isEmpty, name != ".", name != "..", !name.utf8.contains(0) else {
+    throw CLIError.usage("invalid receipt file name")
+  }
+  let directory = Darwin.open(
+    parent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+  guard directory >= 0 else { throw CLIError.usage("cannot open receipt directory") }
+  defer { Darwin.close(directory) }
+  let temporary = ".dory-x86-receipt-\(UUID().uuidString.lowercased())"
+  let descriptor = openat(
+    directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o644)
+  guard descriptor >= 0 else { throw CLIError.usage("cannot create temporary receipt") }
+  defer {
+    Darwin.close(descriptor)
+    _ = unlinkat(directory, temporary, 0)
+  }
+  try data.withUnsafeBytes { bytes in
+    var offset = 0
+    while offset < bytes.count {
+      let written = Darwin.write(
+        descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+      if written < 0 {
+        if errno == EINTR { continue }
+        throw CLIError.usage("cannot write receipt")
+      }
+      guard written > 0 else { throw CLIError.usage("short receipt write") }
+      offset += written
+    }
+  }
+  guard fsync(descriptor) == 0 else { throw CLIError.usage("cannot synchronize receipt") }
+  guard linkat(directory, temporary, directory, name, 0) == 0 else {
+    if errno == EEXIST { throw CLIError.usage("receipt already exists") }
+    throw CLIError.usage("cannot publish receipt")
+  }
+  guard fsync(directory) == 0 else { throw CLIError.usage("cannot synchronize receipt directory") }
+}
+
 do {
   let arguments = try Arguments(Array(CommandLine.arguments.dropFirst()))
   let manifest = try readManifest(arguments.manifest)
@@ -100,7 +139,7 @@ do {
   encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
   let output = try encoder.encode(receipt) + Data("\n".utf8)
   if let receiptURL = arguments.receipt {
-    try output.write(to: receiptURL, options: [.atomic, .withoutOverwriting])
+    try publishReceipt(output, to: receiptURL)
   } else {
     FileHandle.standardOutput.write(output)
   }
