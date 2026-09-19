@@ -7524,7 +7524,8 @@ import XCTest
             addressSpaceID &+= 1
             let execution = try #require(try executor.execute(
               bytes: testCase.bytes, at: 0, mode: .long64, addressSpaceID: addressSpaceID,
-              maximumInstructions: 1, state: &translated))
+              maximumInstructions: 1, state: &translated), Comment(rawValue:
+                "configuration=\(configurationIndex) value=\(value) bytes=\(testCase.bytes)"))
             #expect(execution.block.tier == expectedTier)
             #expect(translated == interpreted)
           }
@@ -9663,7 +9664,9 @@ import XCTest
       let completedExecution = DispatchSemaphore(value: 0)
       let result = PendingWorkExecutionResult(initialState: try .init(rip: base))
 
-      DispatchQueue.global().async {
+      // A dedicated thread keeps this scheduling-boundary test independent of cooperative/global
+      // worker-pool saturation when the complete Swift Testing target runs concurrently.
+      Thread.detachNewThread {
         result.run(
           executor: executor,
           base: base,
@@ -10620,19 +10623,20 @@ import XCTest
       _ = try #require(try execute())
       state.rip = 0x7000
       _ = try #require(try execute())
-      #expect(requestedCounts == [15])
+      // Publication revalidates the exact translated bytes after the speculative fetch.
+      #expect(requestedCounts == [15, program.count])
       #expect(state.registers.rax == 1)
 
       program[2] = 2
       generation = 2
       state.rip = 0x7000
       _ = try #require(try execute())
-      #expect(requestedCounts == [15, program.count, 15])
+      #expect(requestedCounts == [15, program.count, program.count, 15, program.count])
       #expect(state.registers.rax == 2)
 
       state.rip = 0x7000
       _ = try #require(try execute())
-      #expect(requestedCounts == [15, program.count, 15])
+      #expect(requestedCounts == [15, program.count, program.count, 15, program.count])
       let diagnostics = executor.diagnostics
       #expect(diagnostics.recentLookupHits == 3)
       #expect(diagnostics.dictionaryLookupHits == 0)
@@ -11087,7 +11091,10 @@ import XCTest
       #expect(summary.residentBlockCount == 2)
       #expect(requests.first?.address == base)
       #expect(requests.first?.count == 256)
-      #expect(requests.dropFirst().first?.address == 0x2000)
+      // Each compilation performs an exact-byte publication check at the same address before the
+      // chained dispatcher advances to the next instruction page.
+      #expect(requests.dropFirst().first?.address == base)
+      #expect(requests.dropFirst(2).first?.address == 0x2000)
       #expect(
         DoryARM64BaselineExecutor.maximumResidentFetchByteCount(
           at: 0x2FFF,
@@ -11645,11 +11652,18 @@ private final class PendingWorkExecutionResult: @unchecked Sendable {
     releaseTranslation: DispatchSemaphore
   ) {
     var state = initialState
+    var waitsForPendingWorkRequest = true
     do {
       let summary = try executor.executeChainedSummary(
         byteProvider: { address, maximumCount in
-          enteredTranslation.signal()
-          _ = releaseTranslation.wait(timeout: .now() + 2)
+          // Pause the speculative fetch only. Publication deliberately invokes this provider a
+          // second time to revalidate exact bytes; that safety read must not consume another
+          // synchronization signal or manufacture a two-second stall.
+          if waitsForPendingWorkRequest {
+            waitsForPendingWorkRequest = false
+            enteredTranslation.signal()
+            _ = releaseTranslation.wait(timeout: .now() + 2)
+          }
           guard address == base else { return [] }
           return Array([UInt8(0xEB), 0xFE].prefix(maximumCount))
         },

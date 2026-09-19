@@ -5502,10 +5502,10 @@ import Testing
   @Test func scalarMOVLoadsFillThenHitReadTLBOnMappedPhysicalMemory() throws {
     #if arch(arm64)
       let cases: [(bytes: [UInt8], value: UInt64, expectedRAX: UInt64, initialRAX: UInt64)] = [
-        ([0x48, 0x8B, 0x00], 0x1122_3344_5566_7788, 0x1122_3344_5566_7788, 0xDEAD_BEEF_CAFE_BABE),
-        ([0x8B, 0x00], 0xA5A5_5A5A, 0xA5A5_5A5A, 0xFFFF_FFFF_FFFF_FFFF),
-        ([0x8A, 0x00], 0x7C, 0xFFFF_FFFF_FFFF_007C, 0xFFFF_FFFF_FFFF_0000),
-        ([0x66, 0x8B, 0x00], 0xBEEF, 0xFFFF_FFFF_FFFF_BEEF, 0xFFFF_FFFF_FFFF_0000),
+        ([0x48, 0x8B, 0x03], 0x1122_3344_5566_7788, 0x1122_3344_5566_7788, 0xDEAD_BEEF_CAFE_BABE),
+        ([0x8B, 0x03], 0xA5A5_5A5A, 0xA5A5_5A5A, 0xFFFF_FFFF_FFFF_FFFF),
+        ([0x8A, 0x03], 0x7C, 0xFFFF_FFFF_FFFF_007C, 0xFFFF_FFFF_FFFF_0000),
+        ([0x66, 0x8B, 0x03], 0xBEEF, 0xFFFF_FFFF_FFFF_BEEF, 0xFFFF_FFFF_FFFF_0000),
       ]
       for (bytes, value, expectedRAX, initialRAX) in cases {
         let page = Int(getpagesize())
@@ -5516,17 +5516,18 @@ import Testing
         let byteCount = bytes.contains(0x48) ? 8 : bytes.contains(0x66) ? 2 : bytes[0] == 0x8A ? 1 : 4
         try physical.writeScalar(at: dataAddress, value: value, byteCount: byteCount)
         let initial = try DoryX86ArchitecturalState(
-          registers: .init(rax: initialRAX),
+          registers: .init(rax: initialRAX, rbx: dataAddress),
           rip: codeAddress,
           rflags: [.reservedOne, .carry, .zero]
         )
         var interpreted = initial
-        guard case .retired = DoryX86Interpreter().step(
+        let interpreterResult = DoryX86Interpreter().step(
           state: &interpreted,
           memory: physical,
           mode: .long64
-        ) else {
-          Issue.record("interpreter did not retire scalar MOV load")
+        )
+        guard case .retired = interpreterResult else {
+          Issue.record("interpreter did not retire scalar MOV load: \(interpreterResult)")
           return
         }
         #expect(interpreted.registers.rax == expectedRAX)
@@ -5739,6 +5740,19 @@ import Testing
       #expect(warm.registers.rcx == 1)
       #expect(warm.registers.rax == 0x1235_5677)
 
+      let tlb = try #require(executor.translationTLBForTesting)
+      let hostOffset = try #require(try translated.hostAddressSpaceOffsetForJIT(
+        linearAddress: 0x8000,
+        byteCount: 8,
+        access: .read
+      ))
+      try tlb.fill(
+        linearAddress: 0x8000,
+        addressSpaceGeneration: executor.translationTLBGenerationForTesting,
+        access: .read,
+        hostAddress: translated.hostAddressSpaceBase + hostOffset
+      )
+
       var hit = initial
       let hitExecution = try #require(executor.execute(
         bytes: bytes,
@@ -5754,7 +5768,8 @@ import Testing
       #expect(hit.rip == 0x1006)
       #expect(hit.registers.rcx == 1)
       #expect(hit.registers.rax == 0x1235_5677)
-      #expect(executor.diagnostics.translationCacheHits > 0)
+      #expect(executor.diagnostics.translationCacheHits > 0,
+        Comment(rawValue: "diagnostics=\(executor.diagnostics)"))
 
       try physical.writeScalar(at: 0xC040, value: 0x8006, byteCount: 8)
       paging.invalidateAll()
@@ -5852,6 +5867,19 @@ import Testing
       #expect(warm.registers.rcx == 0)
       #expect(warm.registers.rax == 0x1234_ABCD)
 
+      let tlb = try #require(executor.translationTLBForTesting)
+      let hostOffset = try #require(try translated.hostAddressSpaceOffsetForJIT(
+        linearAddress: 0x8000,
+        byteCount: 8,
+        access: .read
+      ))
+      try tlb.fill(
+        linearAddress: 0x8000,
+        addressSpaceGeneration: executor.translationTLBGenerationForTesting,
+        access: .read,
+        hostAddress: translated.hostAddressSpaceBase + hostOffset
+      )
+
       var hit = initial
       _ = try #require(executor.execute(
         bytes: bytes,
@@ -5864,7 +5892,8 @@ import Testing
       ))
       #expect(hit.rip == 0x1007)
       #expect(hit.registers.rax == 0x1234_ABCD)
-      #expect(executor.diagnostics.translationCacheHits > 0)
+      #expect(executor.diagnostics.translationCacheHits > 0,
+        Comment(rawValue: "diagnostics=\(executor.diagnostics)"))
 
       // Invalidation intentionally rejects the warmed entry, so this exercises the callback
       // fault boundary (not a stale inline direct-load recovery).
