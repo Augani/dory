@@ -135,6 +135,21 @@ public protocol DoryX86Memory: AnyObject, Sendable {
   func synchronize()
 }
 
+/// Optional proof that an architectural address range is backed by ordinary RAM participating
+/// in one machine-wide byte-range rendezvous. Returned ranges use actual host backing addresses,
+/// not guest addresses, so physical, translated, DMA, and generated-code paths all contend in
+/// the same coordinate system. Returning `nil` declines range locking before touching MMIO or an
+/// unsupported mapping.
+public protocol DoryX86RangeCoordinatedMemory: DoryX86Memory {
+  var memoryAccessCoordinator: DoryX86MemoryAccessCoordinator { get }
+
+  func memoryAccessRanges(
+    at address: UInt64,
+    byteCount: Int,
+    access: DoryX86MemoryAccessKind
+  ) throws -> [Range<UInt64>]?
+}
+
 public enum DoryX86ScalarMemoryError: Error, Sendable, Equatable {
   case invalidByteCount(Int)
 }
@@ -371,10 +386,11 @@ extension DoryX86ScalarMemory {
 /// APIs still allocate diagnostic copies through Swift; those copies do not promise recoverable
 /// allocation exhaustion. Product paging composes a translator over this exact bounds behavior.
 public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory,
-  DoryX86PageTableWriteTrackingMemory, @unchecked Sendable
+  DoryX86RangeCoordinatedMemory, DoryX86PageTableWriteTrackingMemory, @unchecked Sendable
 {
   public let baseAddress: UInt64
   public let byteCount: Int
+  public let memoryAccessCoordinator: DoryX86MemoryAccessCoordinator
   private let lock = NSLock()
   private let storage: UnsafeMutableBufferPointer<UInt8>
   private let allocator: DoryX86HeapAllocator
@@ -386,20 +402,47 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
 
   var trackedCodePageCount: Int { lock.withLock { codePageGenerations.count } }
 
-  public convenience init(baseAddress: UInt64 = 0, bytes: [UInt8]) throws {
-    try self.init(baseAddress: baseAddress, bytes: bytes, allocator: .system)
+  public convenience init(
+    baseAddress: UInt64 = 0,
+    bytes: [UInt8],
+    memoryAccessCoordinator: DoryX86MemoryAccessCoordinator = .init()
+  ) throws {
+    try self.init(
+      baseAddress: baseAddress,
+      bytes: bytes,
+      memoryAccessCoordinator: memoryAccessCoordinator,
+      allocator: .system
+    )
   }
 
-  convenience init(baseAddress: UInt64 = 0, bytes: [UInt8], allocator: DoryX86HeapAllocator) throws
-  {
-    try self.init(baseAddress: baseAddress, byteCount: bytes.count, allocator: allocator)
+  convenience init(
+    baseAddress: UInt64 = 0,
+    bytes: [UInt8],
+    memoryAccessCoordinator: DoryX86MemoryAccessCoordinator = .init(),
+    allocator: DoryX86HeapAllocator
+  ) throws {
+    try self.init(
+      baseAddress: baseAddress,
+      byteCount: bytes.count,
+      memoryAccessCoordinator: memoryAccessCoordinator,
+      allocator: allocator
+    )
     bytes.withUnsafeBufferPointer { source in
       storage.baseAddress!.update(from: source.baseAddress!, count: source.count)
     }
   }
 
-  public convenience init(baseAddress: UInt64 = 0, byteCount: Int) throws {
-    try self.init(baseAddress: baseAddress, byteCount: byteCount, allocator: .system)
+  public convenience init(
+    baseAddress: UInt64 = 0,
+    byteCount: Int,
+    memoryAccessCoordinator: DoryX86MemoryAccessCoordinator = .init()
+  ) throws {
+    try self.init(
+      baseAddress: baseAddress,
+      byteCount: byteCount,
+      memoryAccessCoordinator: memoryAccessCoordinator,
+      allocator: .system
+    )
   }
 
   /// Source-compatible label for callers already using validated construction.
@@ -407,7 +450,12 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     try self.init(baseAddress: baseAddress, byteCount: byteCount)
   }
 
-  init(baseAddress: UInt64 = 0, byteCount: Int, allocator: DoryX86HeapAllocator) throws {
+  init(
+    baseAddress: UInt64 = 0,
+    byteCount: Int,
+    memoryAccessCoordinator: DoryX86MemoryAccessCoordinator = .init(),
+    allocator: DoryX86HeapAllocator
+  ) throws {
     try validateDoryX86RAMAllocation(baseAddress: baseAddress, byteCount: byteCount)
     let allocation = allocator.allocate(byteCount)
     guard let pointer = allocation.pointer else {
@@ -416,6 +464,7 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     }
     self.baseAddress = baseAddress
     self.byteCount = byteCount
+    self.memoryAccessCoordinator = memoryAccessCoordinator
     self.allocator = allocator
     storage = .init(
       start: pointer.bindMemory(to: UInt8.self, capacity: byteCount), count: byteCount)
@@ -425,17 +474,46 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     allocator.deallocate(UnsafeMutableRawPointer(storage.baseAddress!), byteCount)
   }
 
+  public func memoryAccessRanges(
+    at address: UInt64,
+    byteCount: Int,
+    access: DoryX86MemoryAccessKind
+  ) throws -> [Range<UInt64>]? {
+    guard byteCount > 0 else { return nil }
+    let offset = try checkedOffset(address: address, byteCount: byteCount, access: access)
+    let lowerBound = UInt64(
+      UInt(bitPattern: UnsafeRawPointer(storage.baseAddress!.advanced(by: offset))))
+    return [lowerBound..<(lowerBound + UInt64(byteCount))]
+  }
+
+  private func withOrdinaryAccess<Result>(
+    at address: UInt64,
+    byteCount: Int,
+    access: DoryX86MemoryAccessKind,
+    _ operation: () throws -> Result
+  ) throws -> Result {
+    guard
+      let ranges = try memoryAccessRanges(
+        at: address, byteCount: byteCount, access: access)
+    else { return try operation() }
+    return try memoryAccessCoordinator.withOrdinaryAccess(ranges: ranges, operation)
+  }
+
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
     guard maximumCount >= 0 else {
       throw DoryX86MemoryError.addressOverflow(address: address, byteCount: maximumCount)
     }
     guard maximumCount > 0 else { return [] }
-    lock.lock()
-    defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: 1, access: .instructionFetch)
     let available = min(
       maximumCount, storage.count - offset, Int(clamping: UInt64.max - address))
-    return Array(storage[offset..<(offset + available)])
+    return try withOrdinaryAccess(
+      at: address, byteCount: available, access: .instructionFetch
+    ) {
+      lock.lock()
+      defer { lock.unlock() }
+      return Array(storage[offset..<(offset + available)])
+    }
   }
 
   public func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
@@ -443,38 +521,42 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
       throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
     }
     guard byteCount > 0 else { return [] }
-    lock.lock()
-    defer { lock.unlock() }
-    let offset = try checkedOffset(address: address, byteCount: byteCount, access: .read)
-    if let value = doryX86AtomicScalarLoad(
-      from: UnsafeRawPointer(storage.baseAddress!.advanced(by: offset)),
-      byteCount: byteCount
-    ) {
-      return (0..<byteCount).map {
-        UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
+    return try withOrdinaryAccess(at: address, byteCount: byteCount, access: .read) {
+      lock.lock()
+      defer { lock.unlock() }
+      let offset = try checkedOffset(address: address, byteCount: byteCount, access: .read)
+      if let value = doryX86AtomicScalarLoad(
+        from: UnsafeRawPointer(storage.baseAddress!.advanced(by: offset)),
+        byteCount: byteCount
+      ) {
+        return (0..<byteCount).map {
+          UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
+        }
       }
+      return Array(storage[offset..<(offset + byteCount)])
     }
-    return Array(storage[offset..<(offset + byteCount)])
   }
 
   public func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
     guard [1, 2, 4, 8].contains(byteCount) else {
       throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
     }
-    lock.lock()
-    defer { lock.unlock() }
-    let offset = try checkedOffset(address: address, byteCount: byteCount, access: .read)
-    if let value = doryX86AtomicScalarLoad(
-      from: UnsafeRawPointer(storage.baseAddress!.advanced(by: offset)),
-      byteCount: byteCount
-    ) {
+    return try withOrdinaryAccess(at: address, byteCount: byteCount, access: .read) {
+      lock.lock()
+      defer { lock.unlock() }
+      let offset = try checkedOffset(address: address, byteCount: byteCount, access: .read)
+      if let value = doryX86AtomicScalarLoad(
+        from: UnsafeRawPointer(storage.baseAddress!.advanced(by: offset)),
+        byteCount: byteCount
+      ) {
+        return value
+      }
+      var value: UInt64 = 0
+      for index in 0..<byteCount {
+        value |= UInt64(storage[offset + index]) << UInt64(index * 8)
+      }
       return value
     }
-    var value: UInt64 = 0
-    for index in 0..<byteCount {
-      value |= UInt64(storage[offset + index]) << UInt64(index * 8)
-    }
-    return value
   }
 
   public func validateRead(at address: UInt64, byteCount: Int) throws {
@@ -489,47 +571,51 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
 
   public func write(at address: UInt64, bytes: [UInt8]) throws {
     guard !bytes.isEmpty else { return }
-    lock.lock()
-    defer { lock.unlock() }
-    let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
-    let destination = storage.baseAddress!.advanced(by: offset)
-    let storedAtomically: Bool
-    if [1, 2, 4, 8].contains(bytes.count) {
-      let scalar = bytes.enumerated().reduce(UInt64(0)) {
-        $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    try withOrdinaryAccess(at: address, byteCount: bytes.count, access: .write) {
+      lock.lock()
+      defer { lock.unlock() }
+      let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
+      let destination = storage.baseAddress!.advanced(by: offset)
+      let storedAtomically: Bool
+      if [1, 2, 4, 8].contains(bytes.count) {
+        let scalar = bytes.enumerated().reduce(UInt64(0)) {
+          $0 | UInt64($1.element) << UInt64($1.offset * 8)
+        }
+        storedAtomically = doryX86AtomicScalarStore(
+          to: UnsafeMutableRawPointer(destination), value: scalar, byteCount: bytes.count)
+      } else {
+        storedAtomically = false
       }
-      storedAtomically = doryX86AtomicScalarStore(
-        to: UnsafeMutableRawPointer(destination), value: scalar, byteCount: bytes.count)
-    } else {
-      storedAtomically = false
-    }
-    if !storedAtomically {
-      bytes.withUnsafeBufferPointer { source in
-        destination.update(from: source.baseAddress!, count: source.count)
+      if !storedAtomically {
+        bytes.withUnsafeBufferPointer { source in
+          destination.update(from: source.baseAddress!, count: source.count)
+        }
       }
+      markCodePagesWritten(offset: offset, byteCount: bytes.count)
     }
-    markCodePagesWritten(offset: offset, byteCount: bytes.count)
   }
 
   public func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
     guard [1, 2, 4, 8].contains(byteCount) else {
       throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
     }
-    lock.lock()
-    defer { lock.unlock() }
-    let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
-    if doryX86AtomicScalarStore(
-      to: UnsafeMutableRawPointer(storage.baseAddress!.advanced(by: offset)),
-      value: value,
-      byteCount: byteCount
-    ) {
+    try withOrdinaryAccess(at: address, byteCount: byteCount, access: .write) {
+      lock.lock()
+      defer { lock.unlock() }
+      let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
+      if doryX86AtomicScalarStore(
+        to: UnsafeMutableRawPointer(storage.baseAddress!.advanced(by: offset)),
+        value: value,
+        byteCount: byteCount
+      ) {
+        markCodePagesWritten(offset: offset, byteCount: byteCount)
+        return
+      }
+      for index in 0..<byteCount {
+        storage[offset + index] = UInt8(truncatingIfNeeded: value >> UInt64(index * 8))
+      }
       markCodePagesWritten(offset: offset, byteCount: byteCount)
-      return
     }
-    for index in 0..<byteCount {
-      storage[offset + index] = UInt8(truncatingIfNeeded: value >> UInt64(index * 8))
-    }
-    markCodePagesWritten(offset: offset, byteCount: byteCount)
   }
 
   public func compareExchangeScalar(
@@ -541,31 +627,33 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     guard [1, 2, 4, 8].contains(byteCount) else {
       throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
     }
-    lock.lock()
-    defer { lock.unlock() }
-    let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
-    let mask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
-    if let observed = doryX86AtomicScalarCompareExchange(
-      at: UnsafeMutableRawPointer(storage.baseAddress!.advanced(by: offset)),
-      expected: expected,
-      desired: desired,
-      byteCount: byteCount
-    ) {
-      // x86 CMPXCHG performs a write cycle even on mismatch. Generation
-      // tracking therefore advances for either host CAS outcome.
+    return try withOrdinaryAccess(at: address, byteCount: byteCount, access: .write) {
+      lock.lock()
+      defer { lock.unlock() }
+      let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
+      let mask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
+      if let observed = doryX86AtomicScalarCompareExchange(
+        at: UnsafeMutableRawPointer(storage.baseAddress!.advanced(by: offset)),
+        expected: expected,
+        desired: desired,
+        byteCount: byteCount
+      ) {
+        // x86 CMPXCHG performs a write cycle even on mismatch. Generation
+        // tracking therefore advances for either host CAS outcome.
+        markCodePagesWritten(offset: offset, byteCount: byteCount)
+        return observed & mask
+      }
+      var observed: UInt64 = 0
+      for index in 0..<byteCount {
+        observed |= UInt64(storage[offset + index]) << UInt64(index * 8)
+      }
+      let stored = (observed & mask) == (expected & mask) ? desired : observed
+      for index in 0..<byteCount {
+        storage[offset + index] = UInt8(truncatingIfNeeded: stored >> UInt64(index * 8))
+      }
       markCodePagesWritten(offset: offset, byteCount: byteCount)
       return observed & mask
     }
-    var observed: UInt64 = 0
-    for index in 0..<byteCount {
-      observed |= UInt64(storage[offset + index]) << UInt64(index * 8)
-    }
-    let stored = (observed & mask) == (expected & mask) ? desired : observed
-    for index in 0..<byteCount {
-      storage[offset + index] = UInt8(truncatingIfNeeded: stored >> UInt64(index * 8))
-    }
-    markCodePagesWritten(offset: offset, byteCount: byteCount)
-    return observed & mask
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
@@ -584,9 +672,14 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
   }
 
   public func snapshot() -> [UInt8] {
-    lock.lock()
-    defer { lock.unlock() }
-    return Array(storage)
+    let lowerBound = UInt64(UInt(bitPattern: UnsafeRawPointer(storage.baseAddress!)))
+    return memoryAccessCoordinator.withOrdinaryAccess(
+      ranges: [lowerBound..<(lowerBound + UInt64(byteCount))]
+    ) {
+      lock.lock()
+      defer { lock.unlock() }
+      return Array(storage)
+    }
   }
 
   private func checkedOffset(
@@ -716,30 +809,50 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
     maximumByteCount: Int
   ) throws -> Int? {
     guard maximumByteCount > 0 else { return maximumByteCount == 0 ? 0 : nil }
-    return lock.withLock {
-      guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
-      let sourceDistance = sourceAddress - baseAddress
-      let destinationDistance = destinationAddress - baseAddress
-      guard sourceDistance < UInt64(storage.count), destinationDistance < UInt64(storage.count),
-        sourceDistance <= UInt64(Int.max), destinationDistance <= UInt64(Int.max)
-      else { return nil }
-      let sourceOffset = Int(sourceDistance)
-      let destinationOffset = Int(destinationDistance)
-      let count = min(
-        maximumByteCount,
-        storage.count - sourceOffset,
-        storage.count - destinationOffset
-      )
-      guard count > 0,
-        !sourceAddress.addingReportingOverflow(UInt64(count)).overflow,
-        !destinationAddress.addingReportingOverflow(UInt64(count)).overflow
-      else { return nil }
-      guard sourceOffset + count <= destinationOffset || destinationOffset + count <= sourceOffset
-      else { return nil }
-      storage.baseAddress!.advanced(by: destinationOffset).update(
-        from: storage.baseAddress!.advanced(by: sourceOffset), count: count)
-      markCodePagesWritten(offset: destinationOffset, byteCount: count)
-      return count
+    guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
+    let sourceDistance = sourceAddress - baseAddress
+    let destinationDistance = destinationAddress - baseAddress
+    guard sourceDistance < UInt64(storage.count), destinationDistance < UInt64(storage.count),
+      sourceDistance <= UInt64(Int.max), destinationDistance <= UInt64(Int.max)
+    else { return nil }
+    let sourceOffset = Int(sourceDistance)
+    let destinationOffset = Int(destinationDistance)
+    let coordinatedByteCount = min(
+      maximumByteCount, storage.count - sourceOffset, storage.count - destinationOffset)
+    guard coordinatedByteCount > 0,
+      let sourceRanges = try memoryAccessRanges(
+        at: sourceAddress, byteCount: coordinatedByteCount, access: .read),
+      let destinationRanges = try memoryAccessRanges(
+        at: destinationAddress, byteCount: coordinatedByteCount, access: .write)
+    else { return nil }
+    return memoryAccessCoordinator.withOrdinaryAccess(
+      ranges: sourceRanges + destinationRanges
+    ) {
+      lock.withLock {
+        guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
+        let sourceDistance = sourceAddress - baseAddress
+        let destinationDistance = destinationAddress - baseAddress
+        guard sourceDistance < UInt64(storage.count), destinationDistance < UInt64(storage.count),
+          sourceDistance <= UInt64(Int.max), destinationDistance <= UInt64(Int.max)
+        else { return nil }
+        let sourceOffset = Int(sourceDistance)
+        let destinationOffset = Int(destinationDistance)
+        let count = min(
+          maximumByteCount,
+          storage.count - sourceOffset,
+          storage.count - destinationOffset
+        )
+        guard count > 0,
+          !sourceAddress.addingReportingOverflow(UInt64(count)).overflow,
+          !destinationAddress.addingReportingOverflow(UInt64(count)).overflow
+        else { return nil }
+        guard sourceOffset + count <= destinationOffset || destinationOffset + count <= sourceOffset
+        else { return nil }
+        storage.baseAddress!.advanced(by: destinationOffset).update(
+          from: storage.baseAddress!.advanced(by: sourceOffset), count: count)
+        markCodePagesWritten(offset: destinationOffset, byteCount: count)
+        return count
+      }
     }
   }
 
@@ -753,41 +866,66 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
     guard elementByteCount > 0, maximumElementCount > 0,
       maximumElementCount <= Int.max / elementByteCount
     else { return maximumElementCount == 0 ? 0 : nil }
-    return lock.withLock {
-      guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
-      let sourceDistance = sourceAddress - baseAddress
-      let destinationDistance = destinationAddress - baseAddress
-      guard sourceDistance < UInt64(storage.count), destinationDistance < UInt64(storage.count),
-        sourceDistance <= UInt64(Int.max), destinationDistance <= UInt64(Int.max)
-      else { return nil }
-      let sourceOffset = Int(sourceDistance)
-      let destinationOffset = Int(destinationDistance)
-      let elementCount = min(
-        maximumElementCount,
-        (storage.count - sourceOffset) / elementByteCount,
-        (storage.count - destinationOffset) / elementByteCount
-      )
-      guard elementCount > 0 else { return nil }
-      let byteCount = elementCount * elementByteCount
-      guard !sourceAddress.addingReportingOverflow(UInt64(byteCount)).overflow else { return nil }
-      guard
-        sourceOffset + byteCount <= destinationOffset
-          || destinationOffset + byteCount <= sourceOffset
-      else { return nil }
-      let (destinationEnd, destinationOverflow) = destinationAddress.addingReportingOverflow(
-        UInt64(byteCount))
-      guard !destinationOverflow else { return nil }
-      let destinationRange = destinationAddress..<destinationEnd
-      guard
-        !excludingDestinationRanges.contains(where: { !$0.isEmpty && $0.overlaps(destinationRange) }
+    guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
+    let sourceDistance = sourceAddress - baseAddress
+    let destinationDistance = destinationAddress - baseAddress
+    guard sourceDistance < UInt64(storage.count), destinationDistance < UInt64(storage.count),
+      sourceDistance <= UInt64(Int.max), destinationDistance <= UInt64(Int.max)
+    else { return nil }
+    let coordinatedElementCount = min(
+      maximumElementCount,
+      (storage.count - Int(sourceDistance)) / elementByteCount,
+      (storage.count - Int(destinationDistance)) / elementByteCount
+    )
+    guard coordinatedElementCount > 0 else { return nil }
+    let coordinatedByteCount = coordinatedElementCount * elementByteCount
+    guard
+      let sourceRanges = try memoryAccessRanges(
+        at: sourceAddress, byteCount: coordinatedByteCount, access: .read),
+      let destinationRanges = try memoryAccessRanges(
+        at: destinationAddress, byteCount: coordinatedByteCount, access: .write)
+    else { return nil }
+    return memoryAccessCoordinator.withOrdinaryAccess(
+      ranges: sourceRanges + destinationRanges
+    ) {
+      lock.withLock {
+        guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
+        let sourceDistance = sourceAddress - baseAddress
+        let destinationDistance = destinationAddress - baseAddress
+        guard sourceDistance < UInt64(storage.count), destinationDistance < UInt64(storage.count),
+          sourceDistance <= UInt64(Int.max), destinationDistance <= UInt64(Int.max)
+        else { return nil }
+        let sourceOffset = Int(sourceDistance)
+        let destinationOffset = Int(destinationDistance)
+        let elementCount = min(
+          maximumElementCount,
+          (storage.count - sourceOffset) / elementByteCount,
+          (storage.count - destinationOffset) / elementByteCount
         )
-      else {
-        return nil
+        guard elementCount > 0 else { return nil }
+        let byteCount = elementCount * elementByteCount
+        guard !sourceAddress.addingReportingOverflow(UInt64(byteCount)).overflow else { return nil }
+        guard
+          sourceOffset + byteCount <= destinationOffset
+            || destinationOffset + byteCount <= sourceOffset
+        else { return nil }
+        let (destinationEnd, destinationOverflow) = destinationAddress.addingReportingOverflow(
+          UInt64(byteCount))
+        guard !destinationOverflow else { return nil }
+        let destinationRange = destinationAddress..<destinationEnd
+        guard
+          !excludingDestinationRanges.contains(where: {
+            !$0.isEmpty && $0.overlaps(destinationRange)
+          }
+          )
+        else {
+          return nil
+        }
+        storage.baseAddress!.advanced(by: destinationOffset).update(
+          from: storage.baseAddress!.advanced(by: sourceOffset), count: byteCount)
+        markCodePagesWritten(offset: destinationOffset, byteCount: byteCount)
+        return elementCount
       }
-      storage.baseAddress!.advanced(by: destinationOffset).update(
-        from: storage.baseAddress!.advanced(by: sourceOffset), count: byteCount)
-      markCodePagesWritten(offset: destinationOffset, byteCount: byteCount)
-      return elementCount
     }
   }
 
@@ -799,30 +937,43 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
     guard maximumElementCount > 0, !pattern.isEmpty else {
       return maximumElementCount == 0 ? 0 : nil
     }
-    return lock.withLock {
-      guard destinationAddress >= baseAddress else { return nil }
-      let distance = destinationAddress - baseAddress
-      guard distance < UInt64(storage.count), distance <= UInt64(Int.max) else { return nil }
-      let destinationOffset = Int(distance)
-      let elementCount = min(
-        maximumElementCount,
-        (storage.count - destinationOffset) / pattern.count
-      )
-      guard elementCount > 0 else { return nil }
-      let byteCount = elementCount * pattern.count
-      guard !destinationAddress.addingReportingOverflow(UInt64(byteCount)).overflow else {
-        return nil
-      }
-      pattern.withUnsafeBufferPointer { source in
-        var offset = 0
-        while offset < byteCount {
-          storage.baseAddress!.advanced(by: destinationOffset + offset).update(
-            from: source.baseAddress!, count: pattern.count)
-          offset += pattern.count
+    guard destinationAddress >= baseAddress else { return nil }
+    let distance = destinationAddress - baseAddress
+    guard distance < UInt64(storage.count), distance <= UInt64(Int.max) else { return nil }
+    let coordinatedElementCount = min(
+      maximumElementCount, (storage.count - Int(distance)) / pattern.count)
+    guard coordinatedElementCount > 0,
+      let ranges = try memoryAccessRanges(
+        at: destinationAddress,
+        byteCount: coordinatedElementCount * pattern.count,
+        access: .write)
+    else { return nil }
+    return memoryAccessCoordinator.withOrdinaryAccess(ranges: ranges) {
+      lock.withLock {
+        guard destinationAddress >= baseAddress else { return nil }
+        let distance = destinationAddress - baseAddress
+        guard distance < UInt64(storage.count), distance <= UInt64(Int.max) else { return nil }
+        let destinationOffset = Int(distance)
+        let elementCount = min(
+          maximumElementCount,
+          (storage.count - destinationOffset) / pattern.count
+        )
+        guard elementCount > 0 else { return nil }
+        let byteCount = elementCount * pattern.count
+        guard !destinationAddress.addingReportingOverflow(UInt64(byteCount)).overflow else {
+          return nil
         }
+        pattern.withUnsafeBufferPointer { source in
+          var offset = 0
+          while offset < byteCount {
+            storage.baseAddress!.advanced(by: destinationOffset + offset).update(
+              from: source.baseAddress!, count: pattern.count)
+            offset += pattern.count
+          }
+        }
+        markCodePagesWritten(offset: destinationOffset, byteCount: byteCount)
+        return elementCount
       }
-      markCodePagesWritten(offset: destinationOffset, byteCount: byteCount)
-      return elementCount
     }
   }
 }

@@ -1,5 +1,5 @@
-import Dispatch
 import Darwin
+import Dispatch
 import Testing
 
 @testable import DoryDBTX86
@@ -92,6 +92,50 @@ import Testing
     doryX86MemoryAccessEnd(
       UnsafeMutableRawPointer(bitPattern: UInt(coordinator.opaqueReference)), nativeToken)
     #expect(ordinaryFinished.wait(timeout: .now() + 2) == .success)
+  }
+
+  @Test func checkedRAMAccessesEnterTheBackingRangeAuthority() throws {
+    let memory = try DoryX86ByteArrayMemory(byteCount: 64)
+    let ranges = try #require(
+      try memory.memoryAccessRanges(at: 16, byteCount: 8, access: .write))
+    let exclusive = memory.memoryAccessCoordinator.acquireExclusive(ranges: ranges)
+    let writeStarted = DispatchSemaphore(value: 0)
+    let writeFinished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      writeStarted.signal()
+      try! memory.writeScalar(at: 16, value: 0x8877_6655_4433_2211, byteCount: 8)
+      writeFinished.signal()
+    }
+    writeStarted.wait()
+    #expect(writeFinished.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
+
+    exclusive.release()
+    #expect(writeFinished.wait(timeout: .now() + 2) == .success)
+    #expect(try memory.readScalar(at: 16, byteCount: 8) == 0x8877_6655_4433_2211)
+  }
+
+  @Test func sparseMmapRangesUseActualDiscontiguousHostBacking() throws {
+    let pageByteCount = Int(getpagesize())
+    let memory = try DoryX86MmapMemory(
+      validatingByteCount: pageByteCount * 2,
+      hostAddressSpaceByteCount: pageByteCount * 3,
+      ramMappings: [
+        .init(logicalOffset: 0, hostOffset: 0, byteCount: pageByteCount),
+        .init(
+          logicalOffset: pageByteCount,
+          hostOffset: pageByteCount * 2,
+          byteCount: pageByteCount),
+      ]
+    )
+    let ranges = try #require(
+      try memory.memoryAccessRanges(
+        at: UInt64(pageByteCount - 4), byteCount: 8, access: .read))
+    #expect(ranges.count == 2)
+    #expect(ranges[0].count == 4)
+    #expect(ranges[1].count == 4)
+    #expect(ranges[0].lowerBound == memory.hostAddressSpaceBase + UInt64(pageByteCount - 4))
+    #expect(ranges[1].lowerBound == memory.hostAddressSpaceBase + UInt64(pageByteCount * 2))
+    #expect(ranges[0].upperBound < ranges[1].lowerBound)
   }
 
   private func waitUntil(

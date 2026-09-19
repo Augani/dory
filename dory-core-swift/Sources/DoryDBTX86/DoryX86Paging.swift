@@ -30,7 +30,8 @@ public struct DoryX86PagingContext: Sendable, Hashable {
     if isImplicitSupervisorAccess || mode == .real16 {
       self.currentPrivilegeLevel = 0
     } else if mode != .long64, control.efer & (1 << 10) == 0,
-      rflags.contains(.virtual8086) {
+      rflags.contains(.virtual8086)
+    {
       self.currentPrivilegeLevel = 3
     } else {
       self.currentPrivilegeLevel = currentPrivilegeLevel & 3
@@ -383,7 +384,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
         // Intel's physical 4-level implementations all support PAT (§5.9.2).
         // An IA32e/PAT-absent virtual profile is therefore not a qualified Intel
         // hardware combination; conservatively reject its unsupported PAT index.
-        try validatePATEntry(entry, large: huge, linearAddress: linearAddress,
+        try validatePATEntry(
+          entry, large: huge, linearAddress: linearAddress,
           access: access, context: context)
         let rawAddressField = entry & physicalAddressMask & ~0xfff
         let permittedPATBit: UInt64 = huge ? 1 << 12 : 0
@@ -478,7 +480,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       let isLeaf = level == 1 || huge
       let pageSize: UInt64 = huge ? 1 << 21 : 1 << 12
       if isLeaf {
-        try validatePATEntry(entry, large: huge, linearAddress: linearAddress,
+        try validatePATEntry(
+          entry, large: huge, linearAddress: linearAddress,
           access: access, context: context)
         let rawAddressField = entry & physicalAddressMask & ~0xfff
         let permittedPATBit: UInt64 = huge ? 1 << 12 : 0
@@ -552,7 +555,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       throw pageFault(linearAddress, access, context, protection: true, reserved: true)
     }
     if largePage {
-      try validatePATEntry(UInt64(directory), large: true, linearAddress: linearAddress,
+      try validatePATEntry(
+        UInt64(directory), large: true, linearAddress: linearAddress,
         access: access, context: context)
     }
     if directory & (1 << 5) == 0 {
@@ -583,7 +587,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     guard entry & 1 != 0 else { throw pageFault(linearAddress, access, context, protection: false) }
     // SDM §5.3: with CR4.PSE=0 no bits are reserved in 32-bit paging.
     if context.control.cr4 & (1 << 4) != 0 {
-      try validatePATEntry(UInt64(entry), large: false, linearAddress: linearAddress,
+      try validatePATEntry(
+        UInt64(entry), large: false, linearAddress: linearAddress,
         access: access, context: context)
     }
     user = user && entry & (1 << 2) != 0
@@ -650,7 +655,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     let nxe = context.control.efer & (1 << 11) != 0
     // PAE PDEs/PTEs reserve bits 62:MAXPHYADDR. IA-32e ignores bits 58:52 and
     // uses/ignores bits 62:59 according to protection-key controls, outside this mask.
-    let checkedAddressBits: UInt64 = paeDirectoryOrTable
+    let checkedAddressBits: UInt64 =
+      paeDirectoryOrTable
       ? 0x7fff_ffff_ffff_f000 : 0x000f_ffff_ffff_f000
     let addressBitsOutsideProfile = (entry & checkedAddressBits) & ~physicalAddressMask
     if addressBitsOutsideProfile != 0 || (!nxe && entry & (1 << 63) != 0) {
@@ -708,7 +714,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     if access == .write { code |= 1 << 1 }
     if context.currentPrivilegeLevel == 3 { code |= 1 << 2 }
     if reserved { code |= 1 << 3 }
-    let reportsInstructionFetch = context.control.cr4 & (1 << 20) != 0
+    let reportsInstructionFetch =
+      context.control.cr4 & (1 << 20) != 0
       || (context.control.cr4 & (1 << 5) != 0 && context.control.efer & (1 << 11) != 0)
     if access == .instructionFetch, reportsInstructionFetch { code |= 1 << 4 }
     return code
@@ -786,7 +793,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 /// Per-step linear address-space view. It composes paging with physical memory while preserving
 /// the interpreter's exact access kind and handling accesses that cross guest page boundaries.
 public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
-  DoryX86HostAddressSpaceMemory, @unchecked Sendable
+  DoryX86RangeCoordinatedMemory, DoryX86HostAddressSpaceMemory, @unchecked Sendable
 {
   private let physicalMemory: any DoryX86Memory
   private let scalarPhysicalMemory: (any DoryX86ScalarMemory)?
@@ -794,6 +801,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   private let atomicScalarPhysicalMemory: (any DoryX86AtomicScalarMemory)?
   private let bulkPhysicalMemory: (any DoryX86BulkMemory)?
   private let codeGenerationPhysicalMemory: (any DoryX86CodeGenerationMemory)?
+  private let rangeCoordinatedPhysicalMemory: (any DoryX86RangeCoordinatedMemory)?
+  public let memoryAccessCoordinator: DoryX86MemoryAccessCoordinator
   private let pagingUnit: DoryX86PagingUnit
   public let jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy
   // Control-register instructions must invalidate the supplied translated-memory cache too.
@@ -820,6 +829,9 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
     atomicScalarPhysicalMemory = physicalMemory as? any DoryX86AtomicScalarMemory
     bulkPhysicalMemory = physicalMemory as? any DoryX86BulkMemory
     codeGenerationPhysicalMemory = physicalMemory as? any DoryX86CodeGenerationMemory
+    rangeCoordinatedPhysicalMemory = physicalMemory as? any DoryX86RangeCoordinatedMemory
+    memoryAccessCoordinator =
+      (physicalMemory as? any DoryX86RangeCoordinatedMemory)?.memoryAccessCoordinator ?? .init()
     self.pagingUnit = pagingUnit
     self.context = context
     self.jitWriteCoherencePolicy = jitWriteCoherencePolicy
@@ -866,10 +878,11 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
         physicalMemory: physicalMemory
       )
       let chunk = min(remaining, 4_096 - Int(linearAddress & 0xfff))
-      changed = try protector.protectTranslatedCode(
-        at: translation.physicalAddress,
-        byteCount: chunk
-      ) || changed
+      changed =
+        try protector.protectTranslatedCode(
+          at: translation.physicalAddress,
+          byteCount: chunk
+        ) || changed
       linearAddress &+= UInt64(chunk)
       remaining -= chunk
     }
@@ -927,6 +940,38 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
     try readLinear(
       at: address, byteCount: maximumCount, access: .instructionFetch, allowShortRead: true)
+  }
+
+  public func memoryAccessRanges(
+    at address: UInt64,
+    byteCount: Int,
+    access: DoryX86MemoryAccessKind
+  ) throws -> [Range<UInt64>]? {
+    try validateLinearSpan(at: address, byteCount: byteCount)
+    guard byteCount > 0, let rangeCoordinatedPhysicalMemory else { return nil }
+    var cursor = address
+    var remaining = byteCount
+    var ranges: [Range<UInt64>] = []
+    while remaining > 0 {
+      let translation = try pagingUnit.translate(
+        linearAddress: cursor,
+        access: access,
+        context: context,
+        physicalMemory: physicalMemory
+      )
+      let count = min(Int(4_096 - (cursor & 0xfff)), remaining)
+      guard
+        let physicalRanges = try rangeCoordinatedPhysicalMemory.memoryAccessRanges(
+          at: translation.physicalAddress,
+          byteCount: count,
+          access: access
+        )
+      else { return nil }
+      ranges.append(contentsOf: physicalRanges)
+      remaining -= count
+      if remaining > 0 { cursor += UInt64(count) }
+    }
+    return ranges
   }
 
   /// Resolves the first byte of a linear instruction fetch for physical translation-cache
@@ -988,8 +1033,10 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   /// A separate view keeps implicit descriptor reads and busy-bit writes under
   /// supervisor/SMAP rules without changing the explicit instruction operand's context.
   func implicitSupervisorMemory() -> DoryX86TranslatedMemory {
-    .init(physicalMemory: physicalMemory, pagingUnit: pagingUnit,
-      context: .init(control: context.control, rflags: context.rflags,
+    .init(
+      physicalMemory: physicalMemory, pagingUnit: pagingUnit,
+      context: .init(
+        control: context.control, rflags: context.rflags,
         currentPrivilegeLevel: 0, mode: context.mode, isImplicitSupervisorAccess: true,
         supportsOneGiBPages: context.supportsOneGiBPages,
         supportsPAT: context.supportsPAT))
@@ -1161,7 +1208,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
       var consumedByteCount = 0
       do {
         let translation = try pagingUnit.translate(
-          linearAddress: cursor, access: access, context: readContext, physicalMemory: physicalMemory)
+          linearAddress: cursor, access: access, context: readContext,
+          physicalMemory: physicalMemory)
         let count = min(Int(4_096 - (cursor & 0xfff)), byteCount - result.count)
         if access == .instructionFetch {
           do {
@@ -1213,8 +1261,9 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
     guard byteCount >= 0 else {
       throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
     }
-    guard byteCount == 0
-      || !address.addingReportingOverflow(UInt64(byteCount - 1)).overflow
+    guard
+      byteCount == 0
+        || !address.addingReportingOverflow(UInt64(byteCount - 1)).overflow
     else {
       throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
     }
@@ -1264,10 +1313,12 @@ extension DoryX86TranslatedMemory: DoryX86CodeGenerationMemory {
         physicalMemory: physicalMemory
       )
       let count = min(Int(4_096 - (cursor & 0xfff)), remaining)
-      guard let physicalGeneration = try codeGenerationPhysicalMemory.codeGeneration(
-        at: translation.physicalAddress,
-        byteCount: count
-      ) else { return nil }
+      guard
+        let physicalGeneration = try codeGenerationPhysicalMemory.codeGeneration(
+          at: translation.physicalAddress,
+          byteCount: count
+        )
+      else { return nil }
       token ^= translation.physicalAddress
       token &*= 0x0000_0100_0000_01b3
       token ^= physicalGeneration

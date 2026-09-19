@@ -8,7 +8,8 @@ public enum DoryPCPhysicalMemoryError: Error, Sendable, Equatable {
   case invalidRange(base: UInt64, byteCount: UInt64)
   case overlappingRange(base: UInt64, byteCount: UInt64)
   case unsupportedAccess(offset: UInt64, byteCount: Int, write: Bool)
-  case invalidRAMConfiguration(base: UInt64, byteCount: Int, mmioHoleStart: UInt64, above4GRAMStart: UInt64)
+  case invalidRAMConfiguration(
+    base: UInt64, byteCount: Int, mmioHoleStart: UInt64, above4GRAMStart: UInt64)
 }
 
 /// Process-local counters for calls that cross the CPU-to-physical-memory helper boundary.
@@ -92,8 +93,9 @@ extension DoryPCMMIODevice {
 /// Sealed physical address router. RAM and devices share one DoryX86Memory boundary, so paging,
 /// interpreter, and every future JIT helper observe an identical DoryPC-v1 memory map.
 public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
-  DoryX86AtomicScalarMemory, DoryX86CodeGenerationMemory, DoryX86DirectHostAddressSpaceMemory,
-  DoryX86PageTableWriteTrackingMemory, DoryX86TranslatedCodeProtectionMemory, @unchecked Sendable
+  DoryX86AtomicScalarMemory, DoryX86CodeGenerationMemory, DoryX86RangeCoordinatedMemory,
+  DoryX86DirectHostAddressSpaceMemory, DoryX86PageTableWriteTrackingMemory,
+  DoryX86TranslatedCodeProtectionMemory, @unchecked Sendable
 {
   private enum DiagnosticCounter: Int, CaseIterable {
     case instructionFetchHelperCalls
@@ -126,6 +128,8 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   public let ram: any DoryX86PhysicalRAM
+  private let rangeCoordinatedRAM: (any DoryX86RangeCoordinatedMemory)?
+  public let memoryAccessCoordinator: DoryX86MemoryAccessCoordinator
 
   public var hostAddressSpaceBase: UInt64 {
     (ram as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceBase ?? 0
@@ -187,6 +191,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
         mmioHoleStart: mmioHoleStart, above4GRAMStart: above4GRAMStart)
     }
     self.ram = ram
+    rangeCoordinatedRAM = ram as? any DoryX86RangeCoordinatedMemory
+    memoryAccessCoordinator =
+      (ram as? any DoryX86RangeCoordinatedMemory)?.memoryAccessCoordinator ?? .init()
     self.mmioHoleStart = mmioHoleStart
     self.above4GRAMStart = above4GRAMStart
     self.diagnosticsEnabled = diagnosticsEnabled
@@ -257,13 +264,15 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       let lowRAMUpper = min(ramBytes, mmioHoleStart)
       let highRAMBytes = ramBytes > mmioHoleStart ? ramBytes - mmioHoleStart : 0
       let (highRAMUpper, highRAMOverflow) = above4GRAMStart.addingReportingOverflow(highRAMBytes)
-      let hasRAMOverlays = highRAMOverflow || mappings.contains { mapping in
-        let overlapsLow = mapping.lowerBound < lowRAMUpper && mapping.upperBound > 0
-        let overlapsHigh =
-          highRAMBytes > 0 && mapping.lowerBound < highRAMUpper
-          && mapping.upperBound > above4GRAMStart
-        return overlapsLow || overlapsHigh
-      }
+      let hasRAMOverlays =
+        highRAMOverflow
+        || mappings.contains { mapping in
+          let overlapsLow = mapping.lowerBound < lowRAMUpper && mapping.upperBound > 0
+          let overlapsHigh =
+            highRAMBytes > 0 && mapping.lowerBound < highRAMUpper
+            && mapping.upperBound > above4GRAMStart
+          return overlapsLow || overlapsHigh
+        }
       sealedMappings = SealedMappings(mappings, hasRAMOverlays: hasRAMOverlays)
       isSealed = true
       // Machine execution starts only after sealing. Release/acquire publication makes the
@@ -363,7 +372,8 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
       return try ram.codeGeneration(at: resolved.backingAddress, byteCount: byteCount)
     }
-    if let resolved = try resolve(address: address, byteCount: byteCount, access: .instructionFetch) {
+    if let resolved = try resolve(address: address, byteCount: byteCount, access: .instructionFetch)
+    {
       guard resolved.device.allowsInstructionFetch else { return nil }
       return try resolved.device.codeGeneration(
         offset: resolved.offset,
@@ -503,13 +513,31 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     )
   }
 
+  public func memoryAccessRanges(
+    at address: UInt64,
+    byteCount: Int,
+    access: DoryX86MemoryAccessKind
+  ) throws -> [Range<UInt64>]? {
+    guard byteCount > 0 else { return nil }
+    if try resolve(address: address, byteCount: byteCount, access: access) != nil { return nil }
+    let resolved = try resolveRAM(address: address, byteCount: byteCount, access: access)
+    guard let rangeCoordinatedRAM else { return nil }
+    return try rangeCoordinatedRAM.memoryAccessRanges(
+      at: resolved.backingAddress,
+      byteCount: byteCount,
+      access: access
+    )
+  }
+
   /// VirtIO DMA is deliberately RAM-only. A descriptor can never trigger an APIC, PCI, or other
   /// MMIO register read as a side effect of validation or device processing.
   public func validateDMA(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
     incrementDiagnostic(.dmaValidationCalls)
-    guard try resolve(
-      address: address, byteCount: byteCount, access: deviceWillWrite ? .write : .read
-    ) == nil else {
+    guard
+      try resolve(
+        address: address, byteCount: byteCount, access: deviceWillWrite ? .write : .read
+      ) == nil
+    else {
       throw DoryX86MemoryError.unmapped(
         address: address,
         byteCount: byteCount,
