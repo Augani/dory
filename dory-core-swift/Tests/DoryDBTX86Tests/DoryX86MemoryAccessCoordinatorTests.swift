@@ -1,5 +1,6 @@
 import Darwin
 import Dispatch
+import DoryJITRuntimeC
 import Testing
 
 @testable import DoryDBTX86
@@ -138,6 +139,43 @@ import Testing
     #expect(ranges[0].upperBound < ranges[1].lowerBound)
   }
 
+  @Test func nativeRangedScalarHelpersEnterTheSameBackingAuthority() throws {
+    let coordinator = DoryX86MemoryAccessCoordinator()
+    let fixture = NativeRangedScalarFixture(coordinator: coordinator)
+    let lowerBound = UInt64(UInt(bitPattern: UnsafeRawPointer(fixture.value)))
+    let exclusive = coordinator.acquireExclusive(
+      ranges: [lowerBound..<(lowerBound + UInt64(MemoryLayout<UInt64>.size))])
+    let storeStarted = DispatchSemaphore(value: 0)
+    let storeFinished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      storeStarted.signal()
+      fixture.storeResult = dory_jit_ranged_store_from_context(
+        UnsafePointer(fixture.context),
+        UnsafeMutableRawPointer(fixture.value),
+        0x0123_4567_89AB_CDEF,
+        UInt32(MemoryLayout<UInt64>.size)
+      )
+      storeFinished.signal()
+    }
+    storeStarted.wait()
+    #expect(storeFinished.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
+
+    exclusive.release()
+    #expect(storeFinished.wait(timeout: .now() + 2) == .success)
+    #expect(fixture.storeResult == 0)
+    #expect(fixture.value.pointee == 0x0123_4567_89AB_CDEF)
+
+    var loaded: UInt64 = 0
+    #expect(
+      dory_jit_ranged_load_from_context(
+        UnsafePointer(fixture.context),
+        UnsafeRawPointer(fixture.value),
+        UInt32(MemoryLayout<UInt64>.size),
+        &loaded
+      ) == 0)
+    #expect(loaded == 0x0123_4567_89AB_CDEF)
+  }
+
   private func waitUntil(
     timeout: DispatchTime,
     _ predicate: () -> Bool
@@ -147,5 +185,27 @@ import Testing
       sched_yield()
     }
     Issue.record("Timed out waiting for coordinator state")
+  }
+}
+
+private final class NativeRangedScalarFixture: @unchecked Sendable {
+  let context: UnsafeMutablePointer<UInt64>
+  let value: UnsafeMutablePointer<UInt64>
+  var storeResult: Int32 = -1
+
+  init(coordinator: DoryX86MemoryAccessCoordinator) {
+    context = .allocate(capacity: DoryJITExecutableRegion.contextWordCount)
+    context.initialize(repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+    context[DoryJITExecutableRegion.memoryAccessCoordinatorWordIndex] =
+      coordinator.opaqueReference
+    value = .allocate(capacity: 1)
+    value.initialize(to: 0)
+  }
+
+  deinit {
+    context.deinitialize(count: DoryJITExecutableRegion.contextWordCount)
+    context.deallocate()
+    value.deinitialize(count: 1)
+    value.deallocate()
   }
 }

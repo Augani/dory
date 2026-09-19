@@ -989,6 +989,114 @@ uintptr_t dory_jit_tlb_resolve_from_context_address(void) {
     return resolver.address;
 }
 
+static void *dory_jit_memory_access_coordinator_from_context(const uint64_t *context) {
+    if (context == NULL) {
+        return NULL;
+    }
+    return (void *)(uintptr_t)context[DORY_JIT_MEMORY_ACCESS_COORDINATOR_CONTEXT_WORD];
+}
+
+static int dory_jit_validate_ranged_scalar(
+    const uint64_t *context,
+    const void *host_address,
+    uint32_t byte_count,
+    void **coordinator_out
+) {
+    if (context == NULL || host_address == NULL || coordinator_out == NULL ||
+        (byte_count != 1 && byte_count != 2 && byte_count != 4 && byte_count != 8)) {
+        return EINVAL;
+    }
+    void *coordinator = dory_jit_memory_access_coordinator_from_context(context);
+    if (coordinator == NULL) {
+        return ENOTSUP;
+    }
+    *coordinator_out = coordinator;
+    return 0;
+}
+
+int dory_jit_ranged_load_from_context(
+    const uint64_t *context,
+    const void *host_address,
+    uint32_t byte_count,
+    uint64_t *value_out
+) {
+    void *coordinator = NULL;
+    if (value_out == NULL) {
+        return EINVAL;
+    }
+    const int validation = dory_jit_validate_ranged_scalar(
+        context, host_address, byte_count, &coordinator
+    );
+    if (validation != 0) {
+        return validation;
+    }
+    const uint64_t token = dory_x86_memory_access_begin(
+        coordinator, (uint64_t)(uintptr_t)host_address, byte_count, 0
+    );
+    if (token == 0) {
+        return EINVAL;
+    }
+    uint64_t value = 0;
+    if (dory_atomic_scalar_load_seq_cst(host_address, byte_count, &value) != 0) {
+        const uint8_t *bytes = (const uint8_t *)host_address;
+        for (uint32_t index = 0; index < byte_count; index += 1) {
+            value |= (uint64_t)__atomic_load_n(bytes + index, __ATOMIC_SEQ_CST) << (index * 8);
+        }
+    }
+    dory_x86_memory_access_end(coordinator, token);
+    *value_out = value;
+    return 0;
+}
+
+uintptr_t dory_jit_ranged_load_from_context_address(void) {
+    union {
+        int (*function)(const uint64_t *, const void *, uint32_t, uint64_t *);
+        uintptr_t address;
+    } resolver = {.function = dory_jit_ranged_load_from_context};
+    return resolver.address;
+}
+
+int dory_jit_ranged_store_from_context(
+    const uint64_t *context,
+    void *host_address,
+    uint64_t value,
+    uint32_t byte_count
+) {
+    void *coordinator = NULL;
+    const int validation = dory_jit_validate_ranged_scalar(
+        context, host_address, byte_count, &coordinator
+    );
+    if (validation != 0) {
+        return validation;
+    }
+    const uint64_t token = dory_x86_memory_access_begin(
+        coordinator, (uint64_t)(uintptr_t)host_address, byte_count, 0
+    );
+    if (token == 0) {
+        return EINVAL;
+    }
+    if (dory_atomic_scalar_store_seq_cst(host_address, value, byte_count) != 0) {
+        uint8_t *bytes = (uint8_t *)host_address;
+        for (uint32_t index = 0; index < byte_count; index += 1) {
+            __atomic_store_n(
+                bytes + index,
+                (uint8_t)(value >> (index * 8)),
+                __ATOMIC_SEQ_CST
+            );
+        }
+    }
+    dory_x86_memory_access_end(coordinator, token);
+    return 0;
+}
+
+uintptr_t dory_jit_ranged_store_from_context_address(void) {
+    union {
+        int (*function)(const uint64_t *, void *, uint64_t, uint32_t);
+        uintptr_t address;
+    } resolver = {.function = dory_jit_ranged_store_from_context};
+    return resolver.address;
+}
+
 static void *dory_jit_atomic_coordinator_from_context(const uint64_t *context) {
     if (context == NULL) {
         return NULL;
@@ -1520,7 +1628,10 @@ _Static_assert(
         DORY_JIT_CONTEXT_WORD_COUNT,
     "probe context word count"
 );
-_Static_assert(sizeof(dory_jit_test_abi_snapshot) == 936, "probe record size");
+_Static_assert(
+    sizeof(dory_jit_test_abi_snapshot) == 168 + DORY_JIT_CONTEXT_WORD_COUNT * sizeof(uint64_t),
+    "probe record size"
+);
 
 // x16 points to independent caller-owned storage. No stores to generated frames.
 #define DORY_TEST_ABI_CAPTURE \

@@ -42,7 +42,7 @@ import DoryJITRuntimeC
   }
 
   @Test func stableContextLayoutMatchesTheExecutableBaselineBoundary() {
-    #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<96))
+    #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<97))
     #expect(DoryARM64Tier1ABI.contextWordCount == DoryJITExecutableRegion.contextWordCount)
     #expect(DoryARM64Tier1ABI.contextWordCount == DORY_JIT_CONTEXT_WORD_COUNT)
     #expect(DoryARM64Tier1ABI.ContextWord.hostAddressSpaceBase.rawValue
@@ -89,6 +89,11 @@ import DoryJITRuntimeC
       == DoryJITExecutableRegion.atomicCoordinatorWordIndex)
     #expect(DoryARM64Tier1ABI.ContextWord.atomicCoordinator.rawValue
       == DORY_JIT_ATOMIC_COORDINATOR_CONTEXT_WORD)
+    #expect(DoryARM64Tier1ABI.ContextWord.memoryAccessCoordinator.rawValue == 96)
+    #expect(DoryARM64Tier1ABI.ContextWord.memoryAccessCoordinator.rawValue
+      == DoryJITExecutableRegion.memoryAccessCoordinatorWordIndex)
+    #expect(DoryARM64Tier1ABI.ContextWord.memoryAccessCoordinator.rawValue
+      == DORY_JIT_MEMORY_ACCESS_COORDINATOR_CONTEXT_WORD)
     for word in DoryARM64Tier1ABI.ContextWord.allCases {
       #expect(word.byteOffset == word.rawValue * MemoryLayout<UInt64>.stride)
     }

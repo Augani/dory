@@ -133,6 +133,9 @@ enum DoryARM64Tier1ABI {
     /// Unretained `DoryX86AtomicCoordinator` reference, installed only for the duration of a
     /// memory-capable native dispatch. This is append-only so every prior ABI word stays stable.
     case atomicCoordinator
+    /// Unretained RAM-owned `DoryX86MemoryAccessCoordinator` reference. Direct generated memory
+    /// helpers use the same host-byte authority as checked CPU and DMA access paths.
+    case memoryAccessCoordinator
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }

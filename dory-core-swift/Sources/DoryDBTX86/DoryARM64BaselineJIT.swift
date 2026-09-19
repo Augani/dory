@@ -4750,59 +4750,37 @@ public struct DoryARM64BaselineEmitter: Sendable {
     0xF900_0000 | UInt32(byteOffset / 8) << 10 | base << 5 | register
   }
 
-  private func encodeDirectLoad(
-    width: DoryIRIntegerWidth,
-    register: UInt32,
-    base: UInt32
-  ) -> UInt32 {
-    let opcode: UInt32 =
-      switch width {
-      case .i8: 0x3940_0000
-      case .i16: 0x7940_0000
-      case .i32: 0xB940_0000
-      case .i64: 0xF940_0000
-      }
-    return opcode | base << 5 | register
-  }
-
-  private func encodeDirectStore(
-    width: DoryIRIntegerWidth,
-    register: UInt32,
-    base: UInt32
-  ) -> UInt32 {
-    let opcode: UInt32 =
-      switch width {
-      case .i8: 0x3900_0000
-      case .i16: 0x7900_0000
-      case .i32: 0xB900_0000
-      case .i64: 0xF900_0000
-      }
-    return opcode | base << 5 | register
-  }
-
-  /// Emits an ordinary direct RAM load followed by a conservative full Arm
-  /// barrier. x86 TSO preserves Load→Load and Load→Store program order, while
-  /// bare Arm loads may be observed out of order. A full `DMB ISH` is stronger
-  /// than necessary but gives one auditable boundary shared with direct stores;
-  /// it may be narrowed only with litmus and instruction-inspection evidence.
+  /// Emits an ordinary direct RAM load through the RAM-owned byte-range authority, followed by
+  /// the conservative full Arm ordering bridge. The helper performs the actual host access only
+  /// while an ordinary lease is active; failure returns to the interpreter before a load occurs.
   private func emitDirectLoadWithTSOBarrier(
     width: DoryIRIntegerWidth,
     register: UInt32,
     base: UInt32,
     words: inout [UInt32]
   ) {
-    words.append(encodeDirectLoad(width: width, register: register, base: base))
+    let byteCount = UInt16(width.rawValue / 8)
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    words.append(encodeLogical(.or, left: 31, right: base, destination: 1))
+    words.append(encodeMoveWideZero32(register: 2, immediate: byteCount))
+    words.append(encodeAddImmediate64(left: 31, immediate: 80, destination: 3))
+    emitImmediate(UInt64(dory_jit_ranged_load_from_context_address()), register: 16, into: &words)
+    words.append(0xD63F_0000 | 16 << 5)  // blr x16
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
+    emitInterpreterUnless(condition: .equal, usesMemory: true, into: &words)
+    words.append(encodeLoad64(register: register, base: 31, byteOffset: 80))
     words.append(0xD503_3BBF)  // DMB ISH
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
   }
 
-  /// Emits an ordinary direct RAM store followed by Dory's conservative Arm
-  /// ordering bridge for the x86 TSO boundary.
+  /// Emits an ordinary direct RAM store through the RAM-owned byte-range authority, followed by
+  /// Dory's conservative Arm ordering bridge for the x86 TSO boundary.
   ///
   /// x86 TSO permits Store→Load relaxation but forbids the additional load/load,
   /// load/store, and store/store reorderings available to bare Arm memory
   /// operations. Dory currently chooses the conservative stronger ordering:
-  /// every successful ordinary direct RAM store gets a full `DMB ISH` barrier
-  /// (`0xD503_3BBF`) immediately after its `STR`, so the store is visible to
+  /// every successful ordinary direct RAM store helper gets a full `DMB ISH` barrier
+  /// (`0xD503_3BBF`) immediately after it returns, so the store is visible to
   /// all inner-shareable observers (other vCPUs, devices, renderer mappings)
   /// before any subsequent translated access. A future modeled store buffer may
   /// recover x86's permitted Store→Load relaxation, but must retain the rest of
@@ -4819,9 +4797,18 @@ public struct DoryARM64BaselineEmitter: Sendable {
     base: UInt32,
     words: inout [UInt32]
   ) {
-    words.append(encodeDirectStore(width: width, register: register, base: base))
+    let byteCount = UInt16(width.rawValue / 8)
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+    words.append(encodeLogical(.or, left: 31, right: base, destination: 1))
+    words.append(encodeLogical(.or, left: 31, right: register, destination: 2))
+    words.append(encodeMoveWideZero32(register: 3, immediate: byteCount))
+    emitImmediate(UInt64(dory_jit_ranged_store_from_context_address()), register: 16, into: &words)
+    words.append(0xD63F_0000 | 16 << 5)  // blr x16
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 0, 31, 31))
+    emitInterpreterUnless(condition: .equal, usesMemory: true, into: &words)
     // DMB ISH: full data memory barrier, inner shareable.
     words.append(0xD503_3BBF)
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
   }
 
   private func encodeVariableShift(
@@ -5226,6 +5213,7 @@ struct DoryJITMemoryCapabilities {
   let restartableScalarMemory: (any DoryX86RestartableScalarMemory)?
   let atomicScalarMemory: (any DoryX86AtomicScalarMemory)?
   let atomicCoordinator: DoryX86AtomicCoordinator
+  let memoryAccessCoordinator: DoryX86MemoryAccessCoordinator?
 
   init(memory: any DoryX86Memory, atomicCoordinator: DoryX86AtomicCoordinator) {
     self.memory = memory
@@ -5233,6 +5221,8 @@ struct DoryJITMemoryCapabilities {
     restartableScalarMemory = memory as? any DoryX86RestartableScalarMemory
     atomicScalarMemory = memory as? any DoryX86AtomicScalarMemory
     self.atomicCoordinator = atomicCoordinator
+    memoryAccessCoordinator =
+      (memory as? any DoryX86RangeCoordinatedMemory)?.memoryAccessCoordinator
   }
 }
 
@@ -5449,6 +5439,8 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     DoryARM64Tier1ABI.ContextWord.atomicCompareExchangePair.rawValue
   public static let atomicCoordinatorWordIndex =
     DoryARM64Tier1ABI.ContextWord.atomicCoordinator.rawValue
+  public static let memoryAccessCoordinatorWordIndex =
+    DoryARM64Tier1ABI.ContextWord.memoryAccessCoordinator.rawValue
   public static let ibtcEntriesBaseWordIndex =
     DoryARM64Tier1ABI.ContextWord.ibtcEntriesBase.rawValue
   public static let ibtcEntryMaskWordIndex = DoryARM64Tier1ABI.ContextWord.ibtcEntryMask.rawValue
@@ -5594,6 +5586,8 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRegisterMask.rawValue] = 0
     context[Self.atomicCoordinatorWordIndex] =
       memoryCapabilities?.atomicCoordinator.opaqueReference ?? 0
+    context[Self.memoryAccessCoordinatorWordIndex] =
+      memoryCapabilities?.memoryAccessCoordinator?.opaqueReference ?? 0
     if let memoryCapabilities {
       var memoryContext = DoryJITMemoryCallbackContext(
         capabilities: memoryCapabilities,
@@ -8858,6 +8852,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[DoryARM64Tier1ABI.ContextWord.memoryFaultCheckpointRegisterMask.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.requiresRestartableMemoryReads.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.atomicCoordinator.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.memoryAccessCoordinator.rawValue] = 0
   }
 
   private func recordLazyFlagMaterializations(

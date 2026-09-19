@@ -56,13 +56,9 @@ import XCTest
     #expect(compiled.machineWords.last == 0xD65F_03C0)
   }
 
-  @Test func directStoreEmissionIsFollowedByTSOBarrier() throws {
-    // mov [rax], rbx — a 64-bit ordinary direct RAM store. emitMemoryWrite
-    // emits two direct STR sites (the inline-TLB-hit path and the
-    // resolver-filled path); each must be immediately followed by the
-    // DMB ISH ordering bridge (0xD503_3BBF) that conservatively orders the
-    // store before later accesses. x86 permits Store→Load relaxation; Dory's
-    // current direct-store path intentionally provides the stronger ordering.
+  @Test func directStoreEmissionUsesRangedHelpersAndTSOBarriers() throws {
+    // mov [rax], rbx — both inline-TLB-hit and resolver-filled sites must call the audited
+    // range-coordinated helper. No raw STR through the host-address register may remain.
     let block = try DoryX86IRTranslator().translate(
       [0x48, 0x89, 0x18],
       at: 0x1000,
@@ -70,27 +66,18 @@ import XCTest
     )
     let words = DoryARM64BaselineEmitter().compile(block).machineWords
 
-    // The direct 64-bit STR uses base x13 and source x14 (offset 0).
     let directStore: UInt32 = 0xF900_0000 | 13 << 5 | 14  // 0xF900_01AE
     let barrier: UInt32 = 0xD503_3BBF  // dmb ish
+    let restoreContext: UInt32 = 0xAA13_03E0  // mov x0,x19
 
-    let storeIndices =
-      words.indices.filter { words[$0] == directStore }
-    // Both the inline-TLB-hit and resolver-filled direct-store sites are
-    // present in the emitted code.
-    #expect(storeIndices.count == 2)
-    for index in storeIndices {
-      // The bridge must immediately follow each direct STR.
-      #expect(words[index + 1] == barrier)
-    }
-    // No extra barriers: the callback/fallback section of emitMemoryWrite and
-    // every other path must not claim the direct-store bridge.
-    #expect(words.filter { $0 == barrier }.count == 2)
+    #expect(!words.contains(directStore))
+    let barrierIndices = words.indices.filter { words[$0] == barrier }
+    #expect(barrierIndices.count == 2)
+    for index in barrierIndices { #expect(words[index + 1] == restoreContext) }
   }
 
-  @Test func byteDirectStoreEmissionIsFollowedByTSOBarrier() throws {
-    // mov [rax], bl — an 8-bit ordinary direct RAM store, exercising the i8
-    // width of encodeDirectStore. Both direct STR sites must carry the bridge.
+  @Test func byteDirectStoreEmissionUsesRangedHelpersAndTSOBarriers() throws {
+    // mov [rax], bl — the byte-width path must not retain a raw STRB bypass.
     let block = try DoryX86IRTranslator().translate(
       [0x88, 0x18],
       at: 0x1000,
@@ -100,14 +87,12 @@ import XCTest
 
     let directStore: UInt32 = 0x3900_0000 | 13 << 5 | 14  // 0x3900_01AE
     let barrier: UInt32 = 0xD503_3BBF  // dmb ish
+    let restoreContext: UInt32 = 0xAA13_03E0  // mov x0,x19
 
-    let storeIndices =
-      words.indices.filter { words[$0] == directStore }
-    #expect(storeIndices.count == 2)
-    for index in storeIndices {
-      #expect(words[index + 1] == barrier)
-    }
-    #expect(words.filter { $0 == barrier }.count == 2)
+    #expect(!words.contains(directStore))
+    let barrierIndices = words.indices.filter { words[$0] == barrier }
+    #expect(barrierIndices.count == 2)
+    for index in barrierIndices { #expect(words[index + 1] == restoreContext) }
   }
 
   @Test func interpreterFallbackDoesNotEmitDirectStoreBarrier() throws {
@@ -124,10 +109,8 @@ import XCTest
     #expect(!words.contains(0xD503_3BBF))  // no dmb ish
   }
 
-  @Test func directLoadEmissionIsFollowedByTSOBarrier() throws {
-    // mov rax, [rbx] — an ordinary direct load. Both the inline-TLB-hit and
-    // resolver-filled LDR sites must order this load before later guest memory
-    // operations. Bare Arm Load→Load and Load→Store ordering is too weak.
+  @Test func directLoadEmissionUsesRangedHelpersAndTSOBarriers() throws {
+    // mov rax, [rbx] — both sites must call the audited helper rather than loading through x13.
     let block = try DoryX86IRTranslator().translate(
       [0x48, 0x8B, 0x03],
       at: 0x1000,
@@ -138,14 +121,14 @@ import XCTest
     let directLoadWithoutDestination: UInt32 = 0xF940_0000 | 13 << 5
     let directLoadMask: UInt32 = 0xFFFF_FFE0
     let barrier: UInt32 = 0xD503_3BBF
-    let loadIndices = words.indices.filter {
+    let restoreContext: UInt32 = 0xAA13_03E0  // mov x0,x19
+    let rawHostLoadIndices = words.indices.filter {
       words[$0] & directLoadMask == directLoadWithoutDestination
     }
-    #expect(loadIndices.count == 2)
-    for index in loadIndices {
-      #expect(words[index + 1] == barrier)
-    }
-    #expect(words.filter { $0 == barrier }.count == 2)
+    #expect(rawHostLoadIndices.isEmpty)
+    let barrierIndices = words.indices.filter { words[$0] == barrier }
+    #expect(barrierIndices.count == 2)
+    for index in barrierIndices { #expect(words[index + 1] == restoreContext) }
   }
 
   @Test func generationValidatedNegativeCacheSkipsRepeatedEmitterDeclines() throws {
@@ -9371,6 +9354,21 @@ import XCTest
       #expect(exit == .dispatch)
       #expect(context[0] == 0x1234_5678)
       #expect(context[16] == 0x400A)
+    #endif
+  }
+
+  @Test func nativeDispatchInstallsTheRAMRangeAuthorityInTheAppendOnlyContext() throws {
+    #if arch(arm64)
+      let block = try DoryX86IRTranslator().translate([0x90], at: 0x4100, mode: .long64)
+      let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+      try region.publish(DoryARM64BaselineEmitter().compile(block), at: 0)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 1)
+      var context = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+
+      #expect(try region.execute(at: 0, context: &context, memory: memory) == .dispatch)
+      #expect(
+        context[DoryJITExecutableRegion.memoryAccessCoordinatorWordIndex]
+          == memory.memoryAccessCoordinator.opaqueReference)
     #endif
   }
 

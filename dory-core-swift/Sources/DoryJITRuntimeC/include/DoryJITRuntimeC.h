@@ -12,8 +12,18 @@ typedef struct dory_jit_shadow_return_stack dory_jit_shadow_return_stack;
 
 enum {
     DORY_JIT_ATOMIC_COORDINATOR_CONTEXT_WORD = 95,
-    DORY_JIT_CONTEXT_WORD_COUNT = 96
+    DORY_JIT_MEMORY_ACCESS_COORDINATOR_CONTEXT_WORD = 96,
+    DORY_JIT_CONTEXT_WORD_COUNT = 97
 };
+
+// Swift-owned range authority used by audited direct RAM helpers.
+uint64_t dory_x86_memory_access_begin(
+    void *coordinator,
+    uint64_t address,
+    uint32_t byte_count,
+    uint8_t exclusive
+);
+void dory_x86_memory_access_end(void *coordinator, uint64_t token);
 
 #if defined(__aarch64__)
 // Test-only host ABI oracle. No production execution path calls these probes.
@@ -300,6 +310,20 @@ int dory_jit_tlb_resolve_from_context(
     dory_jit_tlb_resolution *resolution_out
 );
 uintptr_t dory_jit_tlb_resolve_from_context_address(void);
+int dory_jit_ranged_load_from_context(
+    const uint64_t *context,
+    const void *host_address,
+    uint32_t byte_count,
+    uint64_t *value_out
+);
+uintptr_t dory_jit_ranged_load_from_context_address(void);
+int dory_jit_ranged_store_from_context(
+    const uint64_t *context,
+    void *host_address,
+    uint64_t value,
+    uint32_t byte_count
+);
+uintptr_t dory_jit_ranged_store_from_context_address(void);
 // Implemented by DoryDBTX86. The context word is an unretained, executor-owned Swift object.
 void dory_x86_atomic_coordinator_lock(void *coordinator);
 void dory_x86_atomic_coordinator_unlock(void *coordinator);
