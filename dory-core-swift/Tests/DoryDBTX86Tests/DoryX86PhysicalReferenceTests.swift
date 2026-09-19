@@ -251,9 +251,8 @@ private struct ReferenceVector: Codable {
 private struct ReferenceCorpus: Decodable {
   let schemaVersion: Int, corpus: String, origin: String, cases: [ReferenceVector]
   static var directory: URL {
-    URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-      .deletingLastPathComponent().deletingLastPathComponent()
-      .appendingPathComponent("guest/diagnostics/p02-x86-reference", isDirectory: true)
+    Bundle.module.resourceURL!
+      .appendingPathComponent("P02X86Reference", isDirectory: true)
   }
   static func read(_ url: URL) throws -> Data {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)

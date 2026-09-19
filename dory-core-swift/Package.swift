@@ -444,7 +444,8 @@ let package = Package(
     ),
     .testTarget(
       name: "DoryDBTX86Tests",
-      dependencies: ["DoryDBTX86"]
+      dependencies: ["DoryDBTX86"],
+      resources: [.copy("Fixtures/P02X86Reference")]
     ),
     .testTarget(
       name: "DoryMachinePCTests",
