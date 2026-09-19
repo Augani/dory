@@ -50,6 +50,62 @@ import Testing
     #expect(block.terminator == .exit(.interpreter, resumeAt: 0x2000))
   }
 
+  @Test func prefixedBitScansLowerOnlyWhenTheSelectedProfileUsesAliasSemantics() throws {
+    let baseline = try DoryX86IRTranslator().translate(
+      [0xF3, 0x48, 0x0F, 0xBC, 0xDB],
+      at: 0x2100,
+      mode: .long64
+    )
+    #expect(baseline.statements == [
+      .bitScan(
+        reverse: false,
+        destination: .register(.init(bank: "x86.gpr", index: 3, width: .i64)),
+        source: .register(.init(bank: "x86.gpr", index: 3, width: .i64))
+      )
+    ])
+
+    let baselineLeading = try DoryX86IRTranslator().translate(
+      [0xF3, 0x48, 0x0F, 0xBD, 0xDB],
+      at: 0x2110,
+      mode: .long64
+    )
+    #expect(baselineLeading.statements == [
+      .bitScan(
+        reverse: true,
+        destination: .register(.init(bank: "x86.gpr", index: 3, width: .i64)),
+        source: .register(.init(bank: "x86.gpr", index: 3, width: .i64))
+      )
+    ])
+
+    let extendedProfile = DoryX86CPUProfile(
+      identifier: "test.ir.bmi1-lzcnt",
+      features: DoryX86CPUProfile.compatibleV1.features.union([.bmi1, .lzcnt]),
+      physicalAddressBits: 40,
+      linearAddressBits: 48,
+      virtualTSCFrequencyHz: 1_000_000_000,
+      allowingUnqualifiedSIMDAndExtendedState: true
+    )
+    let tzcnt = try DoryX86IRTranslator(profile: extendedProfile).translate(
+      [0xF3, 0x48, 0x0F, 0xBC, 0xDB],
+      at: 0x2100,
+      mode: .long64
+    )
+    #expect(tzcnt.statements == [
+      .helper(identifier: "x86.interpret.one", payload: [0xF3, 0x48, 0x0F, 0xBC, 0xDB])
+    ])
+    #expect(tzcnt.terminator == .exit(.interpreter, resumeAt: 0x2100))
+
+    let lzcnt = try DoryX86IRTranslator(profile: extendedProfile).translate(
+      [0xF3, 0x48, 0x0F, 0xBD, 0xDB],
+      at: 0x2110,
+      mode: .long64
+    )
+    #expect(lzcnt.statements == [
+      .helper(identifier: "x86.interpret.one", payload: [0xF3, 0x48, 0x0F, 0xBD, 0xDB])
+    ])
+    #expect(lzcnt.terminator == .exit(.interpreter, resumeAt: 0x2110))
+  }
+
   @Test func registerConditionalMovesLowerToTypedNativeIR() throws {
     let bytes: [UInt8] = [
       0x41, 0x0F, 0x42, 0xF9,  // cmovb edi,r9d

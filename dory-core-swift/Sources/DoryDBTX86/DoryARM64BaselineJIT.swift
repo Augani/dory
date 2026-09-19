@@ -7680,7 +7680,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     do {
       translated = try DoryX86IRTranslator(
         decoder: decoder,
-        instructionBudget: maximumInstructions
+        instructionBudget: maximumInstructions,
+        profile: profile
       ).translate(bytes, at: guestStart, mode: mode)
     } catch is DoryX86DecodeError {
       // Speculative bytes may stop inside the first instruction at a page boundary.

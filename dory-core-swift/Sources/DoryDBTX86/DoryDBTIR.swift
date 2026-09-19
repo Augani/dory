@@ -234,10 +234,16 @@ public struct DoryIRBasicBlock: Codable, Sendable, Hashable {
 public struct DoryX86IRTranslator: Sendable {
   public let decoder: DoryX86Decoder
   public let instructionBudget: Int
+  public let profile: DoryX86CPUProfile
 
-  public init(decoder: DoryX86Decoder = .init(), instructionBudget: Int = 64) {
+  public init(
+    decoder: DoryX86Decoder = .init(),
+    instructionBudget: Int = 64,
+    profile: DoryX86CPUProfile = .compatibleV1
+  ) {
     self.decoder = decoder
     self.instructionBudget = max(1, instructionBudget)
+    self.profile = profile
   }
 
   public func translate(
@@ -572,6 +578,34 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .countLeadingZeros(let destination, let source) where !profile.supports(.lzcnt):
+      // F3 0F BD aliases BSR when LZCNT is not advertised. Lower the architectural alias so
+      // baseline profiles keep measured kernel prefixes native without gaining LZCNT semantics.
+      return (
+        [
+          .bitScan(
+            reverse: true,
+            destination: operand(destination),
+            source: operand(source, instructionRelativeBase: instruction.nextInstructionAddress)
+          )
+        ],
+        nil
+      )
+    case .countTrailingZeros(let destination, let source) where !profile.supports(.bmi1):
+      // F3 0F BC aliases BSF when BMI1 is not advertised.
+      return (
+        [
+          .bitScan(
+            reverse: false,
+            destination: operand(destination),
+            source: operand(source, instructionRelativeBase: instruction.nextInstructionAddress)
+          )
+        ],
+        nil
+      )
+    case .countLeadingZeros, .countTrailingZeros:
+      // Native LZCNT/TZCNT flag semantics remain outside the current IR contract.
+      return fallback(instruction, reason: .interpreter)
     case .byteSwap(let target):
       return ([.byteSwap(operand(target))], nil)
     case .moveByteSwapped:
