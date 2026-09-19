@@ -1,7 +1,7 @@
 # Dory x86_64 Linux readiness review — 2026-09-19
 
 Reviewed on branch `codex/virtual-workspace-foundation` through implementation commit
-`8ca198c212`. Host: Apple M2 Pro, macOS 27.2, Xcode 27.0, Swift 6.4. The working checkout also
+`121d86faa`. Host: Apple M2 Pro, macOS 27.2, Xcode 27.0, Swift 6.4. The working checkout also
 contains a pre-existing user modification to `scripts/arm-ubuntu-scenario-driver.sh`; it was not
 changed, staged, or used as release evidence during this review.
 
@@ -22,8 +22,9 @@ free-running multiprocessor runtime.
 
 Release remains blocked by four boundaries:
 
-1. The PC scheduler is still slice/coordinator driven. It does not provide persistent, sustained,
-   shared-memory vCPU execution for a multiprocessor Linux guest.
+1. PC host threads are now persistent for the machine lifetime, but guest execution remains
+   slice/coordinator driven. It does not provide sustained, shared-memory execution in which every
+   vCPU stays in its own dispatch loop.
 2. Unaligned, split-cache-line, split-page, and interpreter 16-byte locked operations still need a
    machine-scoped exclusion/rendezvous mechanism that also excludes ordinary accesses. Remote TLB,
    code-retirement, DMA, and self-modifying-code protocols also need free-running SMP proof.
@@ -39,14 +40,14 @@ Release remains blocked by four boundaries:
 |---|---|---|
 | Public product admission | **Safe, closed** | `DoryReleaseSupportPolicy` keeps translated x86_64 Linux unavailable; daemon bootstrap requires explicit qualification authority. |
 | Focused debug atomic/interpreter validation | **Pass** | 106 tests in 3 suites passed: the complete interpreter suite, compare/exchange write/fault semantics, and mixed interpreter/native concurrency probes. |
-| Optimized x86 qualification graph | **Pass** | 2,035 tests passed across `DoryDBTX86Tests` (1,450), decode audit (135), PC (360), firmware (48), Linux boot runner (35), and PC qualification (7). The graph excludes unrelated `DorydKitTests` without exposing debug-only injection hooks in production. |
+| Optimized x86 qualification graph | **Pass** | 2,036 tests passed across `DoryDBTX86Tests` (1,450), decode audit (135), PC (361), firmware (48), Linux boot runner (35), and PC qualification (7). The graph excludes unrelated `DorydKitTests` without exposing debug-only injection hooks in production. |
 | Release Linux runner build | **Pass** | The release PVH runner and content-addressed fixture importer build in the optimized qualification graph. |
 | Release register-loop benchmark | **Provisional pass** | Current 5,000,000-instruction run: interpreter 1.13 MIPS, baseline JIT 746.17 MIPS, tier-one JIT 380.92 MIPS. This is a regression probe, not a ship gate. |
 | Reproducible PVH inputs | **Foundation pass** | A pinned manifest, toolchain identity, content-addressed importer, immutable cache layout, and durable import receipt exist. A clean exact-candidate campaign is still required. |
 | Recent PVH boot/userspace | **Internal pass only** | Two consecutive `rawTargetPrediction=none` runs at `5d888565b3` completed all seven userspace workloads and ACPI S5. Both receipts report `sourceTreeDirty=true`, one vCPU, and `releaseQualified=false`; the latest implementation commit has not been booted. |
 | UEFI install, reboot, cold boot, update | **Fail: no exact-candidate evidence** | No retained campaign covers the complete installer and installed-disk lifecycle for this candidate. |
 | Production predictor boundary | **Pass, conservative** | Production raw target prediction is disabled. Enabled `all` and `tier1-direct-chain` configurations reproduced a native slice that failed to return before the watchdog; neither is admitted. |
-| Real SMP | **Fail** | Workers are created per `run`; the coordinator schedules and awaits admitted slices. The narrow frozen register-only overlap probe is not a Linux SMP runtime. |
+| Real SMP | **Fail** | Machine-owned host workers persist across `run` calls, but the coordinator still submits and awaits bounded slices. The narrow frozen register-only overlap probe is not a Linux SMP runtime. |
 | x86-64-v2 guest ABI | **Fail** | Profile registry still exposes only `baselineV1` / `compatibleV1`. |
 | Aligned scalar atomic domain | **Pass at unit/integration scope** | Swift byte-array/mmap RAM, interpreter aligned scalar locked families, and native JIT helpers use the same lock-free sequentially consistent 1/2/4/8-byte host atomics. |
 | Complete SMP memory contract | **Fail** | Direct native loads/stores are conservatively ordered and aligned scalar atomics interoperate, but split/unaligned/16-byte exclusion, remote invalidation acknowledgement, and the full tier-pair litmus matrix remain open. |
@@ -57,7 +58,7 @@ Release remains blocked by four boundaries:
 ### Current microbenchmark
 
 `swift run -c release dory-x86-throughput-benchmark 5000000` on implementation commit
-`8ca198c212`:
+`8ca198c212` (the later persistent-worker refactor does not change this benchmark's engine path):
 
 | Tier | MIPS | Scope |
 |---|---:|---|
@@ -133,16 +134,21 @@ keeps all raw host-address prediction disabled.
 15. Interpreter aligned locked ALU, unary, XCHG, CMPXCHG, XADD, bit-test/update, and CMPXCHG8B
     forms execute through host compare/exchange transactions. Losing CAS attempts discard candidate
     architectural state, preserving precise flags and registers.
+16. `DoryPCVCPURuntime` now owns persistent host threads for the complete machine lifetime. A
+    public `run` borrows those workers without recreating them, consumes exact per-run CPU-time
+    deltas, and joins every parallel submission before propagating a failure or releasing the
+    execution gate.
 
 These fixes make the current single-vCPU and aligned-scalar signal substantially stronger. They do
 not substitute for the missing free-running SMP and exact-candidate lifecycle campaigns.
 
 ## Remaining engineering work
 
-### P0 — Build the persistent vCPU runtime
+### P0 — Extend persistent workers into free-running vCPU dispatch
 
-- Give each vCPU one persistent host worker that owns architectural state, JIT context, native TLB,
-  code-cache cursor, and a long-running dispatch loop.
+- Move bounded guest dispatch into one long-running loop per existing persistent host worker. Each
+  worker must own its architectural state, JIT context, native TLB, and code-cache cursor without
+  returning ownership to the coordinator after every slice.
 - Deliver interrupt, timer, cancellation, and tier-work requests through per-vCPU atomic pending
   work. Do not return to a central coordinator after every instruction budget.
 - Keep deterministic single-thread replay as a separate explicit implementation, not as the
@@ -230,8 +236,9 @@ Do not change public availability until all of these are true:
 The fixture and optimized-test foundations are now present. The next implementation slice should
 establish the execution and memory foundations together:
 
-1. Introduce `DoryPCVCPURuntime` with persistent workers, explicit deterministic mode, per-vCPU
-   pending-work state, and fully specified lifecycle/failure ownership.
+1. Extend `DoryPCVCPURuntime` from persistent mailbox workers to long-running guest dispatch, with
+   explicit deterministic mode, per-vCPU pending-work state, and fully specified
+   lifecycle/failure ownership.
 2. Introduce a machine-scoped memory-range rendezvous used by all ordinary and locked access paths
    for split/unaligned and non-lock-free 16-byte transactions.
 3. Add remote translation-generation publication/acknowledgement and native-code epoch retirement.

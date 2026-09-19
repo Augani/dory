@@ -127,7 +127,7 @@ As of 2026-09-19:
 | TLB invalidation | Address-space generations, page-write tracking, and per-executor invalidation exist. | Add remote-vCPU generation publication and acknowledgement that works while workers remain free-running. |
 | CPU SMC | Checked callbacks and protected host pages advance guest code generations; byte revalidation protects publication. | Add concurrent cross-vCPU mutation/fetch tests and code-storage epoch retirement. |
 | DMA SMC | Physical-memory DMA validation and checked translated-code lifetime invalidation exist. | Audit every DMA/shared-memory writer and add concurrent DMA/page-table/code mutation campaigns. |
-| Scheduling | Host workers exist and native blocks poll per-vCPU pending-work bytes. | Workers are currently created per `run` and rendezvous with the coordinator for each admitted slice; sustained shared-memory SMP is not yet admitted. |
+| Scheduling | `DoryPCVCPURuntime` owns one persistent host thread per vCPU for the machine lifetime; native blocks poll per-vCPU pending-work bytes, and all parallel error paths rendezvous every submitted worker before releasing machine ownership. | The coordinator still submits and awaits bounded slices. Move guest dispatch into long-running per-vCPU loops before sustained shared-memory SMP is admitted. |
 | Qualification | Instruction inspection covers the direct barriers; focused debug mixed-tier atomic tests pass; the optimized x86/PC/firmware/runner graph executes. | Run the complete tier-pair TSO/atomic/TLB/DMA/SMC matrix on persistent workers at 1, 2, and 4 vCPUs and retain exact-candidate receipts. |
 
 ## Mandatory qualification matrix
