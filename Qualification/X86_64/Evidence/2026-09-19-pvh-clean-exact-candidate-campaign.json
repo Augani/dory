@@ -1,0 +1,92 @@
+{
+  "schema": "dev.dory.x86-qualification-campaign-summary@1",
+  "campaign": "2026-09-19-pvh-clean-exact-candidate",
+  "purpose": "Retain repeated clean-checkout PVH userspace and ACPI poweroff evidence for the implementation candidate after the memory-ordering, scalar-atomic, interpreter-atomic, and persistent-worker changes.",
+  "qualificationScope": "Internal exact-candidate evidence for one host class, one vCPU, compat-v1, baseline JIT with tier one enabled, protected host pages, and raw target prediction disabled. The runner is linker-signed ad hoc, both diagnostic receipts declare releaseQualified=false, UEFI is not covered, and this campaign does not open the public release gate.",
+  "source": {
+    "commit": "121d86faa351e4e5479894b49771c38a26953461",
+    "tree": "clean"
+  },
+  "host": {
+    "class": "apple-m2-pro-macos-27.2-xcode-27.0",
+    "os": "macOS 27.2 (26B5086k)",
+    "xcode": "27.0 (27A266a)"
+  },
+  "fixture": {
+    "manifest": "Qualification/X86_64/Manifests/alpine-virt-3.24.1-pvh-smoke-v2.json",
+    "manifestSHA256": "9a11a01ad9feae91041ec8ce29bc8ed1c15a6d507f971ffdbef51e801dc62e6b",
+    "importReceipt": "Qualification/X86_64/Evidence/2026-09-19-pvh-clean-exact-candidate-fixture-import.json",
+    "importReceiptSHA256": "7adb915412f42a7e2e0478f8d42a73eeab9ac655ce60134eadbce4a8a7333e19",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "kernelBuildID": "6605cb9027e42995c51847655ec230aeb78559bd",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "symbolsSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a"
+  },
+  "runner": {
+    "sha256": "02ca94e747a5e04732f6a48e5726349307b1b0847b5aec53ca35a113c8bb7948",
+    "byteCount": 12235928,
+    "signature": "adhoc-linker-signed"
+  },
+  "configuration": {
+    "cpuProfile": "dory.x86_64.compat-v1",
+    "executionTier": "baselineJIT",
+    "tier1Enabled": true,
+    "jitWriteCoherencePolicy": "protected-host-pages",
+    "rawTargetPrediction": "none",
+    "processorCount": 1,
+    "memoryMiB": 512,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ]
+  },
+  "observations": [
+    {
+      "runID": "66b9e8bc-37cb-4871-bf96-ce2f218690c2",
+      "diagnosticReceipt": "Qualification/X86_64/Evidence/2026-09-19-pvh-clean-exact-candidate-run-1.json",
+      "diagnosticReceiptSHA256": "de16f0612ca7210b58f2c9a301adb39f83c8cf63dcaecceeacac156e51485604",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "guestReceiptSeen": true,
+      "elapsedNanoseconds": 259607776209,
+      "retiredInstructions": 733197676,
+      "directChainPatches": 0,
+      "indirectBranchTargetCacheHits": 0,
+      "shadowReturnStackHits": 0,
+      "pendingWorkMaximumRetiredInstructions": 0,
+      "consoleContainedNUL": false
+    },
+    {
+      "runID": "ebea26bd-60d8-4a20-b6e3-c4c59c2c9fe5",
+      "diagnosticReceipt": "Qualification/X86_64/Evidence/2026-09-19-pvh-clean-exact-candidate-run-2.json",
+      "diagnosticReceiptSHA256": "05e2ff64d50dba007ef432d793536b548b59c896942debb23fcc364e112f25c9",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "guestReceiptSeen": true,
+      "elapsedNanoseconds": 268338689458,
+      "retiredInstructions": 733659790,
+      "directChainPatches": 0,
+      "indirectBranchTargetCacheHits": 0,
+      "shadowReturnStackHits": 0,
+      "pendingWorkMaximumRetiredInstructions": 0,
+      "consoleContainedNUL": false
+    }
+  ],
+  "conclusion": {
+    "exactCandidatePVHRepeat": "passed",
+    "publicReleaseGate": "closed",
+    "remainingBoundaries": [
+      "free-running multiprocessor execution and the complete SMP memory/translation contract",
+      "registered and independently qualified x86-64-v2 guest ABI",
+      "clean UEFI install, reboot, cold-boot, update, shutdown, recovery, and fault campaigns",
+      "production signing and the complete supported-host/tier/configuration matrix"
+    ]
+  }
+}

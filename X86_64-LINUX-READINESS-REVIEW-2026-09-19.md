@@ -30,9 +30,9 @@ Release remains blocked by four boundaries:
    code-retirement, DMA, and self-modifying-code protocols also need free-running SMP proof.
 3. Only `compat-v1` is launchable. The selected x86-64-v2 feature set is not yet completely
    implemented, independently referenced, migration-stable, and registered as a guest ABI.
-4. The exact current candidate has not completed clean PVH and UEFI lifecycle campaigns. Recent PVH
-   evidence is useful internal evidence, but it is dirty-tree, single-vCPU, and predates the final
-   memory-ordering/atomic commits in this review.
+4. The exact implementation candidate now has two clean, repeated single-vCPU PVH userspace and
+   ACPI-poweroff passes on this host. It still lacks production signing, the supported-host/tier
+   matrix, and the complete UEFI install/reboot/cold-boot/update lifecycle campaign.
 
 ## Gate status
 
@@ -43,15 +43,15 @@ Release remains blocked by four boundaries:
 | Optimized x86 qualification graph | **Pass** | 2,036 tests passed across `DoryDBTX86Tests` (1,450), decode audit (135), PC (361), firmware (48), Linux boot runner (35), and PC qualification (7). The graph excludes unrelated `DorydKitTests` without exposing debug-only injection hooks in production. |
 | Release Linux runner build | **Pass** | The release PVH runner and content-addressed fixture importer build in the optimized qualification graph. |
 | Release register-loop benchmark | **Provisional pass** | Current 5,000,000-instruction run: interpreter 1.13 MIPS, baseline JIT 746.17 MIPS, tier-one JIT 380.92 MIPS. This is a regression probe, not a ship gate. |
-| Reproducible PVH inputs | **Foundation pass** | A pinned manifest, toolchain identity, content-addressed importer, immutable cache layout, and durable import receipt exist. A clean exact-candidate campaign is still required. |
-| Recent PVH boot/userspace | **Internal pass only** | Two consecutive `rawTargetPrediction=none` runs at `5d888565b3` completed all seven userspace workloads and ACPI S5. Both receipts report `sourceTreeDirty=true`, one vCPU, and `releaseQualified=false`; the latest implementation commit has not been booted. |
+| Reproducible PVH inputs | **Pass on reviewed host** | A clean checkout reproduced and re-verified the pinned ISO-derived kernel, initrd, and symbols, then published all three through the content-addressed importer with exact manifest hashes. |
+| Recent PVH boot/userspace | **Clean exact-candidate pass, bounded scope** | Two consecutive `rawTargetPrediction=none` runs at `121d86faa` completed all seven userspace workloads and ACPI S5 from a clean tree with the same release runner. Receipts remain internal (`releaseQualified=false`), ad-hoc signed, single-vCPU evidence for one host and one tier/configuration. |
 | UEFI install, reboot, cold boot, update | **Fail: no exact-candidate evidence** | No retained campaign covers the complete installer and installed-disk lifecycle for this candidate. |
 | Production predictor boundary | **Pass, conservative** | Production raw target prediction is disabled. Enabled `all` and `tier1-direct-chain` configurations reproduced a native slice that failed to return before the watchdog; neither is admitted. |
 | Real SMP | **Fail** | Machine-owned host workers persist across `run` calls, but the coordinator still submits and awaits bounded slices. The narrow frozen register-only overlap probe is not a Linux SMP runtime. |
 | x86-64-v2 guest ABI | **Fail** | Profile registry still exposes only `baselineV1` / `compatibleV1`. |
 | Aligned scalar atomic domain | **Pass at unit/integration scope** | Swift byte-array/mmap RAM, interpreter aligned scalar locked families, and native JIT helpers use the same lock-free sequentially consistent 1/2/4/8-byte host atomics. |
 | Complete SMP memory contract | **Fail** | Direct native loads/stores are conservatively ordered and aligned scalar atomics interoperate, but split/unaligned/16-byte exclusion, remote invalidation acknowledgement, and the full tier-pair litmus matrix remain open. |
-| Release reproducibility | **Partial** | Fixture and candidate identities are content-addressed and receipts bind exact inputs. Twenty clean exact-candidate runs and signed PVH/UEFI lifecycle receipts do not yet exist. |
+| Release reproducibility | **Partial** | Fixture and candidate identities are content-addressed, and two clean exact-candidate PVH receipts are retained. Twenty-run stability, production signing, the supported-host/tier matrix, and UEFI lifecycle receipts do not yet exist. |
 
 ## Measurements that must not be conflated
 
@@ -71,7 +71,27 @@ loads/stores, locked operations, interrupts, devices, firmware, or Linux. Tier o
 51% of baseline on this workload; qualification must explain or remove that inversion instead of
 selecting the better result after the fact.
 
-### Recent source-bound PVH evidence
+### Clean exact-candidate PVH evidence
+
+`Qualification/X86_64/Evidence/2026-09-19-pvh-clean-exact-candidate-campaign.json` binds the
+clean implementation candidate, fixture-import receipt, release runner, complete diagnostic
+receipts, and reviewed configuration:
+
+| Run | Source | Result | Elapsed | Retired instructions |
+|---|---|---|---:|---:|
+| `66b9e8bc-37cb-4871-bf96-ce2f218690c2` | clean `121d86faa` | seven workloads + ACPI S5 | 259.61 s | 733,197,676 |
+| `ebea26bd-60d8-4a20-b6e3-c4c59c2c9fe5` | clean `121d86faa` | seven workloads + ACPI S5 | 268.34 s | 733,659,790 |
+
+Both used runner SHA-256
+`02ca94e747a5e04732f6a48e5726349307b1b0847b5aec53ca35a113c8bb7948`, protected host pages,
+`compat-v1`, baseline JIT with tier one enabled, one vCPU, no raw target prediction, and the exact
+content-addressed Alpine fixture. Both full receipts report a clean source tree, a matching guest
+receipt, all requested workloads passed, and terminal `powered-off`; raw prediction counters and
+pending work's maximum retired-instruction delay remained zero. The runner is linker-signed ad hoc,
+and the diagnostic schema correctly reports `releaseQualified=false`, so this closes the clean PVH
+evidence gap for the reviewed tuple without claiming product release qualification.
+
+### Raw-predictor boundary evidence
 
 `Qualification/X86_64/Evidence/2026-09-19-pvh-raw-predictor-campaign.json` records the accepted
 correctness boundary:
@@ -138,9 +158,13 @@ keeps all raw host-address prediction disabled.
     public `run` borrows those workers without recreating them, consumes exact per-run CPU-time
     deltas, and joins every parallel submission before propagating a failure or releasing the
     execution gate.
+17. A clean isolated checkout of `121d86faa` reproduced the pinned PVH artifacts, imported them
+    through the immutable store, built one release runner, and completed two consecutive seven-
+    workload plus ACPI-poweroff runs. The full diagnostic receipts and their campaign binding are
+    retained under `Qualification/X86_64/Evidence`.
 
 These fixes make the current single-vCPU and aligned-scalar signal substantially stronger. They do
-not substitute for the missing free-running SMP and exact-candidate lifecycle campaigns.
+not substitute for the missing free-running SMP, UEFI lifecycle, or supported-matrix campaigns.
 
 ## Remaining engineering work
 
@@ -187,10 +211,11 @@ policy.
 Do not advertise AVX/AVX2 to satisfy probes. They require complete YMM state, VEX upper-lane rules,
 XSAVE images, exception behavior, and two-half NEON lowering in a later profile.
 
-### P0 — Run clean exact-candidate PVH and UEFI campaigns
+### P0 — Complete the exact-candidate PVH matrix and UEFI campaigns
 
-- Build the signed runner and fixtures from a clean checkout and retain their hashes and receipts.
-- Repeat PVH correctness on every supported host class and every admitted production tier/config.
+- Replace the reviewed ad-hoc runner with the production-signed candidate and retain its identity.
+- Repeat PVH correctness on every supported host class and every admitted production tier/config;
+  the reviewed host's single-vCPU baseline-JIT/no-predictor tuple now has two clean passes.
 - For UEFI, retain installer boot, install, installer reboot, cold boot from disk, package update,
   shutdown, recovery, and negative/fault injection evidence.
 - Exercise storage, network, entropy, clock, console/input, and graphics where applicable.
@@ -244,7 +269,7 @@ establish the execution and memory foundations together:
 3. Add remote translation-generation publication/acknowledgement and native-code epoch retirement.
 4. Add two-vCPU shared-memory litmus and throughput campaigns that fail against the current
    coordinator path and pass only with genuine overlap and architectural ordering.
-5. Re-run the content-addressed PVH fixture after each slice, then execute a clean signed PVH/UEFI
-   campaign once the production tuple is frozen.
+5. Re-run the content-addressed PVH fixture after each slice, preserve exact receipts, and execute
+   the clean production-signed PVH/UEFI matrix once the production tuple is frozen.
 
 Until those gates pass, x86_64 Linux should remain visible only to internal qualification tooling.
