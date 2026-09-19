@@ -206,6 +206,40 @@ public struct DoryX86Interpreter: Sendable {
       return fault
     }
 
+    return executeDecodedStep(
+      state: &state,
+      memory: memory,
+      mode: mode,
+      pagingUnit: pagingUnit,
+      translatedMemory: translatedMemory,
+      ioBus: ioBus,
+      singleStepSuppressed: &singleStepSuppressed,
+      executionMemory: executionMemory,
+      originalRIP: originalRIP,
+      instruction: instruction,
+      originalCodeSegment: originalCodeSegment,
+      originalX87StatusWord: originalX87StatusWord
+    )
+  }
+
+  /// Execute an instruction that has already passed fetch, decode, and feature
+  /// validation. Keeping decode out of this deliberately broad dispatcher
+  /// prevents its debug-build frame from consuming the decoder's stack budget.
+  @inline(never)
+  private func executeDecodedStep(
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory,
+    mode: DoryX86ExecutionMode,
+    pagingUnit: DoryX86PagingUnit?,
+    translatedMemory: DoryX86TranslatedMemory?,
+    ioBus: (any DoryX86IOBus)?,
+    singleStepSuppressed: inout Bool,
+    executionMemory: any DoryX86Memory,
+    originalRIP: UInt64,
+    instruction: DoryX86DecodedInstruction,
+    originalCodeSegment: DoryX86SegmentState,
+    originalX87StatusWord: UInt16
+  ) -> DoryX86InterpreterResult {
     do {
       var nextRIP = instruction.nextInstructionAddress & instructionPointerMask(mode)
       switch instruction.operation {
@@ -7389,95 +7423,20 @@ public struct DoryX86Interpreter: Sendable {
       width == .byte,
       addressWidth == .quadword,
       !state.rflags.contains(.direction),
-      let bulkMemory = memory as? any DoryX86BulkMemory
-    {
-      let source = stringSourceAddress(
-        addressWidth: addressWidth,
+      let bulkMemory = memory as? any DoryX86BulkMemory,
+      let result = try executeBulkMoveByteString(
+        width: width,
         instruction: instruction,
         mode: mode,
-        state: state
-      )
-      let destination = stringDestinationAddress(
         addressWidth: addressWidth,
-        mode: mode,
-        state: state
+        iterationBudget: iterationBudget,
+        remaining: &remaining,
+        completed: &completed,
+        state: &state,
+        memory: bulkMemory
       )
-      if forwardRangesDoNotOverlap(source: source, destination: destination, byteCount: remaining) {
-        while remaining != 0, completed < iterationBudget {
-          let sourceAddress = stringSourceAddress(
-            addressWidth: addressWidth,
-            instruction: instruction,
-            mode: mode,
-            state: state
-          )
-          let destinationAddress = stringDestinationAddress(
-            addressWidth: addressWidth,
-            mode: mode,
-            state: state
-          )
-          let maximumCount = Int(min(remaining, iterationBudget - completed))
-          let sourceOperand = stringMemoryOperand(
-            source: true,
-            width: width,
-            addressWidth: addressWidth,
-            instruction: instruction,
-            mode: mode
-          )
-          let destinationOperand = stringMemoryOperand(
-            source: false,
-            width: width,
-            addressWidth: addressWidth,
-            instruction: instruction,
-            mode: mode
-          )
-          // A bulk backend only proves its own mapping. Decline it when the
-          // architectural linear span crosses a segment or canonical boundary
-          // so the scalar loop can commit the valid REP prefix and fault on the
-          // first invalid element.
-          guard
-            bulkStringSpanIsArchitecturallyValid(
-              sourceOperand,
-              effectiveOffset: stringRegister(.rsi, width: addressWidth, state: state),
-              byteCount: maximumCount,
-              write: false,
-              instruction: instruction,
-              state: state
-            ),
-            bulkStringSpanIsArchitecturallyValid(
-              destinationOperand,
-              effectiveOffset: stringRegister(.rdi, width: addressWidth, state: state),
-              byteCount: maximumCount,
-              write: true,
-              instruction: instruction,
-              state: state
-            )
-          else { break }
-          do {
-            guard
-              let copied = try bulkMemory.copyForwardNonoverlapping(
-                from: sourceAddress,
-                to: destinationAddress,
-                maximumByteCount: maximumCount
-              ),
-              copied > 0
-            else { break }
-            precondition(copied <= maximumCount)
-            let delta = UInt64(copied)
-            advanceStringRegister(
-              .rsi, by: delta, decrement: false, width: addressWidth, state: &state)
-            advanceStringRegister(
-              .rdi, by: delta, decrement: false, width: addressWidth, state: &state)
-            completed &+= delta
-            remaining &-= delta
-            writeStringRegister(.rcx, value: remaining, width: addressWidth, state: &state)
-          } catch let error as DoryX86MemoryError {
-            if completed != 0 { throw DoryX86PartialMemoryFault(error: error) }
-            throw error
-          }
-        }
-        if remaining == 0 { return true }
-        if completed == iterationBudget { return false }
-      }
+    {
+      return result
     }
 
     if operation == .move,
@@ -7486,83 +7445,20 @@ public struct DoryX86Interpreter: Sendable {
       addressWidth == .quadword,
       !state.rflags.contains(.direction),
       !DoryX86AlignmentPolicy.isEnabled(state: state),
-      let bulkMemory = memory as? any DoryX86BulkMemory
+      let bulkMemory = memory as? any DoryX86BulkMemory,
+      let result = try executeBulkMoveElementString(
+        width: width,
+        instruction: instruction,
+        mode: mode,
+        addressWidth: addressWidth,
+        iterationBudget: iterationBudget,
+        remaining: &remaining,
+        completed: &completed,
+        state: &state,
+        memory: bulkMemory
+      )
     {
-      while remaining != 0, completed < iterationBudget {
-        let sourceAddress = stringSourceAddress(
-          addressWidth: addressWidth,
-          instruction: instruction,
-          mode: mode,
-          state: state
-        )
-        let destinationAddress = stringDestinationAddress(
-          addressWidth: addressWidth,
-          mode: mode,
-          state: state
-        )
-        let maximumElementCount = Int(min(remaining, iterationBudget - completed))
-        let requestedByteCount = maximumElementCount * width.byteCount
-        let sourceOperand = stringMemoryOperand(
-          source: true,
-          width: width,
-          addressWidth: addressWidth,
-          instruction: instruction,
-          mode: mode
-        )
-        let destinationOperand = stringMemoryOperand(
-          source: false,
-          width: width,
-          addressWidth: addressWidth,
-          instruction: instruction,
-          mode: mode
-        )
-        guard
-          bulkStringSpanIsArchitecturallyValid(
-            sourceOperand,
-            effectiveOffset: stringRegister(.rsi, width: addressWidth, state: state),
-            byteCount: requestedByteCount,
-            write: false,
-            instruction: instruction,
-            state: state
-          ),
-          bulkStringSpanIsArchitecturallyValid(
-            destinationOperand,
-            effectiveOffset: stringRegister(.rdi, width: addressWidth, state: state),
-            byteCount: requestedByteCount,
-            write: true,
-            instruction: instruction,
-            state: state
-          ),
-          instruction.nextInstructionAddress >= instruction.address
-        else { break }
-        do {
-          guard
-            let copied = try bulkMemory.copyForwardNonoverlappingElements(
-              from: sourceAddress,
-              to: destinationAddress,
-              elementByteCount: width.byteCount,
-              maximumElementCount: maximumElementCount,
-              excludingDestinationRanges: [instruction.address..<instruction.nextInstructionAddress]
-            ),
-            copied > 0
-          else { break }
-          precondition(copied <= maximumElementCount)
-          let elementCount = UInt64(copied)
-          let byteCount = elementCount &* UInt64(width.byteCount)
-          advanceStringRegister(
-            .rsi, by: byteCount, decrement: false, width: addressWidth, state: &state)
-          advanceStringRegister(
-            .rdi, by: byteCount, decrement: false, width: addressWidth, state: &state)
-          completed &+= elementCount
-          remaining &-= elementCount
-          writeStringRegister(.rcx, value: remaining, width: addressWidth, state: &state)
-        } catch let error as DoryX86MemoryError {
-          if completed != 0 { throw DoryX86PartialMemoryFault(error: error) }
-          throw error
-        }
-      }
-      if remaining == 0 { return true }
-      if completed == iterationBudget { return false }
+      return result
     }
 
     if operation == .store,
@@ -7571,291 +7467,35 @@ public struct DoryX86Interpreter: Sendable {
       mode == .long64,
       width == .byte || !DoryX86AlignmentPolicy.isEnabled(state: state),
       !state.rflags.contains(.direction),
-      let bulkMemory = memory as? any DoryX86BulkMemory
+      let bulkMemory = memory as? any DoryX86BulkMemory,
+      let result = try executeBulkStoreString(
+        width: width,
+        instruction: instruction,
+        mode: mode,
+        addressWidth: addressWidth,
+        iterationBudget: iterationBudget,
+        remaining: &remaining,
+        completed: &completed,
+        state: &state,
+        memory: bulkMemory
+      )
     {
-      let pattern = littleEndian(state.registers.rax, width: width)
-      while remaining != 0, completed < iterationBudget {
-        let destinationAddress = stringDestinationAddress(
-          addressWidth: addressWidth,
-          mode: mode,
-          state: state
-        )
-        let maximumElementCount = Int(
-          min(remaining, iterationBudget - completed, UInt64(Int.max))
-        )
-        let destinationOperand = stringMemoryOperand(
-          source: false,
-          width: width,
-          addressWidth: addressWidth,
-          instruction: instruction,
-          mode: mode
-        )
-        guard
-          bulkStringSpanIsArchitecturallyValid(
-            destinationOperand,
-            effectiveOffset: stringRegister(.rdi, width: addressWidth, state: state),
-            byteCount: maximumElementCount * width.byteCount,
-            write: true,
-            instruction: instruction,
-            state: state
-          )
-        else { break }
-        do {
-          guard
-            let filled = try bulkMemory.fillRepeating(
-              at: destinationAddress,
-              pattern: pattern,
-              maximumElementCount: maximumElementCount
-            ),
-            filled > 0
-          else { break }
-          precondition(filled <= maximumElementCount)
-          let elementCount = UInt64(filled)
-          let byteCount = elementCount &* UInt64(width.byteCount)
-          advanceStringRegister(
-            .rdi,
-            by: byteCount,
-            decrement: false,
-            width: addressWidth,
-            state: &state
-          )
-          completed &+= elementCount
-          remaining &-= elementCount
-          writeStringRegister(.rcx, value: remaining, width: addressWidth, state: &state)
-        } catch let error as DoryX86MemoryError {
-          if completed != 0 { throw DoryX86PartialMemoryFault(error: error) }
-          throw error
-        }
-      }
-      if remaining == 0 { return true }
-      if completed == iterationBudget { return false }
+      return result
     }
 
     while remaining != 0 {
       do {
-        let sourceAddress = stringSourceAddress(
-          addressWidth: addressWidth,
+        try executeStringIteration(
+          operation,
+          width: width,
           instruction: instruction,
           mode: mode,
-          state: state
-        )
-        let destinationAddress = stringDestinationAddress(
           addressWidth: addressWidth,
-          mode: mode,
-          state: state
+          port: port,
+          state: &state,
+          memory: memory,
+          ioBus: ioBus
         )
-        let sourceOperand = stringMemoryOperand(
-          source: true,
-          width: width,
-          addressWidth: addressWidth,
-          instruction: instruction,
-          mode: mode
-        )
-        let destinationOperand = stringMemoryOperand(
-          source: false,
-          width: width,
-          addressWidth: addressWidth,
-          instruction: instruction,
-          mode: mode
-        )
-        switch operation {
-        case .move:
-          try validateSegmentAccess(
-            sourceOperand,
-            byteCount: width.byteCount,
-            write: false,
-            instruction: instruction,
-            state: state
-          )
-          try validateSegmentAccess(
-            destinationOperand,
-            byteCount: width.byteCount,
-            write: true,
-            instruction: instruction,
-            state: state
-          )
-          try validateAlignmentCheck(
-            address: sourceAddress,
-            byteCount: width.byteCount,
-            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
-            write: false,
-            instruction: instruction,
-            state: state,
-            memory: memory
-          )
-          let bytes = try memory.read(at: sourceAddress, byteCount: width.byteCount)
-          try validateAlignmentCheck(
-            address: destinationAddress,
-            byteCount: width.byteCount,
-            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
-            write: true,
-            instruction: instruction,
-            state: state,
-            memory: memory
-          )
-          try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
-          try memory.write(at: destinationAddress, bytes: bytes)
-        case .compare:
-          try validateSegmentAccess(
-            sourceOperand,
-            byteCount: width.byteCount,
-            write: false,
-            instruction: instruction,
-            state: state
-          )
-          try validateSegmentAccess(
-            destinationOperand,
-            byteCount: width.byteCount,
-            write: false,
-            instruction: instruction,
-            state: state
-          )
-          try validateAlignmentCheck(
-            address: sourceAddress,
-            byteCount: width.byteCount,
-            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
-            write: false,
-            instruction: instruction,
-            state: state,
-            memory: memory
-          )
-          let source = fromLittleEndian(
-            try memory.read(at: sourceAddress, byteCount: width.byteCount))
-          try validateAlignmentCheck(
-            address: destinationAddress,
-            byteCount: width.byteCount,
-            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
-            write: false,
-            instruction: instruction,
-            state: state,
-            memory: memory
-          )
-          let destination = fromLittleEndian(
-            try memory.read(at: destinationAddress, byteCount: width.byteCount))
-          _ = executeALU(
-            .compare,
-            lhs: source,
-            rhs: destination,
-            width: width,
-            flags: &state.rflags
-          )
-        case .store:
-          try validateSegmentAccess(
-            destinationOperand,
-            byteCount: width.byteCount,
-            write: true,
-            instruction: instruction,
-            state: state
-          )
-          try validateAlignmentCheck(
-            address: destinationAddress,
-            byteCount: width.byteCount,
-            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
-            write: true,
-            instruction: instruction,
-            state: state,
-            memory: memory
-          )
-          try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
-          try memory.write(
-            at: destinationAddress,
-            bytes: littleEndian(state.registers.rax, width: width)
-          )
-        case .load:
-          try validateSegmentAccess(
-            sourceOperand,
-            byteCount: width.byteCount,
-            write: false,
-            instruction: instruction,
-            state: state
-          )
-          try validateAlignmentCheck(
-            address: sourceAddress,
-            byteCount: width.byteCount,
-            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
-            write: false,
-            instruction: instruction,
-            state: state,
-            memory: memory
-          )
-          let value = fromLittleEndian(
-            try memory.read(at: sourceAddress, byteCount: width.byteCount))
-          writeStringRegister(.rax, value: value, width: width, state: &state)
-        case .scan:
-          try validateSegmentAccess(
-            destinationOperand,
-            byteCount: width.byteCount,
-            write: false,
-            instruction: instruction,
-            state: state
-          )
-          try validateAlignmentCheck(
-            address: destinationAddress,
-            byteCount: width.byteCount,
-            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
-            write: false,
-            instruction: instruction,
-            state: state,
-            memory: memory
-          )
-          let destination = fromLittleEndian(
-            try memory.read(at: destinationAddress, byteCount: width.byteCount))
-          _ = executeALU(
-            .compare,
-            lhs: state.registers.rax,
-            rhs: destination,
-            width: width,
-            flags: &state.rflags
-          )
-        case .input:
-          try validateSegmentAccess(
-            destinationOperand,
-            byteCount: width.byteCount,
-            write: true,
-            instruction: instruction,
-            state: state
-          )
-          try validateAlignmentCheck(
-            address: destinationAddress,
-            byteCount: width.byteCount,
-            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
-            write: true,
-            instruction: instruction,
-            state: state,
-            memory: memory
-          )
-          try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
-          guard let ioBus else {
-            throw DoryX86IOBusError.unmappedPort(port, width: width)
-          }
-          let value = UInt64(try ioBus.read(port: port, width: width))
-          try memory.write(at: destinationAddress, bytes: littleEndian(value, width: width))
-        case .output:
-          try validateSegmentAccess(
-            sourceOperand,
-            byteCount: width.byteCount,
-            write: false,
-            instruction: instruction,
-            state: state
-          )
-          try validateAlignmentCheck(
-            address: sourceAddress,
-            byteCount: width.byteCount,
-            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
-            write: false,
-            instruction: instruction,
-            state: state,
-            memory: memory
-          )
-          let value = UInt32(
-            truncatingIfNeeded: fromLittleEndian(
-              try memory.read(at: sourceAddress, byteCount: width.byteCount)
-            ))
-          guard let ioBus else {
-            throw DoryX86IOBusError.unmappedPort(port, width: width)
-          }
-          try ioBus.write(port: port, value: value, width: width)
-        }
       } catch let error as DoryX86MemoryError {
         if repeated, operation == .compare || operation == .scan {
           state.rflags = initialFlags
@@ -7905,6 +7545,614 @@ public struct DoryX86Interpreter: Sendable {
       if repeated, remaining != 0, completed == iterationBudget { return false }
     }
     return true
+  }
+
+  @inline(never)
+  private func executeBulkMoveByteString(
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    addressWidth: DoryX86OperandWidth,
+    iterationBudget: UInt64,
+    remaining: inout UInt64,
+    completed: inout UInt64,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86BulkMemory
+  ) throws -> Bool? {
+    let source = stringSourceAddress(
+      addressWidth: addressWidth,
+      instruction: instruction,
+      mode: mode,
+      state: state
+    )
+    let destination = stringDestinationAddress(
+      addressWidth: addressWidth,
+      mode: mode,
+      state: state
+    )
+    guard
+      forwardRangesDoNotOverlap(source: source, destination: destination, byteCount: remaining)
+    else { return nil }
+
+    while remaining != 0, completed < iterationBudget {
+      let sourceAddress = stringSourceAddress(
+        addressWidth: addressWidth,
+        instruction: instruction,
+        mode: mode,
+        state: state
+      )
+      let destinationAddress = stringDestinationAddress(
+        addressWidth: addressWidth,
+        mode: mode,
+        state: state
+      )
+      let maximumCount = Int(min(remaining, iterationBudget - completed))
+      let sourceOperand = stringMemoryOperand(
+        source: true,
+        width: width,
+        addressWidth: addressWidth,
+        instruction: instruction,
+        mode: mode
+      )
+      let destinationOperand = stringMemoryOperand(
+        source: false,
+        width: width,
+        addressWidth: addressWidth,
+        instruction: instruction,
+        mode: mode
+      )
+      // A bulk backend only proves its own mapping. Decline it when the
+      // architectural linear span crosses a segment or canonical boundary
+      // so the scalar loop can commit the valid REP prefix and fault on the
+      // first invalid element.
+      guard
+        bulkStringSpanIsArchitecturallyValid(
+          sourceOperand,
+          effectiveOffset: stringRegister(.rsi, width: addressWidth, state: state),
+          byteCount: maximumCount,
+          write: false,
+          instruction: instruction,
+          state: state
+        ),
+        bulkStringSpanIsArchitecturallyValid(
+          destinationOperand,
+          effectiveOffset: stringRegister(.rdi, width: addressWidth, state: state),
+          byteCount: maximumCount,
+          write: true,
+          instruction: instruction,
+          state: state
+        )
+      else { break }
+      do {
+        guard
+          let copied = try memory.copyForwardNonoverlapping(
+            from: sourceAddress,
+            to: destinationAddress,
+            maximumByteCount: maximumCount
+          ),
+          copied > 0
+        else { break }
+        precondition(copied <= maximumCount)
+        let delta = UInt64(copied)
+        advanceStringRegister(
+          .rsi, by: delta, decrement: false, width: addressWidth, state: &state)
+        advanceStringRegister(
+          .rdi, by: delta, decrement: false, width: addressWidth, state: &state)
+        completed &+= delta
+        remaining &-= delta
+        writeStringRegister(.rcx, value: remaining, width: addressWidth, state: &state)
+      } catch let error as DoryX86MemoryError {
+        if completed != 0 { throw DoryX86PartialMemoryFault(error: error) }
+        throw error
+      }
+    }
+    if remaining == 0 { return true }
+    if completed == iterationBudget { return false }
+    return nil
+  }
+
+  @inline(never)
+  private func executeBulkMoveElementString(
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    addressWidth: DoryX86OperandWidth,
+    iterationBudget: UInt64,
+    remaining: inout UInt64,
+    completed: inout UInt64,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86BulkMemory
+  ) throws -> Bool? {
+    while remaining != 0, completed < iterationBudget {
+      let sourceAddress = stringSourceAddress(
+        addressWidth: addressWidth,
+        instruction: instruction,
+        mode: mode,
+        state: state
+      )
+      let destinationAddress = stringDestinationAddress(
+        addressWidth: addressWidth,
+        mode: mode,
+        state: state
+      )
+      let maximumElementCount = Int(min(remaining, iterationBudget - completed))
+      let requestedByteCount = maximumElementCount * width.byteCount
+      let sourceOperand = stringMemoryOperand(
+        source: true,
+        width: width,
+        addressWidth: addressWidth,
+        instruction: instruction,
+        mode: mode
+      )
+      let destinationOperand = stringMemoryOperand(
+        source: false,
+        width: width,
+        addressWidth: addressWidth,
+        instruction: instruction,
+        mode: mode
+      )
+      guard
+        bulkStringSpanIsArchitecturallyValid(
+          sourceOperand,
+          effectiveOffset: stringRegister(.rsi, width: addressWidth, state: state),
+          byteCount: requestedByteCount,
+          write: false,
+          instruction: instruction,
+          state: state
+        ),
+        bulkStringSpanIsArchitecturallyValid(
+          destinationOperand,
+          effectiveOffset: stringRegister(.rdi, width: addressWidth, state: state),
+          byteCount: requestedByteCount,
+          write: true,
+          instruction: instruction,
+          state: state
+        ),
+        instruction.nextInstructionAddress >= instruction.address
+      else { break }
+      do {
+        guard
+          let copied = try memory.copyForwardNonoverlappingElements(
+            from: sourceAddress,
+            to: destinationAddress,
+            elementByteCount: width.byteCount,
+            maximumElementCount: maximumElementCount,
+            excludingDestinationRanges: [instruction.address..<instruction.nextInstructionAddress]
+          ),
+          copied > 0
+        else { break }
+        precondition(copied <= maximumElementCount)
+        let elementCount = UInt64(copied)
+        let byteCount = elementCount &* UInt64(width.byteCount)
+        advanceStringRegister(
+          .rsi, by: byteCount, decrement: false, width: addressWidth, state: &state)
+        advanceStringRegister(
+          .rdi, by: byteCount, decrement: false, width: addressWidth, state: &state)
+        completed &+= elementCount
+        remaining &-= elementCount
+        writeStringRegister(.rcx, value: remaining, width: addressWidth, state: &state)
+      } catch let error as DoryX86MemoryError {
+        if completed != 0 { throw DoryX86PartialMemoryFault(error: error) }
+        throw error
+      }
+    }
+    if remaining == 0 { return true }
+    if completed == iterationBudget { return false }
+    return nil
+  }
+
+  @inline(never)
+  private func executeBulkStoreString(
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    addressWidth: DoryX86OperandWidth,
+    iterationBudget: UInt64,
+    remaining: inout UInt64,
+    completed: inout UInt64,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86BulkMemory
+  ) throws -> Bool? {
+    let pattern = littleEndian(state.registers.rax, width: width)
+    while remaining != 0, completed < iterationBudget {
+      let destinationAddress = stringDestinationAddress(
+        addressWidth: addressWidth,
+        mode: mode,
+        state: state
+      )
+      let maximumElementCount = Int(
+        min(remaining, iterationBudget - completed, UInt64(Int.max))
+      )
+      let destinationOperand = stringMemoryOperand(
+        source: false,
+        width: width,
+        addressWidth: addressWidth,
+        instruction: instruction,
+        mode: mode
+      )
+      guard
+        bulkStringSpanIsArchitecturallyValid(
+          destinationOperand,
+          effectiveOffset: stringRegister(.rdi, width: addressWidth, state: state),
+          byteCount: maximumElementCount * width.byteCount,
+          write: true,
+          instruction: instruction,
+          state: state
+        )
+      else { break }
+      do {
+        guard
+          let filled = try memory.fillRepeating(
+            at: destinationAddress,
+            pattern: pattern,
+            maximumElementCount: maximumElementCount
+          ),
+          filled > 0
+        else { break }
+        precondition(filled <= maximumElementCount)
+        let elementCount = UInt64(filled)
+        let byteCount = elementCount &* UInt64(width.byteCount)
+        advanceStringRegister(
+          .rdi,
+          by: byteCount,
+          decrement: false,
+          width: addressWidth,
+          state: &state
+        )
+        completed &+= elementCount
+        remaining &-= elementCount
+        writeStringRegister(.rcx, value: remaining, width: addressWidth, state: &state)
+      } catch let error as DoryX86MemoryError {
+        if completed != 0 { throw DoryX86PartialMemoryFault(error: error) }
+        throw error
+      }
+    }
+    if remaining == 0 { return true }
+    if completed == iterationBudget { return false }
+    return nil
+  }
+
+
+  // Keep each operation body out of executeString's frame. Combining bulk,
+  // scalar, and restart bookkeeping produced a debug-build stack frame large
+  // enough to overflow Swift Testing's worker stack before a
+  // canonical-boundary test could execute.
+  @inline(never)
+  private func executeStringIteration(
+    _ operation: DoryX86StringOperation,
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    addressWidth: DoryX86OperandWidth,
+    port: UInt16,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory,
+    ioBus: (any DoryX86IOBus)?
+  ) throws {
+    switch operation {
+    case .move:
+      try executeMoveStringIteration(
+        width: width,
+        instruction: instruction,
+        mode: mode,
+        addressWidth: addressWidth,
+        state: &state,
+        memory: memory
+      )
+    case .compare:
+      try executeCompareStringIteration(
+        width: width,
+        instruction: instruction,
+        mode: mode,
+        addressWidth: addressWidth,
+        state: &state,
+        memory: memory
+      )
+    case .store:
+      try executeStoreStringIteration(
+        width: width,
+        instruction: instruction,
+        mode: mode,
+        addressWidth: addressWidth,
+        state: &state,
+        memory: memory
+      )
+    case .load:
+      try executeLoadStringIteration(
+        width: width,
+        instruction: instruction,
+        mode: mode,
+        addressWidth: addressWidth,
+        state: &state,
+        memory: memory
+      )
+    case .scan:
+      try executeScanStringIteration(
+        width: width,
+        instruction: instruction,
+        mode: mode,
+        addressWidth: addressWidth,
+        state: &state,
+        memory: memory
+      )
+    case .input:
+      try executeInputStringIteration(
+        width: width,
+        instruction: instruction,
+        mode: mode,
+        addressWidth: addressWidth,
+        port: port,
+        state: &state,
+        memory: memory,
+        ioBus: ioBus
+      )
+    case .output:
+      try executeOutputStringIteration(
+        width: width,
+        instruction: instruction,
+        mode: mode,
+        addressWidth: addressWidth,
+        port: port,
+        state: state,
+        memory: memory,
+        ioBus: ioBus
+      )
+    }
+  }
+
+  @inline(never)
+  private func executeMoveStringIteration(
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    addressWidth: DoryX86OperandWidth,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let sourceAddress = stringSourceAddress(
+      addressWidth: addressWidth, instruction: instruction, mode: mode, state: state)
+    let destinationAddress = stringDestinationAddress(
+      addressWidth: addressWidth, mode: mode, state: state)
+    let sourceOperand = stringMemoryOperand(
+      source: true, width: width, addressWidth: addressWidth, instruction: instruction, mode: mode)
+    let destinationOperand = stringMemoryOperand(
+      source: false, width: width, addressWidth: addressWidth, instruction: instruction, mode: mode)
+    try validateSegmentAccess(
+      sourceOperand, byteCount: width.byteCount, write: false, instruction: instruction,
+      state: state)
+    try validateSegmentAccess(
+      destinationOperand, byteCount: width.byteCount, write: true, instruction: instruction,
+      state: state)
+    try validateAlignmentCheck(
+      address: sourceAddress,
+      byteCount: width.byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+      write: false,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    let bytes = try memory.read(at: sourceAddress, byteCount: width.byteCount)
+    try validateAlignmentCheck(
+      address: destinationAddress,
+      byteCount: width.byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+      write: true,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
+    try memory.write(at: destinationAddress, bytes: bytes)
+  }
+
+  @inline(never)
+  private func executeCompareStringIteration(
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    addressWidth: DoryX86OperandWidth,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let sourceAddress = stringSourceAddress(
+      addressWidth: addressWidth, instruction: instruction, mode: mode, state: state)
+    let destinationAddress = stringDestinationAddress(
+      addressWidth: addressWidth, mode: mode, state: state)
+    let sourceOperand = stringMemoryOperand(
+      source: true, width: width, addressWidth: addressWidth, instruction: instruction, mode: mode)
+    let destinationOperand = stringMemoryOperand(
+      source: false, width: width, addressWidth: addressWidth, instruction: instruction, mode: mode)
+    try validateSegmentAccess(
+      sourceOperand, byteCount: width.byteCount, write: false, instruction: instruction,
+      state: state)
+    try validateSegmentAccess(
+      destinationOperand, byteCount: width.byteCount, write: false, instruction: instruction,
+      state: state)
+    try validateAlignmentCheck(
+      address: sourceAddress,
+      byteCount: width.byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+      write: false,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    let source = fromLittleEndian(try memory.read(at: sourceAddress, byteCount: width.byteCount))
+    try validateAlignmentCheck(
+      address: destinationAddress,
+      byteCount: width.byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+      write: false,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    let destination = fromLittleEndian(
+      try memory.read(at: destinationAddress, byteCount: width.byteCount))
+    _ = executeALU(
+      .compare, lhs: source, rhs: destination, width: width, flags: &state.rflags)
+  }
+
+  @inline(never)
+  private func executeStoreStringIteration(
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    addressWidth: DoryX86OperandWidth,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let destinationAddress = stringDestinationAddress(
+      addressWidth: addressWidth, mode: mode, state: state)
+    let destinationOperand = stringMemoryOperand(
+      source: false, width: width, addressWidth: addressWidth, instruction: instruction, mode: mode)
+    try validateSegmentAccess(
+      destinationOperand, byteCount: width.byteCount, write: true, instruction: instruction,
+      state: state)
+    try validateAlignmentCheck(
+      address: destinationAddress,
+      byteCount: width.byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+      write: true,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
+    try memory.write(
+      at: destinationAddress, bytes: littleEndian(state.registers.rax, width: width))
+  }
+
+  @inline(never)
+  private func executeLoadStringIteration(
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    addressWidth: DoryX86OperandWidth,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let sourceAddress = stringSourceAddress(
+      addressWidth: addressWidth, instruction: instruction, mode: mode, state: state)
+    let sourceOperand = stringMemoryOperand(
+      source: true, width: width, addressWidth: addressWidth, instruction: instruction, mode: mode)
+    try validateSegmentAccess(
+      sourceOperand, byteCount: width.byteCount, write: false, instruction: instruction,
+      state: state)
+    try validateAlignmentCheck(
+      address: sourceAddress,
+      byteCount: width.byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+      write: false,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    let value = fromLittleEndian(try memory.read(at: sourceAddress, byteCount: width.byteCount))
+    writeStringRegister(.rax, value: value, width: width, state: &state)
+  }
+
+  @inline(never)
+  private func executeScanStringIteration(
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    addressWidth: DoryX86OperandWidth,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let destinationAddress = stringDestinationAddress(
+      addressWidth: addressWidth, mode: mode, state: state)
+    let destinationOperand = stringMemoryOperand(
+      source: false, width: width, addressWidth: addressWidth, instruction: instruction, mode: mode)
+    try validateSegmentAccess(
+      destinationOperand, byteCount: width.byteCount, write: false, instruction: instruction,
+      state: state)
+    try validateAlignmentCheck(
+      address: destinationAddress,
+      byteCount: width.byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+      write: false,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    let destination = fromLittleEndian(
+      try memory.read(at: destinationAddress, byteCount: width.byteCount))
+    _ = executeALU(
+      .compare, lhs: state.registers.rax, rhs: destination, width: width, flags: &state.rflags)
+  }
+
+  @inline(never)
+  private func executeInputStringIteration(
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    addressWidth: DoryX86OperandWidth,
+    port: UInt16,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory,
+    ioBus: (any DoryX86IOBus)?
+  ) throws {
+    let destinationAddress = stringDestinationAddress(
+      addressWidth: addressWidth, mode: mode, state: state)
+    let destinationOperand = stringMemoryOperand(
+      source: false, width: width, addressWidth: addressWidth, instruction: instruction, mode: mode)
+    try validateSegmentAccess(
+      destinationOperand, byteCount: width.byteCount, write: true, instruction: instruction,
+      state: state)
+    try validateAlignmentCheck(
+      address: destinationAddress,
+      byteCount: width.byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+      write: true,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
+    guard let ioBus else {
+      throw DoryX86IOBusError.unmappedPort(port, width: width)
+    }
+    let value = UInt64(try ioBus.read(port: port, width: width))
+    try memory.write(at: destinationAddress, bytes: littleEndian(value, width: width))
+  }
+
+  @inline(never)
+  private func executeOutputStringIteration(
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    addressWidth: DoryX86OperandWidth,
+    port: UInt16,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory,
+    ioBus: (any DoryX86IOBus)?
+  ) throws {
+    let sourceAddress = stringSourceAddress(
+      addressWidth: addressWidth, instruction: instruction, mode: mode, state: state)
+    let sourceOperand = stringMemoryOperand(
+      source: true, width: width, addressWidth: addressWidth, instruction: instruction, mode: mode)
+    try validateSegmentAccess(
+      sourceOperand, byteCount: width.byteCount, write: false, instruction: instruction,
+      state: state)
+    try validateAlignmentCheck(
+      address: sourceAddress,
+      byteCount: width.byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+      write: false,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    let value = UInt32(
+      truncatingIfNeeded: fromLittleEndian(
+        try memory.read(at: sourceAddress, byteCount: width.byteCount)))
+    guard let ioBus else {
+      throw DoryX86IOBusError.unmappedPort(port, width: width)
+    }
+    try ioBus.write(port: port, value: value, width: width)
   }
 
   private func forwardRangesDoNotOverlap(

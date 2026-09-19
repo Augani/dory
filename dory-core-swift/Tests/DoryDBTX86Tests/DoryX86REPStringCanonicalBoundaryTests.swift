@@ -265,7 +265,9 @@ private final class SparseStringBulkMemory: DoryX86BulkMemory, @unchecked Sendab
 
   func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
     let result = try checkedBytes(at: address, byteCount: byteCount, access: .read)
-    dataReads.append(contentsOf: (0..<byteCount).map { address &+ UInt64($0) })
+    for offset in 0..<byteCount {
+      dataReads.append(address &+ UInt64(offset))
+    }
     return result
   }
 
