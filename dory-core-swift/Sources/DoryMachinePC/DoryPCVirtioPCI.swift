@@ -437,7 +437,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   /// deferred via `pendingReDrain` and flushed here to avoid re-entering the
   /// non-reentrant `deviceState` lock.
   private func drainEpilogue(_ index: UInt16) {
-    lock.withLock { activeDrains.remove(index) }
+    _ = lock.withLock { activeDrains.remove(index) }
     flushPendingReDrain()
   }
 
@@ -451,7 +451,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     // (e.g. vsock TX → RX publish) defer instead of recursing into the
     // non-reentrant deviceState lock. Cleared by drainEpilogue after both
     // the direct and deferred paths finish.
-    lock.withLock { activeDrains.insert(index) }
+    _ = lock.withLock { activeDrains.insert(index) }
     defer { drainEpilogue(index) }
     let processingLock = processingLocks[Int(index)]
     if let processor = processing.2 {

@@ -84,7 +84,7 @@ import Testing
     }
     #expect(queue.snapshot().outstandingHeads == [0])
 
-    try queue.complete(first, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
+    _ = try queue.complete(first, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
     #expect(memory.get(UInt16.self, at: 0x302) == 1)
 
     // Head reuse is valid after completion, but the older chain cannot consume the new claim.
@@ -93,7 +93,7 @@ import Testing
       try queue.complete(first, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
     }
     #expect(memory.get(UInt16.self, at: 0x302) == 1)
-    try queue.complete(reused, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
+    _ = try queue.complete(reused, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
     #expect(memory.get(UInt16.self, at: 0x302) == 2)
   }
 
@@ -125,7 +125,8 @@ import Testing
       try queue.complete(stale, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
     }
     #expect(memory.get(UInt16.self, at: 0x302) == 0)
-    try queue.complete(replacement, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
+    _ = try queue.complete(
+      replacement, bytesWritten: 4, memory: memory, eventIndexNegotiated: false)
     #expect(memory.get(UInt16.self, at: 0x302) == 1)
   }
 

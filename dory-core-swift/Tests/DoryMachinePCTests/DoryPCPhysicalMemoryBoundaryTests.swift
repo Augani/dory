@@ -66,7 +66,7 @@ import Testing
     bus.seal()
     try bus.write(at: 0x100, bytes: [0x90])
     let generation = try #require(try bus.codeGeneration(at: 0x100, byteCount: 1))
-    try bus.protectTranslatedCode(at: 0x100, byteCount: 1)
+    _ = try bus.protectTranslatedCode(at: 0x100, byteCount: 1)
 
     try bus.validateDMA(at: 0x100, byteCount: 1, deviceWillWrite: true)
     try bus.write(at: 0x100, bytes: [0xCC])

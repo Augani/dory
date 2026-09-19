@@ -1126,7 +1126,7 @@ public enum DoryDataDriveArchive {
         let read = listxattr(path, &names, size, options)
         guard read == size else { throw filesystem("read extended attribute names at \(path)") }
         return try names.split(separator: 0).compactMap { rawName in
-            let name = String(cString: Array(rawName) + [0])
+            let name = String(decoding: rawName.map { UInt8(bitPattern: $0) }, as: UTF8.self)
             if isVolatileSystemXattr(name) { return nil }
             let valueSize = getxattr(path, name, nil, 0, 0, options)
             guard valueSize >= 0, valueSize <= maximumXattrBytes else {
@@ -1245,7 +1245,7 @@ public enum DoryDataDriveArchive {
             throw filesystem("read restored xattr names at \(path)")
         }
         for rawName in names.split(separator: 0) {
-            let name = String(cString: Array(rawName) + [0])
+            let name = String(decoding: rawName.map { UInt8(bitPattern: $0) }, as: UTF8.self)
             if !expected.contains(name), !isVolatileSystemXattr(name),
                fremovexattr(descriptor, name, 0) != 0 {
                 throw filesystem("remove unexpected xattr \(name) at \(path)")
@@ -1267,7 +1267,7 @@ public enum DoryDataDriveArchive {
             throw filesystem("read restored xattr names at \(path)")
         }
         for rawName in names.split(separator: 0) {
-            let name = String(cString: Array(rawName) + [0])
+            let name = String(decoding: rawName.map { UInt8(bitPattern: $0) }, as: UTF8.self)
             if !expected.contains(name), !isVolatileSystemXattr(name),
                removexattr(path, name, options) != 0 {
                 throw filesystem("remove unexpected xattr \(name) at \(path)")

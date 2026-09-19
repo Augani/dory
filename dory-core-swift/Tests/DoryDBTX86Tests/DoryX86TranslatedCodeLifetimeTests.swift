@@ -29,8 +29,8 @@ import Testing
     let pageA = UInt64(0)
     let pageB = UInt64(Self.guestPageByteCount)
 
-    try memory.protectTranslatedCode(at: pageA, byteCount: 1)
-    try memory.protectTranslatedCode(at: pageB, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: pageA, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: pageB, byteCount: 1)
     #expect(memory.protectedTranslatedCodePageCount == 2)
 
     let rawGenA = memory.rawCodePageGeneration(at: pageA)
@@ -60,8 +60,8 @@ import Testing
     let pageA = UInt64(0)
     let pageB = UInt64(Self.guestPageByteCount)
 
-    try memory.protectTranslatedCode(at: pageA, byteCount: 1)
-    try memory.protectTranslatedCode(at: pageB, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: pageA, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: pageB, byteCount: 1)
 
     let genA = try #require(try memory.codeGeneration(at: pageA, byteCount: 1))
     let genB = try #require(try memory.codeGeneration(at: pageB, byteCount: 1))
@@ -76,8 +76,8 @@ import Testing
     #expect(memory.rawCodePageGeneration(at: pageB) == rawGenB)
 
     // Re-protect and write to page B: only page B's generation must change.
-    try memory.protectTranslatedCode(at: pageA, byteCount: 1)
-    try memory.protectTranslatedCode(at: pageB, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: pageA, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: pageB, byteCount: 1)
     let genA2 = try #require(try memory.codeGeneration(at: pageA, byteCount: 1))
     let genB2 = try #require(try memory.codeGeneration(at: pageB, byteCount: 1))
     let rawGenA2 = memory.rawCodePageGeneration(at: pageA)
@@ -95,8 +95,8 @@ import Testing
     let pageA = UInt64(0)
     let pageB = UInt64(Self.guestPageByteCount)
 
-    try memory.protectTranslatedCode(at: pageA, byteCount: 1)
-    try memory.protectTranslatedCode(at: pageB, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: pageA, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: pageB, byteCount: 1)
 
     let genA = try #require(try memory.codeGeneration(at: pageA, byteCount: 1))
     let genB = try #require(try memory.codeGeneration(at: pageB, byteCount: 1))
@@ -104,7 +104,7 @@ import Testing
     let rawGenB = memory.rawCodePageGeneration(at: pageB)
 
     // Explicit invalidation of page A must not bump page B's generation.
-    try memory.invalidateTranslatedCode(at: pageA, byteCount: 1)
+    _ = try memory.invalidateTranslatedCode(at: pageA, byteCount: 1)
     #expect(try memory.codeGeneration(at: pageA, byteCount: 1) != genA)
     #expect(try memory.codeGeneration(at: pageB, byteCount: 1) == genB)
     // Exactly-once: page A bumped by 1, page B unchanged.
@@ -119,9 +119,9 @@ import Testing
     let page1 = UInt64(Self.guestPageByteCount)
     let page2 = UInt64(Self.guestPageByteCount * 2)
 
-    try memory.protectTranslatedCode(at: page0, byteCount: 1)
-    try memory.protectTranslatedCode(at: page1, byteCount: 1)
-    try memory.protectTranslatedCode(at: page2, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: page0, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: page1, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: page2, byteCount: 1)
 
     let gen0 = try #require(try memory.codeGeneration(at: page0, byteCount: 1))
     let gen1 = try #require(try memory.codeGeneration(at: page1, byteCount: 1))
@@ -144,7 +144,7 @@ import Testing
 
   @Test func invalidAndOverflowRangesAreRejectedWithoutPartialMutation() throws {
     let memory = try DoryX86MmapMemory(validatingByteCount: Self.hostPageByteCount)
-    try memory.protectTranslatedCode(at: 0, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: 0, byteCount: 1)
     let protectionCount = memory.protectedTranslatedCodePageCount
     let generation = try #require(try memory.codeGeneration(at: 0, byteCount: 1))
 
@@ -199,7 +199,7 @@ import Testing
     let codePage = UInt64(0)
     let dataPage = UInt64(Self.guestPageByteCount)
 
-    try memory.protectTranslatedCode(at: codePage, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: codePage, byteCount: 1)
     let codeGen = try #require(try memory.codeGeneration(at: codePage, byteCount: 1))
     let rawCodeGen = memory.rawCodePageGeneration(at: codePage)
 
@@ -227,8 +227,8 @@ import Testing
     let page0 = UInt64(0)
     let page1 = UInt64(Self.guestPageByteCount)
 
-    try memory.protectTranslatedCode(at: page0, byteCount: 1)
-    try memory.protectTranslatedCode(at: page1, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: page0, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: page1, byteCount: 1)
 
     let gen0 = try #require(try memory.codeGeneration(at: page0, byteCount: 1))
     let gen1 = try #require(try memory.codeGeneration(at: page1, byteCount: 1))
@@ -251,7 +251,7 @@ import Testing
 
   @Test func dmaLifetimeInvalidationRejectsOutOfRangeWithoutMutation() throws {
     let memory = try DoryX86MmapMemory(validatingByteCount: Self.hostPageByteCount)
-    try memory.protectTranslatedCode(at: 0, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: 0, byteCount: 1)
     let protectionCount = memory.protectedTranslatedCodePageCount
     let generation = try #require(try memory.codeGeneration(at: 0, byteCount: 1))
 

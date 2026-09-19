@@ -147,7 +147,7 @@ import Testing
     try memory.write(at: 0, bytes: [0x90])
     let generation = try #require(try memory.codeGeneration(at: 0, byteCount: 1))
 
-    try memory.protectTranslatedCode(at: 0, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: 0, byteCount: 1)
     #expect(memory.protectedTranslatedCodePageCount == 1)
     #expect(regionProtection(at: memory.hostAddressSpaceBase) == VM_PROT_READ)
 
@@ -159,9 +159,9 @@ import Testing
     #expect(try memory.read(at: 0, byteCount: 1) == [0xCC])
     #expect(try memory.codeGeneration(at: 0, byteCount: 1) != generation)
 
-    try memory.protectTranslatedCode(at: 0, byteCount: 1)
+    _ = try memory.protectTranslatedCode(at: 0, byteCount: 1)
     let protectedGeneration = try #require(try memory.codeGeneration(at: 0, byteCount: 1))
-    try memory.invalidateTranslatedCode(at: 0, byteCount: 1)
+    _ = try memory.invalidateTranslatedCode(at: 0, byteCount: 1)
     #expect(memory.protectedTranslatedCodePageCount == 0)
     #expect(try memory.codeGeneration(at: 0, byteCount: 1) != protectedGeneration)
   }
@@ -170,7 +170,7 @@ import Testing
     let memory = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
     var generation = try #require(try memory.codeGeneration(at: 0x100, byteCount: 1))
     for value in 0..<512 {
-      try memory.protectTranslatedCode(at: 0x100, byteCount: 1)
+      _ = try memory.protectTranslatedCode(at: 0x100, byteCount: 1)
       #expect(memory.protectedTranslatedCodePageCount == 1)
       try memory.writeScalar(at: 0x100, value: UInt64(value), byteCount: 1)
       #expect(memory.protectedTranslatedCodePageCount == 0)
