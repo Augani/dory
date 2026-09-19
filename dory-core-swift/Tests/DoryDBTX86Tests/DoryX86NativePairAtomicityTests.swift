@@ -6,7 +6,10 @@ import Testing
 
 @testable import DoryDBTX86
 
-@Suite struct DoryX86NativePairAtomicityTests {
+// These probes deliberately hold the process-wide interpreter/native atomic gate while a worker
+// attempts the matching native helper. Running the probes concurrently can starve the worker pool
+// with gate owners and produce a test-created deadlock rather than exercise guest atomicity.
+@Suite(.serialized) struct DoryX86NativePairAtomicityTests {
   @Test(arguments: [1, 2, 4, 8] as [UInt32])
   func scalarNativeHelpersWaitForInterpreterAtomicGate(byteCount: UInt32) throws {
     #if arch(arm64)
@@ -21,7 +24,7 @@ import Testing
         let result = ScalarAtomicResult()
         completed.enter()
         try DoryX86AtomicGate.shared.withLock {
-          DispatchQueue.global().async {
+          Thread.detachNewThread {
             result.run(helper, fixture: fixture, offset: offset, byteCount: byteCount, probe: probe)
             completed.leave()
           }
@@ -61,7 +64,7 @@ import Testing
           let result = ScalarAtomicResult()
           completed.enter()
           try DoryX86AtomicGate.shared.withLock {
-            DispatchQueue.global().async {
+            Thread.detachNewThread {
               result.run(helper, fixture: fixture, offset: offset, byteCount: byteCount)
               completed.leave()
             }
@@ -132,7 +135,7 @@ import Testing
       let fixture = try PairAtomicityFixture()
       let started = DispatchSemaphore(value: 0)
       let finished = DispatchSemaphore(value: 0)
-      DispatchQueue.global().async {
+      Thread.detachNewThread {
         started.signal()
         fixture.runOrdinaryWriter()
         finished.signal()
