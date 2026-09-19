@@ -15,3 +15,7 @@ The fixture producer rejects missing or changed inputs, verifies every upstream 
 and never treats construction as boot qualification. A runner receipt must separately bind the
 manifest digest, source commit and dirty-tree state, release executable digest, host class, CPU
 profile, execution tier, JIT policy, predictors, vCPU count, memory, and guest result.
+
+`Evidence/` contains reviewed campaign summaries that bind those durable receipt digests. A summary
+does not upgrade a diagnostic run into release qualification: its declared scope, dirty-tree state,
+candidate identity, host coverage, repeat count, and failed observations remain part of the record.

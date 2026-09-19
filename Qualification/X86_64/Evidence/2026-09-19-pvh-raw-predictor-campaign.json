@@ -1,0 +1,125 @@
+{
+  "schema": "dev.dory.x86-qualification-campaign-summary@1",
+  "campaign": "2026-09-19-pvh-raw-predictor-boundary",
+  "purpose": "Record the current-source rejection boundary for raw host-address prediction and the repeated correctness baseline with every raw predictor disabled.",
+  "qualificationScope": "Internal engineering evidence only. Every receipt reports releaseQualified=false and sourceTreeDirty=true; these runs do not open the public release gate.",
+  "host": {
+    "class": "apple-m2-pro-macos-27.2-xcode-27.0"
+  },
+  "fixture": {
+    "manifest": "Qualification/X86_64/Manifests/alpine-virt-3.24.1-pvh-smoke-v2.json",
+    "manifestSHA256": "9a11a01ad9feae91041ec8ce29bc8ed1c15a6d507f971ffdbef51e801dc62e6b",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "kernelBuildID": "6605cb9027e42995c51847655ec230aeb78559bd",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "symbolsSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a"
+  },
+  "configuration": {
+    "cpuProfile": "dory.x86_64.compat-v1",
+    "executionTier": "baselineJIT",
+    "tier1Enabled": true,
+    "jitWriteCoherencePolicy": "protected-host-pages",
+    "processorCount": 1,
+    "memoryMiB": 512,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ]
+  },
+  "observations": [
+    {
+      "runID": "1844a0b5-f319-46a9-831f-24284fa9cbf0",
+      "sourceCommit": "39d1c6b7256fd8a911eb4305d4697a2eb5fabf22",
+      "sourceTreeDirty": true,
+      "runnerSHA256": "949a1e363f63a2eae0040e0f4aa08bc379848c2e68d4b9403212d09b24d46a9f",
+      "receiptSHA256": "f3bd6eace0fcb01cd50c7caaebbe9ddcd2d15503769b53e062691460bce5423c",
+      "rawTargetPrediction": "all",
+      "passed": false,
+      "reason": "wall-budget",
+      "elapsedNanoseconds": 900017689125,
+      "retiredInstructions": 632274000,
+      "lastCompletedSliceElapsedNanoseconds": 201135145125,
+      "lastCompletedSliceInstructions": 1000,
+      "consoleContainedNUL": true
+    },
+    {
+      "runID": "84e90bd6-e6c5-400a-8ea4-36c662ff546d",
+      "sourceCommit": "bbb57025b349bf73cf8fd0b92eb3e119eb127420",
+      "sourceTreeDirty": true,
+      "runnerSHA256": "9acaa02fdbab410f0da4237e216669b198e5133f73332b7edbb0ccbf1d9448cc",
+      "receiptSHA256": "dd2fa34a3702371db03b7fef190c5324d4b0b6decdbcbc1305972c860e69951b",
+      "rawTargetPrediction": "tier1-direct-chain",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "elapsedNanoseconds": 228949052500,
+      "retiredInstructions": 734143431,
+      "consoleContainedNUL": false
+    },
+    {
+      "runID": "c679d047-531b-45ed-b2db-0ce2d5afe460",
+      "sourceCommit": "bbb57025b349bf73cf8fd0b92eb3e119eb127420",
+      "sourceTreeDirty": true,
+      "runnerSHA256": "9acaa02fdbab410f0da4237e216669b198e5133f73332b7edbb0ccbf1d9448cc",
+      "receiptSHA256": "6a4368049f88a93ff6ee7e70e00d0d05bedb74bcc75c16db7aa01757dce0717a",
+      "rawTargetPrediction": "tier1-direct-chain",
+      "passed": false,
+      "reason": "wall-budget",
+      "elapsedNanoseconds": 900004895792,
+      "retiredInstructions": 634489000,
+      "lastCompletedSliceElapsedNanoseconds": 192786315042,
+      "lastCompletedSliceInstructions": 1000,
+      "consoleContainedNUL": false
+    },
+    {
+      "runID": "084eea32-ab67-4922-844f-475975af8007",
+      "sourceCommit": "5d888565b3aefaec1d07da800a6773b3dbccd8b5",
+      "sourceTreeDirty": true,
+      "runnerSHA256": "d3b7a1ccdb19679aa6217fa520ffd26796c3f5321af7ca29eae9a9073e2ad594",
+      "runnerByteCount": 12197000,
+      "receiptSHA256": "0c4e8e4fdba5d541dea7d8a74bee894b99d89cdbf2aeb162aa87944598a53e0b",
+      "rawTargetPrediction": "none",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "elapsedNanoseconds": 262734988583,
+      "retiredInstructions": 732285985,
+      "directChainPatches": 0,
+      "indirectBranchTargetCacheHits": 0,
+      "shadowReturnStackHits": 0,
+      "pendingWorkMaximumRetiredInstructions": 0,
+      "consoleContainedNUL": false
+    },
+    {
+      "runID": "db664692-b11b-4681-864d-5ee712b9f323",
+      "sourceCommit": "5d888565b3aefaec1d07da800a6773b3dbccd8b5",
+      "sourceTreeDirty": true,
+      "runnerSHA256": "d3b7a1ccdb19679aa6217fa520ffd26796c3f5321af7ca29eae9a9073e2ad594",
+      "runnerByteCount": 12197000,
+      "receiptSHA256": "578e0be07a0d59b28b82ebc7b33478b93848dd25772abd3247e2183c2a4879c0",
+      "rawTargetPrediction": "none",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "elapsedNanoseconds": 254141926167,
+      "retiredInstructions": 732309747,
+      "directChainPatches": 0,
+      "indirectBranchTargetCacheHits": 0,
+      "shadowReturnStackHits": 0,
+      "pendingWorkMaximumRetiredInstructions": 0,
+      "consoleContainedNUL": false
+    }
+  ],
+  "conclusion": {
+    "productionRawTargetPrediction": "none",
+    "rejected": [
+      "all",
+      "tier1-direct-chain"
+    ],
+    "rationale": "Both enabled configurations reproduced a native slice that failed to return before the 900-second watchdog. The exact no-predictor release candidate completed two consecutive userspace workload and ACPI poweroff runs with no raw predictor activity."
+  }
+}

@@ -38,20 +38,24 @@ the archive also supplies `/dev/console`, `/dev/null` and `/dev/zero` device nod
 
 ## Execute with the bounded PVH runner
 
-Build the existing `dory-pc-linux-boot-runner` through the core package workflow.
-Supply its absolute path, a newly generated run UUID, an execution tier and
-explicit instruction/time budgets. For example:
+Build `dory-pc-linux-boot-runner` in release mode through the core package workflow. Import the
+three manifest-bound objects with `dory-pc-x86-fixture-importer`; use only the resulting
+content-addressed paths. Supply a newly generated lowercase run UUID and every candidate identity.
+The source-tree value must describe the tree used for the runner binary, not the tree at some later
+time. For example:
 
 ```sh
-/absolute/path/dory-pc-linux-boot-runner \
-  --kernel /tmp/dory-p00-guest-fixtures/x86_64-vmlinux \
+/absolute/path/release/dory-pc-linux-boot-runner \
+  --kernel /absolute/content-store/sha256/e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8 \
   --kernel-sha256 e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8 \
-  --initrd /tmp/dory-p00-guest-fixtures/x86_64-p02-minimal-userspace-v2.cpio \
+  --initrd /absolute/content-store/sha256/22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249 \
   --initrd-sha256 22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249 \
+  --symbols /absolute/content-store/sha256/a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a \
+  --symbols-sha256 a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a \
   --command-line 'console=ttyS0 rdinit=/init panic=-1' \
-  --tier interpreter --memory-mib 512 \
-  --max-instructions 100000000 --wall-seconds 300 \
-  --run-id FRESH-UUID-FOR-THIS-RUN \
+  --tier baseline-jit --tier1 enabled --memory-mib 512 \
+  --max-instructions 1000000000 --wall-seconds 900 \
+  --run-id fresh-lowercase-uuid-for-this-run \
   --workload bootstrap.filesystems \
   --workload syscall.identity \
   --workload process.creation_exec_wait \
@@ -59,11 +63,23 @@ explicit instruction/time budgets. For example:
   --workload signal.handler_return \
   --workload timer.sleep_elapsed \
   --workload filesystem.write_read_sync \
-  --diagnostics /absolute/path/unique-run-result.json
+  --diagnostics /absolute/path/unique-run-result.json \
+  --cpu-profile dory.x86_64.compat-v1 \
+  --fixture-manifest /absolute/repository/Qualification/X86_64/Manifests/alpine-virt-3.24.1-pvh-smoke-v2.json \
+  --fixture-manifest-sha256 9a11a01ad9feae91041ec8ce29bc8ed1c15a6d507f971ffdbef51e801dc62e6b \
+  --source-commit full-40-character-git-commit \
+  --source-tree clean \
+  --host-class validated-host-class-identifier \
+  --processor-count 1 \
+  --jit-write-policy protected-host-pages \
+  --raw-target-prediction none
 ```
 
-The example budgets are limits, not a claim that they suffice. Repeat with a
-fresh UUID and output path for each tier. The runner appends
+The example budgets are limits, not a general performance claim. `none` is the correctness
+baseline: current-source exact-candidate runs rejected `all` and `tier1-direct-chain` after each
+reproduced a native slice that did not return before the wall watchdog. Other modes remain explicit
+engineering experiments and cannot close a qualification gate. Repeat with a fresh UUID and output
+path for each tier. The runner appends
 `dory.pvh_run_id=<lowercase UUID>`; do not add that parameter yourself. PID 1
 rejects a missing, repeated or malformed UUID. Never execute `init` on the host;
 it rejects execution outside PID 1 before performing any workload.
