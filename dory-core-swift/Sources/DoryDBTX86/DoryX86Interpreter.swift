@@ -325,6 +325,14 @@ public struct DoryX86Interpreter: Sendable {
               memory: executionMemory
             )
           }
+          let memoryAccessLease = try exclusiveLockedMemoryAccessLease(
+            for: destination,
+            required: instruction.prefixes.lock && operation != .compare && operation != .test,
+            instruction: instruction,
+            state: operationState,
+            memory: executionMemory
+          )
+          defer { memoryAccessLease?.release() }
           let lhs = try read(
             destination, instruction: instruction, state: operationState, memory: executionMemory)
           let rhs = try read(
@@ -375,6 +383,14 @@ public struct DoryX86Interpreter: Sendable {
             state: operationState,
             memory: executionMemory
           )
+          let memoryAccessLease = try exclusiveLockedMemoryAccessLease(
+            for: operand,
+            required: instruction.prefixes.lock,
+            instruction: instruction,
+            state: operationState,
+            memory: executionMemory
+          )
+          defer { memoryAccessLease?.release() }
           let value = try read(
             operand, instruction: instruction, state: operationState, memory: executionMemory)
           let width = operandWidth(operand)
@@ -601,6 +617,15 @@ public struct DoryX86Interpreter: Sendable {
             to: lhs, instruction: instruction, state: operationState, memory: executionMemory)
           try preflightWrite(
             to: rhs, instruction: instruction, state: operationState, memory: executionMemory)
+          let memoryOperand = isMemory(lhs) ? lhs : rhs
+          let memoryAccessLease = try exclusiveLockedMemoryAccessLease(
+            for: memoryOperand,
+            required: true,
+            instruction: instruction,
+            state: operationState,
+            memory: executionMemory
+          )
+          defer { memoryAccessLease?.release() }
           let left = try read(
             lhs, instruction: instruction, state: operationState, memory: executionMemory)
           let right = try read(
@@ -687,6 +712,14 @@ public struct DoryX86Interpreter: Sendable {
           try preflightWrite(
             to: destination, instruction: instruction, state: operationState,
             memory: executionMemory)
+          let memoryAccessLease = try exclusiveLockedMemoryAccessLease(
+            for: destination,
+            required: instruction.prefixes.lock,
+            instruction: instruction,
+            state: operationState,
+            memory: executionMemory
+          )
+          defer { memoryAccessLease?.release() }
           let destinationValue = try read(
             destination,
             instruction: instruction,
@@ -789,6 +822,14 @@ public struct DoryX86Interpreter: Sendable {
             state: operationState,
             memory: executionMemory
           )
+          let memoryAccessLease = try exclusiveLockedMemoryAccessLease(
+            for: destination,
+            required: instruction.prefixes.lock,
+            instruction: instruction,
+            state: operationState,
+            memory: executionMemory
+          )
+          defer { memoryAccessLease?.release() }
           let destinationValue = try read(
             destination,
             instruction: instruction,
@@ -7521,6 +7562,49 @@ public struct DoryX86Interpreter: Sendable {
     }
   }
 
+  /// Acquires one byte-range authority for a locked fallback transaction after its complete
+  /// architectural write preflight has succeeded. Checked reads and writes taken while this
+  /// lease is active re-enter as ordinary accesses on the same thread, which the coordinator
+  /// deliberately permits, while overlapping CPU, generated-code, and DMA accesses wait.
+  private func exclusiveLockedMemoryAccessLease(
+    for operand: DoryX86Operand,
+    required: Bool,
+    byteCount requestedByteCount: Int? = nil,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> DoryX86MemoryAccessLease? {
+    guard required, case .memory(let memoryOperand) = operand,
+      let coordinatedMemory = memory as? any DoryX86RangeCoordinatedMemory
+    else { return nil }
+    let byteCount = requestedByteCount ?? memoryOperand.width.byteCount
+    let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+    guard
+      let ranges = try coordinatedMemory.memoryAccessRanges(
+        at: address,
+        byteCount: byteCount,
+        access: .write
+      ), !ranges.isEmpty
+    else { return nil }
+    return coordinatedMemory.memoryAccessCoordinator.acquireExclusive(ranges: ranges)
+  }
+
+  private func exclusiveLockedMemoryAccessLease(
+    at address: UInt64,
+    byteCount: Int,
+    required: Bool,
+    memory: any DoryX86Memory
+  ) throws -> DoryX86MemoryAccessLease? {
+    guard required, let coordinatedMemory = memory as? any DoryX86RangeCoordinatedMemory,
+      let ranges = try coordinatedMemory.memoryAccessRanges(
+        at: address,
+        byteCount: byteCount,
+        access: .write
+      ), !ranges.isEmpty
+    else { return nil }
+    return coordinatedMemory.memoryAccessCoordinator.acquireExclusive(ranges: ranges)
+  }
+
   private func alignmentAccessWritesOperand(
     _ memoryOperand: DoryX86MemoryOperand,
     instruction: DoryX86DecodedInstruction
@@ -7754,6 +7838,13 @@ public struct DoryX86Interpreter: Sendable {
           expected = current
         }
       }
+      let memoryAccessLease = try exclusiveLockedMemoryAccessLease(
+        at: address,
+        byteCount: width.byteCount,
+        required: instruction.prefixes.lock && operation != .test,
+        memory: memory
+      )
+      defer { memoryAccessLease?.release() }
       let value = fromLittleEndian(try memory.read(at: address, byteCount: width.byteCount))
       let bit = UInt64(1) << UInt64(bitOffset)
       setFlag(.carry, value & bit != 0, in: &state.rflags)
@@ -8758,6 +8849,15 @@ public struct DoryX86Interpreter: Sendable {
       )
     }
     try memory.validateWrite(at: address, byteCount: byteCount)
+    let memoryAccessLease = try exclusiveLockedMemoryAccessLease(
+      for: .memory(destination),
+      required: instruction.prefixes.lock,
+      byteCount: byteCount,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    defer { memoryAccessLease?.release() }
     let bytes = try memory.read(at: address, byteCount: byteCount)
     let firstQuadword = fromLittleEndian(Array(bytes[0..<8]))
     let memoryLow = doubleQuadword ? firstQuadword : firstQuadword & 0xffff_ffff

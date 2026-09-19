@@ -130,6 +130,99 @@ import Testing
     #endif
   }
 
+  @Test func scalarNativeHelpersEnterTheOrdinaryMemoryRangeAuthority() throws {
+    #if arch(arm64)
+      let fixture = try PairAtomicityFixture()
+      let offset: UInt64 = 0x100
+      let lowerBound = UInt64(UInt(bitPattern: fixture.memory)) + offset
+
+      for helper in ScalarAtomicHelper.allCases {
+        fixture.memory.storeBytes(of: UInt64(0x35), toByteOffset: Int(offset), as: UInt64.self)
+        let exclusive = fixture.memoryAccessCoordinator.acquireExclusive(
+          ranges: [lowerBound..<(lowerBound + 8)])
+        let probe = ScalarAtomicGateProbe()
+        let completed = DispatchGroup()
+        let result = ScalarAtomicResult()
+        completed.enter()
+        Thread.detachNewThread {
+          result.run(helper, fixture: fixture, offset: offset, byteCount: 8, probe: probe)
+          completed.leave()
+        }
+        try #require(try probe.waitUntilBlocked(timeout: .now() + 2),
+          "\(helper) did not join the ordinary memory range authority")
+        #expect(completed.wait(timeout: .now()) == .timedOut)
+        #expect(fixture.memory.load(fromByteOffset: Int(offset), as: UInt64.self) == 0x35)
+        exclusive.release()
+        try #require(completed.wait(timeout: .now() + 2) == .success)
+        #expect(result.status == DORY_JIT_ATOMIC_RESOLUTION_SUCCESS.rawValue)
+      }
+    #endif
+  }
+
+  @Test func nativeCMPXCHG16BEntersTheOrdinaryMemoryRangeAuthority() throws {
+    #if arch(arm64)
+      let fixture = try PairAtomicityFixture()
+      let lowerBound = UInt64(UInt(bitPattern: fixture.memory))
+      let exclusive = fixture.memoryAccessCoordinator.acquireExclusive(
+        ranges: [lowerBound..<(lowerBound + 16)])
+      let probe = ScalarAtomicGateProbe()
+      let completed = DispatchGroup()
+      let result = PairAtomicResult()
+      completed.enter()
+      Thread.detachNewThread {
+        result.run(fixture: fixture, probe: probe)
+        completed.leave()
+      }
+      try #require(try probe.waitUntilBlocked(timeout: .now() + 2),
+        "CMPXCHG16B did not join the ordinary memory range authority")
+      #expect(completed.wait(timeout: .now()) == .timedOut)
+      exclusive.release()
+      try #require(completed.wait(timeout: .now() + 2) == .success)
+      #expect(result.status == DORY_JIT_ATOMIC_RESOLUTION_SUCCESS.rawValue)
+      #expect(result.observedLow == 0)
+      #expect(result.observedHigh == 1)
+    #endif
+  }
+
+  @Test func nativeAtomicHelpersDeclineWithoutMemoryRangeAuthority() throws {
+    #if arch(arm64)
+      let fixture = try PairAtomicityFixture()
+      fixture.context[DoryJITExecutableRegion.memoryAccessCoordinatorWordIndex] = 0
+      fixture.memory.storeBytes(of: UInt64(0x35), toByteOffset: 0x100, as: UInt64.self)
+      var observed: UInt64 = 0
+      #expect(
+        dory_jit_atomic_exchange_from_context(
+          fixture.context,
+          fixture.memory,
+          0x100,
+          0x12,
+          8,
+          &observed
+        ) == DORY_JIT_ATOMIC_RESOLUTION_FALLBACK.rawValue
+      )
+      var values = dory_jit_atomic_pair_values(
+        expected_low: 0,
+        expected_high: 1,
+        desired_low: 0xAAAA,
+        desired_high: 0xBBBB,
+        observed_low: 0,
+        observed_high: 0
+      )
+      #expect(
+        dory_jit_atomic_compare_exchange_pair_from_context(
+          fixture.context,
+          fixture.memory,
+          0,
+          16,
+          &values
+        ) == DORY_JIT_ATOMIC_RESOLUTION_FALLBACK.rawValue
+      )
+      #expect(fixture.memory.load(fromByteOffset: 0x100, as: UInt64.self) == 0x35)
+      #expect(fixture.memory.load(as: UInt64.self) == 0)
+      #expect(fixture.memory.load(fromByteOffset: 8, as: UInt64.self) == 1)
+    #endif
+  }
+
   @Test func independentMachineCoordinatorsDoNotSerializeOneAnother() throws {
     #if arch(arm64)
       let firstMachine = try PairAtomicityFixture()
@@ -313,6 +406,34 @@ private final class ScalarAtomicResult: @unchecked Sendable {
   }
 }
 
+private final class PairAtomicResult: @unchecked Sendable {
+  private(set) var status: Int32 = -1
+  private(set) var observedLow: UInt64 = .max
+  private(set) var observedHigh: UInt64 = .max
+
+  func run(fixture: PairAtomicityFixture, probe: ScalarAtomicGateProbe) {
+    var values = dory_jit_atomic_pair_values(
+      expected_low: 0,
+      expected_high: 0,
+      desired_low: 0xAAAA,
+      desired_high: 0xBBBB,
+      observed_low: 0,
+      observed_high: 0
+    )
+    probe.begin()
+    status = dory_jit_atomic_compare_exchange_pair_from_context(
+      fixture.context,
+      fixture.memory,
+      0,
+      16,
+      &values
+    )
+    probe.end()
+    observedLow = values.observed_low
+    observedHigh = values.observed_high
+  }
+}
+
 private final class ScalarAtomicGateProbe: @unchecked Sendable {
   // 0: setup; 1: native invocation; 2: returned. The release/acquire edge also
   // publishes the Mach thread port. It is never read before phase 1 is observed.
@@ -369,6 +490,7 @@ private final class PairAtomicityFixture: @unchecked Sendable {
   let memory: UnsafeMutableRawPointer
   let context: UnsafeMutablePointer<UInt64>
   let coordinator = DoryX86AtomicCoordinator()
+  let memoryAccessCoordinator = DoryX86MemoryAccessCoordinator()
   let stop: UnsafeMutablePointer<UInt8>
   let writeCount: UnsafeMutablePointer<UInt64>
   private let tlb: OpaquePointer
@@ -422,6 +544,8 @@ private final class PairAtomicityFixture: @unchecked Sendable {
     context[DoryJITExecutableRegion.tlbAddressSpaceGenerationWordIndex] = 1
     context[DoryJITExecutableRegion.tlbStorageWordIndex] = UInt64(UInt(bitPattern: tlb))
     context[DoryJITExecutableRegion.atomicCoordinatorWordIndex] = coordinator.opaqueReference
+    context[DoryJITExecutableRegion.memoryAccessCoordinatorWordIndex] =
+      memoryAccessCoordinator.opaqueReference
     // Page zero, address-space generation one: the production resolver's exact tag.
     precondition(dory_jit_tlb_fill(tlb, DORY_JIT_TLB_ACCESS_WRITE, 0, 1,
       UInt64(UInt(bitPattern: memory))) == 0)

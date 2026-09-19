@@ -1104,6 +1104,19 @@ static void *dory_jit_atomic_coordinator_from_context(const uint64_t *context) {
     return (void *)(uintptr_t)context[DORY_JIT_ATOMIC_COORDINATOR_CONTEXT_WORD];
 }
 
+static uint64_t dory_jit_atomic_memory_access_begin(
+    void *coordinator,
+    uint64_t host_address,
+    uint32_t byte_count
+) {
+    if (coordinator == NULL || host_address == 0 || byte_count == 0) {
+        return 0;
+    }
+    return dory_x86_memory_access_begin(
+        coordinator, host_address, byte_count, 0
+    );
+}
+
 static uint64_t dory_jit_atomic_compare_exchange(
     void *host_address,
     uint64_t expected,
@@ -1160,13 +1173,25 @@ int dory_jit_atomic_compare_exchange_from_context(
     if (coordinator == NULL) {
         return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
     }
+    void *memory_access_coordinator = dory_jit_memory_access_coordinator_from_context(context);
+    if (memory_access_coordinator == NULL) {
+        return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
+    }
     dory_x86_atomic_coordinator_lock(coordinator);
+    const uint64_t memory_access_token = dory_jit_atomic_memory_access_begin(
+        memory_access_coordinator, resolution.host_address, byte_count
+    );
+    if (memory_access_token == 0) {
+        dory_x86_atomic_coordinator_unlock(coordinator);
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
     *observed_out = dory_jit_atomic_compare_exchange(
         (void *)(uintptr_t)resolution.host_address,
         expected,
         desired,
         byte_count
     );
+    dory_x86_memory_access_end(memory_access_coordinator, memory_access_token);
     dory_x86_atomic_coordinator_unlock(coordinator);
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
@@ -1260,12 +1285,24 @@ int dory_jit_atomic_exchange_from_context(
     if (coordinator == NULL) {
         return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
     }
+    void *memory_access_coordinator = dory_jit_memory_access_coordinator_from_context(context);
+    if (memory_access_coordinator == NULL) {
+        return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
+    }
     dory_x86_atomic_coordinator_lock(coordinator);
+    const uint64_t memory_access_token = dory_jit_atomic_memory_access_begin(
+        memory_access_coordinator, resolution.host_address, byte_count
+    );
+    if (memory_access_token == 0) {
+        dory_x86_atomic_coordinator_unlock(coordinator);
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
     *observed_out = dory_jit_atomic_exchange(
         (void *)(uintptr_t)resolution.host_address,
         value,
         byte_count
     );
+    dory_x86_memory_access_end(memory_access_coordinator, memory_access_token);
     dory_x86_atomic_coordinator_unlock(coordinator);
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
@@ -1358,12 +1395,24 @@ int dory_jit_atomic_fetch_add_from_context(
     if (coordinator == NULL) {
         return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
     }
+    void *memory_access_coordinator = dory_jit_memory_access_coordinator_from_context(context);
+    if (memory_access_coordinator == NULL) {
+        return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
+    }
     dory_x86_atomic_coordinator_lock(coordinator);
+    const uint64_t memory_access_token = dory_jit_atomic_memory_access_begin(
+        memory_access_coordinator, resolution.host_address, byte_count
+    );
+    if (memory_access_token == 0) {
+        dory_x86_atomic_coordinator_unlock(coordinator);
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
     *observed_out = dory_jit_atomic_fetch_add(
         (void *)(uintptr_t)resolution.host_address,
         value,
         byte_count
     );
+    dory_x86_memory_access_end(memory_access_coordinator, memory_access_token);
     dory_x86_atomic_coordinator_unlock(coordinator);
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
@@ -1478,13 +1527,25 @@ int dory_jit_atomic_rmw_from_context(
     if (coordinator == NULL) {
         return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
     }
+    void *memory_access_coordinator = dory_jit_memory_access_coordinator_from_context(context);
+    if (memory_access_coordinator == NULL) {
+        return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
+    }
     dory_x86_atomic_coordinator_lock(coordinator);
+    const uint64_t memory_access_token = dory_jit_atomic_memory_access_begin(
+        memory_access_coordinator, resolution.host_address, byte_count
+    );
+    if (memory_access_token == 0) {
+        dory_x86_atomic_coordinator_unlock(coordinator);
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
     *observed_out = dory_jit_atomic_rmw(
         (void *)(uintptr_t)resolution.host_address,
         value,
         byte_count,
         operation
     );
+    dory_x86_memory_access_end(memory_access_coordinator, memory_access_token);
     dory_x86_atomic_coordinator_unlock(coordinator);
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }
@@ -1549,7 +1610,18 @@ int dory_jit_atomic_compare_exchange_pair_from_context(
     if (coordinator == NULL) {
         return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
     }
+    void *memory_access_coordinator = dory_jit_memory_access_coordinator_from_context(context);
+    if (memory_access_coordinator == NULL) {
+        return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
+    }
     dory_x86_atomic_coordinator_lock(coordinator);
+    const uint64_t memory_access_token = dory_jit_atomic_memory_access_begin(
+        memory_access_coordinator, resolution.host_address, byte_count
+    );
+    if (memory_access_token == 0) {
+        dory_x86_atomic_coordinator_unlock(coordinator);
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
     if (byte_count == 8) {
         const uint64_t expected =
             (uint64_t)(uint32_t)values->expected_low |
@@ -1593,6 +1665,7 @@ int dory_jit_atomic_compare_exchange_pair_from_context(
         values->observed_high = (uint64_t)(observed >> 64);
     }
 #endif
+    dory_x86_memory_access_end(memory_access_coordinator, memory_access_token);
     dory_x86_atomic_coordinator_unlock(coordinator);
     return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
 }

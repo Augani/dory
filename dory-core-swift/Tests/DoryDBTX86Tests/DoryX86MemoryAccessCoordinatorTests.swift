@@ -176,6 +176,105 @@ import Testing
     #expect(loaded == 0x0123_4567_89AB_CDEF)
   }
 
+  @Test func unalignedLockedInterpreterFallbackExcludesOverlappingOrdinaryAccess() throws {
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+    try memory.write(at: 0, bytes: [0xF0, 0x48, 0x01, 0x06])  // lock add [rsi],rax
+    try memory.writeScalar(at: 0x101, value: 7, byteCount: 8)
+    let ranges = try #require(
+      try memory.memoryAccessRanges(at: 0x101, byteCount: 8, access: .write))
+    let ordinary = memory.memoryAccessCoordinator.acquireOrdinary(ranges: ranges)
+    let started = DispatchSemaphore(value: 0)
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      var state = try! DoryX86ArchitecturalState(
+        registers: .init(rax: 5, rsi: 0x101),
+        rip: 0
+      )
+      started.signal()
+      _ = DoryX86Interpreter().step(state: &state, memory: memory, mode: .long64)
+      finished.signal()
+    }
+    started.wait()
+    #expect(finished.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
+
+    ordinary.release()
+    #expect(finished.wait(timeout: .now() + 2) == .success)
+    #expect(try memory.readScalar(at: 0x101, byteCount: 8) == 12)
+  }
+
+  @Test func interpreterCMPXCHG16BExcludesOverlappingOrdinaryAccess() throws {
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+    try memory.write(at: 0, bytes: [0xF0, 0x48, 0x0F, 0xC7, 0x0F])  // lock cmpxchg16b [rdi]
+    try memory.writeScalar(at: 0x100, value: 0x1111, byteCount: 8)
+    try memory.writeScalar(at: 0x108, value: 0x2222, byteCount: 8)
+    let ranges = try #require(
+      try memory.memoryAccessRanges(at: 0x100, byteCount: 16, access: .write))
+    let ordinary = memory.memoryAccessCoordinator.acquireOrdinary(ranges: ranges)
+    let started = DispatchSemaphore(value: 0)
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      var state = try! DoryX86ArchitecturalState(
+        registers: .init(
+          rax: 0x1111,
+          rcx: 0xBBBB,
+          rdx: 0x2222,
+          rbx: 0xAAAA,
+          rdi: 0x100
+        ),
+        rip: 0
+      )
+      started.signal()
+      _ = DoryX86Interpreter().step(state: &state, memory: memory, mode: .long64)
+      finished.signal()
+    }
+    started.wait()
+    #expect(finished.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
+
+    ordinary.release()
+    #expect(finished.wait(timeout: .now() + 2) == .success)
+    #expect(try memory.readScalar(at: 0x100, byteCount: 8) == 0xAAAA)
+    #expect(try memory.readScalar(at: 0x108, byteCount: 8) == 0xBBBB)
+  }
+
+  @Test func splitBackingLockedFallbackAcquiresOneMultiRangeLease() throws {
+    let pageByteCount = Int(getpagesize())
+    let memory = try DoryX86MmapMemory(
+      validatingByteCount: pageByteCount * 2,
+      hostAddressSpaceByteCount: pageByteCount * 3,
+      ramMappings: [
+        .init(logicalOffset: 0, hostOffset: 0, byteCount: pageByteCount),
+        .init(
+          logicalOffset: pageByteCount,
+          hostOffset: pageByteCount * 2,
+          byteCount: pageByteCount),
+      ]
+    )
+    try memory.write(at: 0, bytes: [0xF0, 0x48, 0x01, 0x06])  // lock add [rsi],rax
+    let address = UInt64(pageByteCount - 4)
+    try memory.writeScalar(at: address, value: 9, byteCount: 8)
+    let ranges = try #require(
+      try memory.memoryAccessRanges(at: address, byteCount: 8, access: .write))
+    try #require(ranges.count == 2)
+    let ordinary = memory.memoryAccessCoordinator.acquireOrdinary(ranges: [ranges[1]])
+    let started = DispatchSemaphore(value: 0)
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      var state = try! DoryX86ArchitecturalState(
+        registers: .init(rax: 4, rsi: address),
+        rip: 0
+      )
+      started.signal()
+      _ = DoryX86Interpreter().step(state: &state, memory: memory, mode: .long64)
+      finished.signal()
+    }
+    started.wait()
+    #expect(finished.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
+
+    ordinary.release()
+    #expect(finished.wait(timeout: .now() + 2) == .success)
+    #expect(try memory.readScalar(at: address, byteCount: 8) == 13)
+  }
+
   private func waitUntil(
     timeout: DispatchTime,
     _ predicate: () -> Bool
