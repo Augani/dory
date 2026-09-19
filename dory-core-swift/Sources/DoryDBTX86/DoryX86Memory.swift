@@ -1,4 +1,46 @@
+import DoryJITRuntimeC
 import Foundation
+
+@inline(__always)
+func doryX86AtomicScalarLoad(
+  from address: UnsafeRawPointer,
+  byteCount: Int
+) -> UInt64? {
+  guard [1, 2, 4, 8].contains(byteCount) else { return nil }
+  var value: UInt64 = 0
+  guard dory_atomic_scalar_load_seq_cst(address, UInt32(byteCount), &value) == 0 else {
+    return nil
+  }
+  return value
+}
+
+@inline(__always)
+func doryX86AtomicScalarStore(
+  to address: UnsafeMutableRawPointer,
+  value: UInt64,
+  byteCount: Int
+) -> Bool {
+  guard [1, 2, 4, 8].contains(byteCount) else { return false }
+  return dory_atomic_scalar_store_seq_cst(address, value, UInt32(byteCount)) == 0
+}
+
+@inline(__always)
+func doryX86AtomicScalarCompareExchange(
+  at address: UnsafeMutableRawPointer,
+  expected: UInt64,
+  desired: UInt64,
+  byteCount: Int
+) -> UInt64? {
+  guard [1, 2, 4, 8].contains(byteCount) else { return nil }
+  var observed: UInt64 = 0
+  guard
+    dory_atomic_scalar_compare_exchange_seq_cst(
+      address, expected, desired, UInt32(byteCount), &observed) == 0
+  else {
+    return nil
+  }
+  return observed
+}
 
 public enum DoryX86MemoryAccessKind: String, Codable, Sendable, Hashable {
   case instructionFetch
@@ -114,8 +156,9 @@ public protocol DoryX86RestartableScalarMemory: DoryX86Memory {
 /// Optional path for x86 locked scalar read-modify-write operations. The caller must hold the
 /// owning machine's `DoryX86AtomicCoordinator` so interpreter and native locked instructions
 /// share one architectural serialization point before entering memory-owned locks. Implementations must
-/// validate the complete write cycle before reading, serialize the compare and destination
-/// write under one memory-owned critical section, and return the observed destination value.
+/// validate the complete write cycle before reading, perform the compare and destination write
+/// as one indivisible host transaction (or under an authority that also excludes direct native
+/// access), and return the observed destination value.
 /// Returning nil declines native execution before touching MMIO or unsupported memory.
 public protocol DoryX86AtomicScalarMemory: DoryX86Memory {
   func compareExchangeScalar(
@@ -403,6 +446,14 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .read)
+    if let value = doryX86AtomicScalarLoad(
+      from: UnsafeRawPointer(storage.baseAddress!.advanced(by: offset)),
+      byteCount: byteCount
+    ) {
+      return (0..<byteCount).map {
+        UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
+      }
+    }
     return Array(storage[offset..<(offset + byteCount)])
   }
 
@@ -413,6 +464,12 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .read)
+    if let value = doryX86AtomicScalarLoad(
+      from: UnsafeRawPointer(storage.baseAddress!.advanced(by: offset)),
+      byteCount: byteCount
+    ) {
+      return value
+    }
     var value: UInt64 = 0
     for index in 0..<byteCount {
       value |= UInt64(storage[offset + index]) << UInt64(index * 8)
@@ -435,9 +492,21 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
-    bytes.withUnsafeBufferPointer { source in
-      storage.baseAddress!.advanced(by: offset).update(
-        from: source.baseAddress!, count: source.count)
+    let destination = storage.baseAddress!.advanced(by: offset)
+    let storedAtomically: Bool
+    if [1, 2, 4, 8].contains(bytes.count) {
+      let scalar = bytes.enumerated().reduce(UInt64(0)) {
+        $0 | UInt64($1.element) << UInt64($1.offset * 8)
+      }
+      storedAtomically = doryX86AtomicScalarStore(
+        to: UnsafeMutableRawPointer(destination), value: scalar, byteCount: bytes.count)
+    } else {
+      storedAtomically = false
+    }
+    if !storedAtomically {
+      bytes.withUnsafeBufferPointer { source in
+        destination.update(from: source.baseAddress!, count: source.count)
+      }
     }
     markCodePagesWritten(offset: offset, byteCount: bytes.count)
   }
@@ -449,6 +518,14 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
+    if doryX86AtomicScalarStore(
+      to: UnsafeMutableRawPointer(storage.baseAddress!.advanced(by: offset)),
+      value: value,
+      byteCount: byteCount
+    ) {
+      markCodePagesWritten(offset: offset, byteCount: byteCount)
+      return
+    }
     for index in 0..<byteCount {
       storage[offset + index] = UInt8(truncatingIfNeeded: value >> UInt64(index * 8))
     }
@@ -467,11 +544,22 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
+    let mask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
+    if let observed = doryX86AtomicScalarCompareExchange(
+      at: UnsafeMutableRawPointer(storage.baseAddress!.advanced(by: offset)),
+      expected: expected,
+      desired: desired,
+      byteCount: byteCount
+    ) {
+      // x86 CMPXCHG performs a write cycle even on mismatch. Generation
+      // tracking therefore advances for either host CAS outcome.
+      markCodePagesWritten(offset: offset, byteCount: byteCount)
+      return observed & mask
+    }
     var observed: UInt64 = 0
     for index in 0..<byteCount {
       observed |= UInt64(storage[offset + index]) << UInt64(index * 8)
     }
-    let mask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
     let stored = (observed & mask) == (expected & mask) ? desired : observed
     for index in 0..<byteCount {
       storage[offset + index] = UInt8(truncatingIfNeeded: stored >> UInt64(index * 8))

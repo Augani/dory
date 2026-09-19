@@ -7107,6 +7107,12 @@ public struct DoryX86Interpreter: Sendable {
         state: state,
         memory: memory
       )
+      if let scalarMemory = memory as? any DoryX86ScalarMemory {
+        return try scalarMemory.readScalar(
+          at: address,
+          byteCount: operand.width.byteCount
+        )
+      }
       return fromLittleEndian(
         try memory.read(
           at: address,
@@ -7159,6 +7165,14 @@ public struct DoryX86Interpreter: Sendable {
         state: state,
         memory: memory
       )
+      if let scalarMemory = memory as? any DoryX86ScalarMemory {
+        try scalarMemory.writeScalar(
+          at: address,
+          value: value,
+          byteCount: target.width.byteCount
+        )
+        return
+      }
       try memory.write(
         at: address,
         bytes: littleEndian(value, width: target.width)

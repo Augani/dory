@@ -12,6 +12,54 @@ import Testing
 // guest atomicity.
 @Suite(.serialized) struct DoryX86NativePairAtomicityTests {
   @Test(arguments: [1, 2, 4, 8] as [UInt32])
+  func mmapScalarTransactionsShareTheNativeAtomicDomain(byteCount: UInt32) throws {
+    let memory = try DoryX86MmapMemory(validatingByteCount: 0x2000)
+    let address: UInt64 = 0x100
+    let hostAddress = try #require(
+      UnsafeMutableRawPointer(
+        bitPattern: UInt(memory.hostAddressSpaceBase + address)))
+    let mask = UInt64.max >> (64 - byteCount * 8)
+    let first = 0x8877_6655_4433_2211 & mask
+    let second = 0x0123_4567_89AB_CDEF & mask
+    let third = 0xFEDC_BA98_7654_3210 & mask
+
+    try memory.writeScalar(at: address, value: first, byteCount: Int(byteCount))
+    var observed: UInt64 = 0
+    #expect(dory_atomic_scalar_load_seq_cst(hostAddress, byteCount, &observed) == 0)
+    #expect(observed == first)
+
+    #expect(dory_atomic_scalar_store_seq_cst(hostAddress, second, byteCount) == 0)
+    #expect(try memory.readScalar(at: address, byteCount: Int(byteCount)) == second)
+    #expect(
+      try memory.read(at: address, byteCount: Int(byteCount))
+        == (0..<Int(byteCount)).map {
+          UInt8(truncatingIfNeeded: second >> UInt64($0 * 8))
+        })
+
+    #expect(
+      try memory.compareExchangeScalar(
+        at: address,
+        expected: second,
+        desired: third,
+        byteCount: Int(byteCount)
+      ) == second)
+    #expect(dory_atomic_scalar_load_seq_cst(hostAddress, byteCount, &observed) == 0)
+    #expect(observed == third)
+  }
+
+  @Test func nativeScalarTransactionsRejectMisalignedHostAddresses() throws {
+    let memory = try DoryX86MmapMemory(validatingByteCount: 0x1000)
+    let misaligned = try #require(
+      UnsafeMutableRawPointer(
+        bitPattern: UInt(memory.hostAddressSpaceBase + 1)))
+    var observed: UInt64 = 0
+    #expect(dory_atomic_scalar_load_seq_cst(misaligned, 8, &observed) == EINVAL)
+    #expect(dory_atomic_scalar_store_seq_cst(misaligned, 1, 8) == EINVAL)
+    #expect(
+      dory_atomic_scalar_compare_exchange_seq_cst(misaligned, 0, 1, 8, &observed) == EINVAL)
+  }
+
+  @Test(arguments: [1, 2, 4, 8] as [UInt32])
   func scalarNativeHelpersWaitForOwningMachineCoordinator(byteCount: UInt32) throws {
     #if arch(arm64)
       let fixture = try PairAtomicityFixture()

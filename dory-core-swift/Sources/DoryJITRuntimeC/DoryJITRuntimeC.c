@@ -39,6 +39,115 @@ void dory_jit_pending_work_store_release(uint8_t *value, uint8_t desired) {
     atomic_store_explicit((_Atomic uint8_t *)value, desired, memory_order_release);
 }
 
+static int dory_atomic_scalar_arguments_are_valid(
+    const void *address,
+    uint32_t byte_count
+) {
+    if (address == NULL ||
+        (byte_count != 1 && byte_count != 2 && byte_count != 4 && byte_count != 8)) {
+        return 0;
+    }
+    return ((uintptr_t)address & (uintptr_t)(byte_count - 1)) == 0;
+}
+
+int dory_atomic_scalar_load_seq_cst(
+    const void *address,
+    uint32_t byte_count,
+    uint64_t *value_out
+) {
+    if (value_out == NULL || !dory_atomic_scalar_arguments_are_valid(address, byte_count)) {
+        return EINVAL;
+    }
+    switch (byte_count) {
+        case 1:
+            *value_out = __atomic_load_n((const uint8_t *)address, __ATOMIC_SEQ_CST);
+            return 0;
+        case 2:
+            *value_out = __atomic_load_n((const uint16_t *)address, __ATOMIC_SEQ_CST);
+            return 0;
+        case 4:
+            *value_out = __atomic_load_n((const uint32_t *)address, __ATOMIC_SEQ_CST);
+            return 0;
+        default:
+            *value_out = __atomic_load_n((const uint64_t *)address, __ATOMIC_SEQ_CST);
+            return 0;
+    }
+}
+
+int dory_atomic_scalar_store_seq_cst(
+    void *address,
+    uint64_t value,
+    uint32_t byte_count
+) {
+    if (!dory_atomic_scalar_arguments_are_valid(address, byte_count)) {
+        return EINVAL;
+    }
+    switch (byte_count) {
+        case 1:
+            __atomic_store_n((uint8_t *)address, (uint8_t)value, __ATOMIC_SEQ_CST);
+            return 0;
+        case 2:
+            __atomic_store_n((uint16_t *)address, (uint16_t)value, __ATOMIC_SEQ_CST);
+            return 0;
+        case 4:
+            __atomic_store_n((uint32_t *)address, (uint32_t)value, __ATOMIC_SEQ_CST);
+            return 0;
+        default:
+            __atomic_store_n((uint64_t *)address, value, __ATOMIC_SEQ_CST);
+            return 0;
+    }
+}
+
+int dory_atomic_scalar_compare_exchange_seq_cst(
+    void *address,
+    uint64_t expected,
+    uint64_t desired,
+    uint32_t byte_count,
+    uint64_t *observed_out
+) {
+    if (observed_out == NULL || !dory_atomic_scalar_arguments_are_valid(address, byte_count)) {
+        return EINVAL;
+    }
+    switch (byte_count) {
+        case 1: {
+            uint8_t observed = (uint8_t)expected;
+            (void)__atomic_compare_exchange_n(
+                (uint8_t *)address, &observed, (uint8_t)desired, 0,
+                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST
+            );
+            *observed_out = observed;
+            return 0;
+        }
+        case 2: {
+            uint16_t observed = (uint16_t)expected;
+            (void)__atomic_compare_exchange_n(
+                (uint16_t *)address, &observed, (uint16_t)desired, 0,
+                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST
+            );
+            *observed_out = observed;
+            return 0;
+        }
+        case 4: {
+            uint32_t observed = (uint32_t)expected;
+            (void)__atomic_compare_exchange_n(
+                (uint32_t *)address, &observed, (uint32_t)desired, 0,
+                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST
+            );
+            *observed_out = observed;
+            return 0;
+        }
+        default: {
+            uint64_t observed = expected;
+            (void)__atomic_compare_exchange_n(
+                (uint64_t *)address, &observed, desired, 0,
+                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST
+            );
+            *observed_out = observed;
+            return 0;
+        }
+    }
+}
+
 struct dory_jit_tlb {
     uint32_t magic;
     size_t entry_count;
@@ -893,56 +1002,13 @@ static uint64_t dory_jit_atomic_compare_exchange(
     uint64_t desired,
     uint32_t byte_count
 ) {
-    switch (byte_count) {
-        case 1: {
-            uint8_t value = (uint8_t)expected;
-            (void)__atomic_compare_exchange_n(
-                (uint8_t *)host_address,
-                &value,
-                (uint8_t)desired,
-                0,
-                __ATOMIC_SEQ_CST,
-                __ATOMIC_SEQ_CST
-            );
-            return value;
-        }
-        case 2: {
-            uint16_t value = (uint16_t)expected;
-            (void)__atomic_compare_exchange_n(
-                (uint16_t *)host_address,
-                &value,
-                (uint16_t)desired,
-                0,
-                __ATOMIC_SEQ_CST,
-                __ATOMIC_SEQ_CST
-            );
-            return value;
-        }
-        case 4: {
-            uint32_t value = (uint32_t)expected;
-            (void)__atomic_compare_exchange_n(
-                (uint32_t *)host_address,
-                &value,
-                (uint32_t)desired,
-                0,
-                __ATOMIC_SEQ_CST,
-                __ATOMIC_SEQ_CST
-            );
-            return value;
-        }
-        default: {
-            uint64_t value = expected;
-            (void)__atomic_compare_exchange_n(
-                (uint64_t *)host_address,
-                &value,
-                desired,
-                0,
-                __ATOMIC_SEQ_CST,
-                __ATOMIC_SEQ_CST
-            );
-            return value;
-        }
-    }
+    uint64_t observed = 0;
+    const int result = dory_atomic_scalar_compare_exchange_seq_cst(
+        host_address, expected, desired, byte_count, &observed
+    );
+    // All callers have already proven a natural-width aligned host span.
+    // Keep a closed failure value if that invariant is ever violated.
+    return result == 0 ? observed : expected;
 }
 
 int dory_jit_atomic_compare_exchange_from_context(

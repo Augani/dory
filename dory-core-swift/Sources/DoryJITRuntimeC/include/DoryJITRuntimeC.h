@@ -45,6 +45,28 @@ uint64_t dory_jit_test_region_generation(const dory_jit_region *region);
 uint8_t dory_jit_pending_work_load_acquire(const uint8_t *value);
 void dory_jit_pending_work_store_release(uint8_t *value, uint8_t desired);
 
+// Sequentially consistent, lock-free scalar transactions used by Swift memory
+// implementations that share RAM with generated machine code. These functions
+// reject unsupported widths and misaligned host addresses with EINVAL rather
+// than silently introducing a process-global libatomic lock.
+int dory_atomic_scalar_load_seq_cst(
+    const void *address,
+    uint32_t byte_count,
+    uint64_t *value_out
+);
+int dory_atomic_scalar_store_seq_cst(
+    void *address,
+    uint64_t value,
+    uint32_t byte_count
+);
+int dory_atomic_scalar_compare_exchange_seq_cst(
+    void *address,
+    uint64_t expected,
+    uint64_t desired,
+    uint32_t byte_count,
+    uint64_t *observed_out
+);
+
 typedef struct dory_jit_block_key {
     uint64_t physical_rip;
     uint8_t execution_mode;

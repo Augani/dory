@@ -567,6 +567,17 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .read)
+    let resolved = resolvedHostOffset(forLogicalOffset: offset)
+    if byteCount <= resolved.availableByteCount,
+      let value = doryX86AtomicScalarLoad(
+        from: UnsafeRawPointer(pointer.advanced(by: resolved.offset)),
+        byteCount: byteCount
+      )
+    {
+      return (0..<byteCount).map {
+        UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
+      }
+    }
     var result = [UInt8](repeating: 0, count: byteCount)
     copyBytes(fromLogicalOffset: offset, byteCount: byteCount, into: &result)
     return result
@@ -580,6 +591,14 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .read)
     let resolved = resolvedHostOffset(forLogicalOffset: offset)
+    if byteCount <= resolved.availableByteCount,
+      let value = doryX86AtomicScalarLoad(
+        from: UnsafeRawPointer(pointer.advanced(by: resolved.offset)),
+        byteCount: byteCount
+      )
+    {
+      return value
+    }
     var value: UInt64 = 0
     if byteCount <= resolved.availableByteCount {
       for index in 0..<byteCount {
@@ -620,7 +639,16 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
     try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: bytes.count)
-    copyBytes(bytes, toLogicalOffset: offset)
+    let resolved = resolvedHostOffset(forLogicalOffset: offset)
+    var storedAtomically = false
+    if bytes.count <= resolved.availableByteCount, [1, 2, 4, 8].contains(bytes.count) {
+      let value = bytes.enumerated().reduce(UInt64(0)) {
+        $0 | UInt64($1.element) << UInt64($1.offset * 8)
+      }
+      storedAtomically = doryX86AtomicScalarStore(
+        to: pointer.advanced(by: resolved.offset), value: value, byteCount: bytes.count)
+    }
+    if !storedAtomically { copyBytes(bytes, toLogicalOffset: offset) }
     markCodePagesWritten(offset: offset, byteCount: bytes.count)
   }
 
@@ -633,6 +661,13 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
     try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: byteCount)
     let resolved = resolvedHostOffset(forLogicalOffset: offset)
+    if byteCount <= resolved.availableByteCount,
+      doryX86AtomicScalarStore(
+        to: pointer.advanced(by: resolved.offset), value: value, byteCount: byteCount)
+    {
+      markCodePagesWritten(offset: offset, byteCount: byteCount)
+      return
+    }
     if byteCount <= resolved.availableByteCount {
       for index in 0..<byteCount {
         pointer.advanced(by: resolved.offset + index).assumingMemoryBound(to: UInt8.self).pointee =
@@ -662,6 +697,20 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
     try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: byteCount)
     let resolved = resolvedHostOffset(forLogicalOffset: offset)
+    let mask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
+    if byteCount <= resolved.availableByteCount,
+      let observed = doryX86AtomicScalarCompareExchange(
+        at: pointer.advanced(by: resolved.offset),
+        expected: expected,
+        desired: desired,
+        byteCount: byteCount
+      )
+    {
+      // Preserve the architectural mismatch write cycle in generation
+      // metadata even when the host CAS itself only reads on failure.
+      markCodePagesWritten(offset: offset, byteCount: byteCount)
+      return observed & mask
+    }
     var observed: UInt64 = 0
     if byteCount <= resolved.availableByteCount {
       for index in 0..<byteCount {
@@ -679,7 +728,6 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
           << UInt64(index * 8)
       }
     }
-    let mask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
     let stored = (observed & mask) == (expected & mask) ? desired : observed
     if byteCount <= resolved.availableByteCount {
       for index in 0..<byteCount {
