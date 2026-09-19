@@ -63,6 +63,23 @@ import Testing
     #expect(machine.executionStatistics.interpreterInstructions == 4)
   }
 
+  @Test func hostWorkersPersistAcrossRunCalls() throws {
+    let machine = try workerMachine(clock: .deterministic)
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+
+    #expect(try machine.run(maximumInstructions: 2) == .instructionBudget(2))
+    let firstRunThreads = probe.snapshot().threads
+    #expect(firstRunThreads.count == 2)
+
+    #expect(try machine.run(maximumInstructions: 2) == .instructionBudget(2))
+    let secondRun = probe.snapshot()
+    #expect(secondRun.threads == firstRunThreads)
+    #expect(secondRun.distinctThreads == 2)
+    #expect(secondRun.executions == 4)
+    #expect(secondRun.stopped == Set([0, 1]))
+  }
+
   @Test(arguments: [DoryPCPowerAction.powerOff, .reset])
   func powerStopsOverlappingWorkersAndFrozenFetchSurvivesRAMChange(action: DoryPCPowerAction) throws
   {
@@ -1902,6 +1919,7 @@ private final class HaltedMachineClockGate: @unchecked Sendable {
 
 private final class HostWorkerProbe: @unchecked Sendable {
   struct Snapshot {
+    let threads: [Int: ObjectIdentifier]
     let distinctThreads: Int
     let maximumActive: Int
     let active: Int
@@ -1969,7 +1987,7 @@ private final class HostWorkerProbe: @unchecked Sendable {
     condition.lock()
     defer { condition.unlock() }
     return .init(
-      distinctThreads: Set(threads.values).count, maximumActive: maximumActive,
+      threads: threads, distinctThreads: Set(threads.values).count, maximumActive: maximumActive,
       active: active, stopped: stopped, executions: order.count, order: order, timedOut: timedOut,
       nativeRetirements: nativeRetirements)
   }

@@ -23,10 +23,15 @@ final class DoryPCExecutionGate: @unchecked Sendable {
   }
 }
 
-/// A single-slot mailbox for a single vCPU. The condition protects all mailbox/lifetime state;
-/// guest work runs outside it. Only the run coordinator submits work. Completion transfers
-/// ownership back to that coordinator, including on throwing paths.
+/// A persistent single-slot mailbox for one vCPU. The condition protects all mailbox/lifetime
+/// state; guest work runs outside it. The machine runtime owns this worker for its entire lifetime,
+/// while each coordinator submission transfers exclusive vCPU ownership until completion.
 final class DoryPCHostWorker: @unchecked Sendable {
+  struct CPUTime: Sendable {
+    let executionNanoseconds: UInt64
+    let eventNanoseconds: UInt64
+  }
+
   final class Completion<T: Sendable>: @unchecked Sendable {
     private let condition = NSCondition()
     private var result: Result<T, any Error>?
@@ -54,20 +59,14 @@ final class DoryPCHostWorker: @unchecked Sendable {
   private var exited = false
   private let onExit: @Sendable () -> Void
   private let instrumentationEnabled: Bool
-  // A free-running job keeps the vCPU thread alive across coordinator turns. The
-  // coordinator publishes one admitted execution closure at a time and consumes
-  // its result before the worker accepts another. This preserves the existing
-  // admission/rendezvous boundary while avoiding a mailbox job per guest slice.
-  private let freeRunCondition = NSCondition()
-  private var freeRunJob: DoryPCFreeRunCommand?
-  private var freeRunYield: DoryPCFreeRunYield?
-  private var freeRunStopped = false
-  // Read only after stopAndJoin has acquired the exit acknowledgement.
-  private(set) var executionCPUNanoseconds: UInt64 = 0
-  private(set) var eventCPUNanoseconds: UInt64 = 0
+  private let cpuTimeLock = NSLock()
+  private var executionCPUNanoseconds: UInt64 = 0
+  private var eventCPUNanoseconds: UInt64 = 0
 
-  init(processor: Int, instrumentationEnabled: Bool = false,
-    onExit: @escaping @Sendable () -> Void) {
+  init(
+    processor: Int, instrumentationEnabled: Bool = false,
+    onExit: @escaping @Sendable () -> Void
+  ) {
     self.onExit = onExit
     self.instrumentationEnabled = instrumentationEnabled
     let thread = Thread { [self] in loop() }
@@ -83,7 +82,29 @@ final class DoryPCHostWorker: @unchecked Sendable {
     let completion = Completion<T>()
     condition.lock()
     precondition(!stopping && job == nil)
-    job = (kind, { completion.finish(Result { try body() }) })
+    job = (
+      kind,
+      { [self] in
+        let started = instrumentationEnabled ? dory_thread_cpu_time_nanoseconds() : 0
+        let result = Result { try body() }
+        if instrumentationEnabled {
+          let elapsed = dory_thread_cpu_time_nanoseconds() &- started
+          cpuTimeLock.withLock {
+            switch kind {
+            case .execution:
+              let (sum, overflow) = executionCPUNanoseconds.addingReportingOverflow(elapsed)
+              executionCPUNanoseconds = overflow ? .max : sum
+            case .processorEvent:
+              let (sum, overflow) = eventCPUNanoseconds.addingReportingOverflow(elapsed)
+              eventCPUNanoseconds = overflow ? .max : sum
+            }
+          }
+        }
+        // Publish completion only after instrumentation. A coordinator that has observed every
+        // completion can therefore consume an exact per-run CPU-time delta without racing a worker.
+        completion.finish(result)
+      }
+    )
     condition.signal()
     condition.unlock()
     return completion
@@ -95,89 +116,18 @@ final class DoryPCHostWorker: @unchecked Sendable {
     try submit(kind: kind, body).wait()
   }
 
-  func beginFreeRun() -> Completion<Void> {
-    submit { [self] in
-      while true {
-        freeRunCondition.lock()
-        while freeRunJob == nil && !freeRunStopped { freeRunCondition.wait() }
-        guard !freeRunStopped, let job = freeRunJob else {
-          freeRunCondition.unlock()
-          return
-        }
-        freeRunJob = nil
-        freeRunCondition.unlock()
-
-        let yield: DoryPCFreeRunYield
-        switch job {
-        case .execution(let body):
-          yield = .execution(Result { try body() })
-        case .admission(let body):
-          yield = .admission(Result { try body() })
-        }
-        freeRunCondition.lock()
-        freeRunYield = yield
-        freeRunCondition.signal()
-        while freeRunYield != nil && !freeRunStopped { freeRunCondition.wait() }
-        let stopped = freeRunStopped
-        freeRunCondition.unlock()
-        if stopped { return }
-      }
+  /// Returns and clears CPU time accumulated since the last consume. The owning runtime calls this
+  /// only after every submission in a run has completed, so one run cannot inherit another's time.
+  func consumeCPUTime() -> CPUTime {
+    cpuTimeLock.withLock {
+      let snapshot = CPUTime(
+        executionNanoseconds: executionCPUNanoseconds,
+        eventNanoseconds: eventCPUNanoseconds
+      )
+      executionCPUNanoseconds = 0
+      eventCPUNanoseconds = 0
+      return snapshot
     }
-  }
-
-  func scheduleFreeRunExecution(
-    _ body: @escaping @Sendable () throws -> DoryPCDirectKernelMachine.ProcessorExecution
-  ) {
-    freeRunCondition.lock()
-    precondition(!freeRunStopped && freeRunJob == nil && freeRunYield == nil)
-    freeRunJob = .execution(body)
-    freeRunCondition.signal()
-    freeRunCondition.unlock()
-  }
-
-  func awaitFreeRunExecution() throws -> DoryPCDirectKernelMachine.ProcessorExecution {
-    freeRunCondition.lock()
-    while freeRunYield == nil && !freeRunStopped { freeRunCondition.wait() }
-    guard let yield = freeRunYield else {
-      freeRunCondition.unlock()
-      throw DoryPCFreeRunError.stopped
-    }
-    freeRunYield = nil
-    freeRunCondition.signal()
-    freeRunCondition.unlock()
-    guard case .execution(let result) = yield else { throw DoryPCFreeRunError.inconsistentYield }
-    return try result.get()
-  }
-
-  func scheduleFreeRunAdmission(
-    _ body: @escaping @Sendable () throws -> DoryPCDirectKernelMachine.ParallelInstruction?
-  ) {
-    freeRunCondition.lock()
-    precondition(!freeRunStopped && freeRunJob == nil && freeRunYield == nil)
-    freeRunJob = .admission(body)
-    freeRunCondition.signal()
-    freeRunCondition.unlock()
-  }
-
-  func awaitFreeRunAdmission() throws -> DoryPCDirectKernelMachine.ParallelInstruction? {
-    freeRunCondition.lock()
-    while freeRunYield == nil && !freeRunStopped { freeRunCondition.wait() }
-    guard let yield = freeRunYield else {
-      freeRunCondition.unlock()
-      throw DoryPCFreeRunError.stopped
-    }
-    freeRunYield = nil
-    freeRunCondition.signal()
-    freeRunCondition.unlock()
-    guard case .admission(let result) = yield else { throw DoryPCFreeRunError.inconsistentYield }
-    return try result.get()
-  }
-
-  func stopFreeRun() {
-    freeRunCondition.lock()
-    freeRunStopped = true
-    freeRunCondition.broadcast()
-    freeRunCondition.unlock()
   }
 
   /// Stop is sticky and checked under the same condition as wait. A signal sent before a
@@ -206,19 +156,7 @@ final class DoryPCHostWorker: @unchecked Sendable {
       }
       job = nil
       condition.unlock()
-      let started = instrumentationEnabled ? dory_thread_cpu_time_nanoseconds() : 0
       work.body()
-      if instrumentationEnabled {
-        let elapsed = dory_thread_cpu_time_nanoseconds() &- started
-        switch work.kind {
-        case .execution:
-          let (sum, overflow) = executionCPUNanoseconds.addingReportingOverflow(elapsed)
-          executionCPUNanoseconds = overflow ? .max : sum
-        case .processorEvent:
-          let (sum, overflow) = eventCPUNanoseconds.addingReportingOverflow(elapsed)
-          eventCPUNanoseconds = overflow ? .max : sum
-        }
-      }
     }
     onExit()
     condition.lock()
@@ -228,16 +166,38 @@ final class DoryPCHostWorker: @unchecked Sendable {
   }
 }
 
-private enum DoryPCFreeRunError: Error { case stopped, inconsistentYield }
+/// Machine-owned persistent worker set. Construction and teardown occur once per VM rather than
+/// once per public `run` call. This is the lifetime foundation for a later long-running guest
+/// dispatch protocol; today the coordinator still submits bounded slices and rendezvous with every
+/// completion before mutating global machine state.
+final class DoryPCVCPURuntime: @unchecked Sendable {
+  let workers: [DoryPCHostWorker]
 
-private enum DoryPCFreeRunCommand: @unchecked Sendable {
-  case execution(@Sendable () throws -> DoryPCDirectKernelMachine.ProcessorExecution)
-  case admission(@Sendable () throws -> DoryPCDirectKernelMachine.ParallelInstruction?)
-}
+  private let lifecycleLock = NSLock()
+  private var stopped = false
 
-private enum DoryPCFreeRunYield: @unchecked Sendable {
-  case execution(Result<DoryPCDirectKernelMachine.ProcessorExecution, any Error>)
-  case admission(Result<DoryPCDirectKernelMachine.ParallelInstruction?, any Error>)
+  init(processorCount: Int, instrumentationEnabled: Bool) {
+    workers = (0..<processorCount).map { processor in
+      DoryPCHostWorker(
+        processor: processor,
+        instrumentationEnabled: instrumentationEnabled,
+        onExit: {}
+      )
+    }
+  }
+
+  func stopAndJoin() {
+    let shouldStop = lifecycleLock.withLock {
+      guard !stopped else { return false }
+      stopped = true
+      return true
+    }
+    guard shouldStop else { return }
+    for worker in workers { worker.requestStop() }
+    for worker in workers { worker.stopAndJoin() }
+  }
+
+  deinit { stopAndJoin() }
 }
 
 /// Immutable fetch-only memory. Parallel instructions cannot reach shared RAM, translation

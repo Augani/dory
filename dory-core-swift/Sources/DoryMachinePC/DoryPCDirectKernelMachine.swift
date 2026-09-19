@@ -623,6 +623,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy
 
   private let lock = DoryPCExecutionGate()
+  /// Persistent host threads owned for the complete machine lifetime. Public `run` calls borrow
+  /// them through the execution gate and must rendezvous every submitted slice before returning.
+  private let vcpuRuntime: DoryPCVCPURuntime
   private let pendingWorkWake = DoryPCPendingWorkWake()
   // `run` reserves the execution gate while transferring ownership to dedicated workers.
   // No mutex remains held during guest execution. Observability must not
@@ -755,6 +758,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     self.optimizingJITWarmupDispatches = optimizingJITWarmupDispatches
     self.clockSource = clockSource
     self.instrumentationEnabled = instrumentationEnabled
+    vcpuRuntime = DoryPCVCPURuntime(
+      processorCount: processorCount,
+      instrumentationEnabled: instrumentationEnabled
+    )
     publishedHostExecutionDiagnostics = .init(
       enabled: instrumentationEnabled,
       runCalls: 0,
@@ -1316,29 +1323,22 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         )
       }
       let observer = workerObserver
-      let workers = (0..<processorCount).map { processor in
-        DoryPCHostWorker(processor: processor, instrumentationEnabled: instrumentationEnabled) {
-          observer?(.stopped(processor))
-        }
-      }
-      let freeRunCompletions = workers.map { $0.beginFreeRun() }
+      let workers = vcpuRuntime.workers
       let runTimeSample = hostTimeSample()
       defer {
-        // Every return and throw joins every worker before publishing or releasing the gate.
-        // A sticky stop wakes an empty mailbox as well as a worker finishing bounded work.
-        for worker in workers { worker.stopFreeRun() }
-        for worker in workers { worker.requestStop() }
-        for worker in workers { worker.stopAndJoin() }
-        // The free-running job is the only mailbox job at shutdown. Observe its completion so a
-        // future change cannot accidentally conceal a worker-side failure after the join.
-        for completion in freeRunCompletions { _ = try? completion.wait() }
-        for worker in workers {
-          saturatingAdd(worker.executionCPUNanoseconds, to: &hostThreadCPUTime.totalNanoseconds)
-          saturatingAdd(worker.eventCPUNanoseconds, to: &hostThreadCPUTime.totalNanoseconds)
+        // Every submitted job has completed before control can reach a return/throw below. Consume
+        // per-run CPU deltas without terminating the machine-owned worker threads.
+        for (processor, worker) in workers.enumerated() {
+          let cpuTime = worker.consumeCPUTime()
+          saturatingAdd(cpuTime.executionNanoseconds, to: &hostThreadCPUTime.totalNanoseconds)
+          saturatingAdd(cpuTime.eventNanoseconds, to: &hostThreadCPUTime.totalNanoseconds)
           saturatingAdd(
-            worker.executionCPUNanoseconds, to: &hostThreadCPUTime.processorExecutionNanoseconds)
+            cpuTime.executionNanoseconds, to: &hostThreadCPUTime.processorExecutionNanoseconds)
           saturatingAdd(
-            worker.eventCPUNanoseconds, to: &hostThreadCPUTime.processorEventNanoseconds)
+            cpuTime.eventNanoseconds, to: &hostThreadCPUTime.processorEventNanoseconds)
+          // Retain the existing observation boundary: "stopped" means this run no longer lends
+          // architectural state to the worker, not that its persistent host thread was destroyed.
+          observer?(.stopped(processor))
         }
         recordTotalHostTime(since: runTimeSample)
         for memory in physicalMemories { memory.publishDiagnostics() }
@@ -1408,15 +1408,28 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           let plans = try prepareParallelInstructions(
             startingAt: processor, maximumCount: maximumInstructions - completed, workers: workers)
           if plans.count > 1 {
-            for plan in plans {
-              workers[plan.processor].scheduleFreeRunExecution { [self] in
-                observer?(.executing(plan.processor, concurrent: true))
-                defer { observer?(.executed(plan.processor, concurrent: true)) }
-                return try executeParallelInstruction(plan, observer: observer)
+            let submissions = plans.map { plan in
+              (
+                plan,
+                workers[plan.processor].submit { [self] in
+                  observer?(.executing(plan.processor, concurrent: true))
+                  defer { observer?(.executed(plan.processor, concurrent: true)) }
+                  return try executeParallelInstruction(plan, observer: observer)
+                }
+              )
+            }
+            // Join every submitted vCPU even when one fails. No worker may retain architectural
+            // state or guest-memory authority after this run releases the execution gate.
+            var executions: [ProcessorExecution] = []
+            var firstFailure: (any Error)?
+            for submission in submissions {
+              do {
+                executions.append(try submission.1.wait())
+              } catch {
+                if firstFailure == nil { firstFailure = error }
               }
             }
-            // Collect every result before publishing state-dependent machine accounting.
-            let executions = try plans.map { try workers[$0.processor].awaitFreeRunExecution() }
+            if let firstFailure { throw firstFailure }
             recordHostTime(.processorExecution, since: sample)
             for execution in executions {
               completed += execution.instructionCount
@@ -1438,7 +1451,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         let execution: ProcessorExecution
         if instrumentationEnabled {
           let sample = hostTimeSample()
-          workers[processor].scheduleFreeRunExecution { [self] in
+          execution = try workers[processor].perform { [self] in
             pendingWorkWake.setDispatchThread(Thread.current)
             defer { pendingWorkWake.setDispatchThread(nil) }
             observer?(.executing(processor, concurrent: false))
@@ -1450,11 +1463,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
               jitInstructionBudget: jitInstructionBudget
             )
           }
-          execution = try workers[processor].awaitFreeRunExecution()
           pendingWorkWake.setDispatchThread(Thread.current)
           recordHostTime(.processorExecution, since: sample)
         } else {
-          workers[processor].scheduleFreeRunExecution { [self] in
+          execution = try workers[processor].perform { [self] in
             pendingWorkWake.setDispatchThread(Thread.current)
             defer { pendingWorkWake.setDispatchThread(nil) }
             observer?(.executing(processor, concurrent: false))
@@ -1466,7 +1478,6 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
               jitInstructionBudget: jitInstructionBudget
             )
           }
-          execution = try workers[processor].awaitFreeRunExecution()
           pendingWorkWake.setDispatchThread(Thread.current)
         }
         completed += execution.instructionCount
@@ -1597,7 +1608,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       guard let state = loadedStates[processor], !haltedProcessors[processor],
         processorLifecycles[processor] == .running
       else { continue }
-      workers[processor].scheduleFreeRunAdmission { [self] () -> ParallelInstruction? in
+      let plan = try workers[processor].perform { [self] () -> ParallelInstruction? in
         guard let frozen = frozenParallelInstruction(state: state.value, processor: processor)
         else { return nil }
         let mode = executionMode(state.value)
@@ -1616,7 +1627,6 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           processor: processor, state: state,
           mode: mode, memory: frozen, jit: jit)
       }
-      let plan = try workers[processor].awaitFreeRunAdmission()
       // Preserve runnable order across a sensitive instruction instead of skipping ahead.
       guard let plan else { break }
       plans.append(plan)
