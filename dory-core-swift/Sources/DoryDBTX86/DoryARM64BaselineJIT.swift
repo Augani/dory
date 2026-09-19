@@ -2962,7 +2962,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 9, 31))
     let readHostSpanBranch = words.count
     words.append(0)
-    words.append(encodeDirectLoad(width: width, register: resultRegister, base: 13))
+    emitDirectLoadWithTSOBarrier(
+      width: width, register: resultRegister, base: 13, words: &words)
     let hitDoneBranch = words.count
     words.append(0)
 
@@ -3011,7 +3012,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(0)
     words.append(encodeLoad64(register: 13, base: 31, byteOffset: 64))
     words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
-    words.append(encodeDirectLoad(width: width, register: resultRegister, base: 13))
+    emitDirectLoadWithTSOBarrier(
+      width: width, register: resultRegister, base: 13, words: &words)
     let filledDoneBranch = words.count
     words.append(0)
 
@@ -4778,18 +4780,35 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return opcode | base << 5 | register
   }
 
-  /// Emits an ordinary direct RAM store followed by the Arm ordering bridge
-  /// that preserves x86 TSO Store→Load ordering.
+  /// Emits an ordinary direct RAM load followed by a conservative full Arm
+  /// barrier. x86 TSO preserves Load→Load and Load→Store program order, while
+  /// bare Arm loads may be observed out of order. A full `DMB ISH` is stronger
+  /// than necessary but gives one auditable boundary shared with direct stores;
+  /// it may be narrowed only with litmus and instruction-inspection evidence.
+  private func emitDirectLoadWithTSOBarrier(
+    width: DoryIRIntegerWidth,
+    register: UInt32,
+    base: UInt32,
+    words: inout [UInt32]
+  ) {
+    words.append(encodeDirectLoad(width: width, register: register, base: base))
+    words.append(0xD503_3BBF)  // DMB ISH
+  }
+
+  /// Emits an ordinary direct RAM store followed by Dory's conservative Arm
+  /// ordering bridge for the x86 TSO boundary.
   ///
-  /// x86 TSO forbids Store Buffering: a later load on another vCPU may not
-  /// observe an older store from this vCPU reordered after a younger store.
-  /// A bare Arm `STR` permits exactly that reordering on Arm. Every successful
-  /// ordinary direct RAM store therefore gets a full `DMB ISH` barrier
+  /// x86 TSO permits Store→Load relaxation but forbids the additional load/load,
+  /// load/store, and store/store reorderings available to bare Arm memory
+  /// operations. Dory currently chooses the conservative stronger ordering:
+  /// every successful ordinary direct RAM store gets a full `DMB ISH` barrier
   /// (`0xD503_3BBF`) immediately after its `STR`, so the store is visible to
   /// all inner-shareable observers (other vCPUs, devices, renderer mappings)
-  /// before any subsequent translated access. This is the only place ordinary
-  /// direct RAM stores are emitted, so routing both the inline-TLB-hit and
-  /// resolver-filled paths through this helper guarantees no site is missed.
+  /// before any subsequent translated access. A future modeled store buffer may
+  /// recover x86's permitted Store→Load relaxation, but must retain the rest of
+  /// the TSO contract. This is the only place ordinary direct RAM stores are
+  /// emitted, so routing both the inline-TLB-hit and resolver-filled paths
+  /// through this helper guarantees no site is missed.
   ///
   /// MMIO, callback/fallback, faulting and explicit atomic-helper (locked/RMW)
   /// paths deliberately do not use this helper; their ordering is handled by

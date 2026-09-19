@@ -60,8 +60,9 @@ import XCTest
     // mov [rax], rbx — a 64-bit ordinary direct RAM store. emitMemoryWrite
     // emits two direct STR sites (the inline-TLB-hit path and the
     // resolver-filled path); each must be immediately followed by the
-    // DMB ISH ordering bridge (0xD503_3BBF) that preserves x86 TSO
-    // Store→Load ordering on Arm.
+    // DMB ISH ordering bridge (0xD503_3BBF) that conservatively orders the
+    // store before later accesses. x86 permits Store→Load relaxation; Dory's
+    // current direct-store path intentionally provides the stronger ordering.
     let block = try DoryX86IRTranslator().translate(
       [0x48, 0x89, 0x18],
       at: 0x1000,
@@ -123,9 +124,10 @@ import XCTest
     #expect(!words.contains(0xD503_3BBF))  // no dmb ish
   }
 
-  @Test func directLoadEmissionDoesNotEmitStoreBarrier() throws {
-    // mov rax, [rbx] — an ordinary direct load, not a store. The store-only
-    // TSO bridge must not appear on the load path.
+  @Test func directLoadEmissionIsFollowedByTSOBarrier() throws {
+    // mov rax, [rbx] — an ordinary direct load. Both the inline-TLB-hit and
+    // resolver-filled LDR sites must order this load before later guest memory
+    // operations. Bare Arm Load→Load and Load→Store ordering is too weak.
     let block = try DoryX86IRTranslator().translate(
       [0x48, 0x8B, 0x03],
       at: 0x1000,
@@ -133,7 +135,17 @@ import XCTest
     )
     let words = DoryARM64BaselineEmitter().compile(block).machineWords
 
-    #expect(!words.contains(0xD503_3BBF))  // no dmb ish
+    let directLoadWithoutDestination: UInt32 = 0xF940_0000 | 13 << 5
+    let directLoadMask: UInt32 = 0xFFFF_FFE0
+    let barrier: UInt32 = 0xD503_3BBF
+    let loadIndices = words.indices.filter {
+      words[$0] & directLoadMask == directLoadWithoutDestination
+    }
+    #expect(loadIndices.count == 2)
+    for index in loadIndices {
+      #expect(words[index + 1] == barrier)
+    }
+    #expect(words.filter { $0 == barrier }.count == 2)
   }
 
   @Test func generationValidatedNegativeCacheSkipsRepeatedEmitterDeclines() throws {
