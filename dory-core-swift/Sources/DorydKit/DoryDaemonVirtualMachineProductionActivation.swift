@@ -80,6 +80,16 @@ public enum DoryDaemonVirtualMachineProductionActivationResult: Sendable {
 }
 
 extension DoryDaemonVirtualMachineProductionTrustFactory {
+    static func allowsUnsafeDevelopmentGraphicsAdmission(
+        environment: [String: String]
+    ) -> Bool {
+        #if DEBUG
+        environment["DORY_GRAPHICS_ADMISSION_OVERRIDE"] == "unsafe-development"
+        #else
+        false
+        #endif
+    }
+
     /// Verifies production trust, recovers durable planning transactions, installs the exact
     /// recovered launch graph into a production-owned manager, and only then advances the trust
     /// floor. No manager is returned on failure, so partially installed in-memory authority cannot
@@ -160,13 +170,10 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
         let machineManager = MachineManager(
             configuration: machineConfiguration,
             launchPolicy: .perWorkspaceAuthority,
-            allowsQualificationBootstrapLaunches: {
-                #if DEBUG
-                return true
-                #else
-                return false
-                #endif
-            }(),
+            allowsQualificationBootstrapLaunches:
+                Self.allowsUnsafeDevelopmentGraphicsAdmission(
+                    environment: ProcessInfo.processInfo.environment
+                ),
             machineStateBroker: machineStateBroker,
             agentConnector: agentConnector
         )

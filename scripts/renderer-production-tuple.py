@@ -383,13 +383,13 @@ def validate_definition(value: dict[str, Any]) -> dict[str, Any]:
 
     toolchain = value["toolchain"]
     required_toolchain = {
-        "appleClang": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+        "appleClang": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
         "cmake": "4.2.3",
         "meson": "1.12.0",
         "ninja": "1.13.2",
         "pkgConfig": "2.5.1",
-        "xcodeBuild": "17F109",
-        "xcodeVersion": "26.6",
+        "xcodeBuild": "27A266a",
+        "xcodeVersion": "27.0",
     }
     if toolchain != required_toolchain:
         fail("renderer tuple toolchain does not match the reviewed release toolchain")
@@ -757,11 +757,11 @@ def validate_definition(value: dict[str, Any]) -> dict[str, Any]:
         fail("producerFence kernel version is unsupported")
     expected_producer_patches = {
         "prepareFramebufferPatch": {
-            "path": "guest/kernel/patches/6.12.106/0007-virtio-gpu-wait-for-scanout-producers.patch",
+            "path": "patches/linux-6.12.106-virtio-gpu-wait-for-scanout-producers.patch",
             "sha256": "b899d2981d192828ebcbba02a3f8f3409dd27663bf8ca3059bdc95da55090f42",
         },
         "failClosedPatch": {
-            "path": "guest/kernel/patches/6.12.106/0008-virtio-gpu-fail-closed-on-producer-fence-error.patch",
+            "path": "patches/linux-6.12.106-virtio-gpu-fail-closed-on-producer-fence-error.patch",
             "sha256": "53f0db7b102f53c6d3aee13dc43cf45dbfedd5dabd0c04026b0b0c709c13953d",
         },
     }

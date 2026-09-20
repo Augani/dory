@@ -209,7 +209,7 @@ public enum DoryRendererSourceTuple: UInt16, Sendable {
     /// insufficient once exact build policy, transitive sources, and compatibility patches are
     /// part of release identity.
     public static let productionDefinitionSHA256 =
-        "6f537361d165cbe75b04e98ce56c6e878060119c2aca112fa88ceba936092bba"
+        "1c871cb20efa87a3a8cd7ab7b00d34bf451305b4461ca91dc155c4b5123be6d1"
 }
 
 /// Guest-side authority that makes RESOURCE_FLUSH producer-complete. Unknown kernels may not claim
