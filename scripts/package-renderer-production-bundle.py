@@ -717,7 +717,7 @@ def verify_runner_renderer_closure(executable: pathlib.Path) -> None:
 
 def canonicalize_worker_linkage(executable: pathlib.Path, developer_dir: pathlib.Path,
                                 receipt: pathlib.Path) -> None:
-    """Remove SwiftPM's unused Xcode compatibility rpath before the worker is signed."""
+    """Remove SwiftPM's unused, trusted toolchain rpaths before the worker is signed."""
     direct_regular_file(
         executable, "DoryRendererWorker link output", executable=True
     )
@@ -730,38 +730,53 @@ def canonicalize_worker_linkage(executable: pathlib.Path, developer_dir: pathlib
         fail(f"cannot resolve selected Xcode developer directory: {error}")
 
     rpaths = macho_rpaths(executable)
-    if len(rpaths) != 1:
+    if not rpaths or len(rpaths) != len(set(rpaths)):
         fail(
-            "DoryRendererWorker link output must contain exactly one SwiftPM compatibility rpath "
+            "DoryRendererWorker link output must contain unique SwiftPM compatibility rpaths "
             f"before canonicalization (actual={rpaths})"
         )
-    raw_rpath = rpaths[0]
-    if not raw_rpath.startswith("/") or posixpath.normpath(raw_rpath) != raw_rpath:
-        fail(
-            "DoryRendererWorker SwiftPM compatibility rpath is not canonical and absolute "
-            f"(actual={raw_rpath!r})"
-        )
-    rpath = pathlib.Path(raw_rpath)
-    direct_directory(rpath, "SwiftPM compatibility library directory")
-    try:
-        relative = rpath.resolve(strict=True).relative_to(developer)
-    except (OSError, ValueError) as error:
-        fail(f"DoryRendererWorker rpath is outside the selected Xcode toolchain: {error}")
-    parts = relative.parts
-    if (len(parts) != 6
-            or parts[:4] != ("Toolchains", "XcodeDefault.xctoolchain", "usr", "lib")
-            or not re.fullmatch(r"swift-[0-9]+\.[0-9]+", parts[4])
-            or parts[5] != "macosx"):
-        fail("DoryRendererWorker rpath is not the exact Xcode Swift compatibility directory")
+    removed: list[str] = []
+    for raw_rpath in rpaths:
+        if not raw_rpath.startswith("/") or posixpath.normpath(raw_rpath) != raw_rpath:
+            fail(
+                "DoryRendererWorker SwiftPM compatibility rpath is not canonical and absolute "
+                f"(actual={raw_rpath!r})"
+            )
+        rpath = pathlib.Path(raw_rpath)
+        if raw_rpath == "/usr/lib/swift":
+            direct_directory(rpath, "SwiftPM compatibility library directory")
+            removed.append(raw_rpath)
+            continue
+        if re.fullmatch(
+            r"/var/run/com\.apple\.security\.cryptexd/mnt/"
+            r"com\.apple\.MobileAsset\.MetalToolchain-v[^/]+/"
+            r"Metal\.xctoolchain/usr/lib/swift-[0-9]+\.[0-9]+/macosx",
+            raw_rpath,
+        ):
+            removed.append(raw_rpath)
+            continue
+        direct_directory(rpath, "SwiftPM compatibility library directory")
+        try:
+            relative = rpath.resolve(strict=True).relative_to(developer)
+        except (OSError, ValueError):
+            fail("DoryRendererWorker rpath is outside the selected Xcode toolchain")
+        parts = relative.parts
+        if (len(parts) != 6
+                or parts[:4] != ("Toolchains", "XcodeDefault.xctoolchain", "usr", "lib")
+                or not re.fullmatch(r"swift-[0-9]+\.[0-9]+", parts[4])
+                or parts[5] != "macosx"):
+            fail("DoryRendererWorker rpath is not the exact Xcode Swift compatibility directory")
+        removed.append(relative.as_posix())
 
     direct_directory(receipt.parent, "worker canonicalization receipt directory")
     if os.path.lexists(receipt):
         fail("worker canonicalization receipt already exists")
     before = sha256(executable)
-    run([
-        "/usr/bin/xcrun", "--sdk", "macosx", "install_name_tool",
-        "-delete_rpath", raw_rpath, os.fspath(executable),
-    ], "remove SwiftPM compatibility rpath", capture=False)
+    for raw_rpath in rpaths:
+        run([
+            "/usr/bin/xcrun", "--sdk", "macosx", "install_name_tool",
+            "-delete_rpath", raw_rpath, os.fspath(executable),
+        ], "remove SwiftPM compatibility rpath", capture=False)
     if macho_rpaths(executable):
         fail("DoryRendererWorker retains LC_RPATH after canonicalization")
     verify_system_dependencies(executable, "canonical DoryRendererWorker link output")
@@ -773,7 +788,7 @@ def canonicalize_worker_linkage(executable: pathlib.Path, developer_dir: pathlib
         "inputExecutableSHA256": before,
         "kind": "dev.dory.renderer-worker-link-canonicalization",
         "outputExecutableSHA256": after,
-        "removedToolchainRPaths": [relative.as_posix()],
+        "removedToolchainRPaths": removed,
         "schemaVersion": 1,
     }
     temporary = receipt.with_name(f".{receipt.name}.tmp-{os.getpid()}")
