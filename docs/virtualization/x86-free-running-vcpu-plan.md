@@ -2,12 +2,16 @@
 
 Status: **approved engineering sequence; not yet a release claim**
 
-Implementation checkpoint (2026-09-20): commit `298d6668e` completes package B's production
-single-vCPU cutover. One run now lends its persistent host worker one long-running job with exact
-result/directive handoffs while the coordinator retains clocks and events. The 62 direct-kernel and
-17 run-session tests pass debug, optimized, and Thread Sanitizer, and two clean signed exact-commit
-PVH userspace plus ACPI-poweroff runs pass. Package A is complete for this handoff boundary;
-packages C-G remain open, and requests above one vCPU still use the bounded legacy scheduler.
+Implementation checkpoint (2026-09-20): commit `376846fd9` builds on package B's production
+single-vCPU cutover. The owning worker now drains that vCPU's events, interrupt/NMI delivery,
+pending-work generation, and translation invalidation, including maintenance while parked on a
+published result. Every vCPU physical-memory view and the port bus also share a conservative
+machine device domain. The complete PC target passes 401 tests in 53 suites, and the device-heavy
+Thread Sanitizer matrix passes 99 tests in 9 suites. The retained clean signed PVH evidence still
+belongs to exact commit `298d6668e`; it has not been relabeled as current-head evidence. Packages C
+and D have implemented foundations but remain open for multi-worker and asynchronous-backend
+qualification; packages E-G remain open, and requests above one vCPU still use the bounded legacy
+scheduler.
 
 This plan converts the existing machine-lifetime host workers into a real multiprocessor runtime
 without weakening deterministic replay, memory ordering, translation invalidation, device safety,
@@ -17,11 +21,13 @@ below does not qualify SMP until the mandatory matrix passes.
 ## Current boundary
 
 `DoryPCVCPURuntime` owns one persistent host thread per vCPU. With one vCPU,
-`DoryPCDirectKernelMachine.run` submits one run-session worker loop and services exact handoffs for
-clocks, devices, lifecycle, and stop selection. With more than one vCPU it still chooses a
-processor, submits bounded execution, waits, and repeats. The only overlapping multiprocessor path
-admits one frozen register-only instruction per vCPU; that proves host-thread overlap, not Linux
-SMP.
+`DoryPCDirectKernelMachine.run` submits one run-session worker loop. The worker owns processor
+events, interrupt/NMI delivery, and translation acknowledgement; the coordinator services clocks,
+machine lifecycle, device work, and exact result/directive handoffs. A parked owner remains
+available for maintenance without advertising architectural idleness. With more than one vCPU the
+runtime still chooses a processor, submits bounded execution, waits, and repeats. The only
+overlapping multiprocessor path admits one frozen register-only instruction per vCPU; that proves
+host-thread overlap, not Linux SMP.
 
 The following foundations already exist and must be preserved:
 
@@ -30,6 +36,8 @@ The following foundations already exist and must be preserved:
 - machine-scoped ordinary/locked backing-range coordination and fail-closed direct mapping;
 - machine-scoped translation invalidation publication with required/acknowledged generations;
 - current Virtio/xHCI DMA routing through coordinated PC RAM and code-lifetime invalidation;
+- one machine-scoped recursive device-entry domain shared by every vCPU MMIO view and the port bus,
+  while ordinary RAM and DMA synchronization remain outside that domain;
 - private executable storage whose executor lock spans native entry, invalidation, retirement, and
   rotation; and
 - a serial deterministic clock/replay policy used by conformance tests.
@@ -138,7 +146,7 @@ Progress: implementation and promotion evidence complete at `298d6668e`. Tests p
 submission and one worker thread across repeated handoffs in interpreter, baseline, and optimizing
 tiers, exact budget/counter parity, monotonically advancing run generations, failure reservation
 return, and stop-before-join behavior. Two clean signed exact-commit PVH runs completed all seven
-userspace workloads and ACPI S5. Package C is the next code boundary.
+userspace workloads and ACPI S5. Package B remains complete; package C progress is recorded below.
 
 ### C. Per-vCPU events and invalidations
 
@@ -155,23 +163,35 @@ Tests must cover an invalidation published while a target is:
 - entering quiescence; and
 - faulting or stopping concurrently.
 
+Progress through `9d618792e`: the single-vCPU session couples wake publication to per-vCPU pending
+generations, places mutable processor state in per-vCPU slots, and routes events, interrupt/NMI
+delivery, page-table invalidation acknowledgement, and parked-owner maintenance through the owner
+worker. Quiescence reopens when new work races an acknowledgement. Focused debug and Thread
+Sanitizer suites pass, including repeated host-clock halt/interrupt delivery. Still open: activate
+this protocol for every simultaneous worker, then cover interpreted/native/halted/quiescing/fault
+and stop races without coordinator-return acknowledgement.
+
 ### D. Device and shared-state concurrency audit
 
 Inventory every object reachable from `DoryPCPhysicalMemoryBus` and `DoryPCPortIOBus`. Record for
 each operation whether it is immutable, per-vCPU, internally locked, or protected by the new
 machine device domain. Add synchronization before enabling general parallel memory operands.
 
-The lock order is fixed:
+The detailed inventory and callback rules live in `x86-device-shared-state-audit.md`. Run-session
+metadata is isolated and may not be held across device or memory work. Guest entry takes the
+machine domain before device-local state. Physical routing is an immutable snapshot; port routing
+uses a short configuration lock. Device callbacks release local configuration locks before waiting
+on backend work or RAM range authority. DMA bytes and code-generation invalidation become visible
+before completion or interrupt publication. Memory synchronization stays outside the machine
+device domain so asynchronous DMA can complete while guest device access is blocked.
 
-1. run-session metadata;
-2. device-local or machine device-domain lock;
-3. physical-memory route snapshot;
-4. RAM range lease;
-5. code-lifetime generation/protection operation.
-
-No callback may acquire an earlier level while holding a later one. DMA copies must release device
-configuration locks before waiting on RAM range authority; completion/interrupt publication occurs
-after DMA bytes and code-generation invalidation are visible.
+Progress at `376846fd9`: all vCPU physical buses and the port bus share one recursive guest-entry
+domain; separate machines are isolated; ordinary RAM remains concurrent; nested routing is safe;
+and a full-suite-discovered xHCI MMIO/DMA lock cycle is fixed and retained as a regression. The full
+PC target and a 99-test device-heavy Thread Sanitizer matrix pass. Still open: finish callback-graph
+review for built-in clocks, host input, reset, deferred completion, and interrupt sinks; audit every
+admitted `platformMMIODevices`/`pciFunctions` extension; and pass the same matrix under sustained
+two-vCPU execution.
 
 ### E. General two-vCPU execution
 
@@ -224,6 +244,10 @@ Keep each step bisectable and leave the public x86 gate closed:
 7. baseline and mixed-tier admissions, then optimizing pairs;
 8. four-vCPU scale, performance/SLO evidence, and lifecycle hardening; and
 9. exact notarized PVH/UEFI matrix followed by a separate explicit product-policy change.
+
+Steps 1-3 are complete. Step 4 is complete for the single-vCPU owner path but not multi-worker
+activation. Step 5 has its conservative guest-entry boundary and inventory; asynchronous-path and
+extension qualification remain open. Steps 6-9 have not been promoted.
 
 No commit may enable a pair, vCPU count, predictor, profile, or public product path before its own
 evidence lands. Historical receipts never substitute for the exact implementation candidate.
