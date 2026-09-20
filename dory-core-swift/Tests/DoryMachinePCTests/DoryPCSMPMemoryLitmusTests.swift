@@ -270,6 +270,72 @@ import Testing
     #expect(invalidation.requiredGenerations == invalidation.acknowledgedGenerations)
   }
 
+  @Test func guestCPUMutationRevokesRemoteInstructionFetch() throws {
+    let mutableCode: UInt64 = 0xA000
+    let machine = try makeMachine(
+      bsp: [
+        // Wait until the AP has executed the old bytes and left the mutable function.
+        0x83, 0x3D, 0x00, 0x50, 0x00, 0x00, 0x01,  // cmp dword [0x5000],1
+        0x75, 0xF7,  // jne back
+        // Replace the immediate in `mov eax,0x1111` through the normal guest CPU write path.
+        0xC7, 0x05, 0x01, 0xA0, 0x00, 0x00, 0x22, 0x22, 0x00, 0x00,
+        0x0F, 0xAE, 0xF0,  // mfence
+        0xC7, 0x05, 0x04, 0x50, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        // Wait until the AP has serialized and executed the replacement bytes.
+        0x81, 0x3D, 0x14, 0x50, 0x00, 0x00, 0x22, 0x22, 0x00, 0x00,
+        0x75, 0xF4,  // jne back
+        0x66, 0xBA, 0x04, 0x06,  // mov dx,PM1_CONTROL
+        0x66, 0xB8, 0x00, 0x34,  // mov ax,S5|SLP_EN
+        0x66, 0xEF,  // out dx,ax
+      ],
+      ap: [
+        0xB8, 0x00, 0xA0, 0x00, 0x00,  // mov eax,0xA000
+        0xFF, 0xD0,  // call eax
+        0xA3, 0x10, 0x50, 0x00, 0x00,  // mov [0x5010],eax
+        0xC7, 0x05, 0x00, 0x50, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x83, 0x3D, 0x04, 0x50, 0x00, 0x00, 0x01,  // cmp dword [0x5004],1
+        0x75, 0xF7,  // jne back
+        0x31, 0xC0,  // xor eax,eax
+        0x0F, 0xA2,  // cpuid (cross-modifying-code serialization)
+        0xB8, 0x00, 0xA0, 0x00, 0x00,  // mov eax,0xA000
+        0xFF, 0xD0,  // call eax
+        0xA3, 0x14, 0x50, 0x00, 0x00,  // mov [0x5014],eax
+        0xF4,
+      ]
+    )
+    try machine.memory.write(
+      at: mutableCode,
+      bytes: [0xB8, 0x11, 0x11, 0x00, 0x00, 0xC3]  // mov eax,0x1111; ret
+    )
+    try zero([0x5000, 0x5004, 0x5010, 0x5014], in: machine)
+    let generationBefore = try #require(
+      try machine.memory.codeGeneration(at: mutableCode, byteCount: 6)
+    )
+    let codeProtection = try #require(
+      machine.memory as? any DoryX86TranslatedCodeProtectionMemory
+    )
+    #expect(try codeProtection.protectTranslatedCode(at: mutableCode, byteCount: 6))
+    #expect(codeProtection.protectedTranslatedCodePageCount > 0)
+    let protectionBefore = codeProtection.translatedCodeProtectionGeneration
+    let overlap = LitmusOverlapProbe()
+    machine.observeWorkers { overlap.observe($0) }
+
+    guard case .poweredOff(let retired) = try machine.run(maximumInstructions: 100_000) else {
+      Issue.record("expected guest poweroff after the remote instruction fetch changed")
+      return
+    }
+
+    #expect(retired > 0)
+    #expect(try machine.memory.readScalar(at: 0x5010, byteCount: 4) == 0x1111)
+    #expect(try machine.memory.readScalar(at: 0x5014, byteCount: 4) == 0x2222)
+    #expect(
+      try machine.memory.codeGeneration(at: mutableCode, byteCount: 6) != generationBefore
+    )
+    #expect(codeProtection.translatedCodeProtectionGeneration > protectionBefore)
+    #expect(codeProtection.protectedTranslatedCodePageCount == 0)
+    #expect(overlap.maximumActive == 2)
+  }
+
   private enum Register { case rax, rbx }
 
   private func register(
