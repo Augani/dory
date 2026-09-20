@@ -42,4 +42,6 @@ done
 if [ "$PACKAGING_ONLY" = true ]; then
   exec "$REAL_XCODEBUILD" "$@"
 fi
-exec "$REAL_XCODEBUILD" -jobs "$JOBS" "$@" ARCHS=arm64
+exec "$REAL_XCODEBUILD" -jobs "$JOBS" "$@" \
+  ARCHS=arm64 \
+  MACOSX_DEPLOYMENT_TARGET=15.0

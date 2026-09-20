@@ -259,6 +259,9 @@ class StaticTupleTests(unittest.TestCase):
         dependencies = (
             REPO / "scripts/build-renderer-production-dependencies.sh"
         ).read_text()
+        xcodebuild_wrapper = (
+            REPO / "scripts/renderer-build-tools/xcodebuild"
+        ).read_text()
         virgl = (REPO / "scripts/build-virglrenderer.sh").read_text()
         package = PACKAGE.read_text()
         assembler = ASSEMBLER.read_text()
@@ -275,6 +278,7 @@ class StaticTupleTests(unittest.TestCase):
         self.assertIn("Source/ThirdParty/ANGLE", dependencies)
         self.assertIn("verify_angle_runtime_library", dependencies)
         self.assertIn("MVK_HIDE_VULKAN_SYMBOLS=1", dependencies)
+        self.assertIn("MACOSX_DEPLOYMENT_TARGET=15.0", xcodebuild_wrapper)
 
         self.assertIn("-Dplatforms=egl", virgl)
         self.assertIn("-Dvenus-only=false", virgl)

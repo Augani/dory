@@ -492,11 +492,30 @@ Primary reference: [Intel architecture manuals](https://www.intel.com/content/ww
 
 ### 3.3 P3-03 — Complete memory export, mapping and lifetime contracts
 
+**GPU desktop decisions recorded 2026-09-20:**
+
+- **D1 — Aperture overlap:** allocate every VM's blobs from one contiguous, generation-bound
+  shared-memory arena that mirrors the guest aperture. Map/refcount complete 16-KiB granules;
+  same-VM padding may be visible, but no arena contains host, non-GPU, or cross-VM data.
+- **D2 — Stock-only guest profile:** ship vendor kernels (minimum 6.13) and distro Mesa. Do not
+  restore the managed kernel/Mesa pack. The managed profile remains a future-facing enum case with
+  no admission path; if compatibility requires renderer work, rebase virglrenderer instead.
+- **D3 — Older kernels:** automatically and visibly downgrade pre-6.13 guests to a working
+  software desktop, preserving the user's kernel and explaining the HWE/newer-kernel option.
+- **D4 — API strategy:** Venus is primary. Zink-on-Venus is the presumptive OpenGL default, but
+  the controlled 3.7 workload comparison decides; retain VirGL2 only for a named failing workload.
+- **D5 — Window ownership:** the Dory app owns every product window; `dory-hv` owns VM execution
+  and exports generation-bound IOSurface/shared-texture leases over XPC without a second app.
+- **D6 — Sequence:** complete ARM Phase A before desktop/macOS work proceeds in parallel, and do
+  not begin x86 GPU implementation until 3.5 retains one displayed-pixel receipt.
+
 1. Specify resource storage types explicitly: guest RAM, host-visible linear shared backing, imported shared Metal texture and renderer-private optimal storage.
 2. For each type, define allocator, allowed processes, permissions, sizes/alignment, mapping owner, producer/consumer access and release protocol.
 3. Preserve VirGL shared-texture and Venus descriptor-backed linear-memory paths until a replacement proves compatibility and benefit. A Metal bytesNoCopy buffer still has allocation/stride/cache/lifetime requirements.
 4. Bind every FD/handle/lease to machine and worker generation; reject mismatched device identity, invalid texture descriptors and stale/replayed exports.
-5. Handle guest 4-KiB pages on host 16-KiB mappings without exposing adjacent resources. Validate all rounded ranges and map permissions.
+5. Handle guest 4-KiB offsets with D1's per-VM contiguous aperture arena. Validate every rounded
+   range and permission, map whole 16-KiB granules, and unmap a granule only after its final live
+   blob reference is released.
 6. On unmap/reset/death: prevent new accesses, revoke TLB/device mappings, wait or cancel outstanding consumers safely, then release backing. Do not unmap memory while an in-flight Metal command can still read it.
 7. Coordinate PC DBT aliases and code invalidation with 2.6. The renderer does not get to invent a parallel guest address map.
 8. Account separately for CPU copies/uploads, shared-memory writes, GPU layout/format blits and final presentation. Optimize copies only after output and lifetime correctness pass.
@@ -507,12 +526,17 @@ Primary reference: [Intel architecture manuals](https://www.intel.com/content/ww
 
 **Source:** DoryRendererWorkerIdentity, DoryRendererWorkerBootstrap, DoryRendererWorkerVirglBackend, guest kernel patches, Mesa producer scripts.
 
-1. Document the currently accepted managedLinux612106PrepareFBV1 contract and which kernel patches establish it.
+1. Preserve the historical managedLinux612106PrepareFBV1 contract and patch provenance as
+   compatibility evidence, but admit no managed profile in this release per D2.
 2. Trace when the guest has finished writing/rendering a framebuffer, when virtio reports it, and when the host is allowed to import/read/present it.
 3. Verify producer-fence capture, wait and error propagation; do not infer completion merely from queue ordering or receiving RESOURCE_FLUSH.
 4. Implement/reset timeout and device-loss behavior for unsignaled/failed fences. Avoid waiting forever in a queue callback or holding a global renderer lock.
-5. Determine exact upstream kernels whose DRM/virtio behavior satisfies the contract. Kernel version or blob support alone is insufficient.
-6. Freeze kernel/Mesa/worker tuples with their synchronization contract and required features. A stock profile needs its own demonstrated compatibility; a managed profile includes its patch/build provenance.
+5. Admit stock kernels at 6.13 or newer provisionally, then verify the prepare-fb producer ordering
+   from observed fences before promoting graphics to verified; version or blob support alone is
+   insufficient.
+6. Freeze the worker identity and supported stock kernel/Mesa/API matrix. Guest kernel and Mesa
+   digests are not product admission authority; runtime fence verification and capset negotiation
+   are.
 7. Test multiple queues, reordered completions, long GPU work, resource destruction, duplicate fence IDs and reset while producer work is active.
 8. Distinguish Vulkan synchronization inside a context from scanout synchronization between guest, host worker and presentation consumer.
 
@@ -559,8 +583,11 @@ Reference behavior: [Linux DRM framebuffer helpers](https://docs.kernel.org/gpu/
 4. Compare correctness, supported features, startup/shader compilation, frame intervals, CPU/RSS and failure modes on identical guest/host/resources.
 5. Use GNOME/Mutter, KDE/KWin, GTK4, Qt, a browser WebGL scene, glmark2 scenes and an editor/application workload. Record unsupported required features as failures.
 6. Select the default path per admitted profile with rationale. Retain a second path only for a named compatibility requirement; remove it only after that requirement is satisfied elsewhere.
-7. Support explicit unaccelerated installation where the stock installer lacks the required driver/fence contract; offer a documented managed profile afterward. Never silently replace a user's kernel.
-8. Package driver updates transactionally, with rollback to the prior working kernel/Mesa tuple. Record the effect of guest package updates on compatibility.
+7. Support explicit unaccelerated installation where the stock installer lacks the required
+   driver/fence contract and give a visible HWE/newer-kernel hint. Never silently replace a user's
+   kernel or offer a managed profile in this release.
+8. Record how distro kernel/Mesa updates change compatibility and preserve a working software
+   fallback; Dory does not package or install replacement graphics stacks for the stock profile.
 
 **Acceptance:** every advertised GL/Vulkan level has exact prerequisites and real applications behind it; the chosen defaults follow measurements and correctness, not a preference for one library.
 
