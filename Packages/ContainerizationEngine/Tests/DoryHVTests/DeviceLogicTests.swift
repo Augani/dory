@@ -1304,6 +1304,113 @@ import Testing
         #expect(leUInt32(try gpuResponse(gpu: gpu, request: unalignedMap), at: 0) == 0x1205)
     }
 
+    @Test func hostVisibleArenaMapsFourKiBBlobThroughWholeHostGranule() throws {
+        let arena = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(HostPage.size * 2),
+            alignment: Int(HostPage.size)
+        )
+        defer { arena.deallocate() }
+        let arenaAddress = UInt(bitPattern: arena)
+        let operations = DeviceLogicLockedBox(
+            [(hostOffset: UInt64, guest: UInt64, size: Int)]()
+        )
+        let unmapped = DeviceLogicLockedBox([(guest: UInt64, size: Int)]())
+        let guestBase: UInt64 = 0x20_0000_0000
+        let memory = try VirtioGPUHostVisibleMemory(
+            guestBase: guestBase,
+            length: HostPage.size * 2,
+            arenaMapOperation: { pointer, guest, size in
+                operations.withLock {
+                    $0.append((UInt64(UInt(bitPattern: pointer) - arenaAddress), guest, size))
+                }
+            },
+            arenaUnmapOperation: { guest, size in
+                unmapped.withLock { $0.append((guest, size)) }
+            }
+        )
+
+        try memory.mapArena(
+            resourceID: 1,
+            arenaBase: arena,
+            offset: 4_096,
+            size: 4_096
+        )
+
+        #expect(operations.value.count == 1)
+        #expect(operations.value[0].hostOffset == 0)
+        #expect(operations.value[0].guest == guestBase)
+        #expect(operations.value[0].size == Int(HostPage.size))
+        memory.unmap(resourceID: 1)
+        #expect(unmapped.value.count == 1)
+        #expect(unmapped.value[0].guest == guestBase)
+        #expect(unmapped.value[0].size == Int(HostPage.size))
+    }
+
+    @Test func hostVisibleArenaKeepsSharedGranuleUntilLastBlobUnmaps() throws {
+        let arena = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(HostPage.size),
+            alignment: Int(HostPage.size)
+        )
+        defer { arena.deallocate() }
+        let mapped = DeviceLogicLockedBox([UInt64]())
+        let unmapped = DeviceLogicLockedBox([UInt64]())
+        let guestBase: UInt64 = 0x21_0000_0000
+        let memory = try VirtioGPUHostVisibleMemory(
+            guestBase: guestBase,
+            length: HostPage.size,
+            arenaMapOperation: { _, guest, _ in mapped.withLock { $0.append(guest) } },
+            arenaUnmapOperation: { guest, _ in unmapped.withLock { $0.append(guest) } }
+        )
+
+        try memory.mapArena(resourceID: 1, arenaBase: arena, offset: 0, size: 8_192)
+        try memory.mapArena(resourceID: 2, arenaBase: arena, offset: 8_192, size: 8_192)
+        #expect(mapped.value == [guestBase])
+
+        memory.unmap(resourceID: 2)
+        #expect(unmapped.value.isEmpty)
+        memory.unmap(resourceID: 1)
+        #expect(unmapped.value == [guestBase])
+    }
+
+    @Test func hostVisibleArenaResetAndOverflowFailClosed() throws {
+        let arena = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(HostPage.size * 2),
+            alignment: Int(HostPage.size)
+        )
+        defer { arena.deallocate() }
+        let mapped = DeviceLogicLockedBox([UInt64]())
+        let unmapped = DeviceLogicLockedBox([UInt64]())
+        let guestBase: UInt64 = 0x22_0000_0000
+        let memory = try VirtioGPUHostVisibleMemory(
+            guestBase: guestBase,
+            length: HostPage.size * 2,
+            arenaMapOperation: { _, guest, _ in mapped.withLock { $0.append(guest) } },
+            arenaUnmapOperation: { guest, _ in unmapped.withLock { $0.append(guest) } }
+        )
+
+        try memory.mapArena(resourceID: 1, arenaBase: arena, offset: 4_096, size: 20_480)
+        #expect(mapped.value == [guestBase, guestBase + HostPage.size])
+        memory.reset()
+        #expect(Set(unmapped.value) == Set([guestBase, guestBase + HostPage.size]))
+
+        #expect(throws: (any Error).self) {
+            try memory.mapArena(
+                resourceID: 2,
+                arenaBase: arena,
+                offset: UInt64.max - 4_095,
+                size: 8_192
+            )
+        }
+        #expect(throws: (any Error).self) {
+            try memory.mapArena(
+                resourceID: 3,
+                arenaBase: arena,
+                offset: HostPage.size * 2 - 4_096,
+                size: 8_192
+            )
+        }
+    }
+
     @Test func assignsStableUUIDToRendererResource() throws {
         let renderer = FakeVirtioGPURenderer(capsets: [
             VirtioGPUCapset(id: 4, maxVersion: 2, data: [0x56, 0x45, 0x4e, 0x55, 0x53])
@@ -3461,6 +3568,27 @@ import Testing
             | UInt32(bytes[offset + 1]) << 8
             | UInt32(bytes[offset + 2]) << 16
             | UInt32(bytes[offset + 3]) << 24
+    }
+}
+
+private final class DeviceLogicLockedBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: Value
+
+    init(_ value: Value) {
+        storedValue = value
+    }
+
+    func withLock<Result>(_ body: (inout Value) throws -> Result) rethrows -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&storedValue)
+    }
+
+    var value: Value {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedValue
     }
 }
 

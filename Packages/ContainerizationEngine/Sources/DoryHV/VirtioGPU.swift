@@ -1614,29 +1614,77 @@ final class VirtioGPURendererCommandExecutor: @unchecked Sendable {
 /// window at the guest-requested offset — the same zero-copy model libkrun/krunkit use on macOS.
 /// Pre-mapping the whole window would make per-blob hv_vm_map fail (the GPA is already mapped).
 public final class VirtioGPUHostVisibleMemory: @unchecked Sendable {
+    typealias ArenaMapOperation = @Sendable (
+        _ hostPointer: UnsafeMutableRawPointer,
+        _ guestAddress: UInt64,
+        _ byteCount: Int
+    ) throws -> Void
+    typealias ArenaUnmapOperation = @Sendable (
+        _ guestAddress: UInt64,
+        _ byteCount: Int
+    ) -> Void
+
+    private struct ArenaMapping {
+        let offset: UInt64
+        let size: UInt64
+        let granuleOffsets: [UInt64]
+    }
+
     public let guestBase: UInt64
     public let length: UInt64
 
     private let lock = NSLock()
     private var mappings: [UInt32: (offset: UInt64, size: UInt64)] = [:]
+    private var arenaMappings: [UInt32: ArenaMapping] = [:]
+    private var arenaGranuleReferences: [UInt64: UInt32] = [:]
+    private let arenaMapOperation: ArenaMapOperation
+    private let arenaUnmapOperation: ArenaUnmapOperation
 
-    public init(guestBase: UInt64, length: UInt64 = 256 * 1024 * 1024) throws {
+    public convenience init(
+        guestBase: UInt64,
+        length: UInt64 = 256 * 1024 * 1024
+    ) throws {
+        try self.init(
+            guestBase: guestBase,
+            length: length,
+            arenaMapOperation: { hostPointer, guestAddress, byteCount in
+                try hvCheck(
+                    hv_vm_map(
+                        hostPointer,
+                        guestAddress,
+                        byteCount,
+                        hv_memory_flags_t(HV_MEMORY_READ | HV_MEMORY_WRITE)
+                    ),
+                    "virtio-gpu host-visible arena hv_vm_map"
+                )
+            },
+            arenaUnmapOperation: { guestAddress, byteCount in
+                _ = hv_vm_unmap(guestAddress, byteCount)
+            }
+        )
+    }
+
+    init(
+        guestBase: UInt64,
+        length: UInt64,
+        arenaMapOperation: @escaping ArenaMapOperation,
+        arenaUnmapOperation: @escaping ArenaUnmapOperation
+    ) throws {
         guard length > 0,
               guestBase.isMultiple(of: HostPage.size),
               length.isMultiple(of: HostPage.size),
-              length <= UInt64(Int.max) else {
+              length <= UInt64(Int.max),
+              guestBase <= UInt64.max - length else {
             throw VMError.invalidConfiguration("invalid virtio-gpu host-visible memory window")
         }
         self.guestBase = guestBase
         self.length = length
+        self.arenaMapOperation = arenaMapOperation
+        self.arenaUnmapOperation = arenaUnmapOperation
     }
 
     deinit {
-        lock.lock()
-        for (_, mapping) in mappings {
-            _ = hv_vm_unmap(guestBase + mapping.offset, Int(mapping.size))
-        }
-        lock.unlock()
+        reset()
     }
 
     /// hv_vm_map the renderer-owned `hostPointer` into the window at `offset`. `hostPointer` stays
@@ -1659,12 +1707,122 @@ public final class VirtioGPUHostVisibleMemory: @unchecked Sendable {
         mappings[resourceID] = (offset, mapSize)
     }
 
+    /// Maps a logical blob range out of one generation-bound worker arena. Guest offsets remain
+    /// 4 KiB-granular, while Hypervisor.framework sees only whole host pages. Two neighboring
+    /// blobs may therefore reference the same 16 KiB granule; the granule is removed only after
+    /// its final live blob is unmapped. This method is deliberately separate from the legacy
+    /// per-blob path until the worker bootstrap supplies the single contiguous arena authority.
+    func mapArena(
+        resourceID: UInt32,
+        arenaBase: UnsafeMutableRawPointer,
+        offset: UInt64,
+        size: UInt64
+    ) throws {
+        let faultAddress = offset <= UInt64.max - guestBase
+            ? guestBase + offset
+            : UInt64.max
+        let (end, endOverflow) = offset.addingReportingOverflow(size)
+        guard size > 0, !endOverflow, offset < length, end <= length else {
+            throw VMError.guestMemoryFault(address: faultAddress, count: size)
+        }
+        let firstGranule = offset - (offset % HostPage.size)
+        let endRemainder = end % HostPage.size
+        let roundedEnd: UInt64
+        if endRemainder == 0 {
+            roundedEnd = end
+        } else {
+            let (candidate, overflow) = end.addingReportingOverflow(
+                HostPage.size - endRemainder
+            )
+            guard !overflow, candidate <= length else {
+                throw VMError.guestMemoryFault(address: faultAddress, count: size)
+            }
+            roundedEnd = candidate
+        }
+        guard firstGranule < roundedEnd,
+              roundedEnd - firstGranule <= UInt64(Int.max) else {
+            throw VMError.guestMemoryFault(address: faultAddress, count: size)
+        }
+
+        var granules = [UInt64]()
+        granules.reserveCapacity(Int((roundedEnd - firstGranule) / HostPage.size))
+        var granule = firstGranule
+        while granule < roundedEnd {
+            granules.append(granule)
+            granule += HostPage.size
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard mappings[resourceID] == nil, arenaMappings[resourceID] == nil else {
+            throw VMError.invalidConfiguration(
+                "virtio-gpu host-visible resource is already mapped"
+            )
+        }
+
+        var newlyMapped = [UInt64]()
+        do {
+            for granuleOffset in granules
+            where arenaGranuleReferences[granuleOffset] == nil {
+                try arenaMapOperation(
+                    arenaBase.advanced(by: Int(granuleOffset)),
+                    guestBase + granuleOffset,
+                    Int(HostPage.size)
+                )
+                newlyMapped.append(granuleOffset)
+            }
+        } catch {
+            for granuleOffset in newlyMapped.reversed() {
+                arenaUnmapOperation(guestBase + granuleOffset, Int(HostPage.size))
+            }
+            throw error
+        }
+
+        for granuleOffset in granules {
+            arenaGranuleReferences[granuleOffset, default: 0] += 1
+        }
+        arenaMappings[resourceID] = ArenaMapping(
+            offset: offset,
+            size: size,
+            granuleOffsets: granules
+        )
+    }
+
     public func unmap(resourceID: UInt32) {
         lock.lock()
         defer { lock.unlock() }
+        if let mapping = arenaMappings.removeValue(forKey: resourceID) {
+            for granuleOffset in mapping.granuleOffsets {
+                guard let references = arenaGranuleReferences[granuleOffset] else {
+                    continue
+                }
+                if references == 1 {
+                    arenaGranuleReferences.removeValue(forKey: granuleOffset)
+                    arenaUnmapOperation(guestBase + granuleOffset, Int(HostPage.size))
+                } else {
+                    arenaGranuleReferences[granuleOffset] = references - 1
+                }
+            }
+            return
+        }
         if let mapping = mappings.removeValue(forKey: resourceID) {
             _ = hv_vm_unmap(guestBase + mapping.offset, Int(mapping.size))
         }
+    }
+
+    /// Device reset revokes every aperture mapping without depending on resource teardown order.
+    public func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        for granuleOffset in arenaGranuleReferences.keys {
+            arenaUnmapOperation(guestBase + granuleOffset, Int(HostPage.size))
+        }
+        arenaMappings.removeAll(keepingCapacity: false)
+        arenaGranuleReferences.removeAll(keepingCapacity: false)
+        for (_, mapping) in mappings {
+            _ = hv_vm_unmap(guestBase + mapping.offset, Int(mapping.size))
+        }
+        mappings.removeAll(keepingCapacity: false)
     }
 }
 
