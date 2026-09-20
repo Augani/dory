@@ -23,10 +23,15 @@ public final class DoryPCPortIOBus: DoryX86IOBus, @unchecked Sendable {
   }
 
   private let lock = NSLock()
+  let deviceAccessCoordinator: DoryPCDeviceAccessCoordinator
   private var mappings: [Mapping] = []
   private var isSealed = false
 
-  public init() {}
+  public convenience init() { self.init(deviceAccessCoordinator: .init()) }
+
+  init(deviceAccessCoordinator: DoryPCDeviceAccessCoordinator) {
+    self.deviceAccessCoordinator = deviceAccessCoordinator
+  }
 
   public func attach(_ device: any DoryPCPortIODevice) throws {
     try lock.withLock {
@@ -50,22 +55,26 @@ public final class DoryPCPortIOBus: DoryX86IOBus, @unchecked Sendable {
   public func seal() { lock.withLock { isSealed = true } }
 
   public func read(port: UInt16, width: DoryX86OperandWidth) throws -> UInt32 {
-    guard let resolved = resolve(port: port, width: width) else {
-      // An unclaimed PC I/O cycle reads as an open bus. Optional-device probes rely on this to
-      // discover absence; turning it into a CPU fault makes ordinary firmware enumeration fatal.
-      return switch width {
-      case .byte: 0xFF
-      case .word: 0xFFFF
-      case .doubleword, .quadword: 0xFFFF_FFFF
+    try deviceAccessCoordinator.withAccess {
+      guard let resolved = resolve(port: port, width: width) else {
+        // An unclaimed PC I/O cycle reads as an open bus. Optional-device probes rely on this to
+        // discover absence; turning it into a CPU fault makes ordinary firmware enumeration fatal.
+        return switch width {
+        case .byte: 0xFF
+        case .word: 0xFFFF
+        case .doubleword, .quadword: 0xFFFF_FFFF
+        }
       }
+      return try resolved.device.read(portOffset: resolved.offset, width: width)
     }
-    return try resolved.device.read(portOffset: resolved.offset, width: width)
   }
 
   public func write(port: UInt16, value: UInt32, width: DoryX86OperandWidth) throws {
-    // Writes to an unclaimed PC I/O port are discarded, matching an absent ISA/legacy device.
-    guard let resolved = resolve(port: port, width: width) else { return }
-    try resolved.device.write(portOffset: resolved.offset, value: value, width: width)
+    try deviceAccessCoordinator.withAccess {
+      // Writes to an unclaimed PC I/O port are discarded, matching an absent ISA/legacy device.
+      guard let resolved = resolve(port: port, width: width) else { return }
+      try resolved.device.write(portOffset: resolved.offset, value: value, width: width)
+    }
   }
 
   private func resolve(

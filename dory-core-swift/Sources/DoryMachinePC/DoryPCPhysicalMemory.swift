@@ -130,6 +130,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   public let ram: any DoryX86PhysicalRAM
   private let rangeCoordinatedRAM: any DoryX86RangeCoordinatedMemory
   public let memoryAccessCoordinator: DoryX86MemoryAccessCoordinator
+  let deviceAccessCoordinator: DoryPCDeviceAccessCoordinator
 
   public var hostAddressSpaceBase: UInt64 {
     (ram as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceBase ?? 0
@@ -170,7 +171,8 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       ram: ram,
       mmioHoleStart: DoryPCV1ABI.mmioHoleStart,
       above4GRAMStart: DoryPCV1ABI.above4GRAMStart,
-      diagnosticsEnabled: diagnosticsEnabled
+      diagnosticsEnabled: diagnosticsEnabled,
+      deviceAccessCoordinator: .init()
     )
   }
 
@@ -178,7 +180,8 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     ram: any DoryX86PhysicalRAM,
     mmioHoleStart: UInt64,
     above4GRAMStart: UInt64,
-    diagnosticsEnabled: Bool = true
+    diagnosticsEnabled: Bool = true,
+    deviceAccessCoordinator: DoryPCDeviceAccessCoordinator = .init()
   ) throws {
     guard ram.baseAddress == 0, ram.byteCount > 0, mmioHoleStart > 0,
       above4GRAMStart > mmioHoleStart,
@@ -196,6 +199,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     self.mmioHoleStart = mmioHoleStart
     self.above4GRAMStart = above4GRAMStart
     self.diagnosticsEnabled = diagnosticsEnabled
+    self.deviceAccessCoordinator = deviceAccessCoordinator
     hasPublishedSealedMappings = .allocate(capacity: 1)
     hasPublishedSealedMappings.initialize(to: 0)
     diagnosticCounters = .allocate(capacity: DiagnosticCounter.allCases.count)
@@ -303,18 +307,20 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       )
     }
     if let resolved = try resolve(address: address, byteCount: 1, access: .instructionFetch) {
-      guard resolved.device.allowsInstructionFetch else {
-        throw DoryX86MemoryError.unmapped(
-          address: address,
-          byteCount: maximumCount,
-          access: .instructionFetch
+      return try deviceAccessCoordinator.withAccess {
+        guard resolved.device.allowsInstructionFetch else {
+          throw DoryX86MemoryError.unmapped(
+            address: address,
+            byteCount: maximumCount,
+            access: .instructionFetch
+          )
+        }
+        incrementDiagnostic(.mmioInstructionFetchExits)
+        return try resolved.device.read(
+          offset: resolved.offset,
+          byteCount: Int(min(UInt64(maximumCount), resolved.availableByteCount))
         )
       }
-      incrementDiagnostic(.mmioInstructionFetchExits)
-      return try resolved.device.read(
-        offset: resolved.offset,
-        byteCount: Int(min(UInt64(maximumCount), resolved.availableByteCount))
-      )
     }
     let resolved = try resolveRAM(
       address: address,
@@ -337,8 +343,10 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       return try ram.read(at: resolved.backingAddress, byteCount: byteCount)
     }
     if let resolved = try resolve(address: address, byteCount: byteCount, access: .read) {
-      incrementDiagnostic(.mmioReadExits)
-      return try resolved.device.read(offset: resolved.offset, byteCount: byteCount)
+      return try deviceAccessCoordinator.withAccess {
+        incrementDiagnostic(.mmioReadExits)
+        return try resolved.device.read(offset: resolved.offset, byteCount: byteCount)
+      }
     }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
     return try ram.read(at: resolved.backingAddress, byteCount: byteCount)
@@ -355,7 +363,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       return
     }
     if let resolved = try resolve(address: address, byteCount: byteCount, access: .read) {
-      try resolved.device.validateRead(offset: resolved.offset, byteCount: byteCount)
+      try deviceAccessCoordinator.withAccess {
+        try resolved.device.validateRead(offset: resolved.offset, byteCount: byteCount)
+      }
       return
     }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
@@ -373,11 +383,13 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     }
     if let resolved = try resolve(address: address, byteCount: byteCount, access: .instructionFetch)
     {
-      guard resolved.device.allowsInstructionFetch else { return nil }
-      return try resolved.device.codeGeneration(
-        offset: resolved.offset,
-        byteCount: byteCount
-      )
+      return try deviceAccessCoordinator.withAccess {
+        guard resolved.device.allowsInstructionFetch else { return nil }
+        return try resolved.device.codeGeneration(
+          offset: resolved.offset,
+          byteCount: byteCount
+        )
+      }
     }
     let resolved = try resolveRAM(
       address: address,
@@ -396,11 +408,13 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       return try ram.readScalar(at: resolved.backingAddress, byteCount: byteCount)
     }
     if let resolved = try resolve(address: address, byteCount: byteCount, access: .read) {
-      incrementDiagnostic(.mmioReadExits)
-      return try resolved.device.read(
-        offset: resolved.offset, byteCount: byteCount
-      ).enumerated().reduce(0) {
-        $0 | UInt64($1.element) << UInt64($1.offset * 8)
+      return try deviceAccessCoordinator.withAccess {
+        incrementDiagnostic(.mmioReadExits)
+        return try resolved.device.read(
+          offset: resolved.offset, byteCount: byteCount
+        ).enumerated().reduce(0) {
+          $0 | UInt64($1.element) << UInt64($1.offset * 8)
+        }
       }
     }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
@@ -415,8 +429,10 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       return
     }
     if let resolved = try resolve(address: address, byteCount: bytes.count, access: .write) {
-      incrementDiagnostic(.mmioWriteExits)
-      try resolved.device.write(offset: resolved.offset, bytes: bytes)
+      try deviceAccessCoordinator.withAccess {
+        incrementDiagnostic(.mmioWriteExits)
+        try resolved.device.write(offset: resolved.offset, bytes: bytes)
+      }
       return
     }
     let resolved = try resolveRAM(address: address, byteCount: bytes.count, access: .write)
@@ -436,9 +452,11 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       let bytes = (0..<byteCount).map {
         UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
       }
-      try resolved.device.validateWrite(offset: resolved.offset, byteCount: byteCount)
-      incrementDiagnostic(.mmioWriteExits)
-      try resolved.device.write(offset: resolved.offset, bytes: bytes)
+      try deviceAccessCoordinator.withAccess {
+        try resolved.device.validateWrite(offset: resolved.offset, byteCount: byteCount)
+        incrementDiagnostic(.mmioWriteExits)
+        try resolved.device.write(offset: resolved.offset, bytes: bytes)
+      }
       return
     }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .write)
@@ -480,7 +498,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       return
     }
     if let resolved = try resolve(address: address, byteCount: byteCount, access: .write) {
-      try resolved.device.validateWrite(offset: resolved.offset, byteCount: byteCount)
+      try deviceAccessCoordinator.withAccess {
+        try resolved.device.validateWrite(offset: resolved.offset, byteCount: byteCount)
+      }
       return
     }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .write)
@@ -490,6 +510,10 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   public func synchronize() {
     let devices = withMappings { $0.map(\.device) }
     ram.synchronize()
+    // DMA backends use this same memory boundary to publish writes. Do not require the guest
+    // CPU device domain here: a device callback may be waiting for asynchronous backend work
+    // whose completion synchronizes RAM, and taking the domain would turn that wait into a
+    // lock-order cycle. Device implementations retain responsibility for their local barriers.
     for device in devices { device.synchronize() }
   }
 
@@ -781,11 +805,13 @@ extension DoryPCPhysicalMemoryBus: DoryX86RestartableScalarMemory {
       return try ram.readScalar(at: resolved.backingAddress, byteCount: byteCount)
     }
     if let resolved = try resolve(address: address, byteCount: byteCount, access: .read) {
-      incrementDiagnostic(.mmioReadExits)
-      return try resolved.device.readRestartableScalar(
-        offset: resolved.offset,
-        byteCount: byteCount
-      )
+      return try deviceAccessCoordinator.withAccess {
+        incrementDiagnostic(.mmioReadExits)
+        return try resolved.device.readRestartableScalar(
+          offset: resolved.offset,
+          byteCount: byteCount
+        )
+      }
     }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
     return try ram.readScalar(at: resolved.backingAddress, byteCount: byteCount)

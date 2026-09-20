@@ -1063,13 +1063,20 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     memory = sharedMemory
     hostAddressSpaceBase = sharedMemory.hostAddressSpaceBase
     hostAddressSpaceByteCount = sharedMemory.hostAddressSpaceByteCount
+    let deviceAccessCoordinator = DoryPCDeviceAccessCoordinator()
     physicalMemories = try (0..<processorCount).map {
       _ in
-      try DoryPCPhysicalMemoryBus(ram: sharedMemory, diagnosticsEnabled: instrumentationEnabled)
+      try DoryPCPhysicalMemoryBus(
+        ram: sharedMemory,
+        mmioHoleStart: DoryPCV1ABI.mmioHoleStart,
+        above4GRAMStart: DoryPCV1ABI.above4GRAMStart,
+        diagnosticsEnabled: instrumentationEnabled,
+        deviceAccessCoordinator: deviceAccessCoordinator
+      )
     }
     physicalMemory = physicalMemories[0]
     memoryByteCount = memoryBytes
-    ioBus = DoryPCPortIOBus()
+    ioBus = DoryPCPortIOBus(deviceAccessCoordinator: deviceAccessCoordinator)
     let requestPendingWorkForProcessor: @Sendable (Int) -> Void = {
       [createdBaselineJITs, createdOptimizingJITs, pendingWorkWake] processor in
       pendingWorkWake.signal(forProcessor: processor) {
