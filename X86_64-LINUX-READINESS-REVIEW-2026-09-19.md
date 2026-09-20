@@ -92,6 +92,11 @@ and reviewed configuration:
 | `f3f67d00-7bdd-412e-87c5-ec893e0a8d99` | clean `298d6668e` | seven workloads + ACPI S5 | 412.51 s | 733,907,967 |
 | `5c6c65aa-eaac-4c7a-8baa-7b8b6ea1461f` | clean `298d6668e` | seven workloads + ACPI S5 | 411.02 s | 732,052,860 |
 
+The new pair averages 411.77 seconds versus 366.82 seconds for the preceding `39345b6c4` pair,
+about 12.3% slower. The source candidates differ by more than the worker-loop cutover, so this is
+not a controlled attribution; it is retained as a performance-regression signal that must be
+explained with matched instrumentation before release.
+
 Both used runner SHA-256
 `5dc27874aa8b1f26fe3bde5b88869ce1e60f01dba20e023f5327395a51836bb4`, protected host pages,
 `compat-v1`, baseline JIT with tier one enabled, one vCPU, no raw target prediction, and the exact
