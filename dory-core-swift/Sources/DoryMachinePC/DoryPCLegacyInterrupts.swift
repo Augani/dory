@@ -125,6 +125,22 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
     }
   }
 
+  /// Reports whether the cascaded pair already holds a request that can be acknowledged now.
+  func hasDeliverableRequest(interruptsEnabled: Bool) -> Bool {
+    guard interruptsEnabled, dory_atomic_u8_load_acquire(hasPendingRequest) != 0 else {
+      return false
+    }
+    return lock.withLock {
+      guard let masterIRQ = highestDeliverable(master) else { return false }
+      guard masterIRQ == 2 else { return true }
+      if highestDeliverable(slave) != nil { return true }
+      // A stale cascade request does not hide another deliverable master IRQ.
+      var withoutCascade = master
+      withoutCascade.request &= ~(UInt8(1) << 2)
+      return highestDeliverable(withoutCascade) != nil
+    }
+  }
+
   public func snapshot() -> DoryPCPIC8259Snapshot {
     lock.withLock {
       .init(

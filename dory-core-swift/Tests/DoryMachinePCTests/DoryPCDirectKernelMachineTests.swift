@@ -1854,6 +1854,51 @@ import Testing
     #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "T")])
   }
 
+  @Test(arguments: ["apic", "pic"])
+  func haltedCPUServicesRequestPublishedBeforeItBecameDeliverable(source: String) throws {
+    #if arch(arm64)
+      let executionTier = DoryPCExecutionTier.baselineJIT
+    #else
+      let executionTier = DoryPCExecutionTier.interpreter
+    #endif
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      executionTier: executionTier,
+      baselineJITMaximumCodeBytes: 16 * 1024
+    )
+    var code = [UInt8](repeating: 0x90, count: 0x109)
+    // The request is published while IF is clear. STI returns at its shadow boundary, then HLT
+    // clears the shadow without another device edge; the halted owner must still service IRR.
+    code.replaceSubrange(
+      0..<16,
+      with: [
+        0x0F, 0x01, 0x1D, 0, 0, 8, 0,  // LIDT [0x80000]
+        0x0F, 0x01, 0x15, 6, 0, 8, 0,  // LGDT [0x80006]
+        0xFB, 0xF4,  // STI; HLT
+      ])
+    code.replaceSubrange(
+      0x100..<0x109,
+      with: [0xB0, UInt8(ascii: "Q"), 0xBA, 0xF8, 0x03, 0, 0, 0xEE, 0xF4])
+    try machine.load(kernel: makeELF(code: code), commandLine: "x")
+    try installProtectedTables(machine: machine, vector: source == "apic" ? 0x30 : 0x20)
+    if source == "apic" {
+      try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
+      try machine.localAPIC.inject(vector: 0x30)
+    } else {
+      try machine.ioBus.write(port: 0x20, value: 0x11, width: .byte)
+      try machine.ioBus.write(port: 0x21, value: 0x20, width: .byte)
+      try machine.ioBus.write(port: 0x21, value: 0x04, width: .byte)
+      try machine.ioBus.write(port: 0x21, value: 0x01, width: .byte)
+      try machine.ioBus.write(port: 0x21, value: 0xFE, width: .byte)
+      try machine.legacyPIC.raise(irq: 0)
+    }
+
+    let stop = try machine.runOnDedicatedStack(maximumInstructions: 16, exceptionPolicy: .deliver)
+
+    #expect(stop == .halted(instructionCount: 8))
+    #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "Q")])
+  }
+
   @Test func haltedCPUWakesForTheLegacyPITAndPIC() throws {
     let layout = DoryPCPVHBootLayout(
       startInfo: 0x90000,

@@ -184,6 +184,22 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
     }
   }
 
+  /// Reports whether IRR already contains a vector that can be acknowledged now. This is distinct
+  /// from `canAccept`, which answers whether a future assertion could pass the priority checks.
+  func hasDeliverableRequest(
+    interruptsEnabled: Bool,
+    externalPriority: UInt8 = 0
+  ) -> Bool {
+    guard interruptsEnabled, dory_atomic_u8_load_acquire(hasPendingRequest) != 0 else {
+      return false
+    }
+    return lock.withLock {
+      guard softwareEnabled else { return false }
+      let processorPriority = processorPriorityLocked(externalPriority: externalPriority)
+      return interruptRequest.contains { $0 & 0xF0 > processorPriority }
+    }
+  }
+
   /// Completes the highest-priority in-service interrupt and returns its vector for IOAPIC remote
   /// IRR processing. Edge-triggered vectors require no controller follow-up.
   public func endOfInterrupt() -> UInt8? {

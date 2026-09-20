@@ -2170,6 +2170,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         let hasPendingWork =
           acknowledgedPendingWorkGeneration == nil
           || pendingWorkGeneration != acknowledgedPendingWorkGeneration
+          || hasPendingDeliverableInterrupt(forProcessor: 0)
         guard nextRunnableProcessor() != nil || hasPendingWork else {
           let resumed: Bool
           if instrumentationEnabled {
@@ -3991,6 +3992,31 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   private func maskableInterruptsEnabled(_ state: DoryX86ArchitecturalState) -> Bool {
     state.interruptShadow == nil && state.rflags.contains(.interruptEnable)
+  }
+
+  /// A request may be published while IF, an interrupt shadow, or processor priority blocks it.
+  /// If guest execution later makes that already-published request deliverable and then halts,
+  /// there is deliberately no second publication edge. The single-vCPU coordinator must still
+  /// loan the halted owner for one boundary service rather than declaring terminal HLT.
+  private func hasPendingDeliverableInterrupt(forProcessor index: Int) -> Bool {
+    guard processorSlots.indices.contains(index),
+      let state = processorSlots[index].state?.value,
+      processorSlots[index].lifecycle == .running
+    else { return false }
+    if processorSlots[index].hasPendingNMI, !state.nmiBlocked,
+      state.interruptShadow != .movSS
+    {
+      return true
+    }
+    let enabled = maskableInterruptsEnabled(state)
+    let externalPriority = UInt8(truncatingIfNeeded: state.control.cr8) << 4
+    if localAPICs[index].hasDeliverableRequest(
+      interruptsEnabled: enabled,
+      externalPriority: externalPriority
+    ) {
+      return true
+    }
+    return index == 0 && legacyPIC.hasDeliverableRequest(interruptsEnabled: enabled)
   }
 
   private func nextRunnableProcessor() -> Int? {
