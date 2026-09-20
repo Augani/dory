@@ -1563,6 +1563,71 @@ import Testing
         #expect(leUInt32(gpu.configSpace, at: 8) == 1)
     }
 
+    @Test func advertisesAndSynthesizesPerScanoutEDID() throws {
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutSizes: [
+                VirtioGPUScanoutSize(
+                    width: 3_024,
+                    height: 1_964,
+                    physicalWidthMillimeters: 286,
+                    physicalHeightMillimeters: 186
+                ),
+            ]
+        )
+        #expect(gpu.deviceFeatures & (1 << 1) != 0)
+
+        var request = gpuRequest(type: 0x010A, fenceID: 43, contextID: 7, ringIndex: 3)
+        request.appendLE(UInt32(0))
+        request.appendLE(UInt32(0))
+        let response = try gpuResponse(gpu: gpu, request: request)
+        #expect(response.count == 1_056)
+        #expect(leUInt32(response, at: 0) == 0x1104)
+        #expect(leUInt32(response, at: 24) == 128)
+        let edid = Array(response[32..<(32 + 128)])
+        #expect(Array(edid[0..<8]) == [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00])
+        #expect(edid.reduce(UInt8(0), &+) == 0)
+        #expect(edid[21] == 28)
+        #expect(edid[22] == 18)
+        let preferredWidth = UInt32(edid[56]) | UInt32(edid[58] >> 4) << 8
+        let preferredHeight = UInt32(edid[59]) | UInt32(edid[61] >> 4) << 8
+        #expect(preferredWidth == 3_024)
+        #expect(preferredHeight == 1_964)
+        let physicalWidth = UInt32(edid[66]) | UInt32(edid[68] >> 4) << 8
+        let physicalHeight = UInt32(edid[67]) | UInt32(edid[68] & 0x0F) << 8
+        #expect(physicalWidth == 286)
+        #expect(physicalHeight == 186)
+
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        var interruptCount = 0
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) { interruptCount += 1 }
+        gpu.updateScanoutSize(
+            scanoutID: 0,
+            width: 2_560,
+            height: 1_440,
+            physicalWidthMillimeters: 344,
+            physicalHeightMillimeters: 194,
+            transport: transport
+        )
+        #expect(interruptCount == 1)
+        let resizedResponse = try gpuResponse(gpu: gpu, request: request)
+        let resizedEDID = Array(resizedResponse[32..<(32 + 128)])
+        #expect(resizedEDID.reduce(UInt8(0), &+) == 0)
+        #expect(UInt32(resizedEDID[56]) | UInt32(resizedEDID[58] >> 4) << 8 == 2_560)
+        #expect(UInt32(resizedEDID[59]) | UInt32(resizedEDID[61] >> 4) << 8 == 1_440)
+        #expect(UInt32(resizedEDID[66]) | UInt32(resizedEDID[68] >> 4) << 8 == 344)
+        #expect(UInt32(resizedEDID[67]) | UInt32(resizedEDID[68] & 0x0F) << 8 == 194)
+
+        var invalid = gpuRequest(type: 0x010A, fenceID: 0, contextID: 0, ringIndex: 0)
+        invalid.appendLE(UInt32(1))
+        invalid.appendLE(UInt32(0))
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: invalid), at: 0) == 0x1205)
+    }
+
     @Test func publishesAndResizesEachScanoutIndependently() throws {
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
         let gpu = VirtioGPU(
@@ -3634,7 +3699,7 @@ import Testing
         transport.queues[0].configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
         transport.queues[0].setReady(true)
         try writeDescriptor(memory, index: 0, addr: requestBuffer, len: UInt32(request.count), flags: 0x1, next: 1)
-        try writeDescriptor(memory, index: 1, addr: responseBuffer, len: 512, flags: 0x2, next: 0)
+        try writeDescriptor(memory, index: 1, addr: responseBuffer, len: 2_048, flags: 0x2, next: 0)
         try memory.write(request, at: requestBuffer)
         try memory.write(UInt16(0), at: availRing)
         try memory.write(UInt16(0), at: availRing + 4)

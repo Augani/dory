@@ -171,10 +171,27 @@ public struct VirtioGPURect: Sendable, Equatable {
 public struct VirtioGPUScanoutSize: Sendable, Equatable {
     public var width: UInt32
     public var height: UInt32
+    public var physicalWidthMillimeters: UInt16
+    public var physicalHeightMillimeters: UInt16
 
-    public init(width: UInt32, height: UInt32) {
+    public init(
+        width: UInt32,
+        height: UInt32,
+        physicalWidthMillimeters: UInt16? = nil,
+        physicalHeightMillimeters: UInt16? = nil
+    ) {
         self.width = min(16_384, max(1, width))
         self.height = min(16_384, max(1, height))
+        self.physicalWidthMillimeters = physicalWidthMillimeters.map {
+            min(4_095, max(1, $0))
+        } ?? Self.fallbackPhysicalMillimeters(pixels: self.width)
+        self.physicalHeightMillimeters = physicalHeightMillimeters.map {
+            min(4_095, max(1, $0))
+        } ?? Self.fallbackPhysicalMillimeters(pixels: self.height)
+    }
+
+    private static func fallbackPhysicalMillimeters(pixels: UInt32) -> UInt16 {
+        UInt16(clamping: max(1, Int((Double(pixels) * 25.4 / 160).rounded())))
     }
 }
 
@@ -1874,9 +1891,11 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     public let deviceID: UInt32 = 16
     public let queueCount = 2
     public var deviceFeatures: UInt64 {
+        let displayFeatures = lifecycleLock.withLock { acceptingGuestCommands }
+            && scanoutCount > 0 ? Feature.edid : 0
         guard rendererAuthorityIsConfigured,
-              rendererCapabilitiesAreAdvertised else { return 0 }
-        return configuredRendererDeviceFeatures
+              rendererCapabilitiesAreAdvertised else { return displayFeatures }
+        return displayFeatures | configuredRendererDeviceFeatures
     }
     public let sharedMemoryRegions: [VirtioSharedMemoryRegion]
 
@@ -2343,6 +2362,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         static let resourceDetachBacking: UInt32 = 0x0107
         static let getCapsetInfo: UInt32 = 0x0108
         static let getCapset: UInt32 = 0x0109
+        static let getEDID: UInt32 = 0x010A
         static let resourceAssignUUID: UInt32 = 0x010B
         static let resourceCreateBlob: UInt32 = 0x010C
         static let setScanoutBlob: UInt32 = 0x010D
@@ -2365,6 +2385,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         static let okDisplayInfo: UInt32 = 0x1101
         static let okCapsetInfo: UInt32 = 0x1102
         static let okCapset: UInt32 = 0x1103
+        static let okEDID: UInt32 = 0x1104
         static let okResourceUUID: UInt32 = 0x1105
         static let okMapInfo: UInt32 = 0x1106
         static let errorUnspecified: UInt32 = 0x1200
@@ -2373,6 +2394,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
 
     private enum Feature {
         static let virgl: UInt64 = 1 << 0
+        static let edid: UInt64 = 1 << 1
         static let resourceUUID: UInt64 = 1 << 2
         static let resourceBlob: UInt64 = 1 << 3
         static let contextInit: UInt64 = 1 << 4
@@ -2590,11 +2612,21 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         scanoutID: UInt32,
         width: UInt32,
         height: UInt32,
+        physicalWidthMillimeters: UInt16? = nil,
+        physicalHeightMillimeters: UInt16? = nil,
         transport: VirtioMMIOTransport
     ) {
-        let updated = VirtioGPUScanoutSize(width: width, height: height)
         displayLock.lock()
         let index = Int(scanoutID)
+        let previous = scanoutSizes.indices.contains(index) ? scanoutSizes[index] : nil
+        let updated = VirtioGPUScanoutSize(
+            width: width,
+            height: height,
+            physicalWidthMillimeters: physicalWidthMillimeters
+                ?? previous?.physicalWidthMillimeters,
+            physicalHeightMillimeters: physicalHeightMillimeters
+                ?? previous?.physicalHeightMillimeters
+        )
         let changed = scanoutSizes.indices.contains(index) && scanoutSizes[index] != updated
         if changed {
             scanoutSizes[index] = updated
@@ -2629,6 +2661,115 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         displayLock.lock()
         pendingDisplayEvents &= ~cleared
         displayLock.unlock()
+    }
+
+    /// Builds one EDID 1.4 base block whose preferred detailed timing exactly matches the current
+    /// guest-pixel mode. The physical dimensions are supplied by the AppKit display surface and
+    /// therefore move with the window across host panels instead of encoding a fixed pretend DPI.
+    private static func makeEDID(
+        scanoutID: UInt32,
+        size: VirtioGPUScanoutSize
+    ) -> [UInt8] {
+        var edid = [UInt8](repeating: 0, count: 128)
+        edid[0..<8] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]
+        // EISA manufacturer code "DOR", stored most-significant byte first.
+        edid[8] = 0x11
+        edid[9] = 0xF2
+        edid[10] = UInt8(truncatingIfNeeded: scanoutID &+ 1)
+        edid[11] = UInt8(truncatingIfNeeded: (scanoutID &+ 1) >> 8)
+        edid[12] = UInt8(truncatingIfNeeded: scanoutID)
+        edid[13] = UInt8(truncatingIfNeeded: scanoutID >> 8)
+        edid[14] = UInt8(truncatingIfNeeded: scanoutID >> 16)
+        edid[15] = UInt8(truncatingIfNeeded: scanoutID >> 24)
+        edid[16] = 1 // manufacture week; stable synthetic identity
+        edid[17] = 36 // 2026 - 1990
+        edid[18] = 1
+        edid[19] = 4
+        edid[20] = 0x80 // digital input
+        edid[21] = UInt8(clamping: max(1, Int(size.physicalWidthMillimeters) / 10))
+        edid[22] = UInt8(clamping: max(1, Int(size.physicalHeightMillimeters) / 10))
+        edid[23] = 120 // gamma 2.20
+        edid[24] = 0x0A // standard RGB + preferred timing in descriptor 1
+        for index in stride(from: 38, to: 54, by: 2) {
+            edid[index] = 0x01
+            edid[index + 1] = 0x01
+        }
+
+        let width = min(4_095, size.width)
+        let height = min(4_095, size.height)
+        let horizontalBlanking = min(
+            4_095,
+            UInt32(max(160, ((Int(width) / 5 + 7) / 8) * 8))
+        )
+        let verticalBlanking = min(4_095, UInt32(max(45, Int(height) / 20)))
+        let horizontalSyncOffset = min(1_023, max(8, horizontalBlanking / 3))
+        let horizontalSyncPulse = min(
+            1_023,
+            max(8, horizontalBlanking - horizontalSyncOffset * 2)
+        )
+        let verticalSyncOffset: UInt32 = min(63, max(1, verticalBlanking / 4))
+        let verticalSyncPulse: UInt32 = min(
+            63,
+            max(1, verticalBlanking / 8)
+        )
+        let totalPixels = UInt64(width + horizontalBlanking)
+            * UInt64(height + verticalBlanking)
+        let pixelClock10KHz = UInt16(clamping: max(1, Int(totalPixels * 60 / 10_000)))
+        let physicalWidth = UInt32(size.physicalWidthMillimeters)
+        let physicalHeight = UInt32(size.physicalHeightMillimeters)
+        var timing = [UInt8](repeating: 0, count: 18)
+        timing[0] = UInt8(truncatingIfNeeded: pixelClock10KHz)
+        timing[1] = UInt8(truncatingIfNeeded: pixelClock10KHz >> 8)
+        timing[2] = UInt8(truncatingIfNeeded: width)
+        timing[3] = UInt8(truncatingIfNeeded: horizontalBlanking)
+        timing[4] = UInt8(((width >> 8) & 0x0F) << 4 | ((horizontalBlanking >> 8) & 0x0F))
+        timing[5] = UInt8(truncatingIfNeeded: height)
+        timing[6] = UInt8(truncatingIfNeeded: verticalBlanking)
+        timing[7] = UInt8(((height >> 8) & 0x0F) << 4 | ((verticalBlanking >> 8) & 0x0F))
+        timing[8] = UInt8(truncatingIfNeeded: horizontalSyncOffset)
+        timing[9] = UInt8(truncatingIfNeeded: horizontalSyncPulse)
+        timing[10] = UInt8(
+            (verticalSyncOffset & 0x0F) << 4 | (verticalSyncPulse & 0x0F)
+        )
+        timing[11] = UInt8(
+            ((horizontalSyncOffset >> 8) & 0x03) << 6
+                | ((horizontalSyncPulse >> 8) & 0x03) << 4
+                | ((verticalSyncOffset >> 4) & 0x03) << 2
+                | ((verticalSyncPulse >> 4) & 0x03)
+        )
+        timing[12] = UInt8(truncatingIfNeeded: physicalWidth)
+        timing[13] = UInt8(truncatingIfNeeded: physicalHeight)
+        timing[14] = UInt8(
+            ((physicalWidth >> 8) & 0x0F) << 4 | ((physicalHeight >> 8) & 0x0F)
+        )
+        timing[17] = 0x1E // digital separate sync, positive H/V, non-interlaced
+        edid.replaceSubrange(54..<72, with: timing)
+
+        var nameDescriptor = [UInt8](repeating: 0x20, count: 18)
+        nameDescriptor[0..<5] = [0x00, 0x00, 0x00, 0xFC, 0x00]
+        let name = Array("Dory Display\n".utf8.prefix(13))
+        nameDescriptor.replaceSubrange(5..<(5 + name.count), with: name)
+        edid.replaceSubrange(72..<90, with: nameDescriptor)
+
+        var rangeDescriptor = [UInt8](repeating: 0, count: 18)
+        rangeDescriptor[0..<5] = [0x00, 0x00, 0x00, 0xFD, 0x00]
+        rangeDescriptor[5] = 48
+        rangeDescriptor[6] = 60
+        rangeDescriptor[7] = 30
+        rangeDescriptor[8] = 160
+        rangeDescriptor[9] = UInt8(clamping: max(1, Int(pixelClock10KHz) / 1_000))
+        edid.replaceSubrange(90..<108, with: rangeDescriptor)
+
+        var serialDescriptor = [UInt8](repeating: 0x20, count: 18)
+        serialDescriptor[0..<5] = [0x00, 0x00, 0x00, 0xFF, 0x00]
+        let serial = Array(String(format: "DORY-%02u\n", scanoutID).utf8.prefix(13))
+        serialDescriptor.replaceSubrange(5..<(5 + serial.count), with: serial)
+        edid.replaceSubrange(108..<126, with: serialDescriptor)
+        edid[126] = 0
+        edid[127] = UInt8(truncatingIfNeeded: 0 &- edid[0..<127].reduce(0) {
+            $0 &+ UInt32($1)
+        })
+        return edid
     }
 
     /// Clears one complete guest GPU epoch. Display disable is published before generation
@@ -4290,6 +4431,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         switch request.leUInt32(at: 0) {
         case Command.getDisplayInfo:
             return 24 + 16 * 24
+        case Command.getEDID:
+            return 24 + 8 + 1_024
         case Command.getCapsetInfo, Command.resourceAssignUUID:
             return 40
         case Command.resourceMapBlob:
@@ -8191,6 +8334,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         let acceptsCommand = lifecycleLock.withLock { acceptingGuestCommands }
         if !acceptsCommand,
            command != Command.getDisplayInfo,
+           command != Command.getEDID,
            command != Command.getCapsetInfo,
            command != Command.getCapset {
             return responseHeader(type: Response.errorInvalidParameter, request: request)
@@ -8201,6 +8345,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
 
         if rendererAuthorityIsConfigured,
            command != Command.getDisplayInfo,
+           command != Command.getEDID,
            command != Command.getCapsetInfo,
            command != Command.getCapset,
            !rendererLifecycleIsReady {
@@ -8227,6 +8372,23 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 response.appendLE(size == nil ? UInt32(0) : UInt32(1))
                 response.appendLE(UInt32(0))
             }
+            return response
+        case Command.getEDID:
+            try requireLength(request, 32)
+            let scanoutID = request.leUInt32(at: 24)
+            displayLock.lock()
+            let size = scanoutSizes.indices.contains(Int(scanoutID))
+                ? scanoutSizes[Int(scanoutID)] : nil
+            displayLock.unlock()
+            guard let size else {
+                return responseHeader(type: Response.errorInvalidParameter, request: request)
+            }
+            let edid = Self.makeEDID(scanoutID: scanoutID, size: size)
+            var response = responseHeader(type: Response.okEDID, request: request)
+            response.appendLE(UInt32(edid.count))
+            response.appendLE(UInt32(0))
+            response.append(contentsOf: edid)
+            response.append(contentsOf: repeatElement(0, count: 1_024 - edid.count))
             return response
         case Command.resourceCreate2D:
             return try scanoutCommand(request: request) {

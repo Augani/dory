@@ -1192,7 +1192,7 @@ class DesktopDisplayView: NSView {
     private var pressedPointerInput = VirtioInputPressedState()
     private var keyboardModifierState = DesktopKeyboardModifierState()
     private var resizeGeneration: UInt64 = 0
-    var onDrawableSizeChange: ((UInt32, UInt32) -> Void)?
+    var onDrawableSizeChange: ((UInt32, UInt32, UInt16, UInt16) -> Void)?
     var onMacShortcut: ((NSEvent) -> Bool)?
 
     init(
@@ -1222,6 +1222,7 @@ class DesktopDisplayView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         drawableSurfaceDidChange()
+        publishGuestDisplayGeometry(after: 0)
         needsDisplay = true
     }
 
@@ -1299,15 +1300,92 @@ class DesktopDisplayView: NSView {
         if guestCursorUpdate != nil { rebuildGuestCursor(pixelSize: guestPixelSize) }
         let width = UInt32(clamping: max(1, Int(guestPixelSize.width.rounded())))
         let height = UInt32(clamping: max(1, Int(guestPixelSize.height.rounded())))
+        publishGuestDisplayGeometry(
+            width: width,
+            height: height,
+            after: 0.12
+        )
+        needsDisplay = true
+    }
+
+    func hostDisplayDidChange() {
+        drawableSurfaceDidChange()
+        publishGuestDisplayGeometry(after: 0)
+        needsDisplay = true
+    }
+
+    private func publishGuestDisplayGeometry(after delay: TimeInterval) {
+        let guestPixelSize = CGSize(
+            width: max(1, bounds.width * guestBackingScaleFactor),
+            height: max(1, bounds.height * guestBackingScaleFactor)
+        )
+        publishGuestDisplayGeometry(
+            width: UInt32(clamping: max(1, Int(guestPixelSize.width.rounded()))),
+            height: UInt32(clamping: max(1, Int(guestPixelSize.height.rounded()))),
+            after: delay
+        )
+    }
+
+    private func publishGuestDisplayGeometry(
+        width: UInt32,
+        height: UInt32,
+        after delay: TimeInterval
+    ) {
         resizeGeneration &+= 1
         let generation = resizeGeneration
         // AppKit reports every intermediate drag size. Debounce the guest modeset so Mutter
         // receives the final Retina pixel size without reallocating scanout resources per event.
-        DesktopAppRunLoop.perform(after: 0.12) { [weak self] in
+        DesktopAppRunLoop.perform(after: delay) { [weak self] in
             guard let self, self.resizeGeneration == generation else { return }
-            self.onDrawableSizeChange?(width, height)
+            let physicalSize = self.guestPhysicalSizeMillimeters(
+                widthPixels: width,
+                heightPixels: height
+            )
+            self.onDrawableSizeChange?(
+                width,
+                height,
+                physicalSize.width,
+                physicalSize.height
+            )
         }
-        needsDisplay = true
+    }
+
+    private func guestPhysicalSizeMillimeters(
+        widthPixels: UInt32,
+        heightPixels: UInt32
+    ) -> (width: UInt16, height: UInt16) {
+        guard let screen = window?.screen,
+              let screenNumber = screen.deviceDescription[
+                NSDeviceDescriptionKey("NSScreenNumber")
+              ] as? NSNumber,
+              screen.frame.width > 0,
+              screen.frame.height > 0 else {
+            let fallback = VirtioGPUScanoutSize(width: widthPixels, height: heightPixels)
+            return (
+                fallback.physicalWidthMillimeters,
+                fallback.physicalHeightMillimeters
+            )
+        }
+        let panelMillimeters = CGDisplayScreenSize(
+            CGDirectDisplayID(screenNumber.uint32Value)
+        )
+        guard panelMillimeters.width > 0, panelMillimeters.height > 0 else {
+            let fallback = VirtioGPUScanoutSize(width: widthPixels, height: heightPixels)
+            return (
+                fallback.physicalWidthMillimeters,
+                fallback.physicalHeightMillimeters
+            )
+        }
+        return (
+            UInt16(clamping: max(
+                1,
+                Int((panelMillimeters.width * bounds.width / screen.frame.width).rounded())
+            )),
+            UInt16(clamping: max(
+                1,
+                Int((panelMillimeters.height * bounds.height / screen.frame.height).rounded())
+            ))
+        )
     }
 
     override func keyDown(with event: NSEvent) {

@@ -816,7 +816,8 @@ enum DoryPCMode {
                     scanoutID: 0
                 )
                 if devices.dynamicDisplay {
-                    view.onDrawableSizeChange = { [machineState] width, height in
+                    view.onDrawableSizeChange = {
+                        [machineState] width, height, _, _ in
                         machineState.updateDisplaySize(width: width, height: height)
                     }
                 }

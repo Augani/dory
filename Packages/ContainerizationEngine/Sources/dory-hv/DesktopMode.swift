@@ -1184,6 +1184,37 @@ enum DesktopMode {
                 height: max(1, CGFloat(heightPixels) / CGFloat(backingScaleFactor))
             )
         }
+
+        @MainActor
+        func scanoutSize(on screen: NSScreen?) -> VirtioGPUScanoutSize {
+            guard let screen,
+                  let screenNumber = screen.deviceDescription[
+                    NSDeviceDescriptionKey("NSScreenNumber")
+                  ] as? NSNumber,
+                  screen.frame.width > 0,
+                  screen.frame.height > 0 else {
+                return VirtioGPUScanoutSize(width: widthPixels, height: heightPixels)
+            }
+            let panelMillimeters = CGDisplayScreenSize(
+                CGDirectDisplayID(screenNumber.uint32Value)
+            )
+            guard panelMillimeters.width > 0, panelMillimeters.height > 0 else {
+                return VirtioGPUScanoutSize(width: widthPixels, height: heightPixels)
+            }
+            let size = windowSize
+            return VirtioGPUScanoutSize(
+                width: widthPixels,
+                height: heightPixels,
+                physicalWidthMillimeters: UInt16(clamping: max(
+                    1,
+                    Int((panelMillimeters.width * size.width / screen.frame.width).rounded())
+                )),
+                physicalHeightMillimeters: UInt16(clamping: max(
+                    1,
+                    Int((panelMillimeters.height * size.height / screen.frame.height).rounded())
+                ))
+            )
+        }
     }
 
     struct ClipboardPlan: Equatable {
@@ -1590,7 +1621,7 @@ enum DesktopMode {
                     ? 256 * 1_024 * 1_024
                     : hostVisibleArenaByteCount,
                 scanoutSizes: displayPlans.map {
-                    VirtioGPUScanoutSize(width: $0.widthPixels, height: $0.heightPixels)
+                    $0.scanoutSize(on: NSScreen.main)
                 },
                 rendererWorkerCandidate: rendererWorkerLaunch?.commandLane,
                 hostVisibleMemory: hostVisibleMemory,
@@ -2151,7 +2182,8 @@ enum DesktopMode {
                         for (index, display) in displays.enumerated() {
                             let scanoutID = UInt32(index)
                             display.onDrawableSizeChange = {
-                                [weak gpu, weak transport] width, height in
+                                [weak gpu, weak transport]
+                                width, height, physicalWidth, physicalHeight in
                                 guard let gpu, let transport else { return }
                                 pointerTopology.update(
                                     scanoutID: scanoutID,
@@ -2162,6 +2194,8 @@ enum DesktopMode {
                                     scanoutID: scanoutID,
                                     width: width,
                                     height: height,
+                                    physicalWidthMillimeters: physicalWidth,
+                                    physicalHeightMillimeters: physicalHeight,
                                     transport: transport
                                 )
                             }
@@ -2372,12 +2406,21 @@ enum DesktopMode {
         }
 
         func applicationDidChangeScreenParameters(_ notification: Notification) {
-            for (window, assignment) in zip(windows, displayAssignments) {
+            for ((window, assignment), display) in zip(
+                zip(windows, displayAssignments), displays
+            ) {
                 _ = DoryHostDisplayPresentation.recoverDisconnectedDisplay(
                     window: window,
                     assignment: assignment
                 )
+                display.hostDisplayDidChange()
             }
+        }
+
+        func windowDidChangeScreen(_ notification: Notification) {
+            guard let window = notification.object as? NSWindow,
+                  let index = windows.firstIndex(of: window) else { return }
+            displays[index].hostDisplayDidChange()
         }
 
         @objc private func toggleFullScreen(_ sender: Any?) {
