@@ -1323,7 +1323,9 @@ public final class DoryRendererWorkerVirglBackend:
             }
             // `virgl_renderer_get_cap_set` deliberately reports Venus at outer version zero. The
             // returned payload carries the Venus wire/XML/spec versions and is the capability proof.
-            guard venus?.maximumVersion == 0, venus?.bytes.isEmpty == false else {
+            guard let venus,
+                  venus.maximumVersion == 0,
+                  DoryVenusCapsetCompatibility.accepts(venus.bytes) else {
                 throw DoryRendererWorkerBackendActivationError.venusCapability
             }
         } else {

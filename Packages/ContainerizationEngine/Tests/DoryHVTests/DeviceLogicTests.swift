@@ -1348,28 +1348,36 @@ import Testing
 
     @Test func hostVisibleArenaKeepsSharedGranuleUntilLastBlobUnmaps() throws {
         let arena = UnsafeMutableRawPointer.allocate(
-            byteCount: Int(HostPage.size),
+            byteCount: Int(HostPage.size * 2),
             alignment: Int(HostPage.size)
         )
         defer { arena.deallocate() }
-        let mapped = DeviceLogicLockedBox([UInt64]())
-        let unmapped = DeviceLogicLockedBox([UInt64]())
         let guestBase: UInt64 = 0x21_0000_0000
-        let memory = try VirtioGPUHostVisibleMemory(
-            guestBase: guestBase,
-            length: HostPage.size,
-            arenaMapOperation: { _, guest, _ in mapped.withLock { $0.append(guest) } },
-            arenaUnmapOperation: { guest, _ in unmapped.withLock { $0.append(guest) } }
-        )
+        for firstResourceToUnmap in [UInt32(1), UInt32(2)] {
+            let mapped = DeviceLogicLockedBox([UInt64]())
+            let unmapped = DeviceLogicLockedBox([UInt64]())
+            let memory = try VirtioGPUHostVisibleMemory(
+                guestBase: guestBase,
+                length: HostPage.size * 2,
+                arenaMapOperation: { _, guest, _ in mapped.withLock { $0.append(guest) } },
+                arenaUnmapOperation: { guest, _ in unmapped.withLock { $0.append(guest) } }
+            )
 
-        try memory.mapArena(resourceID: 1, arenaBase: arena, offset: 0, size: 8_192)
-        try memory.mapArena(resourceID: 2, arenaBase: arena, offset: 8_192, size: 8_192)
-        #expect(mapped.value == [guestBase])
+            // The first host granule contains bytes from both logically adjacent blobs. The
+            // second blob also reaches the next granule, making either teardown order observable.
+            try memory.mapArena(resourceID: 1, arenaBase: arena, offset: 4_096, size: 8_192)
+            try memory.mapArena(resourceID: 2, arenaBase: arena, offset: 12_288, size: 8_192)
+            #expect(mapped.value == [guestBase, guestBase + HostPage.size])
 
-        memory.unmap(resourceID: 2)
-        #expect(unmapped.value.isEmpty)
-        memory.unmap(resourceID: 1)
-        #expect(unmapped.value == [guestBase])
+            memory.unmap(resourceID: firstResourceToUnmap)
+            if firstResourceToUnmap == 1 {
+                #expect(unmapped.value.isEmpty)
+            } else {
+                #expect(unmapped.value == [guestBase + HostPage.size])
+            }
+            memory.unmap(resourceID: firstResourceToUnmap == 1 ? 2 : 1)
+            #expect(Set(unmapped.value) == Set([guestBase, guestBase + HostPage.size]))
+        }
     }
 
     @Test func hostVisibleArenaResetAndOverflowFailClosed() throws {
@@ -1408,6 +1416,79 @@ import Testing
                 offset: HostPage.size * 2 - 4_096,
                 size: 8_192
             )
+        }
+    }
+
+    @Test func hostVisibleArenaFuzzesOffsetAndSizeBoundsWithoutEscapingArena() throws {
+        let length = HostPage.size * 4
+        let arena = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(length),
+            alignment: Int(HostPage.size)
+        )
+        defer { arena.deallocate() }
+        let guestBase: UInt64 = 0x23_0000_0000
+        let mappedRanges = DeviceLogicLockedBox([(hostOffset: UInt64, guest: UInt64)]())
+        let arenaAddress = UInt(bitPattern: arena)
+        let memory = try VirtioGPUHostVisibleMemory(
+            guestBase: guestBase,
+            length: length,
+            arenaMapOperation: { pointer, guest, _ in
+                mappedRanges.withLock {
+                    $0.append((UInt64(UInt(bitPattern: pointer) - arenaAddress), guest))
+                }
+            },
+            arenaUnmapOperation: { _, _ in }
+        )
+
+        var state: UInt64 = 0xd0_12_4a_2b_15_5e_ed
+        func nextRandom() -> UInt64 {
+            state ^= state << 13
+            state ^= state >> 7
+            state ^= state << 17
+            return state
+        }
+
+        let boundaryValues: [UInt64] = [
+            0, 1, 4_095, 4_096, HostPage.size - 1, HostPage.size,
+            length - 1, length, length + 1, UInt64.max - 4_095, UInt64.max,
+        ]
+        var cases = boundaryValues.flatMap { offset in
+            boundaryValues.map { size in (offset, size) }
+        }
+        for _ in 0..<4_096 {
+            let offsetSelector = nextRandom()
+            let sizeSelector = nextRandom()
+            let offset = offsetSelector.isMultiple(of: 4)
+                ? offsetSelector
+                : offsetSelector % (length * 2)
+            let size = sizeSelector.isMultiple(of: 4)
+                ? sizeSelector
+                : sizeSelector % (length * 2)
+            cases.append((offset, size))
+        }
+
+        for (offset, size) in cases {
+            let (end, overflow) = offset.addingReportingOverflow(size)
+            let expectedValid = size > 0 && !overflow && offset < length && end <= length
+            let mappedBefore = mappedRanges.value.count
+            var didMap = false
+            do {
+                try memory.mapArena(
+                    resourceID: 1,
+                    arenaBase: arena,
+                    offset: offset,
+                    size: size
+                )
+                didMap = true
+                memory.unmap(resourceID: 1)
+            } catch {
+                didMap = false
+            }
+            #expect(didMap == expectedValid, "offset=\(offset) size=\(size)")
+            for range in mappedRanges.value.dropFirst(mappedBefore) {
+                #expect(range.hostOffset < length)
+                #expect(range.guest >= guestBase && range.guest < guestBase + length)
+            }
         }
     }
 

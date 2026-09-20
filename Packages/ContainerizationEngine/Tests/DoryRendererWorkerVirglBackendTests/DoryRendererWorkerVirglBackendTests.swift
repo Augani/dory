@@ -782,6 +782,30 @@ import Testing
         #expect(session.invalidated)
     }
 
+    @Test func malformedOrInsufficientVenusProtocolCapsetFailsClosed() throws {
+        for capset in [
+            Data([4, 1, 2, 3]),
+            DoryVenusCapsetCompatibility.makeTestCapset(wireFormatVersion: 0),
+            DoryVenusCapsetCompatibility.makeTestCapset(venusProtocolSpecVersion: 2),
+            DoryVenusCapsetCompatibility.makeTestCapset(useGuestVRAM: 0),
+        ] {
+            let session = FakeRendererForeignSession(venusCapsetBytes: capset)
+            let backend = makeBackend(session: session)
+            #expect(throws: DoryRendererWorkerBackendActivationError.venusCapability) {
+                _ = try backend.activate(bootstrap: makeBootstrap())
+            }
+            #expect(session.invalidated)
+        }
+    }
+
+    @Test func reviewedStockMesaProtocolTableAcceptsPinnedRendererCapset() {
+        #expect(DoryVenusCapsetCompatibility.reviewedStockGuests.map(\.mesa)
+            == ["24.2.x", "25.0.x", "25.1.x"])
+        #expect(DoryVenusCapsetCompatibility.accepts(
+            DoryVenusCapsetCompatibility.makeTestCapset()
+        ))
+    }
+
     @Test func nonSHMBlobExportFailsClosedBeforeCapabilityAdvertisement() throws {
         let session = FakeRendererForeignSession(exportedBlobType: 1)
         let backend = makeBackend(session: session)
@@ -1931,6 +1955,7 @@ private final class FakeRendererForeignSession:
     private let missingVirGL2: Bool
     private let missingVenus: Bool
     private let venusMaximumVersion: UInt32
+    private let venusCapsetBytes: Data
     private let exportedBlobType: UInt32
     private let reportedResourceInfo: DoryRendererForeignResourceInfo
     private let metalTexture: (any MTLTexture)?
@@ -1971,6 +1996,7 @@ private final class FakeRendererForeignSession:
         missingVirGL2: Bool = false,
         missingVenus: Bool = false,
         venusMaximumVersion: UInt32 = 0,
+        venusCapsetBytes: Data = DoryVenusCapsetCompatibility.makeTestCapset(),
         exportedBlobType: UInt32 = 3,
         resourceInfo: DoryRendererForeignResourceInfo? = nil,
         metalTexture: (any MTLTexture)? = nil,
@@ -1983,6 +2009,7 @@ private final class FakeRendererForeignSession:
         self.missingVirGL2 = missingVirGL2
         self.missingVenus = missingVenus
         self.venusMaximumVersion = venusMaximumVersion
+        self.venusCapsetBytes = venusCapsetBytes
         self.exportedBlobType = exportedBlobType
         self.metalTexture = metalTexture
         self.missingPollDescriptor = missingPollDescriptor
@@ -2033,7 +2060,7 @@ private final class FakeRendererForeignSession:
         return DoryRendererForeignCapset(
             id: id,
             maximumVersion: id == 2 ? 2 : venusMaximumVersion,
-            bytes: Data([UInt8(id), 1, 2, 3])
+            bytes: id == 2 ? Data([UInt8(id), 1, 2, 3]) : venusCapsetBytes
         )
     }
 
