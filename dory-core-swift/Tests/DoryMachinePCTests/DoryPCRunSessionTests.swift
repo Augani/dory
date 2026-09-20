@@ -4,6 +4,25 @@ import Testing
 @testable import DoryMachinePC
 
 @Suite(.serialized) struct DoryPCRunSessionTests {
+  @Test func immutableRunIdentityAndConfigurationArePublishedInEverySnapshot() {
+    let session = DoryPCRunSession(
+      processorCount: 2,
+      instructionBudget: 10,
+      runGeneration: 42,
+      exceptionPolicy: .deliver,
+      clockMode: .hostMonotonic
+    )
+
+    let snapshot = session.snapshot
+    #expect(snapshot.runGeneration == 42)
+    #expect(snapshot.exceptionPolicy == .deliver)
+    #expect(snapshot.clockMode == .hostMonotonic)
+    #expect(snapshot.workerResults == [nil, nil])
+    #expect(snapshot.workerDirectives == [nil, nil])
+    #expect(snapshot.workerCounters == [.zero, .zero])
+    #expect(snapshot.mergedWorkerCounters == .zero)
+  }
+
   @Test func budgetReservationsReturnUnusedWorkAndStopExactlyAtBudget() throws {
     let session = DoryPCRunSession(processorCount: 2, instructionBudget: 10)
     let first = try #require(try session.reserve(processor: 0, maximumInstructions: 6))
@@ -292,6 +311,291 @@ import Testing
     }
     let snapshot = session.snapshot
     #expect(snapshot.pendingRequiredGenerations == snapshot.pendingAcknowledgedGenerations)
+  }
+
+  @Test func workerResultsMergeCountersExactlyOnceAndRequireAnExactResponse() throws {
+    let session = DoryPCRunSession(
+      processorCount: 2,
+      instructionBudget: 9,
+      runGeneration: 17,
+      exceptionPolicy: .deliver,
+      clockMode: .hostMonotonic
+    )
+    let firstReservation = try #require(
+      try session.reserve(processor: 0, maximumInstructions: 5))
+    let secondReservation = try #require(
+      try session.reserve(processor: 1, maximumInstructions: 5))
+    let firstCounters = DoryPCRunSession.WorkerCounters(
+      instructionCount: 5,
+      interpreterInstructions: 2,
+      baselineJITInstructions: 3,
+      baselineJITBlocks: 1,
+      optimizingJITInstructions: 0,
+      optimizingJITBlocks: 0,
+      executionCPUNanoseconds: 100,
+      eventCPUNanoseconds: 10
+    )
+    let secondCounters = DoryPCRunSession.WorkerCounters(
+      instructionCount: 4,
+      interpreterInstructions: 0,
+      baselineJITInstructions: 0,
+      baselineJITBlocks: 0,
+      optimizingJITInstructions: 4,
+      optimizingJITBlocks: 2,
+      executionCPUNanoseconds: 200,
+      eventCPUNanoseconds: 20
+    )
+
+    let first = try session.completeAndPublish(
+      firstReservation, outcome: .retired, counters: firstCounters)
+    let second = try session.completeAndPublish(
+      secondReservation, outcome: .yielded, counters: secondCounters)
+    #expect(first.runGeneration == 17)
+    #expect(second.runGeneration == 17)
+    #expect(try session.workerResult(forProcessor: 0) == first)
+    #expect(try session.workerResult(forProcessor: 1) == second)
+
+    var snapshot = session.snapshot
+    #expect(snapshot.totalRetiredInstructions == 9)
+    #expect(snapshot.terminationReason == .instructionBudget)
+    #expect(snapshot.workerCounters == [firstCounters, secondCounters])
+    #expect(
+      snapshot.mergedWorkerCounters
+        == .init(
+          instructionCount: 9,
+          interpreterInstructions: 2,
+          baselineJITInstructions: 3,
+          baselineJITBlocks: 1,
+          optimizingJITInstructions: 4,
+          optimizingJITBlocks: 2,
+          executionCPUNanoseconds: 300,
+          eventCPUNanoseconds: 30
+        ))
+
+    let firstDirective = try session.respond(to: first, with: .resume)
+    #expect(firstDirective.resultSequence == first.sequence)
+    #expect(try session.consumeDirective(processor: 0, forResultSequence: first.sequence) == .resume)
+    #expect(try session.respond(to: second, with: .stop).directive == .stop)
+    #expect(try session.consumeDirective(processor: 1, forResultSequence: second.sequence) == .stop)
+    snapshot = session.snapshot
+    #expect(snapshot.workerResults == [nil, nil])
+    #expect(snapshot.workerDirectives == [nil, nil])
+  }
+
+  @Test func invalidOrOverlappingWorkerPublicationFailsWithoutMutation() throws {
+    let session = DoryPCRunSession(
+      processorCount: 1,
+      instructionBudget: 8,
+      runGeneration: 7
+    )
+    let reservation = try #require(try session.reserve(processor: 0, maximumInstructions: 4))
+    let reserved = session.snapshot
+    let inconsistent = DoryPCRunSession.WorkerCounters(
+      instructionCount: 4,
+      interpreterInstructions: 1,
+      baselineJITInstructions: 1
+    )
+    #expect(
+      throws: DoryPCRunSession.SessionError.inconsistentWorkerCounters(processor: 0)
+    ) {
+      try session.completeAndPublish(
+        reservation, outcome: .retired, counters: inconsistent)
+    }
+    #expect(session.snapshot == reserved)
+
+    let counters = DoryPCRunSession.WorkerCounters(
+      instructionCount: 4,
+      interpreterInstructions: 4
+    )
+    let result = try session.completeAndPublish(
+      reservation, outcome: .halted, counters: counters)
+    let published = session.snapshot
+    #expect(throws: DoryPCRunSession.SessionError.outstandingWorkerResult(0)) {
+      try session.reserve(processor: 0, maximumInstructions: 1)
+    }
+    #expect(throws: DoryPCRunSession.SessionError.missingReservation(0)) {
+      try session.completeAndPublish(
+        reservation, outcome: .retired, counters: counters)
+    }
+    #expect(session.snapshot == published)
+
+    let wrongRun = DoryPCRunSession.WorkerResult(
+      runGeneration: 8,
+      processor: result.processor,
+      sequence: result.sequence,
+      reservationSequence: result.reservationSequence,
+      outcome: result.outcome,
+      counters: result.counters
+    )
+    #expect(
+      throws: DoryPCRunSession.SessionError.staleRunGeneration(
+        expected: 7,
+        actual: 8
+      )
+    ) {
+      try session.respond(to: wrongRun, with: .stop)
+    }
+    #expect(session.snapshot == published)
+
+    let mismatched = DoryPCRunSession.WorkerResult(
+      runGeneration: result.runGeneration,
+      processor: result.processor,
+      sequence: result.sequence,
+      reservationSequence: result.reservationSequence,
+      outcome: .retired,
+      counters: result.counters
+    )
+    #expect(
+      throws: DoryPCRunSession.SessionError.mismatchedWorkerResult(
+        processor: 0,
+        sequence: result.sequence
+      )
+    ) {
+      try session.respond(to: mismatched, with: .stop)
+    }
+    #expect(session.snapshot == published)
+
+    let stale = DoryPCRunSession.WorkerResult(
+      runGeneration: result.runGeneration,
+      processor: result.processor,
+      sequence: result.sequence &+ 1,
+      reservationSequence: result.reservationSequence,
+      outcome: result.outcome,
+      counters: result.counters
+    )
+    #expect(
+      throws: DoryPCRunSession.SessionError.staleWorkerResult(
+        processor: 0,
+        expected: result.sequence,
+        actual: stale.sequence
+      )
+    ) {
+      try session.respond(to: stale, with: .stop)
+    }
+    #expect(session.snapshot == published)
+
+    _ = try session.respond(to: result, with: .stop)
+    #expect(throws: DoryPCRunSession.SessionError.outstandingWorkerDirective(0)) {
+      try session.reserve(processor: 0, maximumInstructions: 1)
+    }
+    #expect(
+      throws: DoryPCRunSession.SessionError.staleWorkerDirective(
+        processor: 0,
+        expected: result.sequence,
+        actual: result.sequence &+ 1
+      )
+    ) {
+      try session.consumeDirective(
+        processor: 0,
+        forResultSequence: result.sequence &+ 1
+      )
+    }
+    #expect(try session.consumeDirective(processor: 0, forResultSequence: result.sequence) == .stop)
+    #expect(try session.reserve(processor: 0, maximumInstructions: 1) != nil)
+  }
+
+  @Test func earlyCoordinatorResponseCannotBeLostBeforeWorkerWaits() throws {
+    let session = DoryPCRunSession(processorCount: 1, instructionBudget: 1)
+    let reservation = try #require(try session.reserve(processor: 0, maximumInstructions: 1))
+    let result = try session.completeAndPublish(
+      reservation,
+      outcome: .retired,
+      counters: .init(instructionCount: 1, interpreterInstructions: 1)
+    )
+    _ = try session.respond(to: result, with: .stop)
+
+    #expect(
+      try session.waitForDirective(
+        processor: 0,
+        forResultSequence: result.sequence,
+        until: Date(timeIntervalSinceNow: 0.1)
+      ) == .stop)
+    #expect(session.snapshot.workerDirectives == [nil])
+  }
+
+  @Test func tenThousandWorkerHandoffsRetireAndMergeTheExactBudget() throws {
+    let processorCount = 4
+    let instructionBudget: UInt64 = 10_000
+    let session = DoryPCRunSession(
+      processorCount: processorCount,
+      instructionBudget: instructionBudget,
+      runGeneration: 99,
+      clockMode: .hostMonotonic
+    )
+    let failures = LockedValue<[String]>([])
+    let finished = DispatchGroup()
+
+    for processor in 0..<processorCount {
+      finished.enter()
+      DispatchQueue.global().async {
+        defer { finished.leave() }
+        do {
+          while let reservation = try session.reserve(
+            processor: processor,
+            maximumInstructions: 1
+          ) {
+            let result = try session.completeAndPublish(
+              reservation,
+              outcome: .retired,
+              counters: .init(instructionCount: 1, interpreterInstructions: 1)
+            )
+            guard
+              let directive = try session.waitForDirective(
+                processor: processor,
+                forResultSequence: result.sequence,
+                until: Date(timeIntervalSinceNow: 5)
+              )
+            else {
+              failures.mutate { $0.append("worker \(processor) directive timeout") }
+              return
+            }
+            if directive == .stop { return }
+          }
+        } catch {
+          failures.mutate { $0.append("worker \(processor): \(error)") }
+        }
+      }
+    }
+
+    var responded: UInt64 = 0
+    var observedChange = session.snapshot.changeGeneration
+    while responded < instructionBudget {
+      let snapshot = session.snapshot
+      var madeProgress = false
+      for result in snapshot.workerResults.compactMap({ $0 }) {
+        let final = responded + 1 == instructionBudget
+        _ = try session.respond(to: result, with: final ? .stop : .resume)
+        responded += 1
+        madeProgress = true
+      }
+      if !madeProgress {
+        let next = session.waitForChange(
+          after: observedChange,
+          until: Date(timeIntervalSinceNow: 5)
+        )
+        #expect(next.changeGeneration != observedChange)
+        observedChange = next.changeGeneration
+      }
+    }
+
+    // A worker may already have published its final result when the coordinator reaches the exact
+    // budget through another worker. Respond to every remaining mailbox so no owner is stranded.
+    while session.snapshot.workerResults.contains(where: { $0 != nil }) {
+      for result in session.snapshot.workerResults.compactMap({ $0 }) {
+        _ = try session.respond(to: result, with: .stop)
+      }
+    }
+    #expect(finished.wait(timeout: .now() + 5) == .success)
+    let snapshot = session.snapshot
+    #expect(failures.value.isEmpty)
+    #expect(responded == instructionBudget)
+    #expect(snapshot.totalRetiredInstructions == instructionBudget)
+    #expect(snapshot.mergedWorkerCounters.instructionCount == instructionBudget)
+    #expect(snapshot.mergedWorkerCounters.interpreterInstructions == instructionBudget)
+    #expect(snapshot.workerCounters.map(\.instructionCount).reduce(0, +) == instructionBudget)
+    #expect(snapshot.workerResults.allSatisfy { $0 == nil })
+    #expect(snapshot.workerDirectives.allSatisfy { $0 == nil })
+    #expect(snapshot.terminationReason == .instructionBudget)
   }
 }
 

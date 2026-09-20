@@ -1,15 +1,65 @@
+import DoryDBTX86
 import Foundation
 
 /// Machine-scoped coordination state for one future free-running vCPU run.
 ///
 /// The condition protects metadata only. Callers must not enter guest code, call a device, acquire
 /// RAM range authority, or deliver an interrupt while holding it. Architectural state remains
-/// owned by its vCPU worker; this object only coordinates reservations and generations.
+/// owned by its vCPU worker; this object coordinates reservations, handoffs, counters, and
+/// generations without taking architectural ownership.
 final class DoryPCRunSession: @unchecked Sendable {
+  enum ClockMode: Sendable, Equatable {
+    case deterministic
+    case hostMonotonic
+  }
+
   struct Reservation: Sendable, Equatable {
     let processor: Int
     let sequence: UInt64
     let instructionCount: UInt64
+  }
+
+  enum WorkerOutcome: Sendable, Equatable {
+    case retired
+    case yielded
+    case halted
+    case exception(DoryX86Exception)
+  }
+
+  /// Run-local counters are published by the owning worker with its architectural result. The
+  /// session merges them exactly once, before making that result visible to the coordinator.
+  struct WorkerCounters: Sendable, Equatable {
+    var instructionCount: UInt64 = 0
+    var interpreterInstructions: UInt64 = 0
+    var baselineJITInstructions: UInt64 = 0
+    var baselineJITBlocks: UInt64 = 0
+    var optimizingJITInstructions: UInt64 = 0
+    var optimizingJITBlocks: UInt64 = 0
+    var executionCPUNanoseconds: UInt64 = 0
+    var eventCPUNanoseconds: UInt64 = 0
+
+    static let zero = Self()
+  }
+
+  struct WorkerResult: Sendable, Equatable {
+    let runGeneration: UInt64
+    let processor: Int
+    let sequence: UInt64
+    let reservationSequence: UInt64
+    let outcome: WorkerOutcome
+    let counters: WorkerCounters
+  }
+
+  enum WorkerDirective: Sendable, Equatable {
+    case resume
+    case stop
+  }
+
+  struct WorkerDirectiveEnvelope: Sendable, Equatable {
+    let runGeneration: UInt64
+    let processor: Int
+    let resultSequence: UInt64
+    let directive: WorkerDirective
   }
 
   enum TerminationReason: Sendable, Equatable {
@@ -39,9 +89,22 @@ final class DoryPCRunSession: @unchecked Sendable {
     case missingReservation(Int)
     case staleReservation(processor: Int, expected: UInt64, actual: UInt64)
     case retiredBeyondReservation(retired: UInt64, reserved: UInt64)
+    case inconsistentWorkerCounters(processor: Int)
+    case counterOverflow(processor: Int)
+    case outstandingWorkerResult(Int)
+    case outstandingWorkerDirective(Int)
+    case staleRunGeneration(expected: UInt64, actual: UInt64)
+    case missingWorkerResult(Int)
+    case staleWorkerResult(processor: Int, expected: UInt64, actual: UInt64)
+    case mismatchedWorkerResult(processor: Int, sequence: UInt64)
+    case missingWorkerDirective(Int)
+    case staleWorkerDirective(processor: Int, expected: UInt64, actual: UInt64)
   }
 
   struct Snapshot: Sendable, Equatable {
+    let runGeneration: UInt64
+    let exceptionPolicy: DoryPCExceptionPolicy
+    let clockMode: ClockMode
     let initialInstructionBudget: UInt64
     let remainingInstructionBudget: UInt64
     let outstandingReservations: [Reservation?]
@@ -53,12 +116,19 @@ final class DoryPCRunSession: @unchecked Sendable {
     let quiescenceGeneration: UInt64
     let quiescenceRequiredGenerations: [UInt64]
     let quiescenceAcknowledgedGenerations: [UInt64]
+    let workerResults: [WorkerResult?]
+    let workerDirectives: [WorkerDirectiveEnvelope?]
+    let workerCounters: [WorkerCounters]
+    let mergedWorkerCounters: WorkerCounters
     let terminationReason: TerminationReason?
     let changeGeneration: UInt64
   }
 
   private let condition = NSCondition()
   let processorCount: Int
+  let runGeneration: UInt64
+  let exceptionPolicy: DoryPCExceptionPolicy
+  let clockMode: ClockMode
   private let initialInstructionBudget: UInt64
   private var remainingInstructionBudget: UInt64
   private var reservationSequences: [UInt64]
@@ -71,16 +141,27 @@ final class DoryPCRunSession: @unchecked Sendable {
   private var quiescenceGeneration: UInt64 = 0
   private var quiescenceRequiredGenerations: [UInt64]
   private var quiescenceAcknowledgedGenerations: [UInt64]
+  private var workerResultSequences: [UInt64]
+  private var workerResults: [WorkerResult?]
+  private var workerDirectives: [WorkerDirectiveEnvelope?]
+  private var workerCounters: [WorkerCounters]
+  private var mergedWorkerCounters: WorkerCounters = .zero
   private var terminationReason: TerminationReason?
   private var changeGeneration: UInt64 = 0
 
   init(
     processorCount: Int,
     instructionBudget: UInt64,
+    runGeneration: UInt64 = 1,
+    exceptionPolicy: DoryPCExceptionPolicy = .stop,
+    clockMode: ClockMode = .deterministic,
     initialGeneration: UInt64 = 0
   ) {
     precondition(processorCount > 0)
     self.processorCount = processorCount
+    self.runGeneration = runGeneration
+    self.exceptionPolicy = exceptionPolicy
+    self.clockMode = clockMode
     initialInstructionBudget = instructionBudget
     remainingInstructionBudget = instructionBudget
     reservationSequences = .init(repeating: initialGeneration, count: processorCount)
@@ -92,6 +173,10 @@ final class DoryPCRunSession: @unchecked Sendable {
     quiescenceGeneration = initialGeneration
     quiescenceRequiredGenerations = .init(repeating: initialGeneration, count: processorCount)
     quiescenceAcknowledgedGenerations = .init(repeating: initialGeneration, count: processorCount)
+    workerResultSequences = .init(repeating: initialGeneration, count: processorCount)
+    workerResults = .init(repeating: nil, count: processorCount)
+    workerDirectives = .init(repeating: nil, count: processorCount)
+    workerCounters = .init(repeating: .zero, count: processorCount)
     changeGeneration = initialGeneration
     if instructionBudget == 0 { terminationReason = .instructionBudget }
   }
@@ -107,6 +192,12 @@ final class DoryPCRunSession: @unchecked Sendable {
     }
     guard reservations[processor] == nil else {
       throw SessionError.outstandingReservation(processor)
+    }
+    guard workerResults[processor] == nil else {
+      throw SessionError.outstandingWorkerResult(processor)
+    }
+    guard workerDirectives[processor] == nil else {
+      throw SessionError.outstandingWorkerDirective(processor)
     }
     guard terminationReason == nil, remainingInstructionBudget > 0 else { return nil }
 
@@ -129,35 +220,155 @@ final class DoryPCRunSession: @unchecked Sendable {
   func complete(_ reservation: Reservation, retired: UInt64) throws {
     condition.lock()
     defer { condition.unlock() }
-    try validate(reservation.processor)
-    guard let current = reservations[reservation.processor] else {
-      throw SessionError.missingReservation(reservation.processor)
-    }
-    guard current == reservation else {
-      throw SessionError.staleReservation(
-        processor: reservation.processor,
-        expected: current.sequence,
-        actual: reservation.sequence
-      )
-    }
-    guard retired <= reservation.instructionCount else {
-      throw SessionError.retiredBeyondReservation(
-        retired: retired,
-        reserved: reservation.instructionCount
-      )
-    }
-
-    reservations[reservation.processor] = nil
-    let unused = reservation.instructionCount - retired
-    remainingInstructionBudget += unused
-    retiredInstructions[reservation.processor] += retired
-    totalRetiredInstructions += retired
-    if remainingInstructionBudget == 0, reservations.allSatisfy({ $0 == nil }),
-      selectTerminationLocked(.instructionBudget)
-    {
-      publishPendingLocked(processors: reservations.indices)
-    }
+    try validateCompletionLocked(reservation, retired: retired)
+    completeLocked(reservation, retired: retired)
     changedLocked()
+  }
+
+  /// Atomically completes one reservation, merges its counters, and publishes one result. A
+  /// worker cannot overwrite an unread result or run ahead of an unconsumed directive.
+  @discardableResult
+  func completeAndPublish(
+    _ reservation: Reservation,
+    outcome: WorkerOutcome,
+    counters: WorkerCounters
+  ) throws -> WorkerResult {
+    condition.lock()
+    defer { condition.unlock() }
+    let processor = reservation.processor
+    try validateCompletionLocked(reservation, retired: counters.instructionCount)
+    guard workerResults[processor] == nil else {
+      throw SessionError.outstandingWorkerResult(processor)
+    }
+    guard workerDirectives[processor] == nil else {
+      throw SessionError.outstandingWorkerDirective(processor)
+    }
+    try validateCountersLocked(counters, processor: processor)
+    let processorCounters = try addingCountersLocked(
+      workerCounters[processor], counters, processor: processor)
+    let mergedCounters = try addingCountersLocked(
+      mergedWorkerCounters, counters, processor: processor)
+    let sequence = nextGeneration(after: workerResultSequences[processor])
+    let result = WorkerResult(
+      runGeneration: runGeneration,
+      processor: processor,
+      sequence: sequence,
+      reservationSequence: reservation.sequence,
+      outcome: outcome,
+      counters: counters
+    )
+
+    completeLocked(reservation, retired: counters.instructionCount)
+    workerCounters[processor] = processorCounters
+    mergedWorkerCounters = mergedCounters
+    workerResultSequences[processor] = sequence
+    workerResults[processor] = result
+    changedLocked()
+    return result
+  }
+
+  func workerResult(forProcessor processor: Int) throws -> WorkerResult? {
+    condition.lock()
+    defer { condition.unlock() }
+    try validate(processor)
+    return workerResults[processor]
+  }
+
+  /// Responds to the exact unread result. Stale coordinator work cannot resume a worker after a
+  /// newer handoff, and a response is never silently replaced.
+  @discardableResult
+  func respond(to result: WorkerResult, with directive: WorkerDirective) throws
+    -> WorkerDirectiveEnvelope
+  {
+    condition.lock()
+    defer { condition.unlock() }
+    try validate(result.processor)
+    guard result.runGeneration == runGeneration else {
+      throw SessionError.staleRunGeneration(
+        expected: runGeneration,
+        actual: result.runGeneration
+      )
+    }
+    let processor = result.processor
+    guard let current = workerResults[processor] else {
+      throw SessionError.missingWorkerResult(processor)
+    }
+    guard current.sequence == result.sequence else {
+      throw SessionError.staleWorkerResult(
+        processor: processor,
+        expected: current.sequence,
+        actual: result.sequence
+      )
+    }
+    guard current == result else {
+      throw SessionError.mismatchedWorkerResult(
+        processor: processor,
+        sequence: result.sequence
+      )
+    }
+    guard workerDirectives[processor] == nil else {
+      throw SessionError.outstandingWorkerDirective(processor)
+    }
+    let envelope = WorkerDirectiveEnvelope(
+      runGeneration: runGeneration,
+      processor: processor,
+      resultSequence: result.sequence,
+      directive: directive
+    )
+    workerResults[processor] = nil
+    workerDirectives[processor] = envelope
+    changedLocked()
+    return envelope
+  }
+
+  /// Consumes only the directive paired with the caller's exact result sequence.
+  func consumeDirective(processor: Int, forResultSequence sequence: UInt64) throws
+    -> WorkerDirective?
+  {
+    condition.lock()
+    defer { condition.unlock() }
+    try validate(processor)
+    guard let envelope = workerDirectives[processor] else { return nil }
+    guard envelope.resultSequence == sequence else {
+      throw SessionError.staleWorkerDirective(
+        processor: processor,
+        expected: envelope.resultSequence,
+        actual: sequence
+      )
+    }
+    workerDirectives[processor] = nil
+    changedLocked()
+    return envelope.directive
+  }
+
+  /// Waits for the coordinator response to an exact result without losing a response published
+  /// before the worker parks. A timeout does not consume or fabricate a directive.
+  func waitForDirective(
+    processor: Int,
+    forResultSequence sequence: UInt64,
+    until deadline: Date
+  ) throws -> WorkerDirective? {
+    condition.lock()
+    defer { condition.unlock() }
+    try validate(processor)
+    while true {
+      if let envelope = workerDirectives[processor] {
+        guard envelope.resultSequence == sequence else {
+          throw SessionError.staleWorkerDirective(
+            processor: processor,
+            expected: envelope.resultSequence,
+            actual: sequence
+          )
+        }
+        workerDirectives[processor] = nil
+        changedLocked()
+        return envelope.directive
+      }
+      guard workerResults[processor]?.sequence == sequence else {
+        throw SessionError.missingWorkerDirective(processor)
+      }
+      if !condition.wait(until: deadline) { return nil }
+    }
   }
 
   /// Selects one stable terminal reason independent of arrival order. More authoritative reasons
@@ -295,6 +506,75 @@ final class DoryPCRunSession: @unchecked Sendable {
     }
   }
 
+  private func validateCompletionLocked(_ reservation: Reservation, retired: UInt64) throws {
+    try validate(reservation.processor)
+    guard let current = reservations[reservation.processor] else {
+      throw SessionError.missingReservation(reservation.processor)
+    }
+    guard current == reservation else {
+      throw SessionError.staleReservation(
+        processor: reservation.processor,
+        expected: current.sequence,
+        actual: reservation.sequence
+      )
+    }
+    guard retired <= reservation.instructionCount else {
+      throw SessionError.retiredBeyondReservation(
+        retired: retired,
+        reserved: reservation.instructionCount
+      )
+    }
+  }
+
+  private func completeLocked(_ reservation: Reservation, retired: UInt64) {
+    reservations[reservation.processor] = nil
+    let unused = reservation.instructionCount - retired
+    remainingInstructionBudget += unused
+    retiredInstructions[reservation.processor] += retired
+    totalRetiredInstructions += retired
+    if remainingInstructionBudget == 0, reservations.allSatisfy({ $0 == nil }),
+      selectTerminationLocked(.instructionBudget)
+    {
+      publishPendingLocked(processors: reservations.indices)
+    }
+  }
+
+  private func validateCountersLocked(_ counters: WorkerCounters, processor: Int) throws {
+    let (translated, translatedOverflow) = counters.baselineJITInstructions.addingReportingOverflow(
+      counters.optimizingJITInstructions)
+    let (accounted, accountedOverflow) = translated.addingReportingOverflow(
+      counters.interpreterInstructions)
+    guard !translatedOverflow, !accountedOverflow, accounted == counters.instructionCount else {
+      throw SessionError.inconsistentWorkerCounters(processor: processor)
+    }
+  }
+
+  private func addingCountersLocked(
+    _ lhs: WorkerCounters,
+    _ rhs: WorkerCounters,
+    processor: Int
+  ) throws -> WorkerCounters {
+    func add(_ first: UInt64, _ second: UInt64) throws -> UInt64 {
+      let result = first.addingReportingOverflow(second)
+      guard !result.overflow else { throw SessionError.counterOverflow(processor: processor) }
+      return result.partialValue
+    }
+    return try WorkerCounters(
+      instructionCount: add(lhs.instructionCount, rhs.instructionCount),
+      interpreterInstructions: add(
+        lhs.interpreterInstructions, rhs.interpreterInstructions),
+      baselineJITInstructions: add(
+        lhs.baselineJITInstructions, rhs.baselineJITInstructions),
+      baselineJITBlocks: add(lhs.baselineJITBlocks, rhs.baselineJITBlocks),
+      optimizingJITInstructions: add(
+        lhs.optimizingJITInstructions, rhs.optimizingJITInstructions),
+      optimizingJITBlocks: add(lhs.optimizingJITBlocks, rhs.optimizingJITBlocks),
+      executionCPUNanoseconds: add(
+        lhs.executionCPUNanoseconds, rhs.executionCPUNanoseconds),
+      eventCPUNanoseconds: add(lhs.eventCPUNanoseconds, rhs.eventCPUNanoseconds)
+    )
+  }
+
   @discardableResult
   private func selectTerminationLocked(_ reason: TerminationReason) -> Bool {
     if let current = terminationReason, current.priority <= reason.priority { return false }
@@ -331,6 +611,9 @@ final class DoryPCRunSession: @unchecked Sendable {
 
   private func snapshotLocked() -> Snapshot {
     Snapshot(
+      runGeneration: runGeneration,
+      exceptionPolicy: exceptionPolicy,
+      clockMode: clockMode,
       initialInstructionBudget: initialInstructionBudget,
       remainingInstructionBudget: remainingInstructionBudget,
       outstandingReservations: reservations,
@@ -342,6 +625,10 @@ final class DoryPCRunSession: @unchecked Sendable {
       quiescenceGeneration: quiescenceGeneration,
       quiescenceRequiredGenerations: quiescenceRequiredGenerations,
       quiescenceAcknowledgedGenerations: quiescenceAcknowledgedGenerations,
+      workerResults: workerResults,
+      workerDirectives: workerDirectives,
+      workerCounters: workerCounters,
+      mergedWorkerCounters: mergedWorkerCounters,
       terminationReason: terminationReason,
       changeGeneration: changeGeneration
     )
