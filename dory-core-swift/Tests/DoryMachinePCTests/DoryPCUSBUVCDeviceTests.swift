@@ -35,6 +35,19 @@ import Testing
         try .init(type: .isochronous, direction: .in, endpoint: 1, maximumResponseBytes: 6)
       ).status == .notReady)
   }
+
+  @Test func transferReadyHandlerCanReenterCameraState() throws {
+    let camera = try DoryPCUSBUVCDevice(width: 2, height: 1, framesPerSecond: 30)
+    let readiness = UVCReadinessCounter()
+    camera.setTransferReadyHandler {
+      camera.cancelAll()
+      readiness.increment()
+    }
+
+    try camera.enqueueYUY2Frame([1, 2, 3, 4])
+
+    #expect(readiness.value == 1)
+  }
 }
 
 private final class UVCReadinessCounter: @unchecked Sendable {

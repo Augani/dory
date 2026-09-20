@@ -13,6 +13,27 @@ import Testing
     #expect(counter.value == 1)
   }
 
+  @Test func pendingWorkCallbackCanReenterLocalAPIC() throws {
+    let probe = APICPendingWorkReentryProbe()
+    let apic = DoryPCLocalAPIC(apicID: 0, onPendingWork: { probe.observe() })
+    probe.apic = apic
+
+    try apic.inject(vector: 0x40)
+
+    #expect(probe.observedVectors == [0x40])
+  }
+
+  @Test func timerPendingWorkCallbackCanReenterLocalAPIC() throws {
+    let probe = APICPendingWorkReentryProbe()
+    let apic = DoryPCLocalAPIC(apicID: 0, onPendingWork: { probe.observe() })
+    probe.apic = apic
+    try apic.configureTimer(vector: 0x50, masked: false, mode: .oneShot, initialCount: 1)
+
+    apic.advanceTimer(by: 1)
+
+    #expect(probe.observedVectors == [0x50])
+  }
+
   @Test func spuriousVectorAcceptsArchitecturalVirtualWireValue() throws {
     let apic = DoryPCLocalAPIC(apicID: 0)
 
@@ -159,4 +180,13 @@ private final class APICPendingWorkCounter: @unchecked Sendable {
 
   var value: Int { lock.withLock { count } }
   func increment() { lock.withLock { count += 1 } }
+}
+
+private final class APICPendingWorkReentryProbe: @unchecked Sendable {
+  weak var apic: DoryPCLocalAPIC?
+  private(set) var observedVectors: Set<UInt8> = []
+
+  func observe() {
+    observedVectors = apic?.snapshot().interruptRequest ?? []
+  }
 }

@@ -217,7 +217,8 @@ public final class DoryPCPS2KeyboardController: @unchecked Sendable {
   }
 
   private func notify(_ notification: (@Sendable (Bool) -> Void, Bool)?) {
-    notification?.0(notification!.1)
+    guard let notification else { return }
+    notification.0(notification.1)
   }
 }
 

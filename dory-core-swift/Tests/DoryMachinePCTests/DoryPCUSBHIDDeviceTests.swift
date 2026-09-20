@@ -42,6 +42,19 @@ import Testing
     #expect(!mouse.hasPendingReport)
     #expect(mouse.perform(transfer).status == .notReady)
   }
+
+  @Test func transferReadyHandlerCanReenterDeviceState() throws {
+    let mouse = DoryPCUSBHIDDevice(profile: .mouse)
+    let readiness = ReadinessCounter()
+    mouse.setTransferReadyHandler {
+      #expect(mouse.hasPendingReport)
+      readiness.increment()
+    }
+
+    try mouse.enqueue(report: [1, 2, 3, 4])
+
+    #expect(readiness.value == 1)
+  }
 }
 
 private final class ReadinessCounter: @unchecked Sendable {

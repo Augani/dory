@@ -14,6 +14,16 @@ import Testing
     #expect(counter.value == 1)
   }
 
+  @Test func pendingWorkCallbackCanReenterPIC() throws {
+    let probe = PICPendingWorkReentryProbe()
+    let pair = DoryPCPIC8259Pair(onPendingWork: { probe.observe() })
+    probe.pair = pair
+
+    try pair.raise(irq: 1)
+
+    #expect(probe.observedRequest == 0x02)
+  }
+
   @Test func picRemapsMasksCascadesAndAcknowledgesInPriorityOrder() throws {
     let pair = DoryPCPIC8259Pair()
     let master = DoryPCPIC8259Port(pair: pair, slave: false)
@@ -53,6 +63,19 @@ import Testing
     #expect(snapshot.reload == 10)
     #expect(snapshot.current == 4)
     #expect(counter.value == 1)
+  }
+
+  @Test func pitInterruptCallbackCanReenterTimerState() throws {
+    let probe = PITInterruptReentryProbe()
+    let pit = DoryPCPIT8254 { probe.observe() }
+    probe.pit = pit
+    try pit.write(portOffset: 3, value: 0x30, width: .byte)
+    try pit.write(portOffset: 0, value: 1, width: .byte)
+    try pit.write(portOffset: 0, value: 0, width: .byte)
+
+    pit.advance(by: 1)
+
+    #expect(probe.observedCurrent == 0)
   }
 
   @Test func picPredictsCascadedPriorityAcceptance() throws {
@@ -228,4 +251,22 @@ private final class LockedCounter: @unchecked Sendable {
   private var count = 0
   var value: Int { lock.withLock { count } }
   func increment() { lock.withLock { count += 1 } }
+}
+
+private final class PICPendingWorkReentryProbe: @unchecked Sendable {
+  weak var pair: DoryPCPIC8259Pair?
+  private(set) var observedRequest: UInt8 = 0
+
+  func observe() {
+    observedRequest = pair?.snapshot().masterRequest ?? 0
+  }
+}
+
+private final class PITInterruptReentryProbe: @unchecked Sendable {
+  weak var pit: DoryPCPIT8254?
+  private(set) var observedCurrent: UInt32?
+
+  func observe() {
+    observedCurrent = pit?.snapshot().current
+  }
 }

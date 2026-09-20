@@ -89,6 +89,22 @@ import Testing
     #expect(levels.values == [false, true, false])
   }
 
+  @Test func uartInterruptSinkCanReenterUARTState() throws {
+    let levels = LockedLevels()
+    let uart = DoryPCUART16550()
+    uart.connectInterruptSink { level in
+      _ = uart.dropCounts
+      #expect(uart.hasPendingReceivedBytes == level)
+      levels.append(level)
+    }
+    try uart.write(portOffset: 1, value: 1, width: .byte)
+
+    uart.enqueueReceivedBytes([0x41])
+    _ = try uart.read(portOffset: 0, width: .byte)
+
+    #expect(levels.values == [false, true, false])
+  }
+
   @Test func machineRoutesUARTReceiveInterruptToLegacyIRQ4() throws {
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
     try machine.serial.write(portOffset: 1, value: 1, width: .byte)
@@ -125,6 +141,20 @@ import Testing
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
     #expect(machine.ps2Keyboard.enqueueSet1ScanCodes([0x1E]))
     #expect(machine.legacyPIC.snapshot().masterRequest & (1 << 1) != 0)
+  }
+
+  @Test func ps2InterruptSinkCanReenterControllerState() throws {
+    let levels = LockedLevels()
+    let controller = DoryPCPS2KeyboardController()
+    controller.connectInterruptSink { level in
+      let snapshot = controller.snapshot()
+      #expect((snapshot.bytesPending > 0) == level)
+      levels.append(level)
+    }
+
+    #expect(controller.enqueueSet1ScanCodes([0x1E]))
+
+    #expect(levels.values == [false, true])
   }
 
   @Test func ps2KeyboardTracksNegotiatedScanCodeSet() throws {

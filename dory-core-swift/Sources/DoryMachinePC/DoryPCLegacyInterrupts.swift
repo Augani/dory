@@ -58,43 +58,48 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
 
   public func raise(irq: UInt8) throws {
     guard irq < 16 else { throw DoryPCLegacyInterruptError.invalidIRQ(irq) }
-    lock.withLock {
+    let pending = lock.withLock {
       requestLocked(irq: irq)
-      publishPendingRequestLocked()
+      return publishPendingRequestLocked()
     }
+    if pending { onPendingWork() }
   }
 
   public func setAsserted(_ asserted: Bool, irq: UInt8) throws {
     guard irq < 16 else { throw DoryPCLegacyInterruptError.invalidIRQ(irq) }
-    lock.withLock {
+    let pending = lock.withLock {
       if irq < 8 {
         setAssertedLocked(asserted: asserted, irq: irq, chip: &master)
       } else {
         setAssertedLocked(asserted: asserted, irq: irq - 8, chip: &slave)
         updateCascadeLocked()
       }
-      publishPendingRequestLocked()
+      return publishPendingRequestLocked()
     }
+    if pending { onPendingWork() }
   }
 
   public func configureLevelTriggeredIRQs(_ mask: UInt16) {
-    lock.withLock {
+    let pending = lock.withLock {
       master.levelTriggered = UInt8(truncatingIfNeeded: mask)
       slave.levelTriggered = UInt8(truncatingIfNeeded: mask >> 8)
       reconcileLevelRequestsLocked(chip: &master)
       reconcileLevelRequestsLocked(chip: &slave)
       updateCascadeLocked()
-      publishPendingRequestLocked()
+      return publishPendingRequestLocked()
     }
+    if pending { onPendingWork() }
   }
 
   public func acknowledge(interruptsEnabled: Bool) -> UInt8? {
     guard interruptsEnabled, dory_atomic_u8_load_acquire(hasPendingRequest) != 0 else {
       return nil
     }
-    return lock.withLock {
-      defer { publishPendingRequestLocked() }
-      guard var masterIRQ = highestDeliverable(master) else { return nil }
+    let result = lock.withLock { () -> (vector: UInt8?, pending: Bool) in
+      var vector: UInt8?
+      guard var masterIRQ = highestDeliverable(master) else {
+        return (nil, publishPendingRequestLocked())
+      }
       if masterIRQ == 2 {
         if let slaveIRQ = highestDeliverable(slave) {
           slave.request &= ~(UInt8(1) << slaveIRQ)
@@ -102,16 +107,22 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
           master.request &= ~(UInt8(1) << 2)
           master.inService |= UInt8(1) << 2
           updateCascadeLocked()
-          return slave.vectorOffset &+ slaveIRQ
+          vector = slave.vectorOffset &+ slaveIRQ
+          return (vector, publishPendingRequestLocked())
         }
         master.request &= ~(UInt8(1) << 2)
-        guard let next = highestDeliverable(master) else { return nil }
+        guard let next = highestDeliverable(master) else {
+          return (nil, publishPendingRequestLocked())
+        }
         masterIRQ = next
       }
       master.request &= ~(UInt8(1) << masterIRQ)
       master.inService |= UInt8(1) << masterIRQ
-      return master.vectorOffset &+ masterIRQ
+      vector = master.vectorOffset &+ masterIRQ
+      return (vector, publishPendingRequestLocked())
     }
+    if result.pending { onPendingWork() }
+    return result.vector
   }
 
   /// Reports whether a future assertion of `irq` could pass the cascaded priority resolvers.
@@ -168,14 +179,15 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
   }
 
   fileprivate func write(_ value: UInt8, controller: Controller, data: Bool) {
-    lock.withLock {
-      defer { publishPendingRequestLocked() }
+    let pending = lock.withLock {
       if data {
         writeDataLocked(value, controller: controller)
       } else {
         writeCommandLocked(value, controller: controller)
       }
+      return publishPendingRequestLocked()
     }
+    if pending { onPendingWork() }
   }
 
   private func writeCommandLocked(_ value: UInt8, controller: Controller) {
@@ -282,12 +294,18 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
   }
 
   private func reconcileLevelRequestsLocked(chip: inout Chip) {
-    chip.request = (chip.request & ~chip.levelTriggered) | (chip.assertedLines & chip.levelTriggered)
+    chip.request =
+      (chip.request & ~chip.levelTriggered) | (chip.assertedLines & chip.levelTriggered)
   }
 
-  private func publishPendingRequestLocked() {
-    dory_atomic_u8_store_release(hasPendingRequest, master.request == 0 ? 0 : 1)
-    if master.request != 0 { onPendingWork() }
+  @discardableResult
+  private func publishPendingRequestLocked() -> Bool {
+    // The atomic byte is the lock-free fast-path publication. Its scheduler callback is invoked by
+    // each caller only after releasing `lock`, because that callback may synchronously re-enter
+    // the PIC to inspect or acknowledge the request.
+    let pending = master.request != 0
+    dory_atomic_u8_store_release(hasPendingRequest, pending ? 1 : 0)
+    return pending
   }
 
   private func withChip(_ controller: Controller, _ body: (inout Chip) -> Void) {
@@ -366,7 +384,8 @@ public final class DoryPCELCRPort: DoryPCPortIODevice, @unchecked Sendable {
       switch width {
       case .byte:
         let mask = UInt16(0xFF) << UInt16(portOffset * 8)
-        let merged = (value & ~mask) | (UInt16(UInt8(truncatingIfNeeded: newValue)) << (portOffset * 8))
+        let merged =
+          (value & ~mask) | (UInt16(UInt8(truncatingIfNeeded: newValue)) << (portOffset * 8))
         value = merged & Self.writableMask
       case .word:
         value = UInt16(truncatingIfNeeded: newValue) & Self.writableMask
@@ -379,7 +398,7 @@ public final class DoryPCELCRPort: DoryPCPortIODevice, @unchecked Sendable {
 
   private func validate(portOffset: UInt16, width: DoryX86OperandWidth) throws {
     let end = UInt32(portOffset) + UInt32(width.byteCount)
-    guard (width == .byte || width == .word), end <= UInt32(portCount) else {
+    guard width == .byte || width == .word, end <= UInt32(portCount) else {
       throw DoryPCLegacyInterruptError.unsupportedPortWidth(width)
     }
   }
@@ -665,7 +684,8 @@ public final class DoryPCSystemControlPortB: DoryPCPortIODevice, @unchecked Send
       throw DoryPCLegacyInterruptError.unsupportedPortWidth(width)
     }
     let writable = lock.withLock { control }
-    let status = (pit.refreshToggleHigh ? UInt8(0x10) : 0)
+    let status =
+      (pit.refreshToggleHigh ? UInt8(0x10) : 0)
       | (pit.channel2OutputHigh ? UInt8(0x20) : 0)
     return UInt32(writable | status)
   }

@@ -35,13 +35,27 @@ import Testing
 
     #expect(
       recorder.values == [
-        .init(timer: 0, route: .ioAPICPin(11), asserted: true), .init(timer: 0, route: .ioAPICPin(11), asserted: false),
+        .init(timer: 0, route: .ioAPICPin(11), asserted: true),
+        .init(timer: 0, route: .ioAPICPin(11), asserted: false),
       ])
     #expect(hpet.snapshot().interruptStatus == 1)
     #expect(!hpet.snapshot().timers[0].armed)
     #expect(hpet.timerInterruptRequests == [1, 0, 0])
     try write64(hpet, 0x20, 1)
     #expect(hpet.snapshot().interruptStatus == 0)
+  }
+
+  @Test func interruptSinkCanReenterHPETState() throws {
+    let probe = HPETInterruptReentryProbe()
+    let hpet = DoryPCHPET { _, _, asserted in probe.observe(asserted: asserted) }
+    probe.hpet = hpet
+    try write64(hpet, 0x100, UInt64(1 << 2) | UInt64(11 << 9))
+    try write64(hpet, 0x108, 1)
+    try write64(hpet, 0x10, 1)
+
+    hpet.advance(by: 1)
+
+    #expect(probe.observations == [true, false])
   }
 
   @Test func periodicLevelTimerRearmsAndDeassertsWhenStatusClears() throws {
@@ -109,15 +123,20 @@ import Testing
     let legacyRoutes: [DoryPCHPETInterruptRoute] = [.legacyIRQ(0), .legacyIRQ(8), .ioAPICPin(11)]
     #expect(hpet.interruptDeadlines().map(\.route) == legacyRoutes)
     hpet.advance(by: 10)
-    #expect(recorder.values == legacyRoutes.enumerated().flatMap { timer, route in
-      [HPETInterrupt(timer: timer, route: route, asserted: true),
-        HPETInterrupt(timer: timer, route: route, asserted: false)]
-    })
+    #expect(
+      recorder.values
+        == legacyRoutes.enumerated().flatMap { timer, route in
+          [
+            HPETInterrupt(timer: timer, route: route, asserted: true),
+            HPETInterrupt(timer: timer, route: route, asserted: false),
+          ]
+        })
     try write64(hpet, 0x10, 1)
     for timer in 0..<3 {
       try write64(hpet, 0x108 + UInt64(timer * 0x20), 20)
     }
-    #expect(hpet.interruptDeadlines().map(\.route) == [.ioAPICPin(11), .ioAPICPin(11), .ioAPICPin(11)])
+    #expect(
+      hpet.interruptDeadlines().map(\.route) == [.ioAPICPin(11), .ioAPICPin(11), .ioAPICPin(11)])
     hpet.advance(by: 10)
     #expect(recorder.values.suffix(6).allSatisfy { $0.route == .ioAPICPin(11) })
   }
@@ -132,10 +151,12 @@ import Testing
       let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
       try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
       for pin in [0, 2, 8, 11] {
-        try machine.ioAPIC.configure(pin: pin,
+        try machine.ioAPIC.configure(
+          pin: pin,
           route: .init(vector: UInt8(0x40 + pin), destinationAPICID: 0, masked: false))
       }
-      try write64(machine.hpet, 0x100 + UInt64(item.timer * 0x20),
+      try write64(
+        machine.hpet, 0x100 + UInt64(item.timer * 0x20),
         (1 << 2) | (UInt64(item.selected) << 9))
       try write64(machine.hpet, 0x108 + UInt64(item.timer * 0x20), 10)
       try write64(machine.hpet, 0x10, item.legacy ? 3 : 1)
@@ -185,5 +206,18 @@ private final class HPETInterruptRecorder: @unchecked Sendable {
 
   func append(timer: Int, route: DoryPCHPETInterruptRoute, asserted: Bool) {
     lock.withLock { storage.append(.init(timer: timer, route: route, asserted: asserted)) }
+  }
+}
+
+private final class HPETInterruptReentryProbe: @unchecked Sendable {
+  weak var hpet: DoryPCHPET?
+  private let lock = NSLock()
+  private var storage: [Bool] = []
+
+  var observations: [Bool] { lock.withLock { storage } }
+
+  func observe(asserted: Bool) {
+    _ = hpet?.snapshot()
+    lock.withLock { storage.append(asserted) }
   }
 }

@@ -144,6 +144,9 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   public func inject(vector: UInt8, levelTriggered: Bool = false) throws {
     try validate(vector)
     lock.withLock { injectLocked(vector: vector, levelTriggered: levelTriggered) }
+    // Pending-work publication may synchronously inspect this APIC. Never retain the state lock
+    // across that scheduler boundary.
+    onPendingWork()
   }
 
   /// Selects and acknowledges the highest deliverable vector. Acknowledgement atomically moves
@@ -260,12 +263,13 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   /// Advances the timer from its undivided bus clock while retaining partial divider periods.
   public func advanceTimer(byBaseClockTicks ticks: UInt64) {
     guard ticks > 0 else { return }
-    lock.withLock {
+    let injected = lock.withLock {
       let wholeTicks = ticks / timerDivideValue
       let fractionalTicks = timerBaseClockRemainder + ticks % timerDivideValue
       timerBaseClockRemainder = fractionalTicks % timerDivideValue
-      advanceTimerLocked(by: wholeTicks + fractionalTicks / timerDivideValue)
+      return advanceTimerLocked(by: wholeTicks + fractionalTicks / timerDivideValue)
     }
+    if injected { onPendingWork() }
   }
 
   /// Undivided bus-clock ticks remaining before the current one-shot or periodic expiry.
@@ -280,22 +284,25 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   /// matching the APIC's bounded pending representation.
   public func advanceTimer(by ticks: UInt64) {
     guard ticks > 0 else { return }
-    lock.withLock { advanceTimerLocked(by: ticks) }
+    let injected = lock.withLock { advanceTimerLocked(by: ticks) }
+    if injected { onPendingWork() }
   }
 
   public var timerInterruptRequests: UInt64 { lock.withLock { timerInterruptRequestCount } }
 
-  private func advanceTimerLocked(by ticks: UInt64) {
-    guard ticks > 0, timer.currentCount > 0 else { return }
+  private func advanceTimerLocked(by ticks: UInt64) -> Bool {
+    guard ticks > 0, timer.currentCount > 0 else { return false }
     let current = UInt64(timer.currentCount)
     guard ticks >= current else {
       timer.currentCount -= UInt32(ticks)
-      return
+      return false
     }
 
+    var injected = false
     if !timer.masked {
       if diagnosticsEnabled, timerInterruptRequestCount < .max { timerInterruptRequestCount += 1 }
       injectLocked(vector: timer.vector, levelTriggered: false)
+      injected = true
     }
     switch timer.mode {
     case .oneShot:
@@ -303,13 +310,14 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
     case .periodic:
       guard timer.initialCount > 0 else {
         timer.currentCount = 0
-        return
+        return injected
       }
       let period = UInt64(timer.initialCount)
       let ticksAfterFirstExpiry = ticks - current
       let phase = ticksAfterFirstExpiry % period
       timer.currentCount = phase == 0 ? timer.initialCount : UInt32(period - phase)
     }
+    return injected
   }
 
   public func snapshot() -> DoryPCLocalAPICSnapshot {
@@ -330,7 +338,6 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   private func injectLocked(vector: UInt8, levelTriggered: Bool) {
     interruptRequest.insert(vector)
     dory_atomic_u8_store_release(hasPendingRequest, 1)
-    onPendingWork()
     if levelTriggered { self.levelTriggered.insert(vector) }
   }
 

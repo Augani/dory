@@ -885,6 +885,63 @@ import Testing
     #expect(machine.executionStatistics.interpreterInstructions == budget)
   }
 
+  @Test func qualifiedInterpreterPairSurvivesConcurrentBuiltInHostCallbacks() throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    try machine.enableQualifiedInterpreterPairExecution()
+    // Both owners continuously transmit and receive through the same UART while host-side clock,
+    // input, and interrupt callbacks mutate the other built-in devices.
+    try machine.memory.write(
+      at: 0x10_0000,
+      bytes: [0xBA, 0xF8, 0x03, 0, 0, 0xB0, 0x42, 0xEE, 0xEC, 0xEB, 0xFC]
+    )
+    try machine.memory.write(
+      at: 0x8000,
+      bytes: [0xBA, 0xF8, 0x03, 0xB0, 0x41, 0xEE, 0xEC, 0xEB, 0xFC]
+    )
+    try machine.ioBus.write(port: 0x3F9, value: 1, width: .byte)
+    try machine.ioBus.write(port: 0x43, value: 0x34, width: .byte)
+    try machine.ioBus.write(port: 0x40, value: 1, width: .byte)
+    try machine.ioBus.write(port: 0x40, value: 0, width: .byte)
+    try machine.ioBus.write(port: 0x70, value: 0x0B, width: .byte)
+    try machine.ioBus.write(port: 0x71, value: 0x42, width: .byte)
+    try machine.physicalMemory.writeScalar(at: 0xFED0_0100, value: 1 << 2, byteCount: 8)
+    try machine.physicalMemory.writeScalar(at: 0xFED0_0108, value: 1, byteCount: 8)
+    try machine.physicalMemory.writeScalar(at: 0xFED0_0010, value: 1, byteCount: 8)
+
+    let probe = HostWorkerProbe(hold: true, holdConcurrentExecution: true)
+    machine.observeWorkers { probe.observe($0) }
+    let run = HaltedMachineRun(machine: machine, maximumInstructions: 1_000_000_000)
+    defer {
+      probe.release()
+      machine.powerController.request(.powerOff)
+    }
+    try #require(probe.arrived.wait(timeout: .now() + 2) == .success)
+    probe.release()
+
+    for index in 0..<512 {
+      machine.serial.enqueueReceivedBytes([UInt8(truncatingIfNeeded: index)])
+      #expect(machine.ps2Keyboard.enqueueSet1ScanCodes([0x1E]))
+      machine.legacyPIT.advance(by: 1)
+      machine.rtc.advance(by: 32)
+      machine.hpet.advance(by: 1)
+      try machine.localAPICs[index & 1].inject(vector: 0x40)
+    }
+    machine.powerController.request(.powerOff)
+
+    guard case .poweredOff(let instructionCount) = try run.finish() else {
+      Issue.record("Expected concurrent built-in callback poweroff")
+      return
+    }
+    #expect(instructionCount > 0)
+    #expect(machine.legacyPIT.timerInterruptRequests > 0)
+    #expect(machine.rtc.timerInterruptRequests > 0)
+    let snapshot = probe.snapshot()
+    #expect(snapshot.maximumActive == 2)
+    #expect(snapshot.active == 0)
+    #expect(snapshot.stopped == Set([0, 1]))
+    #expect(!snapshot.timedOut)
+  }
+
   @Test func qualifiedInterpreterPairAdmissionFailsClosed() throws {
     let deterministic = try DoryPCDirectKernelMachine(
       memoryBytes: 2 * 1024 * 1024,

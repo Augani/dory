@@ -64,6 +64,21 @@ import Testing
     #expect(rtc.timerInterruptRequests == 2)
   }
 
+  @Test func interruptSinkCanReenterRTCState() throws {
+    let levels = LockedLevels()
+    let rtc = DoryPCRTC146818(initialDate: utcDate(2026, 8, 30, 21, 47, 58))
+    rtc.connectInterruptSink { level in
+      let snapshot = rtc.snapshot()
+      #expect((snapshot.statusC & 0x80 != 0) == level)
+      levels.append(level)
+    }
+    try write(rtc, 0x0B, 0x42)
+
+    rtc.advance(by: 32)
+
+    #expect(levels.values == [false, true])
+  }
+
   @Test func alarmInterruptUsesDontCareFields() throws {
     let rtc = DoryPCRTC146818(initialDate: utcDate(2026, 8, 30, 21, 47, 58))
     try write(rtc, 0x01, 0x59)
