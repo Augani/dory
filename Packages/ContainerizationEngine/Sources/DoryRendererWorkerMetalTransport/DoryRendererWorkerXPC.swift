@@ -8,7 +8,10 @@ import Metal
 /// process identity.
 @objc(DoryRendererWorkerXPCProtocol)
 public protocol DoryRendererWorkerXPCProtocol: NSObjectProtocol {
-    func bootstrap(_ request: Data, withReply reply: @escaping (Data) -> Void)
+    func bootstrap(
+        _ request: Data,
+        withReply reply: @escaping (Data, [FileHandle]) -> Void
+    )
     func exchange(
         _ frame: Data,
         descriptors: [FileHandle],
@@ -30,6 +33,15 @@ public enum DoryRendererWorkerXPCInterface {
         ) as! Set<AnyHashable>
         let exchangeSelector = #selector(
             DoryRendererWorkerXPCProtocol.exchange(_:descriptors:withReply:)
+        )
+        let bootstrapSelector = #selector(
+            DoryRendererWorkerXPCProtocol.bootstrap(_:withReply:)
+        )
+        interface.setClasses(
+            descriptorClasses,
+            for: bootstrapSelector,
+            argumentIndex: 1,
+            ofReply: true
         )
         interface.setClasses(
             descriptorClasses,

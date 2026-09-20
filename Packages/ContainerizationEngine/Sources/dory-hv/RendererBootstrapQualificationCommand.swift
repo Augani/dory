@@ -254,7 +254,10 @@ enum RendererBootstrapQualificationCommand {
                 guestMesa: guestMesa,
                 rendererWorkerExecutable: rendererWorkerExecutable,
                 rendererWorkerCodeDirectoryHash: rendererWorkerCodeDirectoryHash
-            )
+            ),
+            hostVisibleArenaByteCount: profile.requestedCapabilities.contains(.venus)
+                ? DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
+                : 0
         )
     }
 

@@ -67,12 +67,18 @@ private final class DoryRendererWorkerBlobMappingAuthority: @unchecked Sendable 
     private let descriptor: FileHandle
 
     init(_ mapping: DoryRendererWorkerBlobMapping) throws {
+        guard mapping.lease.storage == .perBlobDescriptor,
+              let sharedMemoryDescriptor = mapping.sharedMemoryDescriptor else {
+            throw VMError.invalidConfiguration(
+                "renderer blob mapping is not descriptor-backed"
+            )
+        }
         let roundedLength = mapping.lease.mappingByteCount
             .roundedUpToMultiple(of: HostPage.size)
         guard roundedLength > 0,
               roundedLength <= mapping.lease.declaredFileSize,
               roundedLength <= UInt64(Int.max) else {
-            try? mapping.sharedMemoryDescriptor.close()
+            try? sharedMemoryDescriptor.close()
             throw VMError.invalidConfiguration("worker blob mapping exceeds SHM authority")
         }
         let pointer = mmap(
@@ -80,17 +86,17 @@ private final class DoryRendererWorkerBlobMappingAuthority: @unchecked Sendable 
             Int(roundedLength),
             PROT_READ | PROT_WRITE,
             MAP_SHARED,
-            mapping.sharedMemoryDescriptor.fileDescriptor,
+            sharedMemoryDescriptor.fileDescriptor,
             0
         )
         guard pointer != MAP_FAILED, let pointer else {
-            try? mapping.sharedMemoryDescriptor.close()
+            try? sharedMemoryDescriptor.close()
             throw VMError.outOfMemory("cannot map worker blob SHM: errno \(errno)")
         }
         self.lease = mapping.lease
         self.hostPointer = pointer
         self.mappedByteCount = Int(roundedLength)
-        self.descriptor = mapping.sharedMemoryDescriptor
+        self.descriptor = sharedMemoryDescriptor
     }
 
     deinit {
@@ -2341,8 +2347,13 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         var memory: UInt32
         var size: UInt64
         var mapping: VirtioGPUBlobMapping?
-        var workerMapping: DoryRendererWorkerBlobMappingAuthority?
+        var workerMapping: WorkerBlobMapping?
         var guestMapped = false
+    }
+
+    private enum WorkerBlobMapping {
+        case descriptor(DoryRendererWorkerBlobMappingAuthority)
+        case generationArena
     }
 
     /// - Parameters:
@@ -5885,21 +5896,40 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                           rendererWorkerPendingMappingResourceIDs
                             .contains(admission.resourceID),
                           let hostVisibleMemory else {
-                        try? mapping.sharedMemoryDescriptor.close()
+                        try? mapping.sharedMemoryDescriptor?.close()
                         return false
                     }
-                    let authority = try DoryRendererWorkerBlobMappingAuthority(mapping)
-                    try hostVisibleMemory.map(
-                        resourceID: admission.resourceID,
-                        hostPointer: authority.hostPointer,
-                        offset: admission.hostVisibleOffset,
-                        size: authority.lease.mappingByteCount
-                    )
+                    let retainedMapping: WorkerBlobMapping
+                    switch mapping.lease.storage {
+                    case .perBlobDescriptor:
+                        let authority = try DoryRendererWorkerBlobMappingAuthority(mapping)
+                        try hostVisibleMemory.map(
+                            resourceID: admission.resourceID,
+                            hostPointer: authority.hostPointer,
+                            offset: admission.hostVisibleOffset,
+                            size: authority.lease.mappingByteCount
+                        )
+                        retainedMapping = .descriptor(authority)
+                    case .generationArena:
+                        guard mapping.sharedMemoryDescriptor == nil,
+                              mapping.lease.arenaOffset == admission.hostVisibleOffset,
+                              let arena = rendererWorkerCandidate?.hostVisibleArena else {
+                            try? mapping.sharedMemoryDescriptor?.close()
+                            return false
+                        }
+                        try hostVisibleMemory.mapArena(
+                            resourceID: admission.resourceID,
+                            arenaBase: arena.baseAddress,
+                            offset: mapping.lease.arenaOffset,
+                            size: mapping.lease.mappingByteCount
+                        )
+                        retainedMapping = .generationArena
+                    }
                     guard var updated = blobResources[admission.resourceID] else {
                         hostVisibleMemory.unmap(resourceID: admission.resourceID)
                         return false
                     }
-                    updated.workerMapping = authority
+                    updated.workerMapping = retainedMapping
                     updated.guestMapped = true
                     blobResources[admission.resourceID] = updated
                     rendererWorkerPendingMappingResourceIDs.remove(admission.resourceID)
@@ -5907,7 +5937,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         "worker-map-blob",
                         resourceID: admission.resourceID,
                         detail: "offset=\(admission.hostVisibleOffset) "
-                            + "size=\(authority.lease.mappingByteCount)"
+                            + "size=\(mapping.lease.mappingByteCount) "
+                            + "storage=\(mapping.lease.storage.rawValue)"
                     )
                     return true
                 }

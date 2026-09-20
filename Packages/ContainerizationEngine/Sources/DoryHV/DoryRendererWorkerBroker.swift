@@ -55,6 +55,7 @@ public enum DoryRendererWorkerBrokerError: Error, Equatable, Sendable {
     case invalidBootstrap(DoryRendererWorkerContractError)
     case invalidCommand(DoryRendererWorkerContractError)
     case incompleteCapabilityReceipt
+    case invalidHostVisibleArena
     case notActive(DoryRendererWorkerBrokerState)
     case requestIDExhausted
     case inFlightLimit(limit: Int)
@@ -87,7 +88,54 @@ public struct DoryRendererWorkerFenceReceipt: @unchecked Sendable {
 
 public struct DoryRendererWorkerBlobMapping: @unchecked Sendable {
     public let lease: DoryRendererBlobMappingLease
-    public let sharedMemoryDescriptor: FileHandle
+    public let sharedMemoryDescriptor: FileHandle?
+}
+
+/// VMM-local, generation-bound mapping of the worker's one sparse host-visible GPU arena.
+public final class DoryRendererWorkerHostVisibleArena: @unchecked Sendable {
+    public let generation: DoryRendererWorkerGeneration
+    public let byteCount: UInt64
+    public let baseAddress: UnsafeMutableRawPointer
+
+    private let descriptor: FileHandle
+
+    fileprivate init(
+        generation: DoryRendererWorkerGeneration,
+        byteCount: UInt64,
+        descriptor: FileHandle
+    ) throws {
+        var status = stat()
+        guard byteCount > 0,
+              byteCount <= UInt64(Int.max),
+              fstat(descriptor.fileDescriptor, &status) == 0,
+              DoryRendererSharedMemoryDescriptorPolicy.accepts(mode: status.st_mode),
+              status.st_size >= 0,
+              UInt64(status.st_size) == byteCount else {
+            try? descriptor.close()
+            throw DoryRendererWorkerBrokerError.invalidHostVisibleArena
+        }
+        let mapping = mmap(
+            nil,
+            Int(byteCount),
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED | MAP_NORESERVE,
+            descriptor.fileDescriptor,
+            0
+        )
+        guard mapping != MAP_FAILED, let mapping else {
+            try? descriptor.close()
+            throw DoryRendererWorkerBrokerError.invalidHostVisibleArena
+        }
+        self.generation = generation
+        self.byteCount = byteCount
+        self.baseAddress = mapping
+        self.descriptor = descriptor
+    }
+
+    deinit {
+        _ = munmap(baseAddress, Int(byteCount))
+        try? descriptor.close()
+    }
 }
 
 public struct DoryRendererWorkerScanout: @unchecked Sendable {
@@ -199,6 +247,7 @@ public actor DoryRendererWorkerBroker {
     /// command admission and channel lifecycle remain actor-isolated.
     public nonisolated let bootstrap: DoryRendererWorkerBootstrap
     public nonisolated let capabilityReceipt: DoryRendererCapabilityReceipt
+    public nonisolated let hostVisibleArena: DoryRendererWorkerHostVisibleArena?
 
     private let channel: any DoryRendererWorkerChannel
     private nonisolated let terminalRelay = DoryRendererWorkerBrokerTerminalRelay()
@@ -217,8 +266,16 @@ public actor DoryRendererWorkerBroker {
     public init(
         bootstrap: DoryRendererWorkerBootstrap,
         capabilityReceipt: DoryRendererCapabilityReceipt,
+        hostVisibleArena: DoryRendererWorkerHostVisibleArena? = nil,
         channel: any DoryRendererWorkerChannel
     ) throws {
+        let arenaMatchesBootstrap: Bool
+        if bootstrap.hostVisibleArenaByteCount == 0 {
+            arenaMatchesBootstrap = hostVisibleArena == nil
+        } else {
+            arenaMatchesBootstrap = hostVisibleArena?.generation == bootstrap.generation
+                && hostVisibleArena?.byteCount == bootstrap.hostVisibleArenaByteCount
+        }
         guard capabilityReceipt.isAdmissible(for: bootstrap),
               capabilityReceipt.workspaceID == bootstrap.workspaceID,
               capabilityReceipt.generation == bootstrap.generation,
@@ -226,12 +283,14 @@ public actor DoryRendererWorkerBroker {
               capabilityReceipt.producerFenceContract == bootstrap.producerFenceContract,
               capabilityReceipt.candidateInventory == bootstrap.artifacts.candidateInventory,
               capabilityReceipt.rendererWorkerExecutable
-                == bootstrap.artifacts.rendererWorkerExecutable else {
+                == bootstrap.artifacts.rendererWorkerExecutable,
+              arenaMatchesBootstrap else {
             channel.invalidate()
             throw DoryRendererWorkerBrokerError.incompleteCapabilityReceipt
         }
         self.bootstrap = bootstrap
         self.capabilityReceipt = capabilityReceipt
+        self.hostVisibleArena = hostVisibleArena
         self.channel = channel
         channel.installLifecycleHandler { [weak self] event in
             guard let self else { return }
@@ -257,9 +316,9 @@ public actor DoryRendererWorkerBroker {
         let channel = DoryRendererWorkerXPCChannel(
             codeDirectoryHash: bootstrap.artifacts.rendererWorkerCodeDirectoryHash
         )
-        let receiptBytes: Data
+        let bootstrapReply: DoryRendererWorkerChannelReply
         do {
-            receiptBytes = try await performBootstrap(
+            bootstrapReply = try await performBootstrap(
                 channel: channel,
                 exactBytes: exactBootstrapBytes,
                 timeoutNanoseconds: timeoutNanoseconds
@@ -271,16 +330,41 @@ public actor DoryRendererWorkerBroker {
         let receipt: DoryRendererCapabilityReceipt
         do {
             receipt = try DoryRendererCapabilityReceiptCodec.decode(
-                receiptBytes,
+                bootstrapReply.payload,
                 accepting: bootstrap
             )
         } catch let error as DoryRendererWorkerContractError {
+            Self.close(bootstrapReply.descriptors)
             channel.invalidate()
             throw DoryRendererWorkerBrokerError.invalidBootstrap(error)
+        }
+        let arena: DoryRendererWorkerHostVisibleArena?
+        do {
+            if bootstrap.hostVisibleArenaByteCount == 0 {
+                guard bootstrapReply.descriptors.isEmpty else {
+                    Self.close(bootstrapReply.descriptors)
+                    throw DoryRendererWorkerBrokerError.invalidHostVisibleArena
+                }
+                arena = nil
+            } else {
+                guard bootstrapReply.descriptors.count == 1 else {
+                    Self.close(bootstrapReply.descriptors)
+                    throw DoryRendererWorkerBrokerError.invalidHostVisibleArena
+                }
+                arena = try DoryRendererWorkerHostVisibleArena(
+                    generation: bootstrap.generation,
+                    byteCount: bootstrap.hostVisibleArenaByteCount,
+                    descriptor: bootstrapReply.descriptors[0]
+                )
+            }
+        } catch {
+            channel.invalidate()
+            throw error
         }
         return try Self(
             bootstrap: bootstrap,
             capabilityReceipt: receipt,
+            hostVisibleArena: arena,
             channel: channel
         )
     }
@@ -289,7 +373,7 @@ public actor DoryRendererWorkerBroker {
         channel: any DoryRendererWorkerChannel,
         exactBytes: Data,
         timeoutNanoseconds: UInt64
-    ) async throws -> Data {
+    ) async throws -> DoryRendererWorkerChannelReply {
         guard timeoutNanoseconds > 0 else {
             channel.invalidate()
             throw DoryRendererWorkerBrokerError.deadlineExpired
@@ -568,6 +652,7 @@ public actor DoryRendererWorkerBroker {
             do {
                 lease = try DoryRendererBlobMappingLeaseCodec.decode(
                     reply.payload,
+                    hostVisibleArenaByteCount: bootstrap.hostVisibleArenaByteCount,
                     limits: bootstrap.limits
                 )
             } catch let error as DoryRendererWorkerContractError {
@@ -579,15 +664,19 @@ public actor DoryRendererWorkerBroker {
                   lease.resourceGeneration == command.resourceGeneration else {
                 throw replyMismatch()
             }
-            try Self.validateReturnedSharedMemory(
-                reply.descriptors[0],
-                declaredFileSize: lease.declaredFileSize,
-                minimumByteCount: lease.mappingByteCount,
-                index: 0
-            )
+            if lease.storage == .perBlobDescriptor {
+                try Self.validateReturnedSharedMemory(
+                    reply.descriptors[0],
+                    declaredFileSize: lease.declaredFileSize,
+                    minimumByteCount: lease.mappingByteCount,
+                    index: 0
+                )
+            } else {
+                guard hostVisibleArena != nil else { throw replyMismatch() }
+            }
             return .blobMapping(DoryRendererWorkerBlobMapping(
                 lease: lease,
-                sharedMemoryDescriptor: reply.descriptors[0]
+                sharedMemoryDescriptor: reply.descriptors.first
             ))
 
         case .createFence:

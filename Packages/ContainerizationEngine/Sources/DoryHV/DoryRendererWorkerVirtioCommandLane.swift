@@ -222,6 +222,7 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
     /// Exact authenticated aggregate referenced-byte authority used for target-aware resource
     /// admission before a mutating worker command crosses XPC.
     let maximumReferencedBytes: UInt64
+    let hostVisibleArena: DoryRendererWorkerHostVisibleArena?
 
     private let broker: DoryRendererWorkerBroker
     private let maximumQueuedCommands: Int
@@ -275,6 +276,7 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
         self.workerGeneration = broker.bootstrap.generation
         self.maximumSharedRegions = limits.maximumSharedRegions
         self.maximumReferencedBytes = limits.maximumReferencedBytes
+        self.hostVisibleArena = broker.hostVisibleArena
         self.capsets = broker.capabilityReceipt.capsets.map {
             VirtioGPUCapset(
                 id: $0.id,
@@ -778,7 +780,7 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
                     return
                 }
                 guard self.isActive(deviceGeneration: deviceGeneration) else {
-                    try? mapping.sharedMemoryDescriptor.close()
+                    try? mapping.sharedMemoryDescriptor?.close()
                     completion(.failure(self.inactiveError(actual: deviceGeneration)))
                     return
                 }

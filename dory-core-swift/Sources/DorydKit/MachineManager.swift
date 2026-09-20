@@ -1384,6 +1384,7 @@ struct RawHVRendererBootstrapRequest: Sendable {
     let rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash
     let producerFenceContract: DoryRendererProducerFenceContract
     let guestMesaSHA256: String?
+    let hostVisibleArenaByteCount: UInt64
 
     init(
         workspaceID: UUID,
@@ -1393,7 +1394,8 @@ struct RawHVRendererBootstrapRequest: Sendable {
         rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash,
         producerFenceContract: DoryRendererProducerFenceContract =
             .managedLinux612106PrepareFBV1,
-        guestMesaSHA256: String? = nil
+        guestMesaSHA256: String? = nil,
+        hostVisibleArenaByteCount: UInt64? = nil
     ) {
         self.workspaceID = workspaceID
         self.generation = generation
@@ -1402,6 +1404,11 @@ struct RawHVRendererBootstrapRequest: Sendable {
         self.rendererWorkerCodeDirectoryHash = rendererWorkerCodeDirectoryHash
         self.producerFenceContract = producerFenceContract
         self.guestMesaSHA256 = guestMesaSHA256?.lowercased()
+        self.hostVisibleArenaByteCount = hostVisibleArenaByteCount ?? (
+            producerFenceContract == .managedLinux612106PrepareFBV1
+                ? DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
+                : 0
+        )
     }
 }
 
@@ -15128,7 +15135,8 @@ public final class MachineManager: @unchecked Sendable {
                 rendererWorkerExecutable: renderer.rendererWorkerExecutable,
                 rendererWorkerCodeDirectoryHash:
                     request.rendererWorkerCodeDirectoryHash
-            )
+            ),
+            hostVisibleArenaByteCount: request.hostVisibleArenaByteCount
         )
         let encoded = DoryRendererWorkerBootstrapCodec.encode(bootstrap)
         guard encoded.count == DoryRendererWorkerBootstrapCodec.fixedByteCount else {

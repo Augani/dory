@@ -12,7 +12,7 @@ import Testing
         #expect(!DoryRendererSharedMemoryDescriptorPolicy.accepts(mode: S_IFIFO | 0o600))
     }
 
-    @Test func bootstrapV3IsCanonicalAndPinsTheStaticDualRendererTuple() throws {
+    @Test func bootstrapV4IsCanonicalAndPinsArenaAuthorityAndStaticTuple() throws {
         #expect(
             DoryRendererSourceTuple.virglrendererRevision
                 == "65cc14eb896f121ffc5130ce04815a923a03c41d"
@@ -28,12 +28,19 @@ import Testing
         #expect(DoryRendererSourceTuple.productionCandidate.rawValue == 3)
         let bootstrap = try makeBootstrap()
         let encoded = DoryRendererWorkerBootstrapCodec.encode(bootstrap)
-        #expect(DoryRendererWorkerBootstrapCodec.fixedByteCount == 228)
+        #expect(DoryRendererWorkerBootstrapCodec.fixedByteCount == 236)
         #expect(encoded.count == DoryRendererWorkerBootstrapCodec.fixedByteCount)
-        #expect(Data(encoded[0..<4]) == Data("DRB3".utf8))
+        #expect(Data(encoded[0..<4]) == Data("DRB4".utf8))
         #expect(Data(encoded[172..<192])
             == bootstrap.artifacts.rendererWorkerCodeDirectoryHash.bytes)
         #expect(try DoryRendererWorkerBootstrapCodec.decode(encoded) == bootstrap)
+
+        let arenaBootstrap = try makeBootstrap(
+            hostVisibleArenaByteCount: 1 * 1_024 * 1_024 * 1_024
+        )
+        let arenaEncoded = DoryRendererWorkerBootstrapCodec.encode(arenaBootstrap)
+        #expect(try DoryRendererWorkerBootstrapCodec.decode(arenaEncoded) == arenaBootstrap)
+        #expect(arenaBootstrap.hostVisibleArenaByteCount == 1_073_741_824)
 
         var incomplete = encoded
         writeUInt32(1 << 10, to: &incomplete, at: 12)
@@ -284,6 +291,40 @@ import Testing
                     size: 4_096
                 )
             }
+        }
+    }
+
+    @Test func generationArenaBlobLeaseIsCanonicalAndCarriesNoDescriptor() throws {
+        let arenaByteCount: UInt64 = 256 * 1_024 * 1_024
+        let lease = try DoryRendererBlobMappingLease(
+            workerGeneration: DoryRendererWorkerGeneration(rawValue: 7),
+            resourceID: 42,
+            resourceGeneration: 3,
+            sharedRegionID: DoryRendererSharedRegionID(rawValue: fixedUUID(22)),
+            descriptorIndex: UInt16.max,
+            mapInfo: 1,
+            declaredFileSize: arenaByteCount,
+            mappingByteCount: 65_536,
+            storage: .generationArena,
+            arenaOffset: 16_384,
+            hostVisibleArenaByteCount: arenaByteCount
+        )
+        let encoded = DoryRendererBlobMappingLeaseCodec.encode(lease)
+
+        #expect(encoded.count == DoryRendererBlobMappingLeaseCodec.fixedByteCount)
+        #expect(try DoryRendererBlobMappingLeaseCodec.decode(
+            encoded,
+            hostVisibleArenaByteCount: arenaByteCount
+        ) == lease)
+        try lease.validateOutOfBandDescriptorCount(0)
+        #expect(throws: DoryRendererWorkerContractError.descriptorCountMismatch(
+            expected: 0,
+            actual: 1
+        )) {
+            try lease.validateOutOfBandDescriptorCount(1)
+        }
+        #expect(throws: DoryRendererWorkerContractError.invalidSharedRegionBounds) {
+            _ = try DoryRendererBlobMappingLeaseCodec.decode(encoded)
         }
     }
 
@@ -647,6 +688,9 @@ import Testing
 
     @Test func xpcInterfaceAllowsOnlyDescriptorsAndOneSharedTextureHandle() {
         let interface = DoryRendererWorkerXPCInterface.make()
+        let bootstrapSelector = #selector(
+            DoryRendererWorkerXPCProtocol.bootstrap(_:withReply:)
+        )
         let selector = #selector(
             DoryRendererWorkerXPCProtocol.exchange(_:descriptors:withReply:)
         )
@@ -655,6 +699,11 @@ import Testing
             FileHandle.self
         ) as! Set<AnyHashable>
 
+        #expect(interface.classes(
+            for: bootstrapSelector,
+            argumentIndex: 1,
+            ofReply: true
+        ) == expectedClasses)
         #expect(interface.classes(
             for: selector,
             argumentIndex: 1,
@@ -680,7 +729,8 @@ import Testing
             .managedLinux612106PrepareFBV1,
         requestedCapabilities: DoryRendererRequestedCapabilities =
             .productionAcceleration,
-        guestMesa: DoryRendererArtifactDigest? = nil
+        guestMesa: DoryRendererArtifactDigest? = nil,
+        hostVisibleArenaByteCount: UInt64 = 0
     ) throws -> DoryRendererWorkerBootstrap {
         try DoryRendererWorkerBootstrap(
             workspaceID: DoryRendererWorkspaceID(rawValue: fixedUUID(1)),
@@ -694,7 +744,8 @@ import Testing
                 guestMesa: guestMesa ?? digest(3),
                 rendererWorkerExecutable: digest(4),
                 rendererWorkerCodeDirectoryHash: try codeDirectoryHash(5)
-            )
+            ),
+            hostVisibleArenaByteCount: hostVisibleArenaByteCount
         )
     }
 

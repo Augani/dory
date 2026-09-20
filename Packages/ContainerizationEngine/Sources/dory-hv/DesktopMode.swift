@@ -1528,8 +1528,18 @@ enum DesktopMode {
             let firstFrame = FirstFrameGate(requiredScanoutCount: displayPlans.count)
             self.firstFrame = firstFrame
 
+            let hostVisibleArenaByteCount = rendererWorkerLaunch?
+                .broker.bootstrap.hostVisibleArenaByteCount ?? 0
+            guard rendererWorkerLaunch == nil || hostVisibleArenaByteCount > 0 else {
+                throw VMError.invalidConfiguration(
+                    "accelerated renderer bootstrap has no host-visible arena"
+                )
+            }
             let hostVisibleMemory = try rendererWorkerLaunch != nil
-                ? VirtioGPUHostVisibleMemory(guestBase: GuestLayout.daxWindowBase)
+                ? VirtioGPUHostVisibleMemory(
+                    guestBase: GuestLayout.daxWindowBase,
+                    length: hostVisibleArenaByteCount
+                )
                 : nil
             let graphicsTraceWriter: DesktopGraphicsTraceWriter?
             if configuration.environment["DORY_GPU_TRACE_GRAPHICS"] == "1",
@@ -1561,6 +1571,9 @@ enum DesktopMode {
             }
             let gpu = VirtioGPU(
                 hostMemoryBase: GuestLayout.daxWindowBase,
+                hostMemorySize: rendererWorkerLaunch == nil
+                    ? 256 * 1_024 * 1_024
+                    : hostVisibleArenaByteCount,
                 scanoutSizes: displayPlans.map {
                     VirtioGPUScanoutSize(width: $0.widthPixels, height: $0.heightPixels)
                 },

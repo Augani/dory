@@ -1546,10 +1546,11 @@ import Testing
         #expect(await rendererEventually { recorder.blobMappings.count == 1 })
         let mapping = try #require(recorder.blobMappings.first)
         #expect(mapping.lease == lease)
-        #expect(fcntl(mapping.sharedMemoryDescriptor.fileDescriptor, F_GETFD) >= 0)
+        let mappingDescriptor = try #require(mapping.sharedMemoryDescriptor)
+        #expect(fcntl(mappingDescriptor.fileDescriptor, F_GETFD) >= 0)
         #expect(lane.snapshot().completedResourceCommands == 1)
         #expect(recorder.failures.isEmpty)
-        try mapping.sharedMemoryDescriptor.close()
+        try mappingDescriptor.close()
 
         try lane.unmapBlob(
             resourceID: 29,
@@ -5514,7 +5515,7 @@ private final class RecordingRendererWorkerChannel:
     func bootstrap(
         exactBytes _: Data,
         completion: @escaping @Sendable (
-            Result<Data, DoryRendererWorkerChannelFailure>
+            Result<DoryRendererWorkerChannelReply, DoryRendererWorkerChannelFailure>
         ) -> Void
     ) {
         completion(.failure(.unavailable))
@@ -5677,7 +5678,7 @@ private final class SilentRendererWorkerBootstrapChannel:
     func bootstrap(
         exactBytes: Data,
         completion: @escaping @Sendable (
-            Result<Data, DoryRendererWorkerChannelFailure>
+            Result<DoryRendererWorkerChannelReply, DoryRendererWorkerChannelFailure>
         ) -> Void
     ) {}
 

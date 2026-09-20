@@ -187,8 +187,11 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
         }
         defer { admitted.close() }
 
-        XCTAssertEqual(DoryRendererWorkerBootstrapCodec.fixedByteCount, 228)
-        XCTAssertEqual(admitted.byteCount, 228)
+        XCTAssertEqual(DoryRendererWorkerBootstrapCodec.fixedByteCount, 236)
+        XCTAssertEqual(
+            admitted.byteCount,
+            UInt64(DoryRendererWorkerBootstrapCodec.fixedByteCount)
+        )
         XCTAssertEqual(admitted.authority.name, RuntimeLaunchEnvelope.rendererBootstrapSlotName)
         XCTAssertEqual(
             admitted.authority.childDescriptor,
@@ -208,6 +211,10 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
         XCTAssertEqual(
             bootstrap.requestedCapabilities,
             .productionAcceleration
+        )
+        XCTAssertEqual(
+            bootstrap.hostVisibleArenaByteCount,
+            DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
         )
         XCTAssertEqual(
             bootstrap.artifacts.managedGuestKernel.lowercaseSHA256,

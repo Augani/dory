@@ -1100,11 +1100,20 @@ enum EngineMode {
         backends.append(dataDiskBackend)
         let gpu: VirtioGPU?
         if let rendererWorkerLaunch {
+            let hostVisibleArenaByteCount =
+                rendererWorkerLaunch.broker.bootstrap.hostVisibleArenaByteCount
+            guard hostVisibleArenaByteCount > 0 else {
+                throw VMError.invalidConfiguration(
+                    "accelerated renderer bootstrap has no host-visible arena"
+                )
+            }
             let hostVisibleMemory = try VirtioGPUHostVisibleMemory(
-                guestBase: GuestLayout.daxWindowBase
+                guestBase: GuestLayout.daxWindowBase,
+                length: hostVisibleArenaByteCount
             )
             let acceleratedGPU = VirtioGPU(
                 hostMemoryBase: GuestLayout.daxWindowBase,
+                hostMemorySize: hostVisibleArenaByteCount,
                 rendererWorkerCandidate: rendererWorkerLaunch.commandLane,
                 hostVisibleMemory: hostVisibleMemory,
                 onRendererWorkerFailure: { [weak machine, weak rendererWorkerLaunch] reason in

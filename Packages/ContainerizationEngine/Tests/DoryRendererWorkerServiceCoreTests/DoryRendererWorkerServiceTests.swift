@@ -102,6 +102,29 @@ import Testing
         )
     }
 
+    @Test func bootstrapReturnsExactlyOneArenaDescriptorWithExactDeclaredSize() throws {
+        let arenaBytes = DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
+        let bootstrap = try makeBootstrap(hostVisibleArenaByteCount: arenaBytes)
+        let service = DoryRendererWorkerService(
+            backend: try AdmissibleBackend(arenaByteCount: arenaBytes)
+        )
+
+        let response = service.bootstrapWithDescriptors(
+            exactBytes: DoryRendererWorkerBootstrapCodec.encode(bootstrap)
+        )
+        defer { for descriptor in response.descriptors { try? descriptor.close() } }
+        guard case .success(_, 1) = try DoryRendererWorkerRPCResultCodec.decode(
+            response.result
+        ) else {
+            Issue.record("expected one generation arena descriptor")
+            return
+        }
+        let descriptor = try #require(response.descriptors.first)
+        var status = stat()
+        #expect(fstat(descriptor.fileDescriptor, &status) == 0)
+        #expect(UInt64(status.st_size) == arenaBytes)
+    }
+
     @Test func requestIDsAreStrictlyIncreasingAndReplayFailsTheGeneration() throws {
         let bootstrap = try makeBootstrap()
         let backend = AdmissibleBackend()
@@ -291,7 +314,8 @@ import Testing
     }
 
     private func makeBootstrap(
-        limits: DoryRendererWorkerLimits = .production
+        limits: DoryRendererWorkerLimits = .production,
+        hostVisibleArenaByteCount: UInt64 = 0
     ) throws -> DoryRendererWorkerBootstrap {
         try DoryRendererWorkerBootstrap(
             workspaceID: DoryRendererWorkspaceID(
@@ -310,7 +334,8 @@ import Testing
                     bytes: Data(repeating: 5, count: DoryCodeDirectoryHash.byteCount)
                 )
             ),
-            limits: limits
+            limits: limits,
+            hostVisibleArenaByteCount: hostVisibleArenaByteCount
         )
     }
 
@@ -367,10 +392,31 @@ private final class AdmissibleBackend: DoryRendererWorkerBackend, @unchecked Sen
     let executeStarted = DispatchSemaphore(value: 0)
     let releaseExecution = DispatchSemaphore(value: 0)
     private let blockExecution: Bool
+    private let arenaDescriptor: Int32
 
-    init(blockExecution: Bool = false) {
+    init(blockExecution: Bool = false, arenaByteCount: UInt64 = 0) throws {
         self.blockExecution = blockExecution
+        guard arenaByteCount > 0 else {
+            arenaDescriptor = -1
+            return
+        }
+        var template = Array("/tmp/dory-service-arena.XXXXXX".utf8CString)
+        let descriptor = template.withUnsafeMutableBufferPointer { mkstemp($0.baseAddress!) }
+        guard descriptor >= 0,
+              fchmod(descriptor, S_IRUSR | S_IWUSR) == 0,
+              ftruncate(descriptor, off_t(arenaByteCount)) == 0,
+              template.withUnsafeBufferPointer({ unlink($0.baseAddress!) }) == 0 else {
+            if descriptor >= 0 { close(descriptor) }
+            throw POSIXError(.EIO)
+        }
+        arenaDescriptor = descriptor
     }
+
+    convenience init(blockExecution: Bool = false) {
+        try! self.init(blockExecution: blockExecution, arenaByteCount: 0)
+    }
+
+    deinit { if arenaDescriptor >= 0 { close(arenaDescriptor) } }
 
     func activate(
         bootstrap: DoryRendererWorkerBootstrap
@@ -391,6 +437,13 @@ private final class AdmissibleBackend: DoryRendererWorkerBackend, @unchecked Sen
             _ = releaseExecution.wait(timeout: .now() + 5)
         }
         return .success(payload: Data(), descriptors: [])
+    }
+
+    func hostVisibleArenaDescriptor() throws -> FileHandle? {
+        guard arenaDescriptor >= 0 else { return nil }
+        let descriptor = dup(arenaDescriptor)
+        guard descriptor >= 0 else { throw POSIXError(.EIO) }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
     }
 
     func invalidate() {}

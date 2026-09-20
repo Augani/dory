@@ -1,8 +1,14 @@
 import Foundation
 
-/// Descriptor-backed authority for mapping a renderer blob in the VMM process. The worker never
-/// returns a host pointer: the broker mmaps descriptor zero locally, binds that address to guest
-/// memory, and tears it down before sending the generation-bound `unmapBlob` command.
+public enum DoryRendererBlobMappingStorage: UInt16, Equatable, Sendable {
+    case perBlobDescriptor = 1
+    case generationArena = 2
+}
+
+/// Generation-bound authority for mapping a renderer blob in the VMM process. The worker never
+/// returns a host pointer: the broker either maps an authenticated legacy descriptor locally or
+/// selects the authenticated range of the one bootstrap arena, then binds that address to guest
+/// memory until the generation-bound `unmapBlob` command completes.
 public struct DoryRendererBlobMappingLease: Equatable, Sendable {
     public let workerGeneration: DoryRendererWorkerGeneration
     public let resourceID: UInt32
@@ -12,6 +18,9 @@ public struct DoryRendererBlobMappingLease: Equatable, Sendable {
     public let mapInfo: UInt32
     public let declaredFileSize: UInt64
     public let mappingByteCount: UInt64
+    public let storage: DoryRendererBlobMappingStorage
+    /// Logical byte offset in the generation arena. Zero for descriptor-backed legacy mappings.
+    public let arenaOffset: UInt64
 
     public init(
         workerGeneration: DoryRendererWorkerGeneration,
@@ -22,16 +31,34 @@ public struct DoryRendererBlobMappingLease: Equatable, Sendable {
         mapInfo: UInt32,
         declaredFileSize: UInt64,
         mappingByteCount: UInt64,
+        storage: DoryRendererBlobMappingStorage = .perBlobDescriptor,
+        arenaOffset: UInt64 = 0,
+        hostVisibleArenaByteCount: UInt64 = 0,
         limits: DoryRendererWorkerLimits = .production
     ) throws {
         guard resourceID != 0, resourceGeneration != 0,
-              descriptorIndex == 0,
               (1...3).contains(mapInfo),
               declaredFileSize != 0,
               mappingByteCount != 0,
               mappingByteCount <= declaredFileSize,
               mappingByteCount <= limits.maximumReferencedBytes else {
             throw DoryRendererWorkerContractError.invalidSharedRegionBounds
+        }
+        switch storage {
+        case .perBlobDescriptor:
+            guard descriptorIndex == 0, arenaOffset == 0 else {
+                throw DoryRendererWorkerContractError.invalidSharedRegionBounds
+            }
+        case .generationArena:
+            let (end, overflow) = arenaOffset.addingReportingOverflow(mappingByteCount)
+            guard descriptorIndex == UInt16.max,
+                  hostVisibleArenaByteCount > 0,
+                  declaredFileSize == hostVisibleArenaByteCount,
+                  arenaOffset.isMultiple(of: 4_096),
+                  !overflow,
+                  end <= hostVisibleArenaByteCount else {
+                throw DoryRendererWorkerContractError.invalidSharedRegionBounds
+            }
         }
         self.workerGeneration = workerGeneration
         self.resourceID = resourceID
@@ -41,12 +68,15 @@ public struct DoryRendererBlobMappingLease: Equatable, Sendable {
         self.mapInfo = mapInfo
         self.declaredFileSize = declaredFileSize
         self.mappingByteCount = mappingByteCount
+        self.storage = storage
+        self.arenaOffset = arenaOffset
     }
 
     public func validateOutOfBandDescriptorCount(_ actual: Int) throws {
-        guard actual == 1 else {
+        let expected = storage == .perBlobDescriptor ? 1 : 0
+        guard actual == expected else {
             throw DoryRendererWorkerContractError.descriptorCountMismatch(
-                expected: 1,
+                expected: expected,
                 actual: actual
             )
         }
@@ -56,7 +86,7 @@ public struct DoryRendererBlobMappingLease: Equatable, Sendable {
 public enum DoryRendererBlobMappingLeaseCodec {
     public static let fixedByteCount = 80
     private static let magic: [UInt8] = [0x44, 0x52, 0x4d, 0x31] // "DRM1"
-    private static let version: UInt16 = 1
+    private static let version: UInt16 = 2
 
     public static func encode(_ lease: DoryRendererBlobMappingLease) -> Data {
         var bytes = [UInt8]()
@@ -70,16 +100,17 @@ public enum DoryRendererBlobMappingLeaseCodec {
         bytes.appendLE(lease.resourceGeneration)
         bytes.append(contentsOf: lease.sharedRegionID.rawValue.doryRendererBytes)
         bytes.appendLE(lease.descriptorIndex)
-        bytes.appendLE(UInt16(0))
+        bytes.appendLE(lease.storage.rawValue)
         bytes.appendLE(lease.declaredFileSize)
         bytes.appendLE(lease.mappingByteCount)
-        bytes.appendLE(UInt64(0))
+        bytes.appendLE(lease.arenaOffset)
         precondition(bytes.count == fixedByteCount)
         return Data(bytes)
     }
 
     public static func decode(
         _ data: Data,
+        hostVisibleArenaByteCount: UInt64 = 0,
         limits: DoryRendererWorkerLimits = .production
     ) throws -> DoryRendererBlobMappingLease {
         guard data.count == fixedByteCount else {
@@ -110,8 +141,10 @@ public enum DoryRendererBlobMappingLeaseCodec {
                 actual: data.count
             )
         }
-        guard bytes.leUInt16(at: 54) == 0, bytes.leUInt64(at: 72) == 0 else {
-            throw DoryRendererWorkerContractError.nonzeroReservedField
+        guard let storage = DoryRendererBlobMappingStorage(
+            rawValue: bytes.leUInt16(at: 54)
+        ) else {
+            throw DoryRendererWorkerContractError.invalidSharedRegionBounds
         }
         let decoded = try DoryRendererBlobMappingLease(
             workerGeneration: DoryRendererWorkerGeneration(rawValue: bytes.leUInt64(at: 12)),
@@ -124,6 +157,9 @@ public enum DoryRendererBlobMappingLeaseCodec {
             mapInfo: bytes.leUInt32(at: 24),
             declaredFileSize: bytes.leUInt64(at: 56),
             mappingByteCount: bytes.leUInt64(at: 64),
+            storage: storage,
+            arenaOffset: bytes.leUInt64(at: 72),
+            hostVisibleArenaByteCount: hostVisibleArenaByteCount,
             limits: limits
         )
         guard encode(decoded) == data else {

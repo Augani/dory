@@ -43,7 +43,7 @@ public protocol DoryRendererWorkerChannel: AnyObject, Sendable {
     func bootstrap(
         exactBytes: Data,
         completion: @escaping @Sendable (
-            Result<Data, DoryRendererWorkerChannelFailure>
+            Result<DoryRendererWorkerChannelReply, DoryRendererWorkerChannelFailure>
         ) -> Void
     )
     func exchange(
@@ -126,7 +126,7 @@ public final class DoryRendererWorkerXPCChannel:
     public func bootstrap(
         exactBytes: Data,
         completion: @escaping @Sendable (
-            Result<Data, DoryRendererWorkerChannelFailure>
+            Result<DoryRendererWorkerChannelReply, DoryRendererWorkerChannelFailure>
         ) -> Void
     ) {
         guard isActive else {
@@ -143,27 +143,34 @@ public final class DoryRendererWorkerXPCChannel:
             transition(to: .interrupted)
             return
         }
-        proxy.bootstrap(exactBytes) { [weak self] bytes in
+        proxy.bootstrap(exactBytes) { [weak self] bytes, descriptors in
             guard once.claim() else { return }
             do {
                 switch try DoryRendererWorkerRPCResultCodec.decode(bytes) {
                 case let .success(payload, descriptorCount):
-                    guard descriptorCount == 0 else {
+                    guard Int(descriptorCount) == descriptors.count else {
+                        Self.close(descriptors)
                         completion(.failure(.descriptorCountMismatch(
-                            expected: 0,
-                            actual: Int(descriptorCount)
+                            expected: Int(descriptorCount),
+                            actual: descriptors.count
                         )))
                         self?.invalidate()
                         return
                     }
-                    completion(.success(payload))
+                    completion(.success(DoryRendererWorkerChannelReply(
+                        payload: payload,
+                        descriptors: descriptors
+                    )))
                 case .failure(let code):
+                    Self.close(descriptors)
                     completion(.failure(.serviceFailure(code)))
                 }
             } catch let error as DoryRendererWorkerContractError {
+                Self.close(descriptors)
                 completion(.failure(.malformedResult(error)))
                 self?.invalidate()
             } catch {
+                Self.close(descriptors)
                 completion(.failure(.unavailable))
                 self?.invalidate()
             }

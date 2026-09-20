@@ -66,7 +66,14 @@ public protocol DoryRendererWorkerBackend: AnyObject, Sendable {
         command: DoryRendererWorkerCommand,
         descriptors: [FileHandle]
     ) throws -> DoryRendererWorkerBackendExecution
+    /// Returns one duplicate of the generation's arena descriptor after activation. Backends
+    /// without Venus authority return nil. Ownership transfers to the caller.
+    func hostVisibleArenaDescriptor() throws -> FileHandle?
     func invalidate()
+}
+
+public extension DoryRendererWorkerBackend {
+    func hostVisibleArenaDescriptor() throws -> FileHandle? { nil }
 }
 
 /// Safe default for a packaged service before the audited foreign backend is linked. It returns an
@@ -148,20 +155,29 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
     }
 
     public func bootstrap(exactBytes: Data) -> Data {
+        let response = bootstrapWithDescriptors(exactBytes: exactBytes)
+        for descriptor in response.descriptors { try? descriptor.close() }
+        return response.result
+    }
+
+    public func bootstrapWithDescriptors(exactBytes: Data) -> (
+        result: Data,
+        descriptors: [FileHandle]
+    ) {
         let claimed = lock.withLock {
             guard case .awaitingBootstrap = state else { return false }
             state = .bootstrapping
             return true
         }
         guard claimed else {
-            return failure(.bootstrapAlreadyAttempted)
+            return (failure(.bootstrapAlreadyAttempted), [])
         }
         let bootstrap: DoryRendererWorkerBootstrap
         do {
             bootstrap = try DoryRendererWorkerBootstrapCodec.decode(exactBytes)
         } catch {
             failGeneration()
-            return failure(.invalidEnvelope)
+            return (failure(.invalidEnvelope), [])
         }
         do {
             let receipt: DoryRendererCapabilityReceipt
@@ -183,21 +199,60 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
             }
             guard receipt.isAdmissible(for: bootstrap) else {
                 failGeneration()
-                return try DoryRendererWorkerRPCResultCodec.encode(
-                    .success(payload: receiptBytes, descriptorCount: 0)
+                return (
+                    try DoryRendererWorkerRPCResultCodec.encode(
+                        .success(payload: receiptBytes, descriptorCount: 0)
+                    ),
+                    []
                 )
             }
+            let arenaDescriptors = try bootstrapArenaDescriptors(accepting: bootstrap)
             highestAdmittedRequestID = 0
             lock.withLock { state = .active(bootstrap) }
-            return try DoryRendererWorkerRPCResultCodec.encode(
-                .success(payload: receiptBytes, descriptorCount: 0)
+            return (
+                try DoryRendererWorkerRPCResultCodec.encode(
+                    .success(
+                        payload: receiptBytes,
+                        descriptorCount: UInt16(arenaDescriptors.count)
+                    )
+                ),
+                arenaDescriptors
             )
         } catch let error as DoryRendererWorkerBackendActivationError {
             failGeneration()
-            return failure(error.failureCode)
+            return (failure(error.failureCode), [])
         } catch {
             failGeneration()
-            return failure(.bootstrapRejected)
+            return (failure(.bootstrapRejected), [])
+        }
+    }
+
+    private func bootstrapArenaDescriptors(
+        accepting bootstrap: DoryRendererWorkerBootstrap
+    ) throws -> [FileHandle] {
+        let descriptor = try backend.hostVisibleArenaDescriptor()
+        guard bootstrap.hostVisibleArenaByteCount > 0 else {
+            if let descriptor {
+                try? descriptor.close()
+                throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
+            }
+            return []
+        }
+        guard let descriptor else {
+            throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
+        }
+        do {
+            var status = stat()
+            guard fstat(descriptor.fileDescriptor, &status) == 0,
+                  DoryRendererSharedMemoryDescriptorPolicy.accepts(mode: status.st_mode),
+                  status.st_size >= 0,
+                  UInt64(status.st_size) == bootstrap.hostVisibleArenaByteCount else {
+                throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
+            }
+            return [descriptor]
+        } catch {
+            try? descriptor.close()
+            throw error
         }
     }
 

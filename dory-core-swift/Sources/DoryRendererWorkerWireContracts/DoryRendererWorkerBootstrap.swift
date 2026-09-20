@@ -28,6 +28,9 @@ public struct DoryRendererArtifactManifest: Equatable, Sendable {
 /// environment values, library names, or fallback modes in this envelope. The signed service owns
 /// one successful bootstrap attempt for its complete process lifetime.
 public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
+    public static let minimumHostVisibleArenaByteCount: UInt64 = 256 * 1_024 * 1_024
+    public static let maximumHostVisibleArenaByteCount: UInt64 = 4 * 1_024 * 1_024 * 1_024
+    public static let hostPageByteCount: UInt64 = 16 * 1_024
     public static let supportedProducerFenceContracts: Set<DoryRendererProducerFenceContract> = [
         .managedLinux612106PrepareFBV1,
         .doryPCX8664LinuxVirGL2PrepareFBV1,
@@ -40,6 +43,9 @@ public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
     public let requestedCapabilities: DoryRendererRequestedCapabilities
     public let artifacts: DoryRendererArtifactManifest
     public let limits: DoryRendererWorkerLimits
+    /// Exact sparse SHM arena authority expected from the worker at bootstrap. Zero is retained
+    /// only for renderer profiles without Venus host-visible memory.
+    public let hostVisibleArenaByteCount: UInt64
 
     public init(
         workspaceID: DoryRendererWorkspaceID,
@@ -48,7 +54,8 @@ public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
         producerFenceContract: DoryRendererProducerFenceContract,
         requestedCapabilities: DoryRendererRequestedCapabilities,
         artifacts: DoryRendererArtifactManifest,
-        limits: DoryRendererWorkerLimits = .production
+        limits: DoryRendererWorkerLimits = .production,
+        hostVisibleArenaByteCount: UInt64 = 0
     ) throws {
         guard sourceTuple == .productionCandidate else {
             throw DoryRendererWorkerContractError.unsupportedSourceTuple(sourceTuple.rawValue)
@@ -68,6 +75,16 @@ public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
                 throw DoryRendererWorkerContractError.incompleteAccelerationRequest
             }
         }
+        guard hostVisibleArenaByteCount == 0 || (
+            hostVisibleArenaByteCount >= Self.minimumHostVisibleArenaByteCount
+                && hostVisibleArenaByteCount <= Self.maximumHostVisibleArenaByteCount
+                && hostVisibleArenaByteCount.isMultiple(of: Self.hostPageByteCount)
+        ) else {
+            throw DoryRendererWorkerContractError.invalidSharedRegionBounds
+        }
+        guard requestedCapabilities.contains(.venus) || hostVisibleArenaByteCount == 0 else {
+            throw DoryRendererWorkerContractError.incompleteAccelerationRequest
+        }
         self.workspaceID = workspaceID
         self.generation = generation
         self.sourceTuple = sourceTuple
@@ -75,6 +92,7 @@ public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
         self.requestedCapabilities = requestedCapabilities
         self.artifacts = artifacts
         self.limits = limits
+        self.hostVisibleArenaByteCount = hostVisibleArenaByteCount
     }
 }
 
@@ -82,9 +100,9 @@ public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
 /// impossible and lets the receiver reject the envelope before allocating command or scanout
 /// resources.
 public enum DoryRendererWorkerBootstrapCodec {
-    public static let fixedByteCount = 228
-    private static let magic: [UInt8] = [0x44, 0x52, 0x42, 0x33] // "DRB3"
-    private static let version: UInt16 = 3
+    public static let fixedByteCount = 236
+    private static let magic: [UInt8] = [0x44, 0x52, 0x42, 0x34] // "DRB4"
+    private static let version: UInt16 = 4
 
     public static func encode(_ bootstrap: DoryRendererWorkerBootstrap) -> Data {
         var bytes = [UInt8]()
@@ -109,6 +127,7 @@ public enum DoryRendererWorkerBootstrapCodec {
         bytes.appendLE(UInt32(bootstrap.limits.maximumInFlightCommands))
         bytes.appendLE(UInt32(bootstrap.limits.maximumLiveScanoutLeases))
         bytes.appendLE(bootstrap.limits.maximumScanoutBytes)
+        bytes.appendLE(bootstrap.hostVisibleArenaByteCount)
         bytes.appendLE(UInt32(0))
         precondition(bytes.count == fixedByteCount)
         return Data(bytes)
@@ -153,7 +172,7 @@ public enum DoryRendererWorkerBootstrapCodec {
         guard requestedRaw & ~DoryRendererRequestedCapabilities.knownMask == 0 else {
             throw DoryRendererWorkerContractError.unknownFlags(requestedRaw)
         }
-        guard bytes.leUInt32(at: 224) == 0 else {
+        guard bytes.leUInt32(at: 232) == 0 else {
             throw DoryRendererWorkerContractError.nonzeroReservedField
         }
 
@@ -200,7 +219,8 @@ public enum DoryRendererWorkerBootstrapCodec {
             producerFenceContract: producerFenceContract,
             requestedCapabilities: DoryRendererRequestedCapabilities(rawValue: requestedRaw),
             artifacts: artifacts,
-            limits: limits
+            limits: limits,
+            hostVisibleArenaByteCount: bytes.leUInt64(at: 224)
         )
         guard encode(decoded) == data else {
             throw DoryRendererWorkerContractError.nonCanonicalEncoding

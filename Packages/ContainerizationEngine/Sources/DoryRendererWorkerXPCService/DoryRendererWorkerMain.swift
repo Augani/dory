@@ -27,8 +27,12 @@ private final class DoryRendererWorkerXPCAdapter:
         backend: DoryRendererWorkerBackendFactory.make()
     )
 
-    func bootstrap(_ request: Data, withReply reply: @escaping (Data) -> Void) {
-        reply(service.bootstrap(exactBytes: request))
+    func bootstrap(
+        _ request: Data,
+        withReply reply: @escaping (Data, [FileHandle]) -> Void
+    ) {
+        let result = service.bootstrapWithDescriptors(exactBytes: request)
+        reply(result.result, result.descriptors)
     }
 
     func exchange(

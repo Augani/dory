@@ -281,6 +281,7 @@ public final class DoryRendererWorkerVirglBackend:
     private final class ActiveState {
         let bootstrap: DoryRendererWorkerBootstrap
         let session: any DoryRendererForeignSession
+        let hostVisibleArena: HostVisibleArena?
         var contexts = [UInt32: UInt32]()
         var resources = [UInt32: ResourceState]()
         var lastResourceGenerations = [UInt32: UInt64]()
@@ -290,10 +291,65 @@ public final class DoryRendererWorkerVirglBackend:
 
         init(
             bootstrap: DoryRendererWorkerBootstrap,
-            session: any DoryRendererForeignSession
+            session: any DoryRendererForeignSession,
+            hostVisibleArena: HostVisibleArena?
         ) {
             self.bootstrap = bootstrap
             self.session = session
+            self.hostVisibleArena = hostVisibleArena
+        }
+    }
+
+    /// One unlink-on-create sparse SHM object for the complete worker generation. The mapping is
+    /// intentionally established before foreign renderer activation so the next integration step
+    /// can bind every Venus allocation to a stable subrange without changing bootstrap authority.
+    private final class HostVisibleArena {
+        let byteCount: UInt64
+        let baseAddress: UnsafeMutableRawPointer
+        private let descriptor: Int32
+
+        init(byteCount: UInt64) throws {
+            guard byteCount > 0, byteCount <= UInt64(Int.max) else {
+                throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
+            }
+            let created = DoryCreateRendererHostVisibleArena(byteCount)
+            guard created >= 0 else {
+                throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
+            }
+            let mapping = mmap(
+                nil,
+                Int(byteCount),
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED | MAP_NORESERVE,
+                created,
+                0
+            )
+            guard mapping != MAP_FAILED, let mapping else {
+                close(created)
+                throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
+            }
+            self.byteCount = byteCount
+            self.baseAddress = mapping
+            self.descriptor = created
+        }
+
+        func duplicateDescriptor() throws -> FileHandle {
+            let duplicate = dup(descriptor)
+            guard duplicate >= 0 else {
+                throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
+            }
+            let flags = fcntl(duplicate, F_GETFD)
+            guard flags >= 0,
+                  fcntl(duplicate, F_SETFD, flags | FD_CLOEXEC) == 0 else {
+                close(duplicate)
+                throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
+            }
+            return FileHandle(fileDescriptor: duplicate, closeOnDealloc: true)
+        }
+
+        deinit {
+            _ = munmap(baseAddress, Int(byteCount))
+            close(descriptor)
         }
     }
 
@@ -437,6 +493,14 @@ public final class DoryRendererWorkerVirglBackend:
                 throw DoryRendererWorkerBackendActivationError.artifactAuthority
             }
             let session: any DoryRendererForeignSession
+            let hostVisibleArena: HostVisibleArena?
+            if bootstrap.hostVisibleArenaByteCount == 0 {
+                hostVisibleArena = nil
+            } else {
+                hostVisibleArena = try HostVisibleArena(
+                    byteCount: bootstrap.hostVisibleArenaByteCount
+                )
+            }
             do {
                 session = try sessionFactory.create(attestation: attestation)
             } catch {
@@ -474,7 +538,11 @@ public final class DoryRendererWorkerVirglBackend:
                 } catch {
                     throw DoryRendererWorkerBackendActivationError.capabilityReceipt
                 }
-                let active = ActiveState(bootstrap: bootstrap, session: session)
+                let active = ActiveState(
+                    bootstrap: bootstrap,
+                    session: session,
+                    hostVisibleArena: hostVisibleArena
+                )
                 state = .active(active)
                 active.pollDriver = PollDriver(
                     descriptor: preflight.pollDescriptor,
@@ -497,6 +565,17 @@ public final class DoryRendererWorkerVirglBackend:
     ) throws -> DoryRendererWorkerBackendExecution {
         try executionLane.sync { [self] in
             try executeOnExecutionLane(command: command, descriptors: descriptors)
+        }
+    }
+
+    public func hostVisibleArenaDescriptor() throws -> FileHandle? {
+        try executionLane.sync { [self] in
+            try lock.withLock {
+                guard case .active(let active) = state else {
+                    throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
+                }
+                return try active.hostVisibleArena?.duplicateDescriptor()
+            }
         }
     }
 

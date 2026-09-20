@@ -521,6 +521,24 @@ import Testing
         #expect(session.invalidated == false)
     }
 
+    @Test func activationOwnsOneExactSparseArenaForTheGeneration() throws {
+        let session = FakeRendererForeignSession()
+        let backend = makeBackend(session: session)
+        let arenaBytes = DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
+        _ = try backend.activate(bootstrap: makeBootstrap(
+            hostVisibleArenaByteCount: arenaBytes
+        ))
+        let arenaDescriptor = try backend.hostVisibleArenaDescriptor()
+        let descriptor = try #require(arenaDescriptor)
+        defer { try? descriptor.close() }
+
+        var status = stat()
+        #expect(fstat(descriptor.fileDescriptor, &status) == 0)
+        #expect(status.st_nlink == 0)
+        #expect(UInt64(status.st_size) == arenaBytes)
+        #expect(DoryRendererSharedMemoryDescriptorPolicy.accepts(mode: status.st_mode))
+    }
+
     @Test func surfaceLifecycleFailureFailsClosedBeforeAdvertisingVirGL2() throws {
         let session = FakeRendererForeignSession(rejectSurfaceSubmit: true)
         let backend = makeBackend(session: session)
@@ -1671,7 +1689,8 @@ import Testing
     }
 
     private func makeBootstrap(
-        limits: DoryRendererWorkerLimits = .production
+        limits: DoryRendererWorkerLimits = .production,
+        hostVisibleArenaByteCount: UInt64 = 0
     ) throws -> DoryRendererWorkerBootstrap {
         func digest(_ byte: UInt8) throws -> DoryRendererArtifactDigest {
             try DoryRendererArtifactDigest(bytes: Data(repeating: byte, count: 32))
@@ -1691,7 +1710,8 @@ import Testing
                     bytes: Data(repeating: 5, count: DoryCodeDirectoryHash.byteCount)
                 )
             ),
-            limits: limits
+            limits: limits,
+            hostVisibleArenaByteCount: hostVisibleArenaByteCount
         )
     }
 

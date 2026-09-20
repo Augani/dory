@@ -371,6 +371,9 @@ void DoryVirglRendererPoll(DoryVirglRendererSession *session);
 size_t DoryVirglRendererResourceInfoSize(void);
 size_t DoryVirglRendererResourceInfoFileDescriptorOffset(void);
 
+/* Creates a private, immediately unlinked POSIX SHM object sized for one worker generation. */
+int DoryCreateRendererHostVisibleArena(uint64_t byte_count);
+
 #ifdef __cplusplus
 }
 #endif
