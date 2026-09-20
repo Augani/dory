@@ -28,27 +28,33 @@ import Testing
     independentPorts.seal()
 
     let firstReturned = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
       _ = try? firstBus.read(at: blocking.baseAddress, byteCount: 1)
       firstReturned.signal()
     }
-    #expect(blocking.entered.wait(timeout: .now() + 2) == .success)
+    try #require(blocking.entered.wait(timeout: .now() + 2) == .success)
     var releasedBlockingRead = false
     defer {
       if !releasedBlockingRead { blocking.release.signal() }
     }
 
+    let secondStarted = DispatchSemaphore(value: 0)
     let secondReturned = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
+      secondStarted.signal()
       _ = try? secondBus.read(at: secondMMIO.baseAddress, byteCount: 1)
       secondReturned.signal()
     }
+    let portStarted = DispatchSemaphore(value: 0)
     let portReturned = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
+      portStarted.signal()
       _ = try? ports.read(port: sharedPort.basePort, width: .byte)
       portReturned.signal()
     }
 
+    try #require(secondStarted.wait(timeout: .now() + 2) == .success)
+    try #require(portStarted.wait(timeout: .now() + 2) == .success)
     #expect(secondReturned.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
     #expect(portReturned.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
     #expect(try secondBus.read(at: 0, byteCount: 1) == [0])
@@ -56,11 +62,14 @@ import Testing
 
     // Asynchronous device/DMA completion must be able to publish memory while a guest access is
     // blocked inside another device callback, otherwise the two sides can deadlock each other.
+    let synchronizationStarted = DispatchSemaphore(value: 0)
     let synchronizationReturned = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
+      synchronizationStarted.signal()
       secondBus.synchronize()
       synchronizationReturned.signal()
     }
+    try #require(synchronizationStarted.wait(timeout: .now() + 2) == .success)
     #expect(synchronizationReturned.wait(timeout: .now() + 2) == .success)
 
     blocking.release.signal()

@@ -11,11 +11,14 @@ import Testing
     #expect(coordinator.pending(for: 0) == publication)
     #expect(coordinator.pending(for: 1) == publication)
 
+    let started = DispatchSemaphore(value: 0)
     let finished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
+      started.signal()
       coordinator.wait(for: publication)
       finished.signal()
     }
+    try #require(started.wait(timeout: .now() + 2) == .success)
     #expect(finished.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
     coordinator.acknowledge(processor: 0, generation: publication.generation)
     #expect(finished.wait(timeout: .now() + .milliseconds(25)) == .timedOut)

@@ -383,8 +383,10 @@ import Testing
       return input
     }
 
-    try machine.physicalMemory.write(at: 0x5000, bytes: addressInput(rootPort: 1, endpoint0Ring: 0x9000))
-    try machine.physicalMemory.write(at: 0x7000, bytes: addressInput(rootPort: 2, endpoint0Ring: 0xA000))
+    try machine.physicalMemory.write(
+      at: 0x5000, bytes: addressInput(rootPort: 1, endpoint0Ring: 0x9000))
+    try machine.physicalMemory.write(
+      at: 0x7000, bytes: addressInput(rootPort: 2, endpoint0Ring: 0xA000))
     var configureInput = [UInt8](repeating: 0, count: 1_056)
     configureInput.replaceSubrange(4..<8, with: littleEndian(UInt32(1 << 3)))
     configureInput.replaceSubrange(132..<136, with: littleEndian(UInt32(512 << 16 | 6 << 3)))
@@ -414,11 +416,12 @@ import Testing
     try xhci.connect(port: 2, device: unaffectedDevice)
     try write32(machine, bar + 0x2000, 0)
 
-    #expect(xhci.slotStates == [
-      .init(slotID: 1, addressed: true),
-      .init(slotID: 2, addressed: true),
-      .init(slotID: 3, addressed: false),
-    ])
+    #expect(
+      xhci.slotStates == [
+        .init(slotID: 1, addressed: true),
+        .init(slotID: 2, addressed: true),
+        .init(slotID: 3, addressed: false),
+      ])
     #expect(try read32(machine, 0x6020) & 0x7 == 1)
     #expect(try read32(machine, 0x6060) & 0x7 == 1)
     #expect(try read32(machine, 0xC020) & 0x7 == 1)
@@ -444,7 +447,9 @@ import Testing
     try xhci.disconnect(port: 1)
 
     #expect(disconnectedDevice.cancellationCount == 1)
-    #expect(try machine.physicalMemory.read(at: 0x20B0, byteCount: 16) == [UInt8](repeating: 0, count: 16))
+    #expect(
+      try machine.physicalMemory.read(at: 0x20B0, byteCount: 16) == [UInt8](repeating: 0, count: 16)
+    )
   }
 
   @Test func disconnectRejectsInFlightTransferContextWriteback() throws {
@@ -504,7 +509,7 @@ import Testing
 
     let transferDone = DispatchSemaphore(value: 0)
     let transferResult = LockedTransferResult()
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
       do {
         try write32(machine, bar + 0x2004, 3)
         transferResult.set(.success(()))
