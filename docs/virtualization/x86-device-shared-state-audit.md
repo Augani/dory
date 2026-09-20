@@ -3,7 +3,7 @@
 Status: **machine and built-in callback boundaries implemented; lifecycle and external-adapter
 qualification open**
 
-Implementation checkpoint: `556ba323b` on 2026-09-20. This document is a source inventory and
+Implementation checkpoint: `6e941dfa0` on 2026-09-20. This document is a source inventory and
 admission contract, not a release claim. It covers objects reachable from
 `DoryPCPhysicalMemoryBus` and `DoryPCPortIOBus` in `DoryPCDirectKernelMachine` and records the work
 that remains before general free-running SMP may use them.
@@ -58,7 +58,7 @@ is denied by default until its order is documented here and represented in the c
 | Local APIC and I/O APIC windows | MMIO | Machine domain at the bus; wrapper and APIC models use local locks. Direct injection, timer expiry, interrupt-command, and EOI callbacks route only after local state is snapshotted and the source lock is released. Direct and timer callback re-entry regressions inspect APIC state synchronously. | Exercise simultaneous IPI, EOI, timer, reset, and quiescence throughout sustained owner execution. |
 | HPET | MMIO | Machine domain for registers; model-local lock for clock/timer state; the interrupt route is snapshotted under the local lock and invoked afterward. A callback re-entry regression synchronously inspects HPET state. | Extend concurrent comparator-write and clock-advance coverage through reset and teardown. |
 | PCI ECAM and BAR window | MMIO | Machine domain spans route resolution and target callback. ECAM/BAR attachment tables are sealed; PCI configuration, MSI-X, and function models retain local locks. | Audit every admitted function's configuration/BAR lock order and hot-unplug/reset behavior. |
-| Virtio PCI block, entropy, network, GPU, input, and sound | PCI BAR/ECAM plus DMA | Machine domain for guest register access. The transport has a state lock, per-queue recursive processing locks, generation-scoped deferred completions, and range-coordinated guest memory. | Run reset/reconfigure/completion/interrupt races under sustained SMP for every backend; prove callbacks are made after configuration locks are released. |
+| Virtio PCI block, entropy, network, GPU, input, and sound | PCI BAR/ECAM plus DMA | Machine domain for guest register access. The transport has a state lock, per-queue recursive processing locks, generation-scoped deferred completions, and range-coordinated guest memory. Production `DoryVirtioGuestMemory` writes have qualified protected-code mutation and tracked page-table mutation during remote interpreter execution, below the configured queue/backend layer. | Drive equivalent code and page-table mutations through configured queues and backend completion/interrupt paths. Run reset/reconfigure/completion/interrupt races under sustained SMP for every backend; prove callbacks are made after configuration locks are released. |
 | xHCI and USB HID/UVC | PCI BAR plus DMA | Machine domain for guest registers. xHCI and USB models have local locks; transfer handlers are snapshotted and invoked outside those locks, transfer context writes use coordinated guest memory, and DMA synchronization is outside the machine device domain. HID/UVC handler re-entry and xHCI disconnect/reset/in-flight races are covered. | Expand the campaigns to concurrent vCPU MMIO, repeated attachment lifecycle, and code/page-table DMA targets. |
 | PIC, ELCR, PIT, system-control port, RTC, UART, PS/2 controller | Port I/O | Machine domain spans routing and the port callback. Each mutable model has a local lock. PIC pending-work publication and PIT/RTC/UART/PS2 interrupt sinks now invoke only after releasing the source lock; synchronous state-re-entry regressions cover each path. A two-owner guest UART loop survives 512 concurrent host clock, input, APIC, and power publications. | Extend the bounded campaign through pause, reset, snapshot, and teardown during sustained owner execution. |
 | ACPI PM event/control/timer and reset ports | Port I/O | Machine domain for guest access; `DoryPCPowerController` owns mutable lifecycle state under a local lock, snapshots publication, and invokes pending work afterward. Concurrent-pair async poweroff joins both owners. | Couple reset, snapshot, and teardown to all-worker quiescence and prove no callback survives lifecycle generation changes. |
@@ -93,10 +93,10 @@ audit below does not qualify any extension, direct shared mapping, or future bac
 
 ## Evidence at this checkpoint
 
-- The complete PC target passes 442 tests across 56 Swift Testing suites in debug and optimized
+- The complete PC target passes 444 tests across 56 Swift Testing suites in debug and optimized
   release modes. The pinned Linux integration test is separately skipped when its four artifact
   environment variables are absent; that skip is not boot evidence.
-- The complete current 442-test PC target passes under Thread Sanitizer with no race report. This
+- The complete current 444-test PC target passes under Thread Sanitizer with no race report. This
   includes the device-domain, physical-memory, port-I/O, PCI, Virtio, xHCI, APIC, translation,
   concurrent run-session, and new guest-code litmus suites rather than only the older 99-test
   device subset.
@@ -114,7 +114,14 @@ audit below does not qualify any extension, direct shared mapping, or future bac
   views, ordinary RAM remains live, independent machines do not contend, synchronous nested
   routing is reentrant, and DMA synchronization cannot be blocked by a guest device callback.
 - Existing Virtio/xHCI tests cover generation-scoped deferred completion, reset and disconnect
-  races, range-authority overlap/disjoint behavior, and translated-code invalidation.
+  races, range-authority overlap/disjoint behavior, and translated-code invalidation. A new
+  production guest-memory-interface test writes replacement instructions into protected code while
+  the other interpreter owner is active, then requires DMA synchronization, publication visibility,
+  code/protection generation advance, `CPUID`, replacement fetch, real overlap, and guest S5. A
+  companion cell verifies its live PTE is already tracked, rewrites it through the same production
+  interface, requires both owners to acknowledge the global invalidation, and observes the
+  replacement translation before guest S5. Neither cell yet exercises a configured Virtio queue,
+  backend completion, or interrupt path.
 
 ## Promotion rule
 
