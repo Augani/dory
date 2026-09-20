@@ -1,0 +1,102 @@
+{
+  "schema": "dev.dory.x86-qualification-campaign-summary@1",
+  "campaign": "2026-09-20-pvh-signed-exact-head",
+  "purpose": "Retain repeated clean-checkout PVH userspace and ACPI poweroff evidence for the exact reviewed head after the run-session foundation and serialized pending-work lost-clear repair.",
+  "qualificationScope": "Internal exact-head evidence for one host class, one vCPU, compat-v1, baseline JIT with tier one enabled, protected host pages, and raw target prediction disabled. The runner is Developer-ID-signed with hardened runtime and allow-jit but is not notarized, both diagnostic receipts declare releaseQualified=false, UEFI is not covered, and this campaign does not open the public release gate.",
+  "source": {
+    "commit": "39345b6c487b425018fb9fd7d2136bec2114491b",
+    "tree": "clean"
+  },
+  "host": {
+    "class": "apple-m2-pro-macos-27.2-xcode-27.0",
+    "os": "macOS 27.2 (26B5086k)",
+    "xcode": "27.0 (27A266a)"
+  },
+  "fixture": {
+    "manifest": "Qualification/X86_64/Manifests/alpine-virt-3.24.1-pvh-smoke-v2.json",
+    "manifestSHA256": "9a11a01ad9feae91041ec8ce29bc8ed1c15a6d507f971ffdbef51e801dc62e6b",
+    "importReceipt": "Qualification/X86_64/Evidence/2026-09-20-pvh-signed-exact-head-fixture-import.json",
+    "importReceiptSHA256": "7adb915412f42a7e2e0478f8d42a73eeab9ac655ce60134eadbce4a8a7333e19",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "kernelBuildID": "6605cb9027e42995c51847655ec230aeb78559bd",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "symbolsSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a"
+  },
+  "runner": {
+    "sha256": "d09d1ba2bbfd1e0f925d1287537cdf8927098a9fd858718469088cfea56e7962",
+    "byteCount": 12247808,
+    "signature": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "teamIdentifier": "864H636QW4",
+    "hardenedRuntime": true,
+    "allowJIT": true,
+    "secureTimestamp": "2026-09-20T01:42:14+00:00",
+    "codesignStrictVerification": "passed",
+    "notarized": false,
+    "gatekeeperAssessment": "rejected: Unnotarized Developer ID",
+    "notarizationPreflight": "blocked: Apple notarytool HTTP 403; developer-team agreement missing or expired"
+  },
+  "configuration": {
+    "cpuProfile": "dory.x86_64.compat-v1",
+    "executionTier": "baselineJIT",
+    "tier1Enabled": true,
+    "jitWriteCoherencePolicy": "protected-host-pages",
+    "rawTargetPrediction": "none",
+    "processorCount": 1,
+    "memoryMiB": 512,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ]
+  },
+  "observations": [
+    {
+      "runID": "b4546f63-ad3b-4010-a3aa-b193a8c9ac31",
+      "diagnosticReceipt": "Qualification/X86_64/Evidence/2026-09-20-pvh-signed-exact-head-run-1.json",
+      "diagnosticReceiptSHA256": "2721fb5ae82f3ed7e7639444f842b12910d5296505a47dc481f19e3131960c3b",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "guestReceiptSeen": true,
+      "elapsedNanoseconds": 367851234625,
+      "retiredInstructions": 731826956,
+      "directChainPatches": 0,
+      "indirectBranchTargetCacheHits": 0,
+      "shadowReturnStackHits": 0,
+      "pendingWorkMaximumRetiredInstructions": 0,
+      "consoleContainedNUL": false
+    },
+    {
+      "runID": "1b5e3eee-0b8f-489b-97ba-cd44c5ad5946",
+      "diagnosticReceipt": "Qualification/X86_64/Evidence/2026-09-20-pvh-signed-exact-head-run-2.json",
+      "diagnosticReceiptSHA256": "c9f7715845589f44b655516df80ca12282d455a17f6c3738177efc4f8623f268",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "guestReceiptSeen": true,
+      "elapsedNanoseconds": 365794080542,
+      "retiredInstructions": 732852706,
+      "directChainPatches": 0,
+      "indirectBranchTargetCacheHits": 0,
+      "shadowReturnStackHits": 0,
+      "pendingWorkMaximumRetiredInstructions": 0,
+      "consoleContainedNUL": false
+    }
+  ],
+  "conclusion": {
+    "exactHeadPVHRepeat": "passed",
+    "developerIDInternalRunner": "passed",
+    "publicReleaseGate": "closed",
+    "remainingBoundaries": [
+      "free-running multiprocessor execution and the complete SMP memory/translation contract",
+      "concurrent cross-vCPU code mutation, translation invalidation, DMA, shared-mapping, and code-cache rotation qualification",
+      "registered and independently qualified x86-64-v2 guest ABI",
+      "clean UEFI install, reboot, cold-boot, update, shutdown, recovery, and fault campaigns",
+      "notarized production packaging and the complete supported-host/tier/configuration matrix"
+    ]
+  }
+}

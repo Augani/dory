@@ -7,6 +7,9 @@ Implementation checkpoint (2026-09-20): commit `ab0268045` adds the isolated
 `fc6ab7fd8` closes the current serialized dispatcher's native pending-byte lost-clear race with a
 generation-coupled publication/acknowledgement boundary and four deterministic race tests. The
 session remains intentionally unwired; packages B-G and the remainder of package A below are open.
+The clean signed exact-head campaign at source `39345b6c4` completed two consecutive seven-workload
+PVH plus ACPI-poweroff runs, so the next promotion gate is package B's single-vCPU worker-loop
+cutover and parity campaign rather than more testing of the unchanged serialized path.
 
 This plan converts the existing machine-lifetime host workers into a real multiprocessor runtime
 without weakening deterministic replay, memory ordering, translation invalidation, device safety,
