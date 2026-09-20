@@ -2,14 +2,12 @@
 
 Status: **approved engineering sequence; not yet a release claim**
 
-Implementation checkpoint (2026-09-20): commit `ab0268045` adds the isolated
-`DoryPCRunSession` foundation and eleven debug/optimized/Thread-Sanitizer protocol tests. Commit
-`fc6ab7fd8` closes the current serialized dispatcher's native pending-byte lost-clear race with a
-generation-coupled publication/acknowledgement boundary and four deterministic race tests. The
-session remains intentionally unwired; packages B-G and the remainder of package A below are open.
-The clean signed exact-head campaign at source `39345b6c4` completed two consecutive seven-workload
-PVH plus ACPI-poweroff runs, so the next promotion gate is package B's single-vCPU worker-loop
-cutover and parity campaign rather than more testing of the unchanged serialized path.
+Implementation checkpoint (2026-09-20): commit `298d6668e` completes package B's production
+single-vCPU cutover. One run now lends its persistent host worker one long-running job with exact
+result/directive handoffs while the coordinator retains clocks and events. The 62 direct-kernel and
+17 run-session tests pass debug, optimized, and Thread Sanitizer, and two clean signed exact-commit
+PVH userspace plus ACPI-poweroff runs pass. Package A is complete for this handoff boundary;
+packages C-G remain open, and requests above one vCPU still use the bounded legacy scheduler.
 
 This plan converts the existing machine-lifetime host workers into a real multiprocessor runtime
 without weakening deterministic replay, memory ordering, translation invalidation, device safety,
@@ -18,11 +16,12 @@ below does not qualify SMP until the mandatory matrix passes.
 
 ## Current boundary
 
-`DoryPCVCPURuntime` owns one persistent host thread per vCPU, but
-`DoryPCDirectKernelMachine.run` still chooses a processor, submits one bounded execution slice,
-waits for it, mutates clocks/devices/lifecycle state centrally, and repeats. The only overlapping
-path admits one frozen register-only instruction per vCPU. That path proves host-thread overlap,
-not a Linux SMP runtime.
+`DoryPCVCPURuntime` owns one persistent host thread per vCPU. With one vCPU,
+`DoryPCDirectKernelMachine.run` submits one run-session worker loop and services exact handoffs for
+clocks, devices, lifecycle, and stop selection. With more than one vCPU it still chooses a
+processor, submits bounded execution, waits, and repeats. The only overlapping multiprocessor path
+admits one frozen register-only instruction per vCPU; that proves host-thread overlap, not Linux
+SMP.
 
 The following foundations already exist and must be preserved:
 
@@ -78,6 +77,10 @@ coordinator, enter generated code, or perform interrupt delivery while held.
 
 ### Persistent worker loop
 
+Package B uses a deliberate transitional form: one vCPU stays in one worker job, but publishes an
+exact result and parks while the coordinator owns clocks, events, interrupts, and lifecycle work.
+Packages C and F move those per-vCPU responsibilities below the handoff boundary.
+
 Extend `DoryPCHostWorker` with a machine-lifetime vCPU command protocol rather than repeatedly
 installing closures in a single-slot mailbox. Commands are `start(session)`, `wake(generation)`,
 `quiesce(generation)`, and `terminate`. A started worker loops locally:
@@ -119,10 +122,10 @@ immunity, exact budget reservation/return, generation wrap behavior, first-failu
 idempotent stop, and all-worker acknowledgement. Keep the existing scheduler as the only caller
 until these tests pass under Thread Sanitizer.
 
-Progress: the isolated metadata core and its concurrency proofs are complete. Before package A is
-closed, the production worker command protocol still needs run identity, result mailboxes,
-run-local counter merge ownership, and explicit coordinator/worker quiescence handoff. No public
-or guest execution path uses the session yet.
+Progress: complete for the package-B handoff boundary. Run identity, exact result/directive
+mailboxes, checked reservation return, stable failure/stop selection, run-local counter merge, and
+coordinator/worker stop handoff are wired into the one-vCPU production path and pass the focused
+debug, optimized, and Thread-Sanitizer suites. Multi-vCPU quiescence remains part of packages C/F.
 
 ### B. Single-vCPU long-running cutover
 
@@ -130,6 +133,12 @@ Run one vCPU through the new worker loop while retaining the existing coordinato
 events. Require byte-identical architectural outcomes and stop reasons across interpreter,
 baseline, and optimizing tiers. Repeat the PVH campaign before admitting more than one vCPU. This
 isolates protocol/lifecycle regressions from SMP memory failures.
+
+Progress: implementation and promotion evidence complete at `298d6668e`. Tests prove one worker
+submission and one worker thread across repeated handoffs in interpreter, baseline, and optimizing
+tiers, exact budget/counter parity, monotonically advancing run generations, failure reservation
+return, and stop-before-join behavior. Two clean signed exact-commit PVH runs completed all seven
+userspace workloads and ACPI S5. Package C is the next code boundary.
 
 ### C. Per-vCPU events and invalidations
 

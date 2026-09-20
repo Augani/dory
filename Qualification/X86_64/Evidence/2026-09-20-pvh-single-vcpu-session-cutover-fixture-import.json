@@ -1,0 +1,40 @@
+{
+  "catalogID" : "alpine-virt-3.24.1-x86_64-p02-minimal-v2",
+  "manifestSHA256" : "9a11a01ad9feae91041ec8ce29bc8ed1c15a6d507f971ffdbef51e801dc62e6b",
+  "objects" : [
+    {
+      "byteCount" : 1482752,
+      "objectRelativePath" : "sha256/22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+      "publication" : "published",
+      "role" : "pvh-initrd",
+      "sha256" : "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249"
+    },
+    {
+      "byteCount" : 39274268,
+      "objectRelativePath" : "sha256/e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+      "publication" : "published",
+      "role" : "pvh-kernel",
+      "sha256" : "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8"
+    },
+    {
+      "byteCount" : 6391693,
+      "objectRelativePath" : "sha256/a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+      "publication" : "published",
+      "role" : "pvh-symbols",
+      "sha256" : "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a"
+    }
+  ],
+  "producer" : {
+    "builderSHA256" : "37a9a274e969a683384f42c1eb9673eee7aeac4fd1556084c92235ea7661e132",
+    "environmentDescription" : "Qualification/X86_64/Environments/macos-27.2-arm64-xcode-27.0.json",
+    "environmentIdentitySHA256" : "33614057899904e587cc88b7f3ed7d8aca1619ae91a3adffd69980dba5e6add2",
+    "environmentKind" : "host-toolchain",
+    "recipeSHA256" : "52b01dc00c935064e09bc006955aa27e5a8895a8a660fc16dbe4376fa289bbb6",
+    "toolchainDescription" : "Qualification/X86_64/Toolchains/pvh-smoke-python-3.10.13-bsdtar-3.5.3.json",
+    "toolchainIdentitySHA256" : "ceb07c7a477530d4e0466d4babb177790d9094e92b7405bf8795e3341620254b"
+  },
+  "purpose" : "pvh-smoke",
+  "qualification" : "content integrity and provenance binding only; no guest execution",
+  "qualified" : false,
+  "schema" : "dev.dory.pc-x86-qualification-fixture-import@1"
+}
