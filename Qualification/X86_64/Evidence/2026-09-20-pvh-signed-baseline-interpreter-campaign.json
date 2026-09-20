@@ -1,0 +1,151 @@
+{
+  "schema": "dev.dory.x86-qualification-campaign-summary@1",
+  "campaign": "2026-09-20-pvh-signed-baseline-interpreter",
+  "purpose": "Retain repeated clean-checkout PVH userspace and ACPI poweroff evidence for the exact implementation candidate after persistent multi-vCPU owner activation, interpreter qualification performance work, and the halted-owner deliverable-interrupt repair.",
+  "qualificationScope": "Internal exact-candidate evidence for one host class, one vCPU, compat-v1, both the interpreter and baseline JIT with tier one enabled, protected host pages, and raw target prediction disabled. The release runner and fixture importer are Developer-ID-signed with hardened runtime, the runner has allow-jit, neither executable is notarized, every diagnostic receipt declares releaseQualified=false, UEFI is not covered, and this campaign does not open the public release gate.",
+  "source": {
+    "commit": "5c07bcf4423c1b64f1a501cec4a633728f2e6057",
+    "tree": "clean"
+  },
+  "host": {
+    "class": "apple-m2-pro-macos-27.2-xcode-27.0",
+    "os": "macOS 27.2 (26B5086k)",
+    "xcode": "27.0 (27A266a)"
+  },
+  "fixture": {
+    "manifest": "Qualification/X86_64/Manifests/alpine-virt-3.24.1-pvh-smoke-v2.json",
+    "manifestSHA256": "9a11a01ad9feae91041ec8ce29bc8ed1c15a6d507f971ffdbef51e801dc62e6b",
+    "importReceipt": "Qualification/X86_64/Evidence/2026-09-20-pvh-signed-baseline-interpreter-fixture-import.json",
+    "importReceiptSHA256": "7adb915412f42a7e2e0478f8d42a73eeab9ac655ce60134eadbce4a8a7333e19",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "kernelBuildID": "6605cb9027e42995c51847655ec230aeb78559bd",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "symbolsSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a"
+  },
+  "runner": {
+    "sha256": "ac6e580994eb80fea7a5413c0f92cdbd901770755f67df6786888df4575e80b8",
+    "byteCount": 12423744,
+    "signature": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "teamIdentifier": "864H636QW4",
+    "hardenedRuntime": true,
+    "allowJIT": true,
+    "secureTimestamp": "2026-09-20T09:13:29+00:00",
+    "codesignStrictVerification": "passed",
+    "notarized": false,
+    "gatekeeperAssessment": "rejected: Unnotarized Developer ID",
+    "notarizationPreflight": "blocked: Apple notarytool HTTP 403; developer-team agreement missing or expired"
+  },
+  "fixtureImporter": {
+    "sha256": "e625cbab9447d9c276cb2067a6183d42a38bc20e40241b579497f7adfc036bd4",
+    "signature": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "teamIdentifier": "864H636QW4",
+    "hardenedRuntime": true,
+    "codesignStrictVerification": "passed"
+  },
+  "configuration": {
+    "cpuProfile": "dory.x86_64.compat-v1",
+    "executionTiers": [
+      "interpreter",
+      "baselineJIT"
+    ],
+    "tier1Enabled": true,
+    "jitWriteCoherencePolicy": "protected-host-pages",
+    "rawTargetPrediction": "none",
+    "processorCount": 1,
+    "memoryMiB": 512,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 900,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ]
+  },
+  "observations": [
+    {
+      "runID": "38ce4055-1345-4c12-a294-1bc67115476f",
+      "executionTier": "baselineJIT",
+      "diagnosticReceipt": "Qualification/X86_64/Evidence/2026-09-20-pvh-signed-baseline-interpreter-baseline-run-1.json",
+      "diagnosticReceiptSHA256": "c670557ae382800e345414044d01141f70ddbc14aa97fb078a2a4ff8cdb2d8d4",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "guestReceiptSeen": true,
+      "elapsedNanoseconds": 414324503458,
+      "retiredInstructions": 733474673,
+      "directChainPatches": 0,
+      "indirectBranchTargetCacheHits": 0,
+      "shadowReturnStackHits": 0,
+      "pendingWorkMaximumRetiredInstructions": 0,
+      "consoleContainedNUL": false
+    },
+    {
+      "runID": "47765a0f-10df-41df-b0d8-3251d6070b95",
+      "executionTier": "baselineJIT",
+      "diagnosticReceipt": "Qualification/X86_64/Evidence/2026-09-20-pvh-signed-baseline-interpreter-baseline-run-2.json",
+      "diagnosticReceiptSHA256": "9bd23ae429459c1c354f189c5636f67e037b3ffecbbda8e96fe85a14cf42dad2",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "guestReceiptSeen": true,
+      "elapsedNanoseconds": 421685140375,
+      "retiredInstructions": 733612796,
+      "directChainPatches": 0,
+      "indirectBranchTargetCacheHits": 0,
+      "shadowReturnStackHits": 0,
+      "pendingWorkMaximumRetiredInstructions": 0,
+      "consoleContainedNUL": false
+    },
+    {
+      "runID": "be73236f-8320-45c7-a5f4-c452f57ed7e9",
+      "executionTier": "interpreter",
+      "diagnosticReceipt": "Qualification/X86_64/Evidence/2026-09-20-pvh-signed-baseline-interpreter-interpreter-run-1.json",
+      "diagnosticReceiptSHA256": "d64351c8a7ddafebcd9cd51322e7ab2dfe736969ac474bfb80260d400e1d000c",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "guestReceiptSeen": true,
+      "elapsedNanoseconds": 759306996000,
+      "retiredInstructions": 769081290,
+      "consoleContainedNUL": false
+    },
+    {
+      "runID": "11cffbc9-e8c0-4906-b9d1-cdda4c203a80",
+      "executionTier": "interpreter",
+      "diagnosticReceipt": "Qualification/X86_64/Evidence/2026-09-20-pvh-signed-baseline-interpreter-interpreter-run-2.json",
+      "diagnosticReceiptSHA256": "959af7ba6db56f9b57287533e8aa3dbf1a18a8452b3ea8214cba78580039c7b6",
+      "passed": true,
+      "reason": "userspace-workloads-powered-off",
+      "guestReceiptSeen": true,
+      "elapsedNanoseconds": 739355531291,
+      "retiredInstructions": 766808878,
+      "consoleContainedNUL": false
+    }
+  ],
+  "regressionDiscovery": {
+    "sourceCommit": "e83eabf7d414df5db6daf879e1e0db281f784c55",
+    "runID": "b7a7b7cd-55bd-4674-a7e1-8f24cba0ed17",
+    "diagnosticReceipt": "Qualification/X86_64/Evidence/2026-09-20-pvh-halted-owner-lost-wake-failure.json",
+    "diagnosticReceiptSHA256": "c6bcc50b32d6883f68663394994343f0082c69f0d578f794e9e44a0ee971aeaa",
+    "outcome": "halted-without-poweroff",
+    "elapsedNanoseconds": 360129865375,
+    "retiredInstructions": 662672507,
+    "finding": "The halted single-vCPU owner treated an unchanged pending-work generation as terminal even though local APIC IRR already held vector 236, IF was enabled, the interrupt shadow was clear, and the request had become deliverable after its original publication edge.",
+    "repair": "The terminal-halt decision now rechecks already-published deliverable NMI, local-APIC, and PIC requests. APIC and PIC regressions pre-publish a request while IF is clear, then require service after STI and HLT without a second publication edge."
+  },
+  "conclusion": {
+    "exactCandidatePVHRepeatByTier": "passed",
+    "interpreterWithinQualificationWallBudget": "passed",
+    "developerIDInternalRunner": "passed",
+    "haltedOwnerDeliverableInterruptRegression": "passed",
+    "publicReleaseGate": "closed",
+    "remainingBoundaries": [
+      "general free-running multiprocessor execution and the complete SMP memory, translation, device, and tier-pair contract",
+      "registered and independently qualified x86-64-v2 guest ABI",
+      "clean UEFI install, installer reboot, detached-media cold boot, update, shutdown, recovery, and fault campaigns",
+      "notarized production packaging after the developer-team agreement is restored",
+      "the frozen supported-host, guest-distribution, tier, device, lifecycle, performance, and recovery matrix"
+    ]
+  }
+}
