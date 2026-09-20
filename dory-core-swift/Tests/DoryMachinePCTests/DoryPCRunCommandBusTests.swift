@@ -56,19 +56,19 @@ import Testing
         command: .execute(maximumInstructions: 1)
       )
     )
-    let parked = DispatchGroup()
     let parkedOwnerStarted = DispatchSemaphore(value: 0)
-    parked.enter()
-    DispatchQueue.global().async {
-      defer { parked.leave() }
+    let parkedOwnerFinished = DispatchSemaphore(value: 0)
+    let parkedOwner = Thread {
+      defer { parkedOwnerFinished.signal() }
       parkedOwnerStarted.signal()
       parkedResult.set(try? bus.nextCommand(forProcessor: 1))
     }
+    parkedOwner.start()
 
     try #require(parkedOwnerStarted.wait(timeout: .now() + 2) == .success)
     bus.close()
     #expect(try bus.nextCommand(forProcessor: 0) == nil)
-    #expect(parked.wait(timeout: .now() + 1) == .success)
+    #expect(parkedOwnerFinished.wait(timeout: .now() + 1) == .success)
     #expect(parkedResult.value == nil)
     #expect(throws: DoryPCRunCommandBus.CommandError.closed) {
       try bus.publishExecution(forProcessor: 0, maximumInstructions: 1)
