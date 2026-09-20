@@ -1,4 +1,5 @@
 import DoryDBTX86
+import DoryVirtio
 import Foundation
 import Testing
 
@@ -220,12 +221,13 @@ import Testing
         // Remap 0x400000 from physical 0x3000 to 0x4000. The tracked page-table write
         // publishes a conservative global flush before this owner can continue.
         0xC7, 0x05, 0x00, 0x20, 0x08, 0x00, 0x03, 0x40, 0x00, 0x00,
-        // The architectural invalidation then publishes the exact linear page to both owners.
-        0x0F, 0x01, 0x3D, 0x00, 0x00, 0x40, 0x00,  // invlpg [0x400000]
         0xC7, 0x05, 0x04, 0x50, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
         // Do not halt until the AP has observed and published the replacement page.
         0x81, 0x3D, 0x14, 0x50, 0x00, 0x00, 0x22, 0x22, 0x00, 0x00,
         0x75, 0xF4,  // jne back
+        // Publish the exact invalidation only after the AP proves the global page-table flush
+        // completed. Multiple same-batch invalidations are conservatively promoted to global.
+        0x0F, 0x01, 0x3D, 0x00, 0x00, 0x40, 0x00,  // invlpg [0x400000]
         0x66, 0xBA, 0x04, 0x06,  // mov dx,PM1_CONTROL
         0x66, 0xB8, 0x00, 0x34,  // mov ax,S5|SLP_EN
         0x66, 0xEF,  // out dx,ax
@@ -259,10 +261,17 @@ import Testing
     #expect(try machine.memory.readScalar(at: 0x5010, byteCount: 4) == 0x1111)
     #expect(try machine.memory.readScalar(at: 0x5014, byteCount: 4) == 0x2222)
     #expect(overlap.maximumActive == 2)
+    let translationAcknowledgements = overlap.translationAcknowledgements
     for processor in 0..<2 {
       let after = machine.pagingUnits[processor].diagnostics
-      #expect(after.globalInvalidations > before[processor].globalInvalidations)
-      #expect(after.linearInvalidations > before[processor].linearInvalidations)
+      #expect(
+        after.globalInvalidations > before[processor].globalInvalidations,
+        "processor \(processor) did not acknowledge the global page-table invalidation"
+      )
+      #expect(
+        after.linearInvalidations > before[processor].linearInvalidations,
+        "processor \(processor) did not acknowledge the targeted linear invalidation; worker acknowledgements: \(translationAcknowledgements)"
+      )
     }
     #expect(machine.pagingUnits[1].diagnostics.recentTLBHits > 0)
     let invalidation = machine.translationInvalidationDiagnostics
@@ -333,6 +342,93 @@ import Testing
     )
     #expect(codeProtection.translatedCodeProtectionGeneration > protectionBefore)
     #expect(codeProtection.protectedTranslatedCodePageCount == 0)
+    #expect(overlap.maximumActive == 2)
+  }
+
+  @Test func deviceDMAMutationRevokesRemoteInstructionFetch() throws {
+    let mutableCode: UInt64 = 0xA000
+    let machine = try makeMachine(
+      bsp: [
+        // The BSP remains guest-active while the AP and device backend complete the protocol.
+        0x81, 0x3D, 0x14, 0x50, 0x00, 0x00, 0x22, 0x22, 0x00, 0x00,
+        0x75, 0xF4,  // jne back
+        0x66, 0xBA, 0x04, 0x06,  // mov dx,PM1_CONTROL
+        0x66, 0xB8, 0x00, 0x34,  // mov ax,S5|SLP_EN
+        0x66, 0xEF,  // out dx,ax
+      ],
+      ap: [
+        0xB8, 0x00, 0xA0, 0x00, 0x00,  // mov eax,0xA000
+        0xFF, 0xD0,  // call eax
+        0xA3, 0x10, 0x50, 0x00, 0x00,  // mov [0x5010],eax
+        0xC7, 0x05, 0x00, 0x50, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x83, 0x3D, 0x04, 0x50, 0x00, 0x00, 0x01,  // cmp dword [0x5004],1
+        0x75, 0xF7,  // jne back
+        0x31, 0xC0,  // xor eax,eax
+        0x0F, 0xA2,  // cpuid (cross-modifying-code serialization)
+        0xB8, 0x00, 0xA0, 0x00, 0x00,  // mov eax,0xA000
+        0xFF, 0xD0,  // call eax
+        0xA3, 0x14, 0x50, 0x00, 0x00,  // mov [0x5014],eax
+        0xF4,
+      ]
+    )
+    try machine.memory.write(
+      at: mutableCode,
+      bytes: [0xB8, 0x11, 0x11, 0x00, 0x00, 0xC3]  // mov eax,0x1111; ret
+    )
+    try zero([0x5000, 0x5004, 0x5010, 0x5014], in: machine)
+    let generationBefore = try #require(
+      try machine.physicalMemory.codeGeneration(at: mutableCode, byteCount: 6)
+    )
+    #expect(try machine.physicalMemory.protectTranslatedCode(at: mutableCode, byteCount: 6))
+    let protectionBefore = machine.physicalMemory.translatedCodeProtectionGeneration
+    let dmaValidationsBefore = machine.physicalMemory.diagnostics.dmaValidationCalls
+    let dma: any DoryVirtioGuestMemory = machine.physicalMemory
+    let dmaStarted = DispatchSemaphore(value: 0)
+    let dmaFinished = DispatchSemaphore(value: 0)
+    let dmaResult = LitmusBox<Result<Void, Error>?>(nil)
+    let dmaThread = Thread {
+      dmaStarted.signal()
+      defer { dmaFinished.signal() }
+      do {
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while try dma.read(at: 0x5000, byteCount: 4) != [1, 0, 0, 0] {
+          guard Date() < deadline else { throw LitmusDMAError.guestReadyTimeout }
+          Thread.sleep(forTimeInterval: 0.0001)
+        }
+        try dma.validate(at: mutableCode + 1, byteCount: 4, deviceWillWrite: true)
+        try dma.write(at: mutableCode + 1, bytes: [0x22, 0x22, 0x00, 0x00])
+        dma.synchronize()
+        try dma.validate(at: 0x5004, byteCount: 4, deviceWillWrite: true)
+        try dma.write(at: 0x5004, bytes: [1, 0, 0, 0])
+        dma.synchronize()
+        dmaResult.set(.success(()))
+      } catch {
+        dmaResult.set(.failure(error))
+      }
+    }
+    let overlap = LitmusOverlapProbe()
+    machine.observeWorkers { overlap.observe($0) }
+    dmaThread.start()
+    dmaStarted.wait()
+
+    let result = try machine.run(maximumInstructions: 1_000_000)
+    #expect(dmaFinished.wait(timeout: .now() + .seconds(6)) == .success)
+    try #require(dmaResult.value).get()
+    guard case .poweredOff(let retired) = result else {
+      Issue.record("expected guest poweroff after DMA changed the remote instruction fetch")
+      return
+    }
+
+    #expect(retired > 0)
+    #expect(try machine.memory.readScalar(at: 0x5010, byteCount: 4) == 0x1111)
+    #expect(try machine.memory.readScalar(at: 0x5014, byteCount: 4) == 0x2222)
+    #expect(
+      try machine.physicalMemory.codeGeneration(at: mutableCode, byteCount: 6)
+        != generationBefore
+    )
+    #expect(machine.physicalMemory.translatedCodeProtectionGeneration > protectionBefore)
+    #expect(machine.physicalMemory.protectedTranslatedCodePageCount == 0)
+    #expect(machine.physicalMemory.diagnostics.dmaValidationCalls == dmaValidationsBefore + 2)
     #expect(overlap.maximumActive == 2)
   }
 
@@ -552,8 +648,12 @@ private final class LitmusOverlapProbe: @unchecked Sendable {
   private var entries = 0
   private var active = 0
   private var highWatermark = 0
+  private var invalidationAcknowledgements: [(processor: Int, generation: UInt64)] = []
 
   var maximumActive: Int { condition.withLock { highWatermark } }
+  var translationAcknowledgements: [(processor: Int, generation: UInt64)] {
+    condition.withLock { invalidationAcknowledgements }
+  }
 
   func observe(_ event: DoryPCDirectKernelMachine.WorkerEvent) {
     condition.lock()
@@ -570,8 +670,27 @@ private final class LitmusOverlapProbe: @unchecked Sendable {
       }
     case .executed(_, concurrent: true):
       active -= 1
+    case .acknowledgedTranslationInvalidation(let processor, let generation):
+      invalidationAcknowledgements.append((processor, generation))
     default:
       break
     }
+  }
+}
+
+private enum LitmusDMAError: Error { case guestReadyTimeout }
+
+private final class LitmusBox<Value>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage: Value
+
+  init(_ value: Value) {
+    storage = value
+  }
+
+  var value: Value { lock.withLock { storage } }
+
+  func set(_ value: Value) {
+    lock.withLock { storage = value }
   }
 }
