@@ -30,11 +30,14 @@ enum RendererBootstrapQualificationCommandError: Error, Equatable {
 /// Resources and applies the final outer signature.
 enum RendererBootstrapQualificationCommand {
     enum Profile: String {
+        case stockLinux613 = "stock-linux-6.13-runtime-verified"
         case managedLinux612106 = "managed-linux-6.12.106"
         case doryPCX8664VirGL2 = "dory-pc-x86_64-virgl2"
 
         var producerFenceContract: DoryRendererProducerFenceContract {
             switch self {
+            case .stockLinux613:
+                return .stockLinux613RuntimeVerifiedV1
             case .managedLinux612106:
                 return .managedLinux612106PrepareFBV1
             case .doryPCX8664VirGL2:
@@ -44,7 +47,7 @@ enum RendererBootstrapQualificationCommand {
 
         var requestedCapabilities: DoryRendererRequestedCapabilities {
             switch self {
-            case .managedLinux612106:
+            case .stockLinux613, .managedLinux612106:
                 return .productionAcceleration
             case .doryPCX8664VirGL2:
                 return .pcVirGL2Acceleration
@@ -53,7 +56,7 @@ enum RendererBootstrapQualificationCommand {
 
         var receiptFilename: String {
             switch self {
-            case .managedLinux612106:
+            case .stockLinux613, .managedLinux612106:
                 return DoryVerifiedRendererBootstrapQualification.receiptFilename
             case .doryPCX8664VirGL2:
                 return DoryVerifiedRendererBootstrapQualification.pcVirGL2ReceiptFilename
@@ -62,6 +65,14 @@ enum RendererBootstrapQualificationCommand {
 
         func guestMesaDigest(_ supplied: String?) throws -> DoryRendererArtifactDigest {
             switch self {
+            case .stockLinux613:
+                guard supplied == nil else {
+                    throw RendererBootstrapQualificationCommandError.invalidMesaDigest
+                }
+                return try DoryRendererArtifactDigest(
+                    lowercaseSHA256: DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256,
+                    field: "stockGuestMesaUnbound"
+                )
             case .managedLinux612106:
                 if let supplied, supplied != DoryRendererSourceTuple.guestMesaRuntimeSHA256 {
                     throw RendererBootstrapQualificationCommandError.invalidMesaDigest
@@ -197,8 +208,11 @@ enum RendererBootstrapQualificationCommand {
         let managedKernel: DoryRendererArtifactDigest
         do {
             managedKernel = try DoryRendererArtifactDigest(
-                lowercaseSHA256: options.managedKernelSHA256,
-                field: "managedGuestKernel"
+                lowercaseSHA256: options.profile == .stockLinux613
+                    ? DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256
+                    : options.managedKernelSHA256,
+                field: options.profile == .stockLinux613
+                    ? "stockGuestKernelUnbound" : "managedGuestKernel"
             )
         } catch {
             throw RendererBootstrapQualificationCommandError.invalidKernelDigest
@@ -267,8 +281,8 @@ enum RendererBootstrapQualificationCommand {
             "--inventory", "--managed-kernel-sha256", "--guest-mesa-sha256",
             "--producer-fence-contract", "--issued-at", "--expires-at", "--output",
         ]
-        let required: Set<String> = [
-            "--inventory", "--managed-kernel-sha256", "--issued-at", "--expires-at", "--output",
+        let baseRequired: Set<String> = [
+            "--inventory", "--issued-at", "--expires-at", "--output",
         ]
         var iterator = arguments.makeIterator()
         while let option = iterator.next() {
@@ -278,17 +292,6 @@ enum RendererBootstrapQualificationCommand {
             }
             values[option] = value
         }
-        guard required.isSubset(of: Set(values.keys)),
-              Set(values.keys).isSubset(of: allowed),
-              let inventory = values["--inventory"],
-              let kernel = values["--managed-kernel-sha256"],
-              let issuedString = values["--issued-at"],
-              let expiresString = values["--expires-at"],
-              let output = values["--output"] else {
-            throw RendererBootstrapQualificationCommandError.usage(
-                "renderer-qualify requires inventory, kernel digest, issuance, expiry, and output"
-            )
-        }
         let profile: Profile
         if let rawProfile = values["--producer-fence-contract"] {
             guard let parsed = Profile(rawValue: rawProfile) else {
@@ -296,7 +299,19 @@ enum RendererBootstrapQualificationCommand {
             }
             profile = parsed
         } else {
-            profile = .managedLinux612106
+            profile = .stockLinux613
+        }
+        let required = profile == .stockLinux613
+            ? baseRequired : baseRequired.union(["--managed-kernel-sha256"])
+        guard required.isSubset(of: Set(values.keys)),
+              Set(values.keys).isSubset(of: allowed),
+              let inventory = values["--inventory"],
+              let issuedString = values["--issued-at"],
+              let expiresString = values["--expires-at"],
+              let output = values["--output"] else {
+            throw RendererBootstrapQualificationCommandError.usage(
+                "renderer-qualify requires inventory, kernel digest, issuance, expiry, and output"
+            )
         }
         _ = try profile.guestMesaDigest(values["--guest-mesa-sha256"])
         let issued = try timestamp(issuedString)
@@ -314,7 +329,8 @@ enum RendererBootstrapQualificationCommand {
         return Options(
             profile: profile,
             inventoryPath: inventory,
-            managedKernelSHA256: kernel,
+            managedKernelSHA256: values["--managed-kernel-sha256"]
+                ?? DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256,
             guestMesaSHA256: values["--guest-mesa-sha256"],
             issuedAt: issued,
             expiresAt: expires,

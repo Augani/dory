@@ -90,6 +90,9 @@ public struct DoryVerifiedRendererBootstrapQualification: Equatable, Sendable {
                     == DoryRendererSourceTuple.guestMesaRuntimeSHA256
                 && featureBits == DoryRendererWorkerFeatures.productionAcceleration.rawValue
                 && capsets.map(\.id) == [2, 4]
+        case .stockLinux613RuntimeVerifiedV1:
+            return featureBits == DoryRendererWorkerFeatures.productionAcceleration.rawValue
+                && capsets.map(\.id) == [2, 4]
         case .doryPCX8664LinuxVirGL2PrepareFBV1:
             return guestMesaSHA256.lowercaseSHA256
                     != DoryRendererSourceTuple.guestMesaRuntimeSHA256
@@ -118,14 +121,17 @@ public struct DoryVerifiedRendererBootstrapQualification: Equatable, Sendable {
         bootstrap: DoryRendererWorkerBootstrap,
         liveReceipt: DoryRendererCapabilityReceipt
     ) -> Bool {
-        guard authorizes(
+        let guestArtifactsMatch = producerFenceContract
+            == .stockLinux613RuntimeVerifiedV1
+            || (guestMesaSHA256 == bootstrap.artifacts.guestMesa
+                && managedGuestKernelSHA256 == bootstrap.artifacts.managedGuestKernel)
+        guard guestArtifactsMatch,
+        authorizes(
             candidateInventory: bootstrap.artifacts.candidateInventory,
             workerExecutable: bootstrap.artifacts.rendererWorkerExecutable,
             workerCodeDirectoryHash:
                 bootstrap.artifacts.rendererWorkerCodeDirectoryHash
         ),
-        guestMesaSHA256 == bootstrap.artifacts.guestMesa,
-        managedGuestKernelSHA256 == bootstrap.artifacts.managedGuestKernel,
         producerFenceContract == bootstrap.producerFenceContract,
         liveReceipt.workspaceID == bootstrap.workspaceID,
         liveReceipt.generation == bootstrap.generation,
@@ -182,6 +188,8 @@ public struct DoryVerifiedRendererBootstrapQualification: Equatable, Sendable {
                     != DoryRendererSourceTuple.guestMesaRuntimeSHA256 else {
                 throw DoryRendererBootstrapQualificationError.tupleMismatch
             }
+        case .stockLinux613RuntimeVerifiedV1:
+            break
         }
         guard let rawPublicKey = Data(base64Encoded: DoryComponentDefaults.publicKey),
               rawPublicKey.count == 32 else {
@@ -325,7 +333,7 @@ public struct DoryVerifiedRendererBootstrapQualification: Equatable, Sendable {
         now: Date = Date()
     ) throws -> Self {
         try loadRuntimeCandidate(
-            producerFenceContract: .managedLinux612106PrepareFBV1,
+            producerFenceContract: .stockLinux613RuntimeVerifiedV1,
             from: bundle,
             now: now
         )
@@ -569,6 +577,8 @@ public struct DoryVerifiedRendererBootstrapQualification: Equatable, Sendable {
                     != DoryRendererSourceTuple.guestMesaRuntimeSHA256 else {
                 throw DoryRendererBootstrapQualificationError.tupleMismatch
             }
+        case .stockLinux613RuntimeVerifiedV1:
+            break
         }
         guard qualificationIdentity == "dory-renderer-bootstrap:\(transcriptHex)" else {
             throw DoryRendererBootstrapQualificationError.schemaInvalid
@@ -576,7 +586,7 @@ public struct DoryVerifiedRendererBootstrapQualification: Equatable, Sendable {
 
         let capsets = try decodeCapsets(rawCapsets)
         switch producerFenceContract {
-        case .managedLinux612106PrepareFBV1:
+        case .managedLinux612106PrepareFBV1, .stockLinux613RuntimeVerifiedV1:
             guard featureBits == DoryRendererWorkerFeatures.productionAcceleration.rawValue,
                   capsets.map(\.id) == [2, 4] else {
                 throw DoryRendererBootstrapQualificationError.capabilityMismatch
@@ -839,7 +849,7 @@ public struct DoryVerifiedRendererBootstrapQualification: Equatable, Sendable {
         for producerFenceContract: DoryRendererProducerFenceContract
     ) -> String {
         switch producerFenceContract {
-        case .managedLinux612106PrepareFBV1:
+        case .managedLinux612106PrepareFBV1, .stockLinux613RuntimeVerifiedV1:
             return receiptFilename
         case .doryPCX8664LinuxVirGL2PrepareFBV1:
             return pcVirGL2ReceiptFilename
@@ -850,7 +860,7 @@ public struct DoryVerifiedRendererBootstrapQualification: Equatable, Sendable {
         for producerFenceContract: DoryRendererProducerFenceContract
     ) -> String {
         switch producerFenceContract {
-        case .managedLinux612106PrepareFBV1:
+        case .managedLinux612106PrepareFBV1, .stockLinux613RuntimeVerifiedV1:
             return signatureFilename
         case .doryPCX8664LinuxVirGL2PrepareFBV1:
             return pcVirGL2SignatureFilename

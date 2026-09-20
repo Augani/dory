@@ -34,6 +34,7 @@ public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
     public static let supportedProducerFenceContracts: Set<DoryRendererProducerFenceContract> = [
         .managedLinux612106PrepareFBV1,
         .doryPCX8664LinuxVirGL2PrepareFBV1,
+        .stockLinux613RuntimeVerifiedV1,
     ]
 
     public let workspaceID: DoryRendererWorkspaceID
@@ -66,7 +67,7 @@ public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
             )
         }
         switch producerFenceContract {
-        case .managedLinux612106PrepareFBV1:
+        case .managedLinux612106PrepareFBV1, .stockLinux613RuntimeVerifiedV1:
             guard requestedCapabilities == .productionAcceleration else {
                 throw DoryRendererWorkerContractError.incompleteAccelerationRequest
             }

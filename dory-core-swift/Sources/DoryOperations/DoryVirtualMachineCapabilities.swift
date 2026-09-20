@@ -2098,6 +2098,12 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         if portableLinuxEFIBaseline(request) {
             return nil
         }
+        // Stock ARM64 guests are admitted provisionally from the signed host/runtime tuple.
+        // Guest correctness is promoted only by the live Venus capset and producer-fence
+        // observations; a Dory-signed kernel or Mesa digest is deliberately not authority.
+        if stockLinuxHardwareGraphicsProfile(request) {
+            return nil
+        }
         guard let selectedArtifactSHA256 = request.bootMedia.artifactSHA256 else {
             return unavailable(
                 tier: .supported,
@@ -2175,7 +2181,18 @@ public enum DoryAppleSiliconCapabilityEvaluator {
               request.graphics != .none else {
             return nil
         }
+        if stockLinuxHardwareGraphicsProfile(request) { return nil }
         return trustedQualification?.auditEvidence
+    }
+
+    private static func stockLinuxHardwareGraphicsProfile(
+        _ request: DoryVirtualMachineCapabilityRequest
+    ) -> Bool {
+        request.guest == DoryGuestPlatform(family: .linux, architecture: .arm64)
+            && request.backend == .doryHypervisor
+            && request.graphics == .hardwareAccelerated3D
+            && (request.bootMedia.kind == .linuxKernel
+                || request.bootMedia.kind == .installedLinuxBootBundle)
     }
 
     private static func bootMediaAuditEvidence(

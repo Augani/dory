@@ -213,7 +213,7 @@ struct VirtualMachineCapabilitiesTests {
         )
     )
 
-    @Test("installed Linux ARM64 with native 3D is supported when all components are present")
+    @Test("installed stock Linux ARM64 with native 3D needs no signed guest graphics tuple")
     func linuxNative3DIsSupported() {
         let descriptor = evaluate(
             family: .linux,
@@ -222,7 +222,7 @@ struct VirtualMachineCapabilitiesTests {
             backend: .doryHypervisor,
             graphics: .hardwareAccelerated3D,
             mediaArtifactSHA256: Self.guestArtifactSHA256,
-            trustedGuestImageGraphicsQualification: Self.qualifiedLinuxGraphics
+            automaticallyTrustGuestGraphics: false
         )
 
         #expect(descriptor.schemaVersion == 3)
@@ -231,13 +231,12 @@ struct VirtualMachineCapabilitiesTests {
         #expect(descriptor.availability.state == .available)
         #expect(descriptor.availability.reason == nil)
         #expect(descriptor.availability.isUsable)
-        #expect(descriptor.graphicsQualificationEvidence
-            == Self.qualifiedLinuxGraphics.auditEvidence)
+        #expect(descriptor.graphicsQualificationEvidence == nil)
         #expect(descriptor.runtimeQualificationEvidence?.backend == .doryHypervisor)
     }
 
-    @Test("host renderer facts cannot authorize an unqualified Linux guest image")
-    func linux3DRequiresExactSignedGuestQualification() {
+    @Test("stock Linux 3D ignores managed guest qualification and keeps runtime authority")
+    func linux3DUsesRuntimeRatherThanSignedGuestQualification() {
         let missing = evaluate(
             family: .linux,
             media: .installedLinuxBootBundle,
@@ -258,25 +257,21 @@ struct VirtualMachineCapabilitiesTests {
         let noVenus = trustedQualification(venusVulkanQualified: false)
         let noProducerFence = trustedQualification(producerFenceQualified: false)
 
-        #expect(missing.availability.reason?.code == .guestImageArtifactDigestUnavailable)
+        #expect(missing.availability.isUsable)
         #expect(invalidArtifactIdentity.availability.reason?.code
             == .bootMediaArtifactDigestInvalid)
-        #expect(evaluateLinux3D(trustedQualification: missingManifestIdentity).availability.reason?.code
-            == .guestImageQualificationAuditEvidenceInvalid)
-        #expect(evaluateLinux3D(trustedQualification: invalidManifestDigest).availability.reason?.code
-            == .guestImageQualificationAuditEvidenceInvalid)
-        #expect(evaluateLinux3D(trustedQualification: mismatched).availability.reason?.code
-            == .guestImageArtifactQualificationMismatch)
-        #expect(evaluateLinux3D(trustedQualification: noVirtioGPU).availability.reason?.code
-            == .linuxVirtioGPUKernelDeviceUnqualified)
-        #expect(evaluateLinux3D(trustedQualification: noVenus).availability.reason?.code
-            == .linuxVenusVulkanRuntimeUnqualified)
-        #expect(evaluateLinux3D(
-            trustedQualification: noProducerFence
-        ).availability.reason?.code == .linuxVirtioGPUProducerFenceUnqualified)
+        #expect(evaluateLinux3D(trustedQualification: missingManifestIdentity).availability.isUsable)
+        #expect(evaluateLinux3D(trustedQualification: invalidManifestDigest).availability.isUsable)
+        #expect(evaluateLinux3D(trustedQualification: mismatched).availability.isUsable)
+        #expect(evaluateLinux3D(trustedQualification: noVirtioGPU).availability.isUsable)
+        #expect(evaluateLinux3D(trustedQualification: noVenus).availability.isUsable)
+        #expect(evaluateLinux3D(trustedQualification: noProducerFence).availability.isUsable)
         #expect(evaluateLinux3D(
             trustedQualification: Self.qualifiedLinuxGraphics
         ).availability.isUsable)
+        #expect(evaluateLinux3D(
+            trustedQualification: Self.qualifiedLinuxGraphics
+        ).graphicsQualificationEvidence == nil)
     }
 
     @Test("caller-authored qualification fields cannot cross the request trust boundary")
@@ -309,8 +304,8 @@ struct VirtualMachineCapabilitiesTests {
             host: Self.provisionedHost
         )
 
-        #expect(descriptor.availability.reason?.code
-            == .trustedGuestImageGraphicsQualificationUnavailable)
+        #expect(descriptor.availability.reason?.code == .runtimeQualificationUnavailable)
+        #expect(descriptor.graphicsQualificationEvidence == nil)
     }
 
     @Test("native hypervisor admits installer media with exact runtime qualification")
@@ -742,7 +737,7 @@ struct VirtualMachineCapabilitiesTests {
             == Self.macOSRestoreArtifactSHA256)
     }
 
-    @Test("qualified graphics audit evidence survives descriptor persistence")
+    @Test("stock graphics persists runtime evidence without managed guest evidence")
     func graphicsAuditEvidenceRoundTrip() throws {
         let descriptor = evaluateLinux3D(
             trustedQualification: Self.qualifiedLinuxGraphics
@@ -755,37 +750,36 @@ struct VirtualMachineCapabilitiesTests {
 
         #expect(decoded == descriptor)
         #expect(Set([decoded]).contains(descriptor))
-        #expect(decoded.graphicsQualificationEvidence
-            == Self.qualifiedLinuxGraphics.auditEvidence)
-        #expect(decoded.graphicsQualificationEvidence?.artifactSHA256
-            == Self.guestArtifactSHA256)
-        #expect(decoded.graphicsQualificationEvidence?.manifestSHA256
-            == Self.manifestSHA256)
-        #expect(decoded.graphicsQualificationEvidence?.signingKeyID == "dory-release-2026")
-        #expect(decoded.graphicsQualificationEvidence?.manifestFormatVersion == 1)
+        #expect(decoded.graphicsQualificationEvidence == nil)
         #expect(decoded.runtimeQualificationEvidence?.backendRuntimeBuildID
             == "dory-hv-2026.8")
         #expect(decoded.runtimeQualificationEvidence?.virtualHardwareABIVersion == 1)
     }
 
-    @Test("implemented raw-HV graphical modes require digest-bound virtio-gpu qualification")
+    @Test("software keeps guest qualification while stock 3D is runtime-qualified")
     func everyRawGraphicalModeRequiresGuestDriverQualification() {
-        for graphics in [
-            DoryGraphicsAccelerationLevel.software,
-            .hardwareAccelerated3D,
-        ] {
-            let descriptor = evaluate(
-                family: .linux,
-                media: .installedLinuxBootBundle,
-                source: .userProvided,
-                backend: .doryHypervisor,
-                graphics: graphics,
-                mediaArtifactSHA256: Self.guestArtifactSHA256,
-                automaticallyTrustGuestGraphics: false
-            )
-            #expect(descriptor.availability.reason?.code
-                == .trustedGuestImageGraphicsQualificationUnavailable)
-        }
+        let unqualifiedSoftware = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .software,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            automaticallyTrustGuestGraphics: false
+        )
+        #expect(unqualifiedSoftware.availability.reason?.code
+            == .trustedGuestImageGraphicsQualificationUnavailable)
+        let stock3D = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .hardwareAccelerated3D,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            automaticallyTrustGuestGraphics: false
+        )
+        #expect(stock3D.availability.isUsable)
+        #expect(stock3D.graphicsQualificationEvidence == nil)
 
         let noVirtio = trustedQualification(virtioGPUQualified: false)
         let software = evaluate(

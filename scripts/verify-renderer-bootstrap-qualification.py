@@ -22,8 +22,11 @@ KIND = "dev.dory.renderer-bootstrap-qualification"
 INVENTORY_KIND = "dev.dory.renderer-artifact-inventory"
 SOURCE_TUPLE = "dory-dual-metal-20260826"
 SOURCE_TUPLE_WIRE = 3
-DEFINITION_SHA256 = "6f537361d165cbe75b04e98ce56c6e878060119c2aca112fa88ceba936092bba"
+DEFINITION_SHA256 = "8207a3d14cc0abce6fcf3dc560c1c4c5e0cbbcdf01aa38107f102025569b6e10"
 GUEST_MESA_SHA256 = "fa12e2bef9855dd382c3cd7f1dcd434f65302fc13471ae06367179f1ad37124c"
+STOCK_GUEST_ARTIFACT_UNBOUND_SHA256 = (
+    "29ee966cf7ceee2421d631fd0edd208fcd698ceb1da67e344bf6eb3b74e2920e"
+)
 PRODUCTION_FEATURE_BITS = (1 << 11) - 1
 PC_VIRGL2_FEATURE_BITS = (
     (1 << 0) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6)
@@ -304,7 +307,24 @@ def verify(arguments: argparse.Namespace) -> None:
         verify_code_identity(runner, RUNNER_REQUIREMENT, check_nested=True)
         verify_code_identity(worker_bundle, WORKER_REQUIREMENT, check_nested=False)
     inventory_data, inventory = verify_inventory(contents)
-    if arguments.profile == "managed-linux-6.12.106":
+    if arguments.profile == "stock-linux-6.13-runtime-verified":
+        receipt_name = GENERIC_RECEIPT_NAME
+        signature_name = GENERIC_SIGNATURE_NAME
+        expected_scalars = {
+            "kind": KIND,
+            "schemaVersion": 1,
+            "bootstrapProtocolVersion": 3,
+            "capabilityReceiptProtocolVersion": 4,
+            "producerFenceContract": 3,
+            "sourceTuple": SOURCE_TUPLE_WIRE,
+            "tupleDefinitionSHA256": DEFINITION_SHA256,
+            "guestMesaSHA256": STOCK_GUEST_ARTIFACT_UNBOUND_SHA256,
+            "managedGuestKernelSHA256": STOCK_GUEST_ARTIFACT_UNBOUND_SHA256,
+            "featureBits": PRODUCTION_FEATURE_BITS,
+            "candidateInventorySHA256": digest(inventory_data),
+        }
+        expected_capsets = [(2, None), (4, 0)]
+    elif arguments.profile == "managed-linux-6.12.106":
         receipt_name = GENERIC_RECEIPT_NAME
         signature_name = GENERIC_SIGNATURE_NAME
         expected_guest_mesa = GUEST_MESA_SHA256
@@ -358,12 +378,18 @@ def verify(arguments: argparse.Namespace) -> None:
     for field, expected in expected_scalars.items():
         if receipt.get(field) != expected:
             fail(f"renderer qualification differs at {field}")
-    kernel_data = regular_file(
-        arguments.managed_kernel.absolute(), 2 * 1024 * 1024 * 1024
-    )
-    if receipt["managedGuestKernelSHA256"] != digest(kernel_data):
-        fail("renderer qualification binds a different managed guest kernel")
-    verify_kernel_architecture(kernel_data, arguments.profile)
+    if arguments.profile == "stock-linux-6.13-runtime-verified":
+        if arguments.managed_kernel is not None:
+            fail("stock renderer qualification must not accept a managed guest kernel")
+    else:
+        if arguments.managed_kernel is None:
+            fail("managed renderer qualification requires an exact guest kernel")
+        kernel_data = regular_file(
+            arguments.managed_kernel.absolute(), 2 * 1024 * 1024 * 1024
+        )
+        if receipt["managedGuestKernelSHA256"] != digest(kernel_data):
+            fail("renderer qualification binds a different managed guest kernel")
+        verify_kernel_architecture(kernel_data, arguments.profile)
     worker_record = inventory["components"]["rendererWorker"]["files"][0]
     if receipt["workerExecutableSHA256"] != worker_record["sha256"]:
         fail("renderer qualification binds a different worker executable")
@@ -431,11 +457,15 @@ def verify(arguments: argparse.Namespace) -> None:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--runner-app", type=pathlib.Path, required=True)
-    result.add_argument("--managed-kernel", type=pathlib.Path, required=True)
+    result.add_argument("--managed-kernel", type=pathlib.Path)
     result.add_argument(
         "--profile",
-        choices=["managed-linux-6.12.106", "dory-pc-x86_64-virgl2"],
-        default="managed-linux-6.12.106",
+        choices=[
+            "stock-linux-6.13-runtime-verified",
+            "managed-linux-6.12.106",
+            "dory-pc-x86_64-virgl2",
+        ],
+        default="stock-linux-6.13-runtime-verified",
     )
     result.add_argument("--guest-mesa-sha256")
     result.add_argument(

@@ -1462,7 +1462,8 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         into issues: inout [DoryResolvedMachinePlanValidationIssue]
     ) {
         if supportTier == .supported, backend == .doryHypervisor,
-           graphics != .none, !usesPortableLinuxEFIBaseline {
+           graphics != .none, !usesPortableLinuxEFIBaseline,
+           !usesStockLinuxGraphicsProfile {
             guard let graphicsEvidence = qualificationEvidence.graphics else {
                 issues.append(DoryResolvedMachinePlanValidationIssue(
                     code: .missingGraphicsQualification,
@@ -1647,6 +1648,19 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             return bootMedia.inspectionEvidence?.catalogManifestEvidence == nil
         }
         return bootMedia.inspectionEvidence == nil
+    }
+
+    /// D2 stock ARM64 graphics intentionally carries no guest-image graphics qualification.
+    /// The exact signed runtime/host evidence remains mandatory; the renderer generation starts
+    /// provisionally and establishes guest compatibility from live capset/fence observations.
+    private var usesStockLinuxGraphicsProfile: Bool {
+        guest == DoryGuestPlatform(family: .linux, architecture: .arm64)
+            && backend == .doryHypervisor
+            && graphics == .hardwareAccelerated3D
+            && supportTier == .supported
+            && (bootMedia.media.kind == .linuxKernel
+                || bootMedia.media.kind == .installedLinuxBootBundle)
+            && qualificationEvidence.graphics == nil
     }
 
     /// Production native Mac restore planning is intentionally admitted as an exact prepared

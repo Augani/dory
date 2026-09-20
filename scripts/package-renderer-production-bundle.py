@@ -891,7 +891,7 @@ def create_bundle_inventory(repo_root: pathlib.Path, contents: pathlib.Path) -> 
 def verify_profile_qualification_evidence(
     repo_root: pathlib.Path,
     contents: pathlib.Path,
-    managed_kernel: pathlib.Path,
+    managed_kernel: pathlib.Path | None,
     *,
     profile: str,
     receipt_path: pathlib.Path,
@@ -904,10 +904,11 @@ def verify_profile_qualification_evidence(
         sys.executable,
         os.fspath(repo_root / "scripts/verify-renderer-bootstrap-qualification.py"),
         "--runner-app", os.fspath(contents.parent),
-        "--managed-kernel", os.fspath(managed_kernel),
         "--repo-root", os.fspath(repo_root),
         "--profile", profile,
     ]
+    if managed_kernel is not None:
+        verifier_arguments.extend(["--managed-kernel", os.fspath(managed_kernel)])
     if guest_mesa_sha256 is not None:
         verifier_arguments.extend(["--guest-mesa-sha256", guest_mesa_sha256])
     if allow_unsealed_staging:
@@ -928,7 +929,7 @@ def verify_profile_qualification_evidence(
 def verify_qualification_evidence(
     repo_root: pathlib.Path,
     contents: pathlib.Path,
-    managed_kernel: pathlib.Path,
+    managed_kernel: pathlib.Path | None,
     *,
     require_release_signature: bool,
     allow_unsealed_staging: bool,
@@ -938,12 +939,11 @@ def verify_qualification_evidence(
     definition_path = direct_regular_file(
         repo_root / "Config/DoryRendererProductionTuple.json", "renderer tuple definition"
     )
-    verify_arm64_linux_kernel(managed_kernel)
     receipt_digest, signature_digest = verify_profile_qualification_evidence(
         repo_root,
         contents,
         managed_kernel,
-        profile="managed-linux-6.12.106",
+        profile="stock-linux-6.13-runtime-verified",
         receipt_path=qualification_path(contents),
         signature_path=qualification_signature_path(contents),
         require_release_signature=require_release_signature,
@@ -1225,7 +1225,7 @@ def parser() -> argparse.ArgumentParser:
     verify_command.add_argument("--expected-team", required=True)
     verify_command.add_argument("--allow-adhoc-test", action="store_true")
     verify_command.add_argument("--require-release-signature", action="store_true")
-    verify_command.add_argument("--managed-kernel", type=pathlib.Path, required=True)
+    verify_command.add_argument("--managed-kernel", type=pathlib.Path)
     verify_command.add_argument("--pc-managed-kernel", type=pathlib.Path)
     verify_command.add_argument("--pc-guest-mesa", type=pathlib.Path)
     evidence_command = commands.add_parser("seal-evidence")
@@ -1233,7 +1233,7 @@ def parser() -> argparse.ArgumentParser:
     evidence_command.add_argument("--expected-team", required=True)
     evidence_command.add_argument("--allow-adhoc-test", action="store_true")
     evidence_command.add_argument("--require-release-signature", action="store_true")
-    evidence_command.add_argument("--managed-kernel", type=pathlib.Path, required=True)
+    evidence_command.add_argument("--managed-kernel", type=pathlib.Path)
     evidence_command.add_argument("--pc-managed-kernel", type=pathlib.Path)
     evidence_command.add_argument("--pc-guest-mesa", type=pathlib.Path)
     link_command = commands.add_parser("verify-link-stage")

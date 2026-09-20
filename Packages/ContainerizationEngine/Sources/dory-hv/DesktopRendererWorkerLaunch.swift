@@ -284,7 +284,9 @@ final class DesktopRendererWorkerLaunch: @unchecked Sendable {
             }
         } else {
             guard requiredProducerFenceContract
-                    == .doryPCX8664LinuxVirGL2PrepareFBV1 else {
+                    == .doryPCX8664LinuxVirGL2PrepareFBV1
+                    || requiredProducerFenceContract
+                        == .stockLinux613RuntimeVerifiedV1 else {
                 throw DesktopRendererWorkerLaunchError.missingBootstrapAuthority
             }
         }
@@ -392,7 +394,9 @@ final class DesktopRendererWorkerLaunch: @unchecked Sendable {
         var authority = Data("dory.renderer.qualified-producer-fence-authority.v1\0".utf8)
         var contract = bootstrap.producerFenceContract.rawValue.littleEndian
         withUnsafeBytes(of: &contract) { authority.append(contentsOf: $0) }
-        authority.append(bootstrap.artifacts.managedGuestKernel.bytes)
+        if bootstrap.producerFenceContract == .managedLinux612106PrepareFBV1 {
+            authority.append(bootstrap.artifacts.managedGuestKernel.bytes)
+        }
         return sha256(authority)
     }
 

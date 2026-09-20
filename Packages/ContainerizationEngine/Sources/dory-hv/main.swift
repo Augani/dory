@@ -767,7 +767,10 @@ case "desktop":
         rendererWorkerLaunch = try await DesktopRendererWorkerLaunch.prepare(
             resolvedGraphics: resolvedGraphics,
             rendererBootstrapAuthority: rendererBootstrapAuthority,
-            exactManagedKernelSHA256: exactManagedKernelSHA256
+            exactManagedKernelSHA256: exactManagedKernelSHA256,
+            requiredProducerFenceContract: runtimeLaunchEnvelope == nil
+                ? .managedLinux612106PrepareFBV1
+                : .stockLinux613RuntimeVerifiedV1
         )
     } catch {
         fail("desktop renderer-worker launch authority is invalid: \(error)")

@@ -118,6 +118,65 @@ struct DoryRendererBootstrapQualificationTests {
         ))
     }
 
+    @Test("stock qualification binds host capabilities without pinning guest artifacts")
+    func stockQualificationLeavesGuestArtifactsRuntimeObserved() throws {
+        let fixture = try RendererBootstrapQualificationFixture()
+        let qualificationBootstrap = try DoryRendererWorkerBootstrap(
+            workspaceID: DoryRendererWorkspaceID(
+                rawValue: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+            ),
+            generation: DoryRendererWorkerGeneration(rawValue: 7),
+            sourceTuple: .productionCandidate,
+            producerFenceContract: .stockLinux613RuntimeVerifiedV1,
+            requestedCapabilities: .productionAcceleration,
+            artifacts: DoryRendererArtifactManifest(
+                candidateInventory: try fixture.digest("1"),
+                managedGuestKernel: try fixture.digest("7"),
+                guestMesa: try fixture.digest("8"),
+                rendererWorkerExecutable: try fixture.digest("2"),
+                rendererWorkerCodeDirectoryHash: try DoryCodeDirectoryHash(
+                    lowercaseHexadecimal: String(repeating: "ab", count: 20)
+                )
+            ),
+            hostVisibleArenaByteCount:
+                DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
+        )
+        let qualificationReceipt = try fixture.liveReceipt(
+            accepting: qualificationBootstrap
+        )
+        let bytes = try DoryVerifiedRendererBootstrapQualification.makeCandidateReceipt(
+            bootstrap: qualificationBootstrap,
+            liveReceipt: qualificationReceipt,
+            issuedAt: fixture.now.addingTimeInterval(-60),
+            expiresAt: fixture.now.addingTimeInterval(24 * 60 * 60)
+        )
+        let qualification = try DoryVerifiedRendererBootstrapQualification
+            .decodeDeveloperIDSignedCandidate(receiptData: bytes, now: fixture.now)
+
+        let liveBootstrap = try DoryRendererWorkerBootstrap(
+            workspaceID: qualificationBootstrap.workspaceID,
+            generation: qualificationBootstrap.generation,
+            sourceTuple: qualificationBootstrap.sourceTuple,
+            producerFenceContract: .stockLinux613RuntimeVerifiedV1,
+            requestedCapabilities: .productionAcceleration,
+            artifacts: DoryRendererArtifactManifest(
+                candidateInventory: qualificationBootstrap.artifacts.candidateInventory,
+                managedGuestKernel: try fixture.digest("9"),
+                guestMesa: try fixture.digest("a"),
+                rendererWorkerExecutable:
+                    qualificationBootstrap.artifacts.rendererWorkerExecutable,
+                rendererWorkerCodeDirectoryHash:
+                    qualificationBootstrap.artifacts.rendererWorkerCodeDirectoryHash
+            ),
+            hostVisibleArenaByteCount:
+                DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
+        )
+        #expect(qualification.authorizes(
+            bootstrap: liveBootstrap,
+            liveReceipt: try fixture.liveReceipt(accepting: liveBootstrap)
+        ))
+    }
+
     @Test("unsigned preview requires outer seal and invalid signature never downgrades")
     func runtimeCandidateTrustTransition() throws {
         let fixture = try RendererBootstrapQualificationFixture()

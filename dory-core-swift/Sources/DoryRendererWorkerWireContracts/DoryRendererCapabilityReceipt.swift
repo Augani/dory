@@ -125,7 +125,7 @@ public struct DoryRendererCapabilityReceipt: Equatable, Sendable {
 
     public func isAdmissible(for bootstrap: DoryRendererWorkerBootstrap) -> Bool {
         switch bootstrap.producerFenceContract {
-        case .managedLinux612106PrepareFBV1:
+        case .managedLinux612106PrepareFBV1, .stockLinux613RuntimeVerifiedV1:
             return productionAccelerationIsAdmissible
         case .doryPCX8664LinuxVirGL2PrepareFBV1:
             return pcVirGL2AccelerationIsAdmissible

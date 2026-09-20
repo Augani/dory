@@ -1405,7 +1405,7 @@ struct RawHVRendererBootstrapRequest: Sendable {
         self.producerFenceContract = producerFenceContract
         self.guestMesaSHA256 = guestMesaSHA256?.lowercased()
         self.hostVisibleArenaByteCount = hostVisibleArenaByteCount ?? (
-            producerFenceContract == .managedLinux612106PrepareFBV1
+            producerFenceContract != .doryPCX8664LinuxVirGL2PrepareFBV1
                 ? DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
                 : 0
         )
@@ -5538,11 +5538,12 @@ public final class MachineManager: @unchecked Sendable {
                     }
                     let rendererBootstrapRequest: RawHVRendererBootstrapRequest?
                     if launchBinding.graphics == .hardwareAccelerated3D {
-                        guard resolvedPlan.qualificationEvidence.graphics != nil,
+                        guard resolvedPlan.guest
+                                == DoryGuestPlatform(family: .linux, architecture: .arm64),
                               resolvedPlan.qualificationEvidence.runtime != nil,
                               let rendererReleaseIdentity else {
                             throw MachineManagerError.persistence(
-                                "accelerated raw-HV launch is missing signed guest or worker authority"
+                                "accelerated raw-HV launch is missing stock-guest runtime or worker authority"
                             )
                         }
                         rendererBootstrapRequest = RawHVRendererBootstrapRequest(
@@ -5552,7 +5553,8 @@ public final class MachineManager: @unchecked Sendable {
                                 resolvedPlan.backendRuntimeBuildIdentifier,
                             components: resolvedPlan.components,
                             rendererWorkerCodeDirectoryHash:
-                                rendererReleaseIdentity.rendererWorkerCodeDirectoryHash
+                                rendererReleaseIdentity.rendererWorkerCodeDirectoryHash,
+                            producerFenceContract: .stockLinux613RuntimeVerifiedV1
                         )
                     } else {
                         rendererBootstrapRequest = nil
@@ -15117,7 +15119,7 @@ public final class MachineManager: @unchecked Sendable {
         )
         let requestedCapabilities: DoryRendererRequestedCapabilities
         switch request.producerFenceContract {
-        case .managedLinux612106PrepareFBV1:
+        case .managedLinux612106PrepareFBV1, .stockLinux613RuntimeVerifiedV1:
             requestedCapabilities = .productionAcceleration
         case .doryPCX8664LinuxVirGL2PrepareFBV1:
             requestedCapabilities = .pcVirGL2Acceleration

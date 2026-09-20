@@ -216,6 +216,20 @@ struct DesktopRendererWorkerLaunchTests {
     }
 
     @Test func qualificationCommandProfilesSelectExactRuntimeContracts() throws {
+        let stock = RendererBootstrapQualificationCommand.Profile.stockLinux613
+        #expect(stock.producerFenceContract == .stockLinux613RuntimeVerifiedV1)
+        #expect(try stock.guestMesaDigest(nil).lowercaseSHA256
+            == DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256)
+        let stockOptions = try RendererBootstrapQualificationCommand.parse([
+            "--inventory", "/fixture/Contents/Resources/renderer-production-inventory.json",
+            "--issued-at", "2026-09-06T00:00:00Z",
+            "--expires-at", "2026-10-06T00:00:00Z",
+            "--output", "/fixture/renderer-bootstrap-qualification.json",
+        ][...])
+        #expect(stockOptions.profile == .stockLinux613)
+        #expect(stockOptions.managedKernelSHA256
+            == DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256)
+
         let arm = RendererBootstrapQualificationCommand.Profile.managedLinux612106
         #expect(try arm.guestMesaDigest(nil).lowercaseSHA256
             == DoryRendererSourceTuple.guestMesaRuntimeSHA256)

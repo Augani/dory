@@ -519,7 +519,7 @@ public final class DoryRendererWorkerVirglBackend:
             }
             do {
                 let requiresVenus = bootstrap.producerFenceContract
-                    == .managedLinux612106PrepareFBV1
+                    != .doryPCX8664LinuxVirGL2PrepareFBV1
                 let preflight = try Self.preflight(
                     session: session,
                     requiresVenus: requiresVenus

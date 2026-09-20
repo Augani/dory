@@ -204,6 +204,11 @@ public enum DoryRendererSourceTuple: UInt16, Sendable {
         "19a55684e03b26053f504982ebbbd85f31d198bcaeb307239689fd11189f17e9"
     public static let guestMesaRuntimeSHA256 =
         "fa12e2bef9855dd382c3cd7f1dcd434f65302fc13471ae06367179f1ad37124c"
+    /// Canonical non-artifact marker used only while qualifying the host renderer for the stock
+    /// profile. A live launch replaces both guest fields with its observed boot/runtime facts;
+    /// this marker is never accepted as guest compatibility authority.
+    public static let stockGuestArtifactUnboundSHA256 =
+        "29ee966cf7ceee2421d631fd0edd208fcd698ceb1da67e344bf6eb3b74e2920e"
     public static let moltenVKRevision = "ef1c5461774f5fbd224ddcfd91fd2c0ea23f0384"
     /// SHA-256 of the canonical checked-in production tuple definition. A source enum alone is
     /// insufficient once exact build policy, transitive sources, and compatibility patches are
@@ -217,6 +222,11 @@ public enum DoryRendererSourceTuple: UInt16, Sendable {
 public enum DoryRendererProducerFenceContract: UInt16, Sendable, Codable, Hashable {
     case managedLinux612106PrepareFBV1 = 1
     case doryPCX8664LinuxVirGL2PrepareFBV1 = 2
+    /// Stock ARM64 Linux uses the upstream prepare-fb ordering introduced in Linux 6.13.
+    /// Unlike the historical managed contract, this value does not claim authority from a
+    /// Dory-built kernel digest. Admission is provisional until the live fence/presentation
+    /// boundary is observed for this renderer generation.
+    case stockLinux613RuntimeVerifiedV1 = 3
 }
 
 public struct DoryRendererRequestedCapabilities: OptionSet, Sendable {
