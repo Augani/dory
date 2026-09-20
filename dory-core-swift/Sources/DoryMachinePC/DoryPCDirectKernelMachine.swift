@@ -81,6 +81,18 @@ final class DoryPCPendingWorkWake: @unchecked Sendable {
     condition.unlock()
   }
 
+  /// Wakes one parked owner for a coordinator command. This is a real generation edge, but it
+  /// does not set a native poll byte because the target is already outside guest code. Coupling
+  /// the command to the same condition as device/translation work closes the gap between checking
+  /// a result directive and parking for maintenance.
+  func notify(forProcessor processor: Int) {
+    condition.lock()
+    precondition(generations.indices.contains(processor))
+    generations[processor] = nextGeneration(after: generations[processor])
+    condition.broadcast()
+    condition.unlock()
+  }
+
   /// Clears native poll bytes only if no asynchronous edge was published after `observed`.
   /// Publication and acknowledgement use the same lock, so either the clear happens first and a
   /// later publisher restores the byte, or the publication happens first and the clear declines.
@@ -130,6 +142,17 @@ final class DoryPCPendingWorkWake: @unchecked Sendable {
       condition.broadcast()
       if !condition.wait(until: deadline) { break }
     }
+  }
+
+  /// Waits for a parked worker's maintenance/command edge without advertising architectural
+  /// idleness. Tests and public coordination may treat `waiting` as proof that the coordinator has
+  /// completed the result handoff and entered the halted-vCPU wait; a maintenance waiter is not
+  /// that boundary.
+  func waitForMaintenance(forProcessor processor: Int, after observed: UInt64) {
+    condition.lock()
+    defer { condition.unlock() }
+    precondition(generations.indices.contains(processor))
+    while generations[processor] == observed { condition.wait() }
   }
 
   func wait(after observed: Snapshot, until deadline: Date) {
@@ -1803,6 +1826,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       let result = try outstandingResult ?? session.workerResult(forProcessor: 0)
       if let result {
         _ = try session.respond(to: result, with: .stop)
+        pendingWorkWake.notify(forProcessor: result.processor)
         outstandingResult = nil
       }
       if let workerCompletion { _ = try workerCompletion.wait() }
@@ -1822,6 +1846,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       pendingWorkWake.setDispatchThread(nil)
       if let result = outstandingResult {
         _ = try session.respond(to: result, with: .resume)
+        pendingWorkWake.notify(forProcessor: result.processor)
         outstandingResult = nil
       } else {
         precondition(workerCompletion == nil)
@@ -2126,21 +2151,61 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           counters: failureCounters,
           acknowledgedPendingWorkGeneration: pendingWorkWake.snapshot(forProcessor: processor)
         )
-        _ = try session.waitForDirective(
+        _ = try waitForWorkerDirective(
+          session: session,
           processor: processor,
-          forResultSequence: failureResult.sequence
+          resultSequence: failureResult.sequence,
+          observer: observer
         )
         return
       }
-      switch try session.waitForDirective(
+      switch try waitForWorkerDirective(
+        session: session,
         processor: processor,
-        forResultSequence: result.sequence
+        resultSequence: result.sequence,
+        observer: observer
       ) {
       case .resume:
         continue
       case .stop:
         return
       }
+    }
+  }
+
+  /// Keeps a parked owner available for remote translation invalidations without allowing it to
+  /// mutate architectural lifecycle/interrupt state past its published result. Coordinator
+  /// directives and machine pending work share the generation condition, so neither an early
+  /// command nor an invalidation published between the last check and the wait can be lost.
+  private func waitForWorkerDirective(
+    session: DoryPCRunSession,
+    processor: Int,
+    resultSequence: UInt64,
+    observer: (@Sendable (WorkerEvent) -> Void)?
+  ) throws -> DoryPCRunSession.WorkerDirective {
+    while true {
+      if let directive = try session.consumeDirective(
+        processor: processor,
+        forResultSequence: resultSequence
+      ) {
+        return directive
+      }
+
+      let observedWakeGeneration = pendingWorkWake.snapshot(forProcessor: processor)
+      pendingWorkWake.setDispatchThread(Thread.current, forProcessor: processor)
+      _ = servicePendingTranslationInvalidation(forProcessor: processor, observer: observer)
+      pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
+
+      if let directive = try session.consumeDirective(
+        processor: processor,
+        forResultSequence: resultSequence
+      ) {
+        return directive
+      }
+      pendingWorkWake.waitForMaintenance(
+        forProcessor: processor,
+        after: observedWakeGeneration
+      )
     }
   }
 

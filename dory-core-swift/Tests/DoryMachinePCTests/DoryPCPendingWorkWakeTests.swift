@@ -122,6 +122,24 @@ import Testing
     #expect(!pending[0].load())
     #expect(pending[1].load())
   }
+
+  @Test func maintenanceWaitDoesNotAdvertiseArchitecturalIdleness() {
+    let wake = DoryPCPendingWorkWake()
+    let entered = DispatchSemaphore(value: 0)
+    let returned = DispatchSemaphore(value: 0)
+    let observed = wake.snapshot(forProcessor: 0)
+
+    DispatchQueue.global().async {
+      entered.signal()
+      wake.waitForMaintenance(forProcessor: 0, after: observed)
+      returned.signal()
+    }
+
+    #expect(entered.wait(timeout: .now() + 2) == .success)
+    #expect(!wake.waitUntilWaiting(until: Date(timeIntervalSinceNow: 0.025)))
+    wake.notify(forProcessor: 0)
+    #expect(returned.wait(timeout: .now() + 2) == .success)
+  }
 }
 
 private final class LockedPendingByte: @unchecked Sendable {
