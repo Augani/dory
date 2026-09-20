@@ -1183,6 +1183,78 @@ import XCTest
     #endif
   }
 
+  @Test func codeCacheInvalidationWaitsForInFlightNativeExecution() throws {
+    #if arch(arm64)
+      let codeBase: UInt64 = 0x2C_000
+      let dataAddress: UInt64 = 0x100
+      let bytes: [UInt8] = [0x8B, 0x03]  // mov eax, dword ptr [rbx]
+      let enteredNativeRead = DispatchSemaphore(value: 0)
+      let releaseNativeRead = DispatchSemaphore(value: 0)
+      let memory = try BlockingScalarMemory(
+        byteCount: 0x1000,
+        enteredRead: enteredNativeRead,
+        releaseRead: releaseNativeRead)
+      try memory.writeScalar(at: dataAddress, value: 0x1234_5678, byteCount: 4)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+
+      func execute(_ state: inout DoryX86ArchitecturalState) throws
+        -> DoryARM64ExecutionSummary?
+      {
+        try executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            guard address == codeBase else { return [] }
+            return Array(bytes.prefix(maximumCount))
+          },
+          codeGenerationProvider: { _, _ in 1 },
+          physicalRIPProvider: { $0 },
+          at: codeBase,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory)
+      }
+
+      // Publish the resident block before arming the callback rendezvous. The second execution
+      // therefore pauses inside generated code while the executor's storage hazard is active.
+      var warmState = try DoryX86ArchitecturalState(rip: codeBase)
+      warmState.registers.rbx = dataAddress
+      _ = try #require(try execute(&warmState))
+      #expect(warmState.registers.rax == 0x1234_5678)
+
+      memory.armNextScalarRead()
+      defer { releaseNativeRead.signal() }
+      let execution = CodeCacheHazardExecutionResult(
+        initialState: try DoryX86ArchitecturalState(rip: codeBase),
+        dataAddress: dataAddress)
+      let executionCompleted = DispatchSemaphore(value: 0)
+      Thread.detachNewThread {
+        execution.run(executor: executor, codeBase: codeBase, bytes: bytes, memory: memory)
+        executionCompleted.signal()
+      }
+      #expect(enteredNativeRead.wait(timeout: .now() + 2) == .success)
+
+      let invalidationStarted = DispatchSemaphore(value: 0)
+      let invalidationCompleted = DispatchSemaphore(value: 0)
+      Thread.detachNewThread {
+        invalidationStarted.signal()
+        executor.invalidateAll()
+        invalidationCompleted.signal()
+      }
+      #expect(invalidationStarted.wait(timeout: .now() + 2) == .success)
+      #expect(invalidationCompleted.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
+
+      releaseNativeRead.signal()
+      #expect(executionCompleted.wait(timeout: .now() + 2) == .success)
+      #expect(invalidationCompleted.wait(timeout: .now() + 2) == .success)
+      let snapshot = execution.snapshot
+      #expect(snapshot.errorDescription == nil)
+      #expect(snapshot.summary?.guestInstructionCount == 1)
+      #expect(snapshot.state.registers.rax == 0x1234_5678)
+      #expect(snapshot.state.rip == codeBase + UInt64(bytes.count))
+    #endif
+  }
+
   @Test func nativeTraceRefusesOffsetsWhoseResidentsWereRetired() throws {
     #if arch(arm64)
       let base: UInt64 = 0x30_000
@@ -11794,6 +11866,114 @@ private final class PendingWorkExecutionResult: @unchecked Sendable {
         summary: summary,
         errorDescription: errorDescription
       )
+    }
+  }
+}
+
+private final class BlockingScalarMemory: DoryX86ScalarMemory, @unchecked Sendable {
+  private let lock = NSLock()
+  private let backing: DoryX86ByteArrayMemory
+  private let enteredRead: DispatchSemaphore
+  private let releaseRead: DispatchSemaphore
+  private var waitsForNextScalarRead = false
+
+  init(
+    byteCount: Int,
+    enteredRead: DispatchSemaphore,
+    releaseRead: DispatchSemaphore
+  ) throws {
+    backing = try DoryX86ByteArrayMemory(byteCount: byteCount)
+    self.enteredRead = enteredRead
+    self.releaseRead = releaseRead
+  }
+
+  func armNextScalarRead() {
+    lock.withLock { waitsForNextScalarRead = true }
+  }
+
+  func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    try backing.instructionBytes(at: address, maximumCount: maximumCount)
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    try backing.read(at: address, byteCount: byteCount)
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    try backing.write(at: address, bytes: bytes)
+  }
+
+  func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
+    let shouldWait = lock.withLock {
+      guard waitsForNextScalarRead else { return false }
+      waitsForNextScalarRead = false
+      return true
+    }
+    if shouldWait {
+      enteredRead.signal()
+      releaseRead.wait()
+    }
+    return try backing.readScalar(at: address, byteCount: byteCount)
+  }
+
+  func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
+    try backing.writeScalar(at: address, value: value, byteCount: byteCount)
+  }
+}
+
+private final class CodeCacheHazardExecutionResult: @unchecked Sendable {
+  struct Snapshot {
+    let state: DoryX86ArchitecturalState
+    let summary: DoryARM64ExecutionSummary?
+    let errorDescription: String?
+  }
+
+  private let lock = NSLock()
+  private var state: DoryX86ArchitecturalState
+  private var summary: DoryARM64ExecutionSummary?
+  private var errorDescription: String?
+
+  init(initialState: DoryX86ArchitecturalState, dataAddress: UInt64) {
+    state = initialState
+    state.registers.rbx = dataAddress
+  }
+
+  func run(
+    executor: DoryARM64BaselineExecutor,
+    codeBase: UInt64,
+    bytes: [UInt8],
+    memory: any DoryX86Memory
+  ) {
+    var executionState = lock.withLock { state }
+    do {
+      let summary = try executor.executeChainedSummary(
+        byteProvider: { address, maximumCount in
+          guard address == codeBase else { return [] }
+          return Array(bytes.prefix(maximumCount))
+        },
+        codeGenerationProvider: { _, _ in 1 },
+        physicalRIPProvider: { $0 },
+        at: codeBase,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &executionState,
+        memory: memory)
+      lock.withLock {
+        state = executionState
+        self.summary = summary
+      }
+    } catch {
+      lock.withLock {
+        state = executionState
+        errorDescription = String(describing: error)
+      }
+    }
+  }
+
+  var snapshot: Snapshot {
+    lock.withLock {
+      .init(state: state, summary: summary, errorDescription: errorDescription)
     }
   }
 }
