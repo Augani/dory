@@ -279,6 +279,95 @@ import Testing
     #expect(invalidation.requiredGenerations == invalidation.acknowledgedGenerations)
   }
 
+  @Test func deviceDMAPageTableRewriteInvalidatesAnActiveRemoteTLB() throws {
+    let setup = protectedPagingSetup()
+    let machine = try makeMachine(
+      bsp: setup + [
+        // Keep the BSP guest-active until the AP observes the DMA-installed translation.
+        0x81, 0x3D, 0x14, 0x50, 0x00, 0x00, 0x22, 0x22, 0x00, 0x00,
+        0x75, 0xF4,  // jne back
+        0x66, 0xBA, 0x04, 0x06,  // mov dx,PM1_CONTROL
+        0x66, 0xB8, 0x00, 0x34,  // mov ax,S5|SLP_EN
+        0x66, 0xEF,  // out dx,ax
+      ],
+      ap: setup + [
+        0xA1, 0x00, 0x00, 0x40, 0x00,  // mov eax,[0x400000] (fill)
+        0xA1, 0x00, 0x00, 0x40, 0x00,  // mov eax,[0x400000] (hit)
+        0xA3, 0x10, 0x50, 0x00, 0x00,  // mov [0x5010],eax
+        0xC7, 0x05, 0x00, 0x50, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x83, 0x3D, 0x04, 0x50, 0x00, 0x00, 0x01,  // cmp dword [0x5004],1
+        0x75, 0xF7,  // jne back
+        0x8B, 0x1D, 0x00, 0x00, 0x40, 0x00,  // mov ebx,[0x400000]
+        0x89, 0x1D, 0x14, 0x50, 0x00, 0x00,  // mov [0x5014],ebx
+        0xF4,
+      ]
+    )
+    try installLegacyPageTables(in: machine)
+    try machine.memory.writeScalar(at: 0x3000, value: 0x1111, byteCount: 4)
+    try machine.memory.writeScalar(at: 0x4000, value: 0x2222, byteCount: 4)
+    try zero([0x5000, 0x5004, 0x5010, 0x5014], in: machine)
+    let before = machine.pagingUnits.map(\.diagnostics)
+    let dmaValidationsBefore = machine.physicalMemory.diagnostics.dmaValidationCalls
+    let dma: any DoryVirtioGuestMemory = machine.physicalMemory
+    let dmaStarted = DispatchSemaphore(value: 0)
+    let dmaFinished = DispatchSemaphore(value: 0)
+    let dmaResult = LitmusBox<Result<Void, Error>?>(nil)
+    let dmaThread = Thread {
+      dmaStarted.signal()
+      defer { dmaFinished.signal() }
+      do {
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while try dma.read(at: 0x5000, byteCount: 4) != [1, 0, 0, 0] {
+          guard Date() < deadline else { throw LitmusDMAError.guestReadyTimeout }
+          Thread.sleep(forTimeInterval: 0.0001)
+        }
+        // The AP's walk has now registered physical page 0x82000 as a page-table page.
+        guard machine.physicalMemory.isTrackedPageTablePage(containing: 0x82000) else {
+          throw LitmusDMAError.pageTableNotTracked
+        }
+        try dma.validate(at: 0x82000, byteCount: 4, deviceWillWrite: true)
+        try dma.write(at: 0x82000, bytes: [0x03, 0x40, 0x00, 0x00])
+        dma.synchronize()
+        try dma.validate(at: 0x5004, byteCount: 4, deviceWillWrite: true)
+        try dma.write(at: 0x5004, bytes: [1, 0, 0, 0])
+        dma.synchronize()
+        dmaResult.set(.success(()))
+      } catch {
+        dmaResult.set(.failure(error))
+      }
+    }
+    let overlap = LitmusOverlapProbe()
+    machine.observeWorkers { overlap.observe($0) }
+    dmaThread.start()
+    dmaStarted.wait()
+
+    let result = try machine.run(maximumInstructions: 1_000_000)
+    #expect(dmaFinished.wait(timeout: .now() + .seconds(6)) == .success)
+    try #require(dmaResult.value).get()
+    guard case .poweredOff(let retired) = result else {
+      Issue.record("expected guest poweroff after DMA changed the remote translation")
+      return
+    }
+
+    #expect(retired > 0)
+    #expect(try machine.memory.readScalar(at: 0x5010, byteCount: 4) == 0x1111)
+    #expect(try machine.memory.readScalar(at: 0x5014, byteCount: 4) == 0x2222)
+    #expect(machine.physicalMemory.diagnostics.dmaValidationCalls == dmaValidationsBefore + 2)
+    #expect(overlap.maximumActive == 2)
+    let translationAcknowledgements = overlap.translationAcknowledgements
+    for processor in 0..<2 {
+      let after = machine.pagingUnits[processor].diagnostics
+      #expect(
+        after.globalInvalidations > before[processor].globalInvalidations,
+        "processor \(processor) did not acknowledge the DMA page-table invalidation; worker acknowledgements: \(translationAcknowledgements)"
+      )
+    }
+    #expect(machine.pagingUnits[1].diagnostics.recentTLBHits > 0)
+    let invalidation = machine.translationInvalidationDiagnostics
+    #expect(invalidation.generation >= 1)
+    #expect(invalidation.requiredGenerations == invalidation.acknowledgedGenerations)
+  }
+
   @Test func guestCPUMutationRevokesRemoteInstructionFetch() throws {
     let mutableCode: UInt64 = 0xA000
     let machine = try makeMachine(
@@ -678,7 +767,10 @@ private final class LitmusOverlapProbe: @unchecked Sendable {
   }
 }
 
-private enum LitmusDMAError: Error { case guestReadyTimeout }
+private enum LitmusDMAError: Error {
+  case guestReadyTimeout
+  case pageTableNotTracked
+}
 
 private final class LitmusBox<Value>: @unchecked Sendable {
   private let lock = NSLock()
