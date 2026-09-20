@@ -15,6 +15,7 @@ struct DoryFSWorkerCoherenceContractTests {
             transactionID: 6,
             transactionIndex: 1,
             transactionCount: 2,
+            purpose: .reconciliation,
             invalidations: [
                 .delete(parentNodeID: 1, childNodeID: 2, name: "old"),
                 .entry(parentNodeID: 1, name: "new", flags: 0),
@@ -26,6 +27,7 @@ struct DoryFSWorkerCoherenceContractTests {
         let frame = try DoryFSWorkerCoherenceCodec.encode(batch)
         #expect(frame.count <= DoryFSWorkerCoherenceCodec.maximumFrameBytes)
         #expect(try DoryFSWorkerCoherenceCodec.decodeBatch(frame) == batch)
+        #expect(try DoryFSWorkerCoherenceCodec.decodeBatch(frame).purpose == .reconciliation)
         #expect(try DoryFSWorkerCoherenceCodec.encode(
             DoryFSWorkerCoherenceCodec.decodeBatch(frame)
         ) == frame)
@@ -120,8 +122,8 @@ struct DoryFSWorkerCoherenceContractTests {
         let canonical = try DoryFSWorkerCoherenceCodec.encode(batch)
 
         var reserved = canonical
-        reserved[7] = 1
-        #expect(throws: DoryFSWorkerCoherenceCodecError.nonzeroReservedField) {
+        reserved[7] = 2
+        #expect(throws: DoryFSWorkerCoherenceCodecError.invalidBatchPurpose(2)) {
             _ = try DoryFSWorkerCoherenceCodec.decodeBatch(reserved)
         }
 

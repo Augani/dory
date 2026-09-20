@@ -948,6 +948,33 @@ struct VirtioFSTests {
         #expect(fatal.reason == nil)
     }
 
+    @Test func coherenceBridgeScalesOnlyReconciliationInvalidationDeadline() throws {
+        let capability = try bridgeCapability(30)
+        let incremental = try DoryFSWorkerCoherenceBatch(
+            generation: DoryFSWorkerTestChannel.generation,
+            shareCapabilityID: capability,
+            batchID: 1_000,
+            invalidations: [.inode(nodeID: 1, offset: 0, length: -1)],
+            nudgeRelativePaths: []
+        )
+        let reconciliation = try DoryFSWorkerCoherenceBatch(
+            generation: DoryFSWorkerTestChannel.generation,
+            shareCapabilityID: capability,
+            batchID: 1_001,
+            purpose: .reconciliation,
+            invalidations: (1...1_024).map {
+                .inode(nodeID: UInt64(10_000 + $0), offset: 0, length: -1)
+            },
+            nudgeRelativePaths: []
+        )
+
+        #expect(DoryHostShareCoherenceBridge.invalidationDeadline(for: incremental) == .seconds(1))
+        #expect(
+            DoryHostShareCoherenceBridge.invalidationDeadline(for: reconciliation)
+                == .seconds(5) + .milliseconds(2_048)
+        )
+    }
+
     @Test func coherenceBridgeFailStopsAStalledMultiFrameTransaction() async throws {
         let harness = try VirtioFSNotificationHarness(notificationBacklogLimit: 1)
         try await harness.prepareCoherentCachingEligibility()
@@ -1033,6 +1060,7 @@ struct VirtioFSTests {
             Issue.record("transport-reset transaction unexpectedly committed")
         } catch {}
         #expect(fatal.reason != nil)
+        #expect(fatal.reason?.contains("guest tmpfs mounts will be cleared") == true)
         #expect(harness.fs.requestPublicationGateClosed)
     }
 

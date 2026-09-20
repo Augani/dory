@@ -834,6 +834,7 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
                         transactionID: transactionID,
                         transactionIndex: UInt16(index),
                         transactionCount: transactionCount,
+                        purpose: .reconciliation,
                         invalidations: keyedInvalidations[start..<end].map(\.value),
                         nudgeRelativePaths: includeWatcherRootNudge
                             && endpoint.watcherNudgesEnabled

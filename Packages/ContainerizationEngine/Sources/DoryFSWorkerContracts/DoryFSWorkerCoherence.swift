@@ -9,6 +9,14 @@ public enum DoryFSWorkerCoherenceInvalidation: Equatable, Sendable {
     case delete(parentNodeID: UInt64, childNodeID: UInt64, name: String)
 }
 
+/// Distinguishes latency-sensitive incremental edits from conservative full-cache sweeps. A
+/// reconciliation can contain every identity known to a busy share and therefore receives a
+/// larger runner-side acknowledgement budget than an ordinary edit batch.
+public enum DoryFSWorkerCoherenceBatchPurpose: UInt8, Equatable, Sendable {
+    case incremental = 0
+    case reconciliation = 1
+}
+
 /// A retained, replayable host-edit operation for exactly one worker generation and share
 /// capability. The worker must retain the exact encoded bytes until it receives a matching ACK.
 public struct DoryFSWorkerCoherenceBatch: Equatable, Sendable {
@@ -20,6 +28,7 @@ public struct DoryFSWorkerCoherenceBatch: Equatable, Sendable {
     public let transactionID: UInt64
     public let transactionIndex: UInt16
     public let transactionCount: UInt16
+    public let purpose: DoryFSWorkerCoherenceBatchPurpose
     public let invalidations: [DoryFSWorkerCoherenceInvalidation]
     /// Canonical paths relative to this capability's pinned root. The runner alone maps them onto
     /// the corresponding guest mount; an absolute host or guest path cannot cross this contract.
@@ -32,6 +41,7 @@ public struct DoryFSWorkerCoherenceBatch: Equatable, Sendable {
         transactionID: UInt64? = nil,
         transactionIndex: UInt16 = 0,
         transactionCount: UInt16 = 1,
+        purpose: DoryFSWorkerCoherenceBatchPurpose = .incremental,
         invalidations: [DoryFSWorkerCoherenceInvalidation],
         nudgeRelativePaths: [String]
     ) throws {
@@ -120,6 +130,7 @@ public struct DoryFSWorkerCoherenceBatch: Equatable, Sendable {
         self.transactionID = resolvedTransactionID
         self.transactionIndex = transactionIndex
         self.transactionCount = transactionCount
+        self.purpose = purpose
         self.invalidations = invalidations
         self.nudgeRelativePaths = nudgeRelativePaths
     }
@@ -348,6 +359,7 @@ public enum DoryFSWorkerCoherenceCodecError: Error, Equatable, Sendable {
     case invalidBatchID
     case invalidTransactionID
     case invalidTransactionPosition(index: UInt16, count: UInt16)
+    case invalidBatchPurpose(UInt8)
     case nonFinalTransactionNudge
     case invalidNodeID
     case invalidInvalidationRange
@@ -376,7 +388,7 @@ public enum DoryFSWorkerCoherenceCodec {
     public static let maximumEntryNameBytes = 255
     public static let maximumRelativePathBytes = 4_095
 
-    private static let version: UInt16 = 2
+    private static let version: UInt16 = 3
     private static let batchMagic: [UInt8] = [0x44, 0x46, 0x43, 0x31] // DFC1
     private static let acknowledgementMagic: [UInt8] = [0x44, 0x46, 0x43, 0x41] // DFCA
     private static let batchKind: UInt8 = 1
@@ -391,7 +403,7 @@ public enum DoryFSWorkerCoherenceCodec {
         bytes.append(contentsOf: batchMagic)
         bytes.appendLE(version)
         bytes.append(batchKind)
-        bytes.append(0)
+        bytes.append(batch.purpose.rawValue)
         bytes.appendLE(UInt32(0)) // patched after the complete bounded frame is assembled
         bytes.appendLE(batch.transactionIndex)
         bytes.appendLE(batch.transactionCount)
@@ -491,8 +503,8 @@ public enum DoryFSWorkerCoherenceCodec {
         guard bytes[6] == batchKind else {
             throw DoryFSWorkerCoherenceCodecError.unknownFrameKind(bytes[6])
         }
-        guard bytes[7] == 0 else {
-            throw DoryFSWorkerCoherenceCodecError.nonzeroReservedField
+        guard let purpose = DoryFSWorkerCoherenceBatchPurpose(rawValue: bytes[7]) else {
+            throw DoryFSWorkerCoherenceCodecError.invalidBatchPurpose(bytes[7])
         }
         let declaredLength = bytes.leUInt32(at: 8)
         guard UInt64(declaredLength) == UInt64(bytes.count) else {
@@ -614,6 +626,7 @@ public enum DoryFSWorkerCoherenceCodec {
             transactionID: transactionID,
             transactionIndex: transactionIndex,
             transactionCount: transactionCount,
+            purpose: purpose,
             invalidations: invalidations,
             nudgeRelativePaths: nudges
         )

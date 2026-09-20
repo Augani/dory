@@ -167,6 +167,7 @@ struct DoryFSWorkerHostCoherenceTests {
         #expect(relay.statistics.running)
         #expect(relay.statistics.eventLossCount == 1)
         let recoveryBatches = exchange.recordedBatches.dropFirst(batchesBeforeLoss)
+        #expect(recoveryBatches.allSatisfy { $0.purpose == .reconciliation })
         #expect(recoveryBatches.contains { batch in
             batch.invalidations.contains(.delete(
                 parentNodeID: HostFS.rootNodeID,
@@ -219,6 +220,40 @@ struct DoryFSWorkerHostCoherenceTests {
             expectedLossCount: 2
         ))
         #expect(relay.statistics.running)
+        #expect(failures.error == nil)
+    }
+
+    @Test func repeatedEventLossDoesNotEscalateAfterSixSuccessfulSweeps() async throws {
+        let share = try CoherenceTemporaryShare()
+        let file = share.root.appendingPathComponent("known.txt")
+        try Data("before".utf8).write(to: file)
+        let hostFS = try HostFS(rootPath: share.root.path)
+        _ = try hostFS.lookup(parent: HostFS.rootNodeID, name: file.lastPathComponent)
+        let capability = try hostCoherenceCapability(19)
+        let exchange = HostCoherenceExchangeRecorder()
+        let failures = HostCoherenceFailureRecorder()
+        let relay = try DoryFSWorkerHostCoherence(
+            generation: DoryFSWorkerGeneration(rawValue: 119),
+            shares: [(capability, hostFS, .invalidationOnly)],
+            exchange: exchange.exchange,
+            onFailure: failures.record
+        )
+        defer { relay.stop() }
+        try relay.activate()
+
+        var delivered = relay.statistics.deliveredBatchCount
+        for expectedLossCount in 1...7 {
+            relay.recordEventLossForTesting(capability: capability)
+            #expect(try await waitForRecoveredEventLoss(
+                in: relay,
+                deliveredAfter: delivered,
+                expectedLossCount: UInt64(expectedLossCount)
+            ))
+            delivered = relay.statistics.deliveredBatchCount
+        }
+
+        #expect(relay.statistics.running)
+        #expect(relay.statistics.eventLossCount == 7)
         #expect(failures.error == nil)
     }
 

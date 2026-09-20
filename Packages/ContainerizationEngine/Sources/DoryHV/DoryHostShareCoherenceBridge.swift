@@ -69,13 +69,18 @@ public actor DoryHostShareCoherenceBridge {
                 for backend in backends { backend.failStopRequestPublication() }
                 return true
             }
-            if shouldReport { onFatal(reason) }
+            if shouldReport {
+                onFatal(
+                    "\(reason); VM restart required; guest tmpfs mounts will be cleared"
+                )
+            }
         }
 
         var isFailed: Bool { lock.withLock { failed } }
     }
 
     private static let reverseInvalidationDeadline: Duration = .seconds(1)
+    static let maximumReconciliationInvalidationDeadline: Duration = .seconds(60)
     private let endpoints: [DoryFSShareCapabilityID: DoryHostShareCoherenceEndpoint]
     private let guestEvents: any GuestFSEventSending
     private let onDiagnostic: @Sendable (String) -> Void
@@ -156,6 +161,7 @@ public actor DoryHostShareCoherenceBridge {
             128,
             max(1, endpoint.backend.notificationBacklogLimit)
         )
+        let invalidationDeadline = Self.invalidationDeadline(for: batch)
         let isStandalone = batch.transactionCount == 1
         do {
             if isStandalone {
@@ -166,7 +172,7 @@ public actor DoryHostShareCoherenceBridge {
                     try await endpoint.backend.invalidateAtomically(
                         invalidations,
                         maximumBatchSize: maximumBatchSize,
-                        timeout: Self.reverseInvalidationDeadline
+                        timeout: invalidationDeadline
                     )
                 }
             } else if batch.transactionIndex == 0 {
@@ -176,7 +182,7 @@ public actor DoryHostShareCoherenceBridge {
                 let backendTransaction = try await endpoint.backend.beginInvalidationTransaction(
                     invalidations,
                     maximumBatchSize: maximumBatchSize,
-                    timeout: Self.reverseInvalidationDeadline
+                    timeout: invalidationDeadline
                 )
                 guard !terminal.isFailed else {
                     throw DoryHostShareCoherenceBridgeError.notificationFailure
@@ -204,7 +210,7 @@ public actor DoryHostShareCoherenceBridge {
                     current.backendTransaction,
                     invalidations: invalidations,
                     maximumBatchSize: maximumBatchSize,
-                    timeout: Self.reverseInvalidationDeadline,
+                    timeout: invalidationDeadline,
                     finishing: finishing
                 )
                 guard !terminal.isFailed else {
@@ -262,6 +268,20 @@ public actor DoryHostShareCoherenceBridge {
                     + "reverse cache invalidation remains active"
             )
         }
+    }
+
+    /// A normal edit stays fail-fast. Full reconciliation frames scale their deadline with the
+    /// amount of reverse-notification work because FSEvents loss commonly follows a large host
+    /// file burst. Caching and request publication remain closed for this whole interval, so the
+    /// larger budget improves availability without exposing stale data.
+    static func invalidationDeadline(for batch: DoryFSWorkerCoherenceBatch) -> Duration {
+        guard batch.purpose == .reconciliation else {
+            return reverseInvalidationDeadline
+        }
+        return min(
+            maximumReconciliationInvalidationDeadline,
+            .seconds(5) + .milliseconds(2 * batch.invalidations.count)
+        )
     }
 
     private func armTransactionWatchdog(transactionID: UInt64) {
