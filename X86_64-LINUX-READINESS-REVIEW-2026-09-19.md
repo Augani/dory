@@ -1,7 +1,7 @@
 # Dory x86_64 Linux readiness review — 2026-09-19 (updated 2026-09-20)
 
 Reviewed on branch `codex/virtual-workspace-foundation` through implementation commit
-`5c07bcf4423c1b64f1a501cec4a633728f2e6057`. Host: Apple M2
+`e7c6f1eec766de3f60f56464a8e8125c67e784ef`. Host: Apple M2
 Pro, macOS 27.2, Xcode 27.0, Swift 6.4. The working checkout also contains a pre-existing user
 modification to `scripts/arm-ubuntu-scenario-driver.sh`; it was not changed, staged, or used as
 release evidence during this review.
@@ -18,30 +18,32 @@ availability gate closed.**
 The single-vCPU engine is suitable for continued internal Linux qualification. Reproducible PVH
 inputs exist, the safe no-raw-predictor production boundary is retained, and CPU RAM paths share a
 machine-scoped byte-range authority for ordinary and locked access. Direct native loads and stores
-also have explicit Arm ordering. Every vCPU now receives one persistent owner job for the duration
-of a public run, but general multiprocessor guest execution remains deliberately serialized while
-the existing preflighted register-only overlap path is the only concurrent instruction admission.
-The owning worker handles processor events, interrupt/NMI delivery, and translation invalidation,
-including maintenance while parked. All guest MMIO/PIO entry is conservatively serialized per
-machine without blocking ordinary RAM or DMA publication.
+also have explicit Arm ordering. Every vCPU receives one persistent owner job for the duration of
+a public run. A new fail-closed internal policy admits exactly two interpreter vCPUs with
+host-monotonic time and no caller-supplied PCI or platform-MMIO extensions to execute bounded guest
+chunks concurrently. The default path, every native or mixed tier pair, extension devices, and the
+public product path remain denied. The owning workers handle processor events, interrupt/NMI
+delivery, and translation invalidation, including maintenance while parked. All guest MMIO/PIO
+entry is conservatively serialized per machine without blocking ordinary RAM or DMA publication.
 
-The exact clean implementation candidate at `5c07bcf44` has two repeated PVH workload plus ACPI
+The latest exact clean boot-evidence candidate at `5c07bcf44` has two repeated PVH workload plus ACPI
 S5 passes in baseline JIT and two more in the interpreter. The same Developer-ID-signed,
 hardened-runtime runner completed every observation; interpreter batching reduced the real boot
 from a 900-second timeout at 47.9 million instructions to two complete runs in 759.31 and 739.36
 seconds. Exact qualification also found and fixed a halted-owner lost-wake defect: an interrupt
 published while IF or priority blocked it could later become deliverable without a second
-publication edge. The APIC/PIC regression, full PC suite, and focused Thread Sanitizer matrix pass.
-None of this proves a free-running multiprocessor runtime, ordinary installed Linux lifecycle, or a
-notarized production package.
+publication edge. The APIC/PIC regression and the complete current 429-test PC suite pass in debug,
+release, and under Thread Sanitizer. None of this proves a production free-running multiprocessor
+runtime, ordinary installed Linux lifecycle, or a notarized production package.
 
 Release remains blocked by four boundaries:
 
 1. Every requested vCPU now runs one persistent owner job with exact result/directive handoffs and
    worker-owned processor events/interrupts/invalidations while the coordinator retains clocks and
-   machine lifecycle. General multiprocessor instructions are still serialized behind the
-   admission boundary; only the frozen register-only overlap path runs concurrently. There is no
-   sustained shared-memory SMP runtime yet.
+   machine lifecycle. Exactly one internal interpreter/interpreter pair can now execute ordinary
+   and locked guest memory instructions concurrently through bounded rendezvous batches. That
+   policy is not public, is not used by the signed Linux runner, excludes caller extension devices,
+   and has not passed the complete tier, lifecycle, device, translation, SMC, or scaling matrix.
 2. CPU ordinary accesses and unaligned, split-backing, and interpreter 16-byte locked fallbacks now
    share a machine-scoped range authority. Coordinated dispatch now publishes and acknowledges
    remote translation invalidations; current Virtio/xHCI DMA paths enter the same RAM authority;
@@ -64,19 +66,19 @@ Release remains blocked by four boundaries:
 | Gate | Status | Evidence / reason |
 |---|---|---|
 | Public product admission | **Safe, closed** | `DoryReleaseSupportPolicy` keeps translated x86_64 Linux unavailable; daemon bootstrap requires explicit qualification authority. |
-| Current PC/device concurrency validation | **Pass at source-test scope** | The exact implementation checkpoint passes 411 Swift Testing tests across 54 PC suites plus 35 runner tests. A focused Thread Sanitizer matrix passes 96 tests across the direct-kernel machine, pending-work, APIC, and PIC suites with no race report. The artifact-backed Linux integration is separate and is not counted as boot evidence. |
-| Optimized x86 qualification graph | **Pass for affected graph** | The broad DBT graph passes 1,471 tests across 141 suites, and the full PC/runner graph passes 446 tests across 58 suites after the interpreter and lost-wake repairs. The graph excludes unrelated `DorydKitTests` without exposing debug-only injection hooks in production. |
+| Current PC/device concurrency validation | **Pass at source-test scope** | Current head passes all 429 PC tests across 56 suites in debug, release, and under Thread Sanitizer with no race report, plus 35 runner tests across 4 suites in debug and release. The artifact-backed Linux integration is separate and is not counted as boot evidence. |
+| Optimized x86 qualification graph | **Pass at current implementation head** | With `DORY_X86_OPTIMIZED_QUALIFICATION=1`, the isolated release graph passes DBT 1,470 tests/141 suites, decode audit 135/22, PC 429/56, firmware 48/12, runner 35/4, and qualification 7/2. The graph excludes unrelated `DorydKitTests` without exposing debug-only injection hooks in production. This is current source-test evidence, not a signed boot receipt. |
 | Release Linux runner build | **Pass** | The release PVH runner and content-addressed fixture importer build in the optimized qualification graph. |
 | Release register-loop benchmark | **Provisional pass** | Current 5,000,000-instruction run: interpreter 1.13 MIPS, baseline JIT 746.17 MIPS, tier-one JIT 380.92 MIPS. This is a regression probe, not a ship gate. |
 | Reproducible PVH inputs | **Pass on reviewed host** | A clean checkout reproduced and re-verified the pinned ISO-derived kernel, initrd, and symbols, then published all three through the content-addressed importer with exact manifest hashes. |
-| Recent PVH boot/userspace | **Current exact-candidate internal pass in both required CI tiers** | At clean `5c07bcf44`, two consecutive `rawTargetPrediction=none` baseline-JIT runs and two interpreter runs completed all seven userspace workloads and ACPI S5 with the same Developer-ID-signed hardened-runtime runner. Receipts remain internal (`releaseQualified=false`), single-vCPU evidence for one host/profile/device tuple; the runner is not notarized. |
+| Recent PVH boot/userspace | **Latest retained exact-candidate internal pass in both required CI tiers** | At clean `5c07bcf44`, two consecutive `rawTargetPrediction=none` baseline-JIT runs and two interpreter runs completed all seven userspace workloads and ACPI S5 with the same Developer-ID-signed hardened-runtime runner. These receipts predate the concurrent-pair changes, remain internal (`releaseQualified=false`), and cover one single-vCPU host/profile/device tuple; the runner is not notarized. |
 | UEFI install, reboot, cold boot, update | **Fail: no exact-candidate evidence** | No retained campaign covers the complete installer and installed-disk lifecycle for this candidate. |
 | Production predictor boundary | **Pass, conservative** | Production raw target prediction is disabled. Enabled `all` and `tier1-direct-chain` configurations reproduced a native slice that failed to return before the watchdog; neither is admitted. |
-| Real SMP | **Fail** | Every vCPU now keeps one owner job for the run, but the coordinator still admits general guest instructions serially. The narrow frozen register-only overlap probe is not a sustained Linux SMP runtime. |
+| Real SMP | **Fail for production admission** | An internal exact-two-vCPU interpreter policy now executes ordinary and locked guest instructions concurrently and proves real owner-thread overlap. It still rendezvous-batches through the coordinator, excludes extension devices, has no current Linux SMP receipt or scaling result, and leaves every public/native/mixed pair denied. |
 | x86-64-v2 guest ABI | **Fail** | Profile registry still exposes only `baselineV1` / `compatibleV1`. |
 | CPU scalar/locked range domain | **Pass at unit/integration scope** | Checked byte-array/mmap/translated/PC RAM, direct native loads/stores, aligned native atomics, interpreter unaligned and split-backing locked fallbacks, and interpreter/native CMPXCHG16B all enter one backing-address range authority. Missing authority makes direct native atomics fail closed. |
 | Guest device-entry domain | **Pass at source-test scope** | All vCPU physical buses and the port bus share one recursive per-machine domain for MMIO, ECAM, PCI BAR, and PIO callbacks. Ordinary RAM and DMA synchronization stay outside it. Full PC testing found and retained a regression for an xHCI MMIO/DMA lock cycle; the corrected boundary passes the device-heavy TSan matrix. Asynchronous backend and extension-device qualification remains open. |
-| Complete SMP memory contract | **Fail** | Worker-owned single-vCPU translation acknowledgement, current-device DMA range participation, private-executor code-storage hazard protection, and the conservative guest device-entry boundary are implemented and tested. Simultaneous free-running acknowledgement, cross-vCPU SMC, external/shared mappings, asynchronous callback audit, and the full tier-pair litmus matrix remain open. |
+| Complete SMP memory contract | **Fail** | Worker-owned translation acknowledgement, current-device DMA range participation, private-executor code-storage hazard protection, and the conservative guest device-entry boundary are implemented and tested. The interpreter pair passes initial SB/LB/message-passing/MFENCE and XCHG/XADD/CMPXCHG cells, exact budget/fault tests, an external page-table invalidation test, and async poweroff join. IRIW, the remaining fence/locked/split cases, guest-driven local/remote TLB campaigns, cross-vCPU SMC/DMA, asynchronous callback audit, and every other tier/count remain open. |
 | Release reproducibility | **Partial** | Fixture and candidate identities are content-addressed, and four clean exact-commit `5c07bcf44` PVH receipts bind one Developer-ID-signed runner across baseline JIT and interpreter. Twenty-run stability, notarized product packaging, the supported-host/guest/device matrix, and UEFI lifecycle receipts do not yet exist. |
 
 ## Measurements that must not be conflated
@@ -329,11 +331,25 @@ keeps all raw host-address prediction disabled.
     NMI, APIC, and PIC state, with APIC/PIC regressions that publish while IF is clear and require
     delivery after `STI; HLT`. The 411-test PC suite, 35 runner tests, and 96-test focused Thread
     Sanitizer matrix pass after the repair.
+35. An internal, fail-closed multiprocessor policy now admits only an exact two-vCPU interpreter
+    pair with host-monotonic time and no caller-supplied PCI or platform-MMIO extensions. Both
+    persistent owners reserve disjoint global budget before a lost-wakeup-free rendezvous, execute
+    concurrently, join before architectural state is inspected, return unretired reservations,
+    and select faults/stops deterministically. Default and public behavior remain serialized.
+36. Real protected-mode guest loops now run 2,000 iterations each of Store Buffering, Load
+    Buffering, Message Passing, MFENCE substitution, implicit-locked XCHG, and locked CMPXCHG on
+    the admitted pair; a 24,000-instruction locked XADD campaign proves no lost updates. The probe
+    requires two actual concurrent owner entries, so these tests cannot pass through the serial
+    default. All seven pass under Thread Sanitizer.
+37. The expanded full PC run exposed three tests whose two-second success assertions depended on
+    work starting promptly on the shared dispatch pool. Device-domain, translation-invalidation,
+    and xHCI disconnect tests now use dedicated host threads and explicit start observations. The
+    exact three-test sanitizer run passes, followed by the complete 429-test/56-suite PC target
+    under Thread Sanitizer.
 
-These fixes make the current single-vCPU and owner-lifetime signal substantially stronger. They do
-not substitute for general concurrent guest-instruction admission, asynchronous device callback
-audit, concurrent cross-vCPU translation/code-lifetime proof, UEFI lifecycle, or supported-matrix
-campaigns.
+These fixes establish a genuine but narrow concurrent interpreter pair. They do not substitute for
+asynchronous device callback audit, complete cross-vCPU translation/code-lifetime proof, the full
+tier/count matrix, Linux SMP and scaling evidence, UEFI lifecycle, or supported-host campaigns.
 
 ## Remaining engineering work
 
@@ -346,12 +362,13 @@ The session foundation, serialized pending-work repair, and single-vCPU long-run
 implemented at `298d6668e`. Through `e0cfdcdc8`, the owner worker also handles its processor events,
 interrupt/NMI delivery, pending generations, and translation invalidation, including parked-owner
 maintenance, and every vCPU keeps one owner job for the public run. Exact checkpoint `5c07bcf44`
-has repeated baseline and interpreter PVH evidence. General guest execution remains serially
-admitted, so the SMP gate is not closed.
+has repeated baseline and interpreter PVH evidence. Commit `40db03245` adds the internal exact-two-
+vCPU interpreter policy described above. It is qualification scaffolding, not a public promotion,
+and the SMP gate remains closed.
 
-- Replace serial general-instruction admission with qualified simultaneous execution, starting
-  with interpreter/interpreter. Each existing owner already retains its architectural state, JIT
-  context, native TLB, and code-cache cursor across command boundaries.
+- Complete the promotion matrix for the internal interpreter/interpreter admission before exposing
+  it to Linux or product policy. Each owner already retains its architectural state, paging/TLB
+  context, and exact result/budget envelope across command boundaries.
 - Move the remaining clock/lifecycle coordination into explicit quiescence rendezvous so ordinary
   execution does not return to a central coordinator after every bounded command.
 - Keep deterministic single-thread replay as a separate explicit implementation, not as the
@@ -449,28 +466,33 @@ Do not change public availability until all of these are true:
 
 ## Immediate next code slice
 
-Persistent owner jobs, the conservative machine device-entry boundary, current single-vCPU PVH
-parity, and interpreter viability are implemented. The next slice must admit real concurrency
-without weakening the explicit denial boundary:
+Persistent owner jobs, the conservative machine device-entry boundary, single-vCPU PVH parity,
+interpreter viability, and an internal exact-two-vCPU interpreter admission are implemented. The
+first guest-code cells cover SB, LB, message passing, MFENCE, XCHG, XADD, and CMPXCHG with proven
+owner overlap. Baseline, mixed, optimizing, caller extension devices, and product admission remain
+denied by default. The next slice is:
 
-1. Add an internal interpreter/interpreter two-vCPU admission that lets both existing owner loops
-   reserve and execute work concurrently. Keep baseline, mixed, optimizing, public extension
-   devices, and product admission denied by default.
-2. Finish the built-in asynchronous callback review and add concurrent clock/input/reset,
+1. Finish the built-in asynchronous callback review and add concurrent clock/input/reset,
    completion/interrupt, hot-unplug, and teardown tests. Require each admitted
    `platformMMIODevices`/`pciFunctions` implementation to declare and prove its callback, DMA,
    interrupt-publication, and teardown contract.
-3. Before promoting that pair, pass Store Buffering, Load Buffering, Message Passing, IRIW, every
-   locked family, targeted/global TLB invalidation, page-table rewrite, DMA/CPU code mutation,
-   protected-page rotation, exact budget/stop arbitration, pause/reset/poweroff, and a sustained
-   shared-memory scaling workload that cannot pass on the serial admission path.
-4. Add baseline/baseline, interpreter/baseline, and optimizing combinations one at a time only
+2. Add guest-driven page-table rewrite plus local and remote targeted/global invalidation while the
+   other owner is executing. Then add CPU and DMA mutation/fetch of active code, protected-page
+   rotation, and generation-publication tests.
+3. Complete the interpreter-pair memory matrix: IRIW, SFENCE/LFENCE, the remaining locked families,
+   ordinary-reader mixtures, unaligned/cache-line/page splits, faulting second pages, and 8/16-byte
+   compare/exchange. Add pause/reset/snapshot/teardown races and exact stop arbitration for each.
+4. Replace coordinator rendezvous batching with the documented sustained owner-loop/quiescence
+   protocol, then demonstrate a shared-memory workload with real host overlap and at least 1.6x
+   two-vCPU throughput over one vCPU without changing correctness policy.
+5. Add baseline/baseline, interpreter/baseline, and optimizing combinations one at a time only
    after the same matrix passes for that exact pair. Retain the interpreter as the oracle and keep
    raw host-address prediction disabled.
-5. Continue the x86-64-v2 semantic/reference program and UEFI installed-disk lifecycle in parallel;
+6. Continue the x86-64-v2 semantic/reference program and UEFI installed-disk lifecycle in parallel;
    neither should be deferred behind Tier2 performance work.
-6. Re-run content-addressed PVH evidence after each promoted execution pair. Once the product tuple
-   and supported host classes are frozen and the Apple team agreement is restored, execute the
-   clean notarized PVH/UEFI matrix and only then consider a separate public-policy change.
+7. Re-run the complete debug, optimized, and sanitizer graphs plus content-addressed PVH evidence
+   after each promoted execution pair. Once the product tuple and supported host classes are frozen
+   and the Apple team agreement is restored, execute the clean notarized PVH/UEFI matrix and only
+   then consider a separate public-policy change.
 
 Until those gates pass, x86_64 Linux should remain visible only to internal qualification tooling.

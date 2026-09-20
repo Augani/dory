@@ -2,17 +2,20 @@
 
 Status: **approved engineering sequence; not yet a release claim**
 
-Implementation checkpoint (2026-09-20): commit `5c07bcf44` builds on package B's production
-single-vCPU cutover. Every requested vCPU now keeps one owner job for the public run. Each owner
-drains that vCPU's events, interrupt/NMI delivery, pending-work generation, and translation
-invalidation, including maintenance while parked on a published result. Every vCPU physical-memory
-view and the port bus also share a conservative machine device domain. General guest instructions
-remain serially admitted; only the existing preflighted register-only path overlaps. The complete
-PC target passes 411 tests in 54 suites plus 35 runner tests, and the focused direct-kernel,
-pending-work, APIC, and PIC Thread Sanitizer matrix passes 96 tests in 4 suites. One exact clean,
-Developer-ID-signed runner completed two baseline-JIT and two interpreter PVH workload plus ACPI-S5
-runs. Packages C and D have multi-owner foundations but remain open for concurrent execution and
-asynchronous-backend qualification; packages E-G remain open.
+Implementation checkpoint (2026-09-20): commit `e7c6f1eec` builds on package B's production
+single-vCPU cutover. Every requested vCPU keeps one owner job for the public run. Each owner drains
+that vCPU's events, interrupt/NMI delivery, pending-work generation, and translation invalidation,
+including maintenance while parked on a published result. Every vCPU physical-memory view and the
+port bus also share a conservative machine device domain. An internal fail-closed policy now admits
+exactly two host-monotonic interpreter vCPUs without caller extension devices to execute bounded
+guest chunks concurrently; all other pairs and public admission remain denied. Current head passes
+429 PC tests in 56 suites plus 35 runner tests. The complete 429-test PC target also passes under
+Thread Sanitizer with no race report. The current isolated release graph passes DBT 1,470/141,
+decode audit 135/22, PC 429/56, firmware 48/12, runner 35/4, and qualification 7/2.
+Exact clean commit `5c07bcf44` retains two baseline-JIT and two interpreter PVH workload plus
+ACPI-S5 runs. Packages C-E are partially implemented but remain open for the full concurrent
+translation, asynchronous-backend, lifecycle, and tier-pair qualification; packages F-G remain
+open.
 
 This plan converts the existing machine-lifetime host workers into a real multiprocessor runtime
 without weakening deterministic replay, memory ordering, translation invalidation, device safety,
@@ -25,10 +28,12 @@ below does not qualify SMP until the mandatory matrix passes.
 submits one run-session owner loop to every requested vCPU. Each worker owns processor events,
 interrupt/NMI delivery, and translation acknowledgement; the coordinator services clocks, machine
 lifecycle, device work, admission, and exact result/directive handoffs. A parked owner remains
-available for maintenance without advertising architectural idleness. For more than one vCPU the
-coordinator still admits general guest work to only one owner at a time. The only overlapping
-multiprocessor path admits one frozen register-only instruction per vCPU; that proves host-thread
-overlap, not Linux SMP.
+available for maintenance without advertising architectural idleness. The default scheduler still
+admits general guest work to only one owner at a time. The internal interpreter-pair policy instead
+reserves an exact global budget, rendezvous-starts both owners, joins both responses, and only then
+observes architectural state. It is deliberately limited to exactly two vCPUs, host-monotonic time,
+the interpreter, and no caller-supplied PCI or platform-MMIO devices. It proves concurrent shared-
+memory execution, not Linux SMP promotion or a sustained autonomous owner loop.
 
 The following foundations already exist and must be preserved:
 
@@ -168,14 +173,16 @@ Tests must cover an invalidation published while a target is:
 - entering quiescence; and
 - faulting or stopping concurrently.
 
-Progress through `5c07bcf44`: the run session couples wake publication to per-vCPU pending
+Progress through `40db03245`: the run session couples wake publication to per-vCPU pending
 generations, places mutable processor state in per-vCPU slots, and routes events, interrupt/NMI
 delivery, page-table invalidation acknowledgement, and parked-owner maintenance through every
 owner worker. Quiescence reopens when new work races an acknowledgement. A halted owner also
 rechecks already-published NMI, local-APIC, and PIC work that became deliverable without a second
-generation edge. Focused debug and Thread Sanitizer suites plus repeated exact PVH runs pass. Still
-open: admit simultaneous general execution, then cover interpreted/native/halted/quiescing/fault
-and stop races without coordinator serialization.
+generation edge. The internal interpreter pair acknowledges an externally published page-table
+flush on both owners and joins both owners before asynchronous poweroff returns. Focused debug and
+Thread Sanitizer suites plus the older exact PVH runs pass. Still open: guest-driven local and
+remote invalidation during active translations, native tiers, and halted/quiescing/fault/stop races
+without coordinator rendezvous batching.
 
 ### D. Device and shared-state concurrency audit
 
@@ -201,10 +208,21 @@ two-vCPU execution.
 
 ### E. General two-vCPU execution
 
-Delete the frozen register-only admission restriction only after packages A-D pass. Start with the
-interpreter/interpreter pair, then baseline/baseline, then mixed and optimizing pairs. Each new pair
-is denied by default until its TSO, locked-operation, invalidation, DMA, SMC, and code-cache cells
-pass. Keep raw host-address predictors disabled.
+Public promotion deletes the serial admission restriction only after packages A-D pass. Start with
+the interpreter/interpreter pair, then baseline/baseline, then mixed and optimizing pairs. Each new
+pair is denied by default until its TSO, locked-operation, invalidation, DMA, SMC, and code-cache
+cells pass. Keep raw host-address predictors disabled.
+
+Progress through `76acd1b0d`: an internal exact-two-vCPU interpreter policy executes bounded work
+on both persistent owners only for host-monotonic machines without caller extension devices. A
+per-run barrier begins only after both owners reserve disjoint global budget; cancel/close wakes an
+early arrival; every result is joined; budget, exception, triple-fault, halt, yield, and power/reset
+selection are deterministic. Tests prove ordinary shared-memory overlap, exact budgets from 2
+through 129, page-table invalidation acknowledgement, async poweroff join, 10,000 locked
+increments, and protected-mode guest litmus loops for SB, LB, message passing, MFENCE, XCHG, XADD,
+and CMPXCHG. This is not package-E promotion: IRIW, the remaining fence/locked/split cases, TLB,
+DMA/SMC, lifecycle, performance, Linux SMP, other tiers, four vCPUs, and exact-candidate receipts
+remain open.
 
 ### F. Lifecycle and observability
 
@@ -251,10 +269,11 @@ Keep each step bisectable and leave the public x86 gate closed:
 8. four-vCPU scale, performance/SLO evidence, and lifecycle hardening; and
 9. exact notarized PVH/UEFI matrix followed by a separate explicit product-policy change.
 
-Steps 1-3 are complete. Step 4 is active for every persistent owner, but simultaneous general
-execution is still denied. Step 5 has its conservative guest-entry boundary and inventory;
-asynchronous-path, extension-device, and sustained-concurrency qualification remain open. Steps
-6-9 have not been promoted.
+Steps 1-3 are complete. Step 4 is active for every persistent owner and has one initial concurrent
+interpreter-pair invalidation/power test, but the full translation/lifecycle matrix remains open.
+Step 5 has its conservative guest-entry boundary and inventory; asynchronous-path, extension-
+device, and sustained-concurrency qualification remain open. Step 6 has an internal fail-closed
+admission and initial litmus cells, but it has not been promoted. Steps 7-9 remain open.
 
 No commit may enable a pair, vCPU count, predictor, profile, or public product path before its own
 evidence lands. Historical receipts never substitute for the exact implementation candidate.

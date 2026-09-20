@@ -2,7 +2,7 @@
 
 Status: **machine boundary implemented; asynchronous and external-adapter qualification open**
 
-Implementation checkpoint: `376846fd9` on 2026-09-20. This document is a source inventory and
+Implementation checkpoint: `e7c6f1eec` on 2026-09-20. This document is a source inventory and
 admission contract, not a release claim. It covers objects reachable from
 `DoryPCPhysicalMemoryBus` and `DoryPCPortIOBus` in `DoryPCDirectKernelMachine` and records the work
 that remains before general free-running SMP may use them.
@@ -86,13 +86,19 @@ invalidation hook, not proof that an arbitrary mapping uses it correctly. Any fu
 file-backed, graphics, camera, or passthrough adapter remains denied until it satisfies this
 section.
 
+The internal two-vCPU interpreter qualification policy enforces this boundary in code: admission
+fails closed when either caller-supplied collection is non-empty. That is a temporary denial rule,
+not evidence that built-in asynchronous callbacks or any extension have completed this audit.
+
 ## Evidence at this checkpoint
 
-- The complete PC target passes 401 tests across 53 Swift Testing suites in debug mode. The pinned
+- The complete PC target passes 429 tests across 56 Swift Testing suites in debug mode. The pinned
   Linux integration test is separately skipped when its four artifact environment variables are
   absent; that skip is not boot evidence.
-- The device-heavy Thread Sanitizer matrix passes 99 tests across device-domain, physical-memory,
-  port-I/O, PCI, Virtio, xHCI, and APIC suites with no race report.
+- The complete current 429-test PC target passes under Thread Sanitizer with no race report. This
+  includes the device-domain, physical-memory, port-I/O, PCI, Virtio, xHCI, APIC, translation,
+  concurrent run-session, and new guest-code litmus suites rather than only the older 99-test
+  device subset.
 - Deterministic tests prove one machine serializes MMIO against port I/O across separate vCPU bus
   views, ordinary RAM remains live, independent machines do not contend, synchronous nested
   routing is reentrant, and DMA synchronization cannot be blocked by a guest device callback.
@@ -101,9 +107,9 @@ section.
 
 ## Promotion rule
 
-This checkpoint supplies the conservative guest-entry boundary required before general
-two-vCPU execution. It does not complete package D by itself. Package D closes only after every
-built-in asynchronous path and every admitted extension has a reviewed callback graph, the
-free-running two-vCPU race matrix passes, and the exact candidate has retained TSan and lifecycle
-receipts. Until then, general multiprocessor guest execution and the public x86 Linux gate remain
-closed.
+This checkpoint supplies the conservative guest-entry boundary used by the narrow internal
+interpreter pair. It does not complete package D or authorize pair promotion. Package D closes only
+after every built-in asynchronous path and every admitted extension has a reviewed callback graph,
+the sustained two-vCPU race matrix passes, and the exact candidate has retained TSan and lifecycle
+receipts. Until then, extension-device SMP, general multiprocessor promotion, and the public x86
+Linux gate remain closed.
