@@ -2339,6 +2339,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     /// detached its generation and host destruction has completed. The same bound applies with no
     /// renderer, preventing an untrusted guest from growing mailbox release storage without limit.
     private let lifecycleLock = NSLock()
+    /// The transport is retained by the machine. Keep only a weak recovery route so renderer
+    /// helper death can assert DEVICE_NEEDS_RESET without extending the MMIO/device lifetime.
+    private weak var attachedTransport: VirtioMMIOTransport?
     private let rendererRetirementQueue = DispatchQueue(label: "dev.dory.gpu.resource-retirement")
     private var retiringResources: [UInt32: UInt64] = [:]
     private var activeQuiescence: ActiveQuiescence?
@@ -2634,6 +2637,30 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         }
         displayLock.unlock()
         if changed { transport.notifyConfigChange() }
+    }
+
+    public func deviceReady(transport: VirtioMMIOTransport) {
+        lifecycleLock.withLock { attachedTransport = transport }
+    }
+
+    /// Converts an asynchronous Metal failure for a worker-owned frame into the same isolated
+    /// generation failure used for XPC/helper death. A CPU-only Metal failure remains a display
+    /// failure; only an authenticated worker generation is eligible for this device-reset path.
+    public func reportRendererWorkerPresentationFailure(
+        workerGeneration: UInt64,
+        reason: String
+    ) {
+        guard let rendererWorkerCandidate,
+              rendererWorkerCandidate.snapshot().state
+                == .active(deviceGeneration: workerGeneration) else { return }
+        rendererWorkerCandidate.revoke(deviceGeneration: workerGeneration)
+        rendererWorkerCandidateFailed(
+            generation: workerGeneration,
+            error: .notActive(.failed(deviceGeneration: workerGeneration))
+        )
+        FileHandle.standardError.write(Data(
+            "dory-gpu: worker Metal presentation failed: \(reason)\n".utf8
+        ))
     }
 
     /// Source-compatible primary-scanout resize bridge.
@@ -7732,6 +7759,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         onRendererWorkerFailure?(
             "generation \(generation) failed: \(String(describing: error))"
         )
+        // Renderer isolation is useful only if helper death cannot become VM death. Ask the guest
+        // virtio driver to reset this device while every unrelated VM device keeps running.
+        lifecycleLock.withLock { attachedTransport }?.requestDeviceReset()
     }
 
     public var statistics: VirtioGPUStatistics {

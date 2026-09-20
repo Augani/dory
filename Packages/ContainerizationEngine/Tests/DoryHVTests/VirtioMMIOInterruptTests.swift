@@ -113,4 +113,29 @@ import Testing
         #expect(transport.statistics.deviceResets == 1)
         #expect(transport.statistics.emittedInterruptSignals == 2)
     }
+
+    @Test func deviceResetRequestIsStickyCoalescedAndGuestAcknowledged() throws {
+        let signals = SignalCounter()
+        let transport = try makeTransport(signals: signals)
+        transport.write(offset: 0x070, value: 0x0F, width: 4)
+
+        transport.requestDeviceReset()
+        transport.requestDeviceReset()
+
+        // This minimal backend does not offer VIRTIO_F_VERSION_1, so FEATURES_OK/DRIVER_OK are
+        // correctly rejected and only ACKNOWLEDGE|DRIVER plus DEVICE_NEEDS_RESET remain.
+        #expect(transport.read(offset: 0x070, width: 4) == 0x43)
+        #expect(transport.read(offset: 0x060, width: 4) == 2)
+        #expect(transport.read(offset: 0x0FC, width: 4) == 1)
+        #expect(signals.count == 1)
+
+        // Normal driver status writes cannot clear a device-owned reset request.
+        transport.write(offset: 0x070, value: 0x0F, width: 4)
+        #expect(transport.read(offset: 0x070, width: 4) == 0x43)
+
+        transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(transport.read(offset: 0x070, width: 4) == 0)
+        #expect(transport.read(offset: 0x060, width: 4) == 0)
+        #expect(transport.statistics.deviceResets == 1)
+    }
 }

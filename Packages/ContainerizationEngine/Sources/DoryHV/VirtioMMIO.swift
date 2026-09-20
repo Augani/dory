@@ -117,6 +117,9 @@ public final class VirtioMMIOTransport: MMIODevice {
     private enum DeviceStatus {
         static let driverOK: UInt32 = 1 << 2
         static let featuresOK: UInt32 = 1 << 3
+        /// Virtio 1.2 DEVICE_NEEDS_RESET. Unlike FAILED, this bit belongs to the device and is
+        /// preserved across guest status writes until the driver acknowledges it with status 0.
+        static let deviceNeedsReset: UInt32 = 1 << 6
     }
 
     private var offeredFeatures: UInt64 {
@@ -163,6 +166,20 @@ public final class VirtioMMIOTransport: MMIODevice {
         registerLock.lock()
         configGeneration &+= 1
         let shouldEmit = markInterruptPending(2)
+        registerLock.unlock()
+        if shouldEmit { emitInterruptSignal() }
+    }
+
+    /// Quarantines a failed device without stopping the VM. The status edge and configuration
+    /// interrupt are the standard virtio signal that asks the guest driver to tear down its live
+    /// queues and write status 0. This is used for isolated helper failure: disks, networking, and
+    /// guest execution stay live while only the affected device is reset.
+    public func requestDeviceReset() {
+        registerLock.lock()
+        let newlyRequested = status & DeviceStatus.deviceNeedsReset == 0
+        status |= DeviceStatus.deviceNeedsReset
+        if newlyRequested { configGeneration &+= 1 }
+        let shouldEmit = newlyRequested && markInterruptPending(2)
         registerLock.unlock()
         if shouldEmit { emitInterruptSignal() }
     }
@@ -308,11 +325,15 @@ public final class VirtioMMIOTransport: MMIODevice {
             interruptLock.unlock()
         case 0x070:
             let previousStatus = status
-            status = UInt32(truncatingIfNeeded: value)
-            if status == 0 {
+            let requestedStatus = UInt32(truncatingIfNeeded: value)
+            if requestedStatus == 0 {
+                status = 0
                 resetDevice()
                 break
             }
+            // DEVICE_NEEDS_RESET is device-owned. A driver cannot accidentally clear the
+            // quarantine by rewriting its ordinary ACKNOWLEDGE/DRIVER/FEATURES_OK/DRIVER_OK bits.
+            status = requestedStatus | (previousStatus & DeviceStatus.deviceNeedsReset)
 
             if status & DeviceStatus.featuresOK != 0 {
                 if driverFeaturesAreValid {

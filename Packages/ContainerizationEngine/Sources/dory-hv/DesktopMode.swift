@@ -1658,7 +1658,6 @@ enum DesktopMode {
                 },
                 onRendererWorkerFailure: {
                     [
-                        weak machine,
                         weak rendererWorkerLaunch,
                         rendererRuntimeFailureLatch,
                     ] reason in
@@ -1668,9 +1667,9 @@ enum DesktopMode {
                     )
                     rendererWorkerLaunch?.failSynchronizedPresentation(reason)
                     rendererWorkerLaunch?.teardown(reason: reason)
-                    machine?.requestStop(.crash(
-                        "renderer worker failed closed: \(reason)"
-                    ))
+                    Self.log(
+                        "dory-hv desktop: renderer worker isolated; VM remains running: \(reason)"
+                    )
                 },
                 onStockFenceVerification: { [graphicsReadinessState] outcome in
                     graphicsReadinessState.apply(outcome)
@@ -1680,6 +1679,15 @@ enum DesktopMode {
                 }
             )
             self.gpu = gpu
+            for case let metalDisplay as DesktopMetalView in displays {
+                metalDisplay.onWorkerPresentationFailed = {
+                    [weak gpu] workerGeneration, reason in
+                    gpu?.reportRendererWorkerPresentationFailure(
+                        workerGeneration: workerGeneration,
+                        reason: reason
+                    )
+                }
+            }
             let initializationRollback = DesktopInitializationRollback()
             defer { initializationRollback.performIfNeeded() }
             initializationRollback.register {

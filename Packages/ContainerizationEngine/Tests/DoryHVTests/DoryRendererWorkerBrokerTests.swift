@@ -2041,6 +2041,31 @@ import Testing
 }
 
 @Suite(.serialized) struct DoryRendererWorkerVirtioGPUIntegrationTests {
+    @Test func workerDeathRequestsOnlyVirtioGPUReset() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 1
+        )
+        let queue = try RendererWorkerGPUQueueFixture(
+            lane: lane,
+            guestBase: 0x4_8000_0000
+        )
+        queue.gpu.deviceReady(transport: queue.transport)
+
+        fixture.channel.emit(.interrupted)
+
+        #expect(await rendererEventually {
+            queue.transport.read(offset: 0x070, width: 4) & 0x40 != 0
+        })
+        #expect(queue.transport.read(offset: 0x060, width: 4) & 2 != 0)
+        #expect(queue.transport.read(offset: 0x0FC, width: 4) == 1)
+        guard case .failed(epoch: 1, _) = queue.gpu.rendererLifecycleHealth else {
+            Issue.record("renderer worker death did not quarantine only the GPU generation")
+            return
+        }
+    }
+
     @Test func initialLinuxStatusResetRebindsUnusedWorkerWithoutRevokingIt() async throws {
         let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
         let lane = try DoryRendererWorkerVirtioCommandLane(
