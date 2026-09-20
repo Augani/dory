@@ -1,7 +1,7 @@
 # Dory x86_64 Linux readiness review — 2026-09-19 (updated 2026-09-20)
 
 Reviewed on branch `codex/virtual-workspace-foundation` through implementation commit
-`e7c6f1eec766de3f60f56464a8e8125c67e784ef`. Host: Apple M2
+`d35b9a62c016c3e737c120e356c1161eb893005e`. Host: Apple M2
 Pro, macOS 27.2, Xcode 27.0, Swift 6.4. The working checkout also contains a pre-existing user
 modification to `scripts/arm-ubuntu-scenario-driver.sh`; it was not changed, staged, or used as
 release evidence during this review.
@@ -32,9 +32,12 @@ hardened-runtime runner completed every observation; interpreter batching reduce
 from a 900-second timeout at 47.9 million instructions to two complete runs in 759.31 and 739.36
 seconds. Exact qualification also found and fixed a halted-owner lost-wake defect: an interrupt
 published while IF or priority blocked it could later become deliverable without a second
-publication edge. The APIC/PIC regression and the complete current 429-test PC suite pass in debug,
-release, and under Thread Sanitizer. None of this proves a production free-running multiprocessor
-runtime, ordinary installed Linux lifecycle, or a notarized production package.
+publication edge. A built-in callback review then found APIC and PIC pending-work hooks invoked
+under their source locks; both now release those locks before calling into the scheduler. Direct
+re-entry regressions and a concurrent two-owner clock/input/interrupt workload are retained. The
+complete current 440-test PC suite passes in debug, optimized release, and under Thread Sanitizer.
+None of this proves a production free-running multiprocessor runtime, ordinary installed Linux
+lifecycle, or a notarized production package.
 
 Release remains blocked by four boundaries:
 
@@ -50,8 +53,9 @@ Release remains blocked by four boundaries:
    private executor storage cannot be invalidated or recycled during native entry. Free-running
    delivery/acknowledgement, cross-vCPU self-modifying-code proof, external/shared mappings, and the
    complete tier-pair matrix remain open. A machine-scoped guest device-entry domain now covers
-   MMIO/PIO/PCI callbacks, but asynchronous built-in paths and public extension devices still need
-   the documented callback-graph and free-running race audit.
+   MMIO/PIO/PCI callbacks, and the built-in callback source-lock audit is regression protected.
+   Pause/reset/snapshot/hot-unplug/teardown under sustained workers, public extension devices, and
+   future shared mappings still need the documented lifecycle and callback-graph qualification.
 3. Only `compat-v1` is launchable. The selected x86-64-v2 feature set is not yet completely
    implemented, independently referenced, migration-stable, and registered as a guest ABI.
 4. Exact clean source commit `5c07bcf44` has two repeated single-vCPU PVH userspace and
@@ -66,8 +70,8 @@ Release remains blocked by four boundaries:
 | Gate | Status | Evidence / reason |
 |---|---|---|
 | Public product admission | **Safe, closed** | `DoryReleaseSupportPolicy` keeps translated x86_64 Linux unavailable; daemon bootstrap requires explicit qualification authority. |
-| Current PC/device concurrency validation | **Pass at source-test scope** | Current head passes all 429 PC tests across 56 suites in debug, release, and under Thread Sanitizer with no race report, plus 35 runner tests across 4 suites in debug and release. The artifact-backed Linux integration is separate and is not counted as boot evidence. |
-| Optimized x86 qualification graph | **Pass at current implementation head** | With `DORY_X86_OPTIMIZED_QUALIFICATION=1`, the isolated release graph passes DBT 1,470 tests/141 suites, decode audit 135/22, PC 429/56, firmware 48/12, runner 35/4, and qualification 7/2. The graph excludes unrelated `DorydKitTests` without exposing debug-only injection hooks in production. This is current source-test evidence, not a signed boot receipt. |
+| Current PC/device concurrency validation | **Pass at source-test scope** | Current head passes all 440 PC tests across 56 suites in debug, optimized release, and under Thread Sanitizer with no race report. The retained runner graph passes 35 tests across 4 suites in debug and release; it was not relabeled as current boot evidence. The artifact-backed Linux integration is separate and is not counted as boot evidence. |
+| Optimized x86 qualification graph | **Pass; current PC slice refreshed** | With `DORY_X86_OPTIMIZED_QUALIFICATION=1`, current head passes PC 440/56. The previously retained unchanged groups pass DBT 1,470/141, decode audit 135/22, firmware 48/12, runner 35/4, and qualification 7/2. The graph excludes unrelated `DorydKitTests` without exposing debug-only injection hooks in production. This is source-test evidence, not a signed boot receipt. |
 | Release Linux runner build | **Pass** | The release PVH runner and content-addressed fixture importer build in the optimized qualification graph. |
 | Release register-loop benchmark | **Provisional pass** | Current 5,000,000-instruction run: interpreter 1.13 MIPS, baseline JIT 746.17 MIPS, tier-one JIT 380.92 MIPS. This is a regression probe, not a ship gate. |
 | Reproducible PVH inputs | **Pass on reviewed host** | A clean checkout reproduced and re-verified the pinned ISO-derived kernel, initrd, and symbols, then published all three through the content-addressed importer with exact manifest hashes. |
@@ -77,8 +81,8 @@ Release remains blocked by four boundaries:
 | Real SMP | **Fail for production admission** | An internal exact-two-vCPU interpreter policy now executes ordinary and locked guest instructions concurrently and proves real owner-thread overlap. It still rendezvous-batches through the coordinator, excludes extension devices, has no current Linux SMP receipt or scaling result, and leaves every public/native/mixed pair denied. |
 | x86-64-v2 guest ABI | **Fail** | Profile registry still exposes only `baselineV1` / `compatibleV1`. |
 | CPU scalar/locked range domain | **Pass at unit/integration scope** | Checked byte-array/mmap/translated/PC RAM, direct native loads/stores, aligned native atomics, interpreter unaligned and split-backing locked fallbacks, and interpreter/native CMPXCHG16B all enter one backing-address range authority. Missing authority makes direct native atomics fail closed. |
-| Guest device-entry domain | **Pass at source-test scope** | All vCPU physical buses and the port bus share one recursive per-machine domain for MMIO, ECAM, PCI BAR, and PIO callbacks. Ordinary RAM and DMA synchronization stay outside it. Full PC testing found and retained a regression for an xHCI MMIO/DMA lock cycle; the corrected boundary passes the device-heavy TSan matrix. Asynchronous backend and extension-device qualification remains open. |
-| Complete SMP memory contract | **Fail** | Worker-owned translation acknowledgement, current-device DMA range participation, private-executor code-storage hazard protection, and the conservative guest device-entry boundary are implemented and tested. The interpreter pair passes initial SB/LB/message-passing/MFENCE and XCHG/XADD/CMPXCHG cells, exact budget/fault tests, an external page-table invalidation test, and async poweroff join. IRIW, the remaining fence/locked/split cases, guest-driven local/remote TLB campaigns, cross-vCPU SMC/DMA, asynchronous callback audit, and every other tier/count remain open. |
+| Guest device-entry domain | **Pass at source-test scope** | All vCPU physical buses and the port bus share one recursive per-machine domain for MMIO, ECAM, PCI BAR, and PIO callbacks. Ordinary RAM and DMA synchronization stay outside it. Full PC testing retained the xHCI MMIO/DMA lock-cycle regression; the built-in source-callback audit found and repaired APIC/PIC callback-under-lock defects. Re-entry and concurrent two-owner callback tests pass under TSan. Lifecycle and extension-device qualification remains open. |
+| Complete SMP memory contract | **Fail** | Worker-owned translation acknowledgement, current-device DMA range participation, private-executor code-storage hazard protection, the conservative guest device-entry boundary, and the built-in callback source-lock audit are implemented and tested. The interpreter pair passes initial SB/LB/message-passing/MFENCE and XCHG/XADD/CMPXCHG cells, exact budget/fault tests, an external page-table invalidation test, async callback traffic, and async poweroff join. IRIW, the remaining fence/locked/split cases, guest-driven local/remote TLB campaigns, cross-vCPU SMC/DMA, lifecycle/teardown races, public extensions, and every other tier/count remain open. |
 | Release reproducibility | **Partial** | Fixture and candidate identities are content-addressed, and four clean exact-commit `5c07bcf44` PVH receipts bind one Developer-ID-signed runner across baseline JIT and interpreter. Twenty-run stability, notarized product packaging, the supported-host/guest/device matrix, and UEFI lifecycle receipts do not yet exist. |
 
 ## Measurements that must not be conflated
@@ -346,10 +350,18 @@ keeps all raw host-address prediction disabled.
     and xHCI disconnect tests now use dedicated host threads and explicit start observations. The
     exact three-test sanitizer run passes, followed by the complete 429-test/56-suite PC target
     under Thread Sanitizer.
+38. The built-in asynchronous callback source-lock audit found two concrete defects: local APIC
+    injection/timer expiry and PIC pending-request publication called scheduler work while holding
+    their local state locks. Both now publish the atomic state under lock, release it, and only then
+    invoke the scheduler. Synchronous re-entry regressions cover APIC/PIC/PIT/UART/PS2/RTC/HPET and
+    USB HID/UVC. A real two-owner guest UART loop also survives 512 concurrent host clock, input,
+    APIC, and power publications. The complete 440-test/56-suite PC target passes in debug,
+    optimized release, and under Thread Sanitizer.
 
 These fixes establish a genuine but narrow concurrent interpreter pair. They do not substitute for
-asynchronous device callback audit, complete cross-vCPU translation/code-lifetime proof, the full
-tier/count matrix, Linux SMP and scaling evidence, UEFI lifecycle, or supported-host campaigns.
+pause/reset/snapshot/hot-unplug/teardown proof, public-extension callback qualification, complete
+cross-vCPU translation/code-lifetime proof, the full tier/count matrix, Linux SMP and scaling
+evidence, UEFI lifecycle, or supported-host campaigns.
 
 ## Remaining engineering work
 
@@ -397,10 +409,10 @@ is implemented; the remaining contract is not just more stress on that lock:
   executable cache can recycle storage.
 - Audit every external/shared-memory writer for RAM ordering, page-table invalidation, and
   translated-code generation revocation.
-- Complete the asynchronous device callback graph in
-  `docs/virtualization/x86-device-shared-state-audit.md`. The machine guest-entry domain is present,
-  but clock/input/reset/deferred-completion/interrupt sinks and public MMIO/PCI extensions still
-  need sustained-SMP and teardown qualification.
+- Preserve the completed built-in callback source-lock graph in
+  `docs/virtualization/x86-device-shared-state-audit.md`, then add sustained
+  pause/reset/snapshot/hot-unplug/teardown campaigns and require public MMIO/PCI extensions to
+  provide the same callback, DMA, invalidation, and lifecycle proof before admission.
 - Execute the full interpreter/baseline/optimizing pair matrix for TSO, locks, fences, TLBs, DMA,
   self-modifying code, and code-cache rotation at 1, 2, and 4 vCPUs.
 
@@ -467,21 +479,20 @@ Do not change public availability until all of these are true:
 ## Immediate next code slice
 
 Persistent owner jobs, the conservative machine device-entry boundary, single-vCPU PVH parity,
-interpreter viability, and an internal exact-two-vCPU interpreter admission are implemented. The
-first guest-code cells cover SB, LB, message passing, MFENCE, XCHG, XADD, and CMPXCHG with proven
-owner overlap. Baseline, mixed, optimizing, caller extension devices, and product admission remain
-denied by default. The next slice is:
+interpreter viability, an internal exact-two-vCPU interpreter admission, and the built-in callback
+source-lock audit are implemented. The first guest-code cells cover SB, LB, message passing,
+MFENCE, XCHG, XADD, and CMPXCHG with proven owner overlap. Baseline, mixed, optimizing, caller
+extension devices, and product admission remain denied by default. The next slice is:
 
-1. Finish the built-in asynchronous callback review and add concurrent clock/input/reset,
-   completion/interrupt, hot-unplug, and teardown tests. Require each admitted
-   `platformMMIODevices`/`pciFunctions` implementation to declare and prove its callback, DMA,
-   interrupt-publication, and teardown contract.
-2. Add guest-driven page-table rewrite plus local and remote targeted/global invalidation while the
+1. Add guest-driven page-table rewrite plus local and remote targeted/global invalidation while the
    other owner is executing. Then add CPU and DMA mutation/fetch of active code, protected-page
    rotation, and generation-publication tests.
-3. Complete the interpreter-pair memory matrix: IRIW, SFENCE/LFENCE, the remaining locked families,
+2. Complete the interpreter-pair memory matrix: IRIW, SFENCE/LFENCE, the remaining locked families,
    ordinary-reader mixtures, unaligned/cache-line/page splits, faulting second pages, and 8/16-byte
    compare/exchange. Add pause/reset/snapshot/teardown races and exact stop arbitration for each.
+3. Extend the callback work through concurrent reset, completion/interrupt, hot-unplug, snapshot,
+   and teardown. Require each admitted `platformMMIODevices`/`pciFunctions` implementation to
+   declare and prove its callback, DMA, interrupt-publication, and lifecycle contract.
 4. Replace coordinator rendezvous batching with the documented sustained owner-loop/quiescence
    protocol, then demonstrate a shared-memory workload with real host overlap and at least 1.6x
    two-vCPU throughput over one vCPU without changing correctness policy.
