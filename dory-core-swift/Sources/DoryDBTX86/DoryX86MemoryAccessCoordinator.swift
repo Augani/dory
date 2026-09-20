@@ -1,4 +1,5 @@
 import Darwin
+import DoryJITRuntimeC
 import Foundation
 
 /// Machine-owned byte-range rendezvous for guest RAM.
@@ -37,8 +38,31 @@ public final class DoryX86MemoryAccessCoordinator: @unchecked Sendable {
     ranges: [Range<UInt64>],
     _ operation: () throws -> Result
   ) rethrows -> Result {
+    if isInsideCoveringOrdinaryBatch(ranges) { return try operation() }
     let lease = acquireOrdinary(ranges: ranges)
     defer { lease.release() }
+    return try operation()
+  }
+
+  /// Coalesces a bounded owner-thread sequence of ordinary accesses beneath one admitted lease.
+  /// Nested ordinary ranges covered by the batch bypass coordinator bookkeeping, but the outer
+  /// lease remains active throughout: overlapping exclusive work still waits, and an exclusive
+  /// access issued by this same thread retains the coordinator's existing reentrant semantics.
+  public func withOrdinaryBatchAccess<Result>(
+    range: Range<UInt64>,
+    _ operation: () throws -> Result
+  ) rethrows -> Result {
+    precondition(!range.isEmpty, "memory access batch requires a nonempty range")
+    let lease = acquireOrdinary(ranges: [range])
+    let reference = UnsafeRawPointer(bitPattern: UInt(opaqueReference))
+    precondition(
+      dory_memory_access_batch_begin(reference, range.lowerBound, range.upperBound) == 0,
+      "nested memory access batches are unsupported"
+    )
+    defer {
+      dory_memory_access_batch_end(reference)
+      lease.release()
+    }
     return try operation()
   }
 
@@ -57,6 +81,18 @@ public final class DoryX86MemoryAccessCoordinator: @unchecked Sendable {
 
   var waitingExclusiveCount: Int {
     condition.withLock { waitingExclusive.count }
+  }
+
+  var activeLeaseCount: Int {
+    condition.withLock { active.count }
+  }
+
+  private func isInsideCoveringOrdinaryBatch(_ ranges: [Range<UInt64>]) -> Bool {
+    guard !ranges.isEmpty else { return false }
+    let reference = UnsafeRawPointer(bitPattern: UInt(opaqueReference))
+    return ranges.allSatisfy {
+      dory_memory_access_batch_contains(reference, $0.lowerBound, $0.upperBound) != 0
+    }
   }
 
   private func acquire(

@@ -1204,7 +1204,12 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
     guard byteCount > 0 else { return [] }
     let readContext = overrideContext ?? context
     var result: [UInt8] = []
-    result.reserveCapacity(allowShortRead ? min(byteCount, 4_096) : byteCount)
+    // Instruction decoding usually consumes one physical fetch. Let that array flow directly to
+    // the decoder instead of reserving and copying a second buffer; only a proven cross-page read
+    // needs accumulation. Ordinary data reads retain their exact preallocation behavior.
+    if access != .instructionFetch {
+      result.reserveCapacity(allowShortRead ? min(byteCount, 4_096) : byteCount)
+    }
     var cursor = address
     while result.count < byteCount {
       var consumedByteCount = 0
@@ -1224,8 +1229,13 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
               throw pagingUnit.unavailableBackingFault(
                 linearAddress: cursor, access: access, context: readContext)
             }
+            if result.isEmpty, bytes.count == byteCount { return bytes }
             result += bytes
             consumedByteCount = bytes.count
+            // A short physical fetch marks a backing/device boundary, even when it lies inside
+            // one translated linear page. Return the admitted prefix so the decoder can decide
+            // whether the instruction is complete before any access crosses that boundary.
+            if allowShortRead, bytes.count < count { return result }
           } catch let error as DoryX86MemoryError {
             throw pagingUnit.normalizeBackingFault(
               error, linearAddress: cursor, access: access, context: readContext)

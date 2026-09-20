@@ -4,6 +4,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+int32_t dory_memory_access_batch_begin(
+    const void *coordinator,
+    uint64_t lower_bound,
+    uint64_t upper_bound);
+void dory_memory_access_batch_end(const void *coordinator);
+uint8_t dory_memory_access_batch_contains(
+    const void *coordinator,
+    uint64_t lower_bound,
+    uint64_t upper_bound);
+
 typedef struct dory_jit_region dory_jit_region;
 typedef struct dory_jit_tlb dory_jit_tlb;
 typedef struct dory_jit_block_cache dory_jit_block_cache;

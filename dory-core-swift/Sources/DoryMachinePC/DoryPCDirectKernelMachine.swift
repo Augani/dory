@@ -16,12 +16,25 @@ final class DoryPCPendingWorkWake: @unchecked Sendable {
   private var waiting: [Bool]
   private var coordinatorWaiting = false
   private var dispatchThreads: [Thread?]
+  private let pendingPollBytes: [UnsafeMutablePointer<UInt8>]
 
   init(processorCount: Int = 1) {
     precondition(processorCount > 0)
     generations = .init(repeating: 0, count: processorCount)
     waiting = .init(repeating: false, count: processorCount)
     dispatchThreads = .init(repeating: nil, count: processorCount)
+    pendingPollBytes = (0..<processorCount).map { _ in
+      let pointer = UnsafeMutablePointer<UInt8>.allocate(capacity: 1)
+      pointer.initialize(to: 0)
+      return pointer
+    }
+  }
+
+  deinit {
+    for pointer in pendingPollBytes {
+      pointer.deinitialize(count: 1)
+      pointer.deallocate()
+    }
   }
 
   /// Marks every vCPU as synchronously dispatched by `thread`. The serialized fallback scheduler
@@ -56,6 +69,9 @@ final class DoryPCPendingWorkWake: @unchecked Sendable {
     condition.lock()
     precondition(generations.indices.contains(processor))
     publication()
+    // Interpreter batches poll the same publication edge as generated code. Publish the device
+    // or translation mutation first, then make the edge visible with release ordering.
+    dory_atomic_u8_store_release(pendingPollBytes[processor], 1)
     // Synchronous device work is already owned by this dispatch pass. In particular PIC
     // acknowledgement republishes masked requests: treating that as an asynchronous edge
     // would spin forever on an undeliverable IRQ (and advance deterministic time).
@@ -72,6 +88,9 @@ final class DoryPCPendingWorkWake: @unchecked Sendable {
   func signalAll(publishing publication: () -> Void) {
     condition.lock()
     publication()
+    for pointer in pendingPollBytes {
+      dory_atomic_u8_store_release(pointer, 1)
+    }
     var changed = false
     for processor in generations.indices where dispatchThreads[processor] !== Thread.current {
       generations[processor] = nextGeneration(after: generations[processor])
@@ -93,6 +112,13 @@ final class DoryPCPendingWorkWake: @unchecked Sendable {
     condition.unlock()
   }
 
+  /// Lock-free poll used between interpreted instructions. Command notifications do not set this
+  /// byte because a command is only published while the owner is already outside guest code.
+  func hasPendingWork(forProcessor processor: Int) -> Bool {
+    precondition(pendingPollBytes.indices.contains(processor))
+    return dory_atomic_u8_load_acquire(pendingPollBytes[processor]) != 0
+  }
+
   /// Clears native poll bytes only if no asynchronous edge was published after `observed`.
   /// Publication and acknowledgement use the same lock, so either the clear happens first and a
   /// later publisher restores the byte, or the publication happens first and the clear declines.
@@ -107,6 +133,7 @@ final class DoryPCPendingWorkWake: @unchecked Sendable {
     precondition(generations.indices.contains(processor))
     guard generations[processor] == observed else { return false }
     clear()
+    dory_atomic_u8_store_release(pendingPollBytes[processor], 0)
     return true
   }
 
@@ -124,6 +151,7 @@ final class DoryPCPendingWorkWake: @unchecked Sendable {
         continue
       }
       clear(processor)
+      dory_atomic_u8_store_release(pendingPollBytes[processor], 0)
     }
     return complete
   }
@@ -1883,10 +1911,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         }
 
         let remaining = maximumInstructions - completed
-        let reservationLimit =
-          baselineJITs.isEmpty
-          ? remaining
-          : UInt64(baselineInstructionBudget(maximumInstructions: remaining))
+        let reservationLimit = UInt64(
+          executionInstructionBudget(maximumInstructions: remaining)
+        )
         let executionSample = hostTimeSample()
         try dispatch(
           .execute(maximumInstructions: reservationLimit),
@@ -1911,7 +1938,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             if result.counters.instructionCount > 1 {
               advanceClocks(by: result.counters.instructionCount - 1)
             }
-            advanceTSCs(byMachineTicks: result.counters.instructionCount)
+            advanceTSCs(
+              byMachineTicks: singleInterpreterOwnsDeterministicTSC
+                ? min(result.counters.instructionCount, 1)
+                : result.counters.instructionCount
+            )
           }
           recordHostTime(.clockAdvancement, since: sample)
         } else if clockSource.monotonicNanoseconds != nil {
@@ -1920,7 +1951,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           if result.counters.instructionCount > 1 {
             advanceClocks(by: result.counters.instructionCount - 1)
           }
-          advanceTSCs(byMachineTicks: result.counters.instructionCount)
+          advanceTSCs(
+            byMachineTicks: singleInterpreterOwnsDeterministicTSC
+              ? min(result.counters.instructionCount, 1)
+              : result.counters.instructionCount
+          )
         }
         if let stop = powerStop(instructionCount: completed) {
           let reason: DoryPCRunSession.TerminationReason =
@@ -2167,10 +2202,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         }
 
         let remaining = maximumInstructions - completed
-        let reservationLimit =
-          baselineJITs.isEmpty
-          ? UInt64(1)
-          : UInt64(baselineInstructionBudget(maximumInstructions: remaining))
+        let reservationLimit = UInt64(
+          executionInstructionBudget(maximumInstructions: remaining)
+        )
         let executionSample = hostTimeSample()
         try dispatchWorker(maximumInstructions: min(remaining, reservationLimit))
         let result = try waitForWorkerResult(
@@ -2201,7 +2235,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             if result.counters.instructionCount > 1 {
               advanceClocks(by: result.counters.instructionCount - 1)
             }
-            advanceTSCs(byMachineTicks: result.counters.instructionCount)
+            advanceTSCs(
+              byMachineTicks: singleInterpreterOwnsDeterministicTSC
+                ? min(result.counters.instructionCount, 1)
+                : result.counters.instructionCount
+            )
           }
           recordHostTime(.clockAdvancement, since: sample)
         } else if clockSource.monotonicNanoseconds != nil {
@@ -2210,7 +2248,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           if result.counters.instructionCount > 1 {
             advanceClocks(by: result.counters.instructionCount - 1)
           }
-          advanceTSCs(byMachineTicks: result.counters.instructionCount)
+          advanceTSCs(
+            byMachineTicks: singleInterpreterOwnsDeterministicTSC
+              ? min(result.counters.instructionCount, 1)
+              : result.counters.instructionCount
+          )
         }
         if let stop = powerStop(instructionCount: completed) {
           let reason: DoryPCRunSession.TerminationReason =
@@ -3274,6 +3316,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     maximumInstructions: UInt64,
     jitInstructionBudget: Int?
   ) throws -> ProcessorExecution {
+    if baselineJITs.isEmpty {
+      return executeInterpreterBatch(
+        processor: processor,
+        state: &state,
+        maximumInstructions: maximumInstructions
+      )
+    }
     let mode = executionMode(state)
     var deoptimizedPrefix: DoryARM64ExecutionSummary?
     var attemptedJIT: DoryARM64BaselineExecutor?
@@ -3411,6 +3460,136 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     )
   }
 
+  /// Runs ordinary interpreter work on its owning vCPU stack without a coordinator handoff after
+  /// every instruction. The owner still returns at every architecturally observable boundary:
+  /// an asynchronous device/translation publication, a tracked page-table write, REP progress,
+  /// interrupt/NMI eligibility, HLT, or exception. The coordinator caps the reservation at the
+  /// next accepted timer deadline, so deterministic clock and interrupt behavior remains identical
+  /// to native execution batches.
+  private func executeInterpreterBatch(
+    processor: Int,
+    state: inout DoryX86ArchitecturalState,
+    maximumInstructions: UInt64
+  ) -> ProcessorExecution {
+    precondition(maximumInstructions > 0)
+    // A whole-RAM lease is useful only for the sole-vCPU interpreter campaign. Multi-vCPU
+    // machines deliberately preserve per-instruction range admission so startup, overlap, and
+    // locked transactions on another owner can rendezvous without waiting for a batch boundary.
+    guard processorSlots.count == 1 else {
+      return executeInterpreterBatchBody(
+        processor: processor,
+        state: &state,
+        maximumInstructions: maximumInstructions
+      )
+    }
+    let physicalMemory = physicalMemories[processor]
+    let base = physicalMemory.hostAddressSpaceBase
+    let byteCount = physicalMemory.hostAddressSpaceByteCount
+    let upperBound = base.addingReportingOverflow(UInt64(byteCount))
+    guard byteCount > 0, !upperBound.overflow else {
+      return executeInterpreterBatchBody(
+        processor: processor,
+        state: &state,
+        maximumInstructions: maximumInstructions
+      )
+    }
+    return physicalMemory.memoryAccessCoordinator.withOrdinaryBatchAccess(
+      range: base..<upperBound.partialValue
+    ) {
+      executeInterpreterBatchBody(
+        processor: processor,
+        state: &state,
+        maximumInstructions: maximumInstructions
+      )
+    }
+  }
+
+  private func executeInterpreterBatchBody(
+    processor: Int,
+    state: inout DoryX86ArchitecturalState,
+    maximumInstructions: UInt64
+  ) -> ProcessorExecution {
+    var completed: UInt64 = 0
+    while completed < maximumInstructions {
+      // Native dispatchers treat RDTSC as a time boundary. A pure single-vCPU interpreter can
+      // preserve the same per-instruction TSC without giving up its owner-side batch: advance the
+      // coherent TSC before every instruction after the first, then let the coordinator publish
+      // the final tick when the batch returns.
+      if completed > 0, singleInterpreterOwnsDeterministicTSC {
+        advanceInterpreterTSC(&state, byMachineTicks: 1)
+      }
+      let interruptShadowBefore = state.interruptShadow
+      let interruptEnabledBefore = state.rflags.contains(.interruptEnable)
+      let nmiBlockedBefore = state.nmiBlocked
+      let result = interpreters[processor].step(
+        state: &state,
+        memory: physicalMemories[processor],
+        mode: executionMode(state),
+        pagingUnit: pagingUnits[processor],
+        translatedMemory: translatedMemories[processor],
+        ioBus: ioBus
+      )
+      completed += 1
+      switch result {
+      case .retired(let instruction):
+        if case .interruptReturn = instruction.operation {
+          processorSlots[processor].retiredInterruptReturns &+= 1
+        }
+        if pendingWorkWake.hasPendingWork(forProcessor: processor)
+          || physicalMemories[processor].hasPendingPageTableWrite
+          || interruptShadowBefore != nil
+          || state.interruptShadow != nil
+          || interruptEnabledBefore != state.rflags.contains(.interruptEnable)
+          || nmiBlockedBefore != state.nmiBlocked
+        {
+          return .init(
+            result: .yielded,
+            instructionCount: completed,
+            jitTier: nil,
+            jitInstructionCount: 0,
+            interpreterInstructionCount: completed,
+            jitBlockCount: 0
+          )
+        }
+      case .yielded:
+        return .init(
+          result: .yielded,
+          instructionCount: completed,
+          jitTier: nil,
+          jitInstructionCount: 0,
+          interpreterInstructionCount: completed,
+          jitBlockCount: 0
+        )
+      case .halted:
+        return .init(
+          result: .halted,
+          instructionCount: completed,
+          jitTier: nil,
+          jitInstructionCount: 0,
+          interpreterInstructionCount: completed,
+          jitBlockCount: 0
+        )
+      case .exception(let exception):
+        return .init(
+          result: .exception(exception),
+          instructionCount: completed,
+          jitTier: nil,
+          jitInstructionCount: 0,
+          interpreterInstructionCount: completed,
+          jitBlockCount: 0
+        )
+      }
+    }
+    return .init(
+      result: .retired,
+      instructionCount: completed,
+      jitTier: nil,
+      jitInstructionCount: 0,
+      interpreterInstructionCount: completed,
+      jitBlockCount: 0
+    )
+  }
+
   private func selectedJIT(
     forProcessor processor: Int,
     state: DoryX86ArchitecturalState,
@@ -3457,19 +3636,39 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       ? optimizingJIT : baselineJIT
   }
 
-  private func baselineInstructionBudget(maximumInstructions: UInt64) -> Int {
+  private func executionInstructionBudget(maximumInstructions: UInt64) -> Int {
     // SMP fairness keeps a 64-instruction quantum while multiple processors can run. Once every
-    // other processor has parked, a larger bounded quantum avoids needless Swift round trips.
-    // Interrupt deadlines below still shorten either batch whenever observable work is due sooner.
+    // other processor has parked, a larger bounded quantum avoids needless Swift round trips for
+    // both the interpreter and native tiers. Interrupt deadlines below still shorten either batch
+    // whenever observable work is due sooner.
     let runnableProcessorCount = processorSlots.lazy.filter {
       $0.state != nil && !$0.isHalted && $0.lifecycle == .running
     }.prefix(2).count
-    let fairnessLimit: UInt64 = runnableProcessorCount == 1 ? 4_096 : 64
+    let soleProcessorLimit: UInt64 =
+      baselineJITs.isEmpty && clockSource.monotonicNanoseconds != nil ? 1 : 4_096
+    let fairnessLimit: UInt64 =
+      runnableProcessorCount == 1 ? soleProcessorLimit : (baselineJITs.isEmpty ? 1 : 64)
     var budget = Int(min(maximumInstructions, fairnessLimit))
     if let deadline = ticksUntilNextAcceptedInterrupt() {
       budget = min(budget, Int(min(deadline, UInt64(Int.max))))
     }
     return max(1, budget)
+  }
+
+  private var singleInterpreterOwnsDeterministicTSC: Bool {
+    processorCount == 1 && baselineJITs.isEmpty && clockSource.monotonicNanoseconds == nil
+  }
+
+  private func advanceInterpreterTSC(
+    _ state: inout DoryX86ArchitecturalState,
+    byMachineTicks ticks: UInt64
+  ) {
+    let tscTicks = scaledDeviceTicks(
+      machineTicks: ticks,
+      frequencyHz: interpreter.profile.virtualTSCFrequencyHz,
+      remainder: &tscClockRemainder
+    )
+    state.tsc &+= tscTicks
   }
 
   private func advanceClocks(by ticks: UInt64) {

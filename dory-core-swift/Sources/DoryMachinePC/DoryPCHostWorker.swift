@@ -225,9 +225,9 @@ final class DoryPCFrozenInstructionMemory: DoryX86Memory {
       throw DoryX86MemoryError.unmapped(
         address: address, byteCount: maximumCount, access: .instructionFetch)
     }
-    // The interpreter starts incremental decoding with one byte. This internal observation
-    // point lets tests rendezvous while both interpreter steps are actually on their stacks.
-    if address == self.address, maximumCount == 1 { onFirstFetch?() }
+    // This internal observation point lets tests rendezvous while both interpreter steps are
+    // actually on their stacks. The decoder may admit the current page in one bounded fetch.
+    if address == self.address { onFirstFetch?() }
     let offset = Int(address - self.address)
     return Array(bytes[offset..<min(bytes.count, offset + maximumCount)])
   }

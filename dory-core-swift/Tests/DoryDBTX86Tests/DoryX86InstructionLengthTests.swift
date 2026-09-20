@@ -142,9 +142,27 @@ import Testing
       #expect(DoryX86Interpreter().step(state: &state, memory: observed, mode: .long64)
         == .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: 0x1FFE)))
       #expect(state == before)
-      #expect(observed.fetches.map(\.count) == [1, 2])
+      // Both architecturally relevant bytes occupy the same linear page, so the interpreter may
+      // admit that page once. It must not fetch from the irrelevant following page.
+      #expect(observed.fetches.map(\.count) == [2])
       #expect(observed.dataReads == 0 && observed.dataWrites == 0)
     }
+  }
+
+  @Test func ordinaryInstructionsUseOneBoundedPageFetch() throws {
+    let physical = try DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [0x48, 0x83, 0xC0, 0x01] + Array(repeating: 0x90, count: 11)
+    )
+    let observed = FetchObservedMemory(physical)
+    var state = try state(mode: .long64, rip: 0x1000)
+    #expect(DoryX86Interpreter().step(state: &state, memory: observed, mode: .long64)
+      == .retired(try DoryX86Decoder().decode([0x48, 0x83, 0xC0, 0x01],
+        at: 0x1000, mode: .long64)))
+    #expect(state.registers.rax == 0xA6 && state.rip == 0x1004)
+    #expect(observed.fetches.count == 1)
+    #expect(observed.fetches[0].address == 0x1000)
+    #expect(observed.fetches[0].count == 15)
   }
 
   private var modes: [DoryX86ExecutionMode] { [.real16, .protected16, .protected32, .long64] }

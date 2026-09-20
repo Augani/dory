@@ -39,7 +39,11 @@ import Testing
     #expect(snapshot.runLoopStarts[0].processor == 0)
     #expect(snapshot.runLoopStops[0].processor == 0)
     #expect(snapshot.runLoopStarts[0].generation == snapshot.runLoopStops[0].generation)
-    #expect(snapshot.executions > 1)
+    if tier == .interpreter {
+      #expect(snapshot.executions == 1)
+    } else {
+      #expect(snapshot.executions > 1)
+    }
     #expect(snapshot.distinctThreads == 1)
     #expect(snapshot.pendingWorkThreads == Set(snapshot.threads.values))
     #expect(snapshot.active == 0)
@@ -78,6 +82,56 @@ import Testing
     #expect(snapshot.executions == 0)
   }
 
+  @Test func singleProcessorInterpreterBatchPollsAsynchronousPower() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+    let executing = DispatchSemaphore(value: 0)
+    machine.observeWorkers {
+      if case .executing = $0 { executing.signal() }
+    }
+    let run = HaltedMachineRun(machine: machine, maximumInstructions: 1_000_000_000)
+    try #require(executing.wait(timeout: .now() + 2) == .success)
+
+    machine.powerController.request(.powerOff)
+    guard case .poweredOff(let instructionCount) = try run.finish() else {
+      Issue.record("Expected asynchronous poweroff")
+      return
+    }
+    #expect(instructionCount > 0)
+    #expect(instructionCount < 4_096)
+  }
+
+  @Test func singleProcessorInterpreterBatchStopsAtTrackedPageTableWrite() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    // mov dword ptr [0x100],1; nop
+    try machine.load(
+      kernel: makeELF(code: [0xC7, 0x04, 0x25, 0, 1, 0, 0, 1, 0, 0, 0, 0x90]),
+      commandLine: "x"
+    )
+    machine.physicalMemory.trackPageTablePage(containing: 0x100)
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+
+    #expect(try machine.run(maximumInstructions: 2) == .instructionBudget(2))
+    #expect(probe.snapshot().executions == 2)
+    let diagnostics = machine.translationInvalidationDiagnostics
+    #expect(diagnostics.requiredGenerations == [1])
+    #expect(diagnostics.acknowledgedGenerations == [1])
+  }
+
+  @Test func hostMonotonicInterpreterRetainsPerInstructionClockBoundaries() throws {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      clockSource: .hostMonotonic { 0 }
+    )
+    try machine.load(kernel: makeELF(code: [0x90, 0x90, 0x90, 0x90]), commandLine: "x")
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+
+    #expect(try machine.run(maximumInstructions: 4) == .instructionBudget(4))
+    #expect(probe.snapshot().executions == 4)
+  }
+
   @Test func singleProcessorWorkerOwnsPageTableInvalidationAcknowledgement() throws {
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: 2 * 1024 * 1024,
@@ -112,7 +166,7 @@ import Testing
     #expect(snapshot.runLoopStarts.map(\.generation) == [1, 2])
     #expect(snapshot.runLoopStops.map(\.generation) == [1, 2])
     #expect(snapshot.distinctThreads == 1)
-    #expect(snapshot.executions == 8)
+    #expect(snapshot.executions == 2)
   }
 
   @Test func atomicCoordinatorIsSharedWithinOneMachineAndIsolatedAcrossMachines() throws {

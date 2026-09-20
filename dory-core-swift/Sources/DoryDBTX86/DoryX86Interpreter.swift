@@ -6992,15 +6992,54 @@ public struct DoryX86Interpreter: Sendable {
     mode: DoryX86ExecutionMode,
     maximumByteCount: Int
   ) throws -> DoryX86DecodedInstruction {
-    for requestedByteCount in 1...maximumByteCount {
-      let bytes = try memory.instructionBytes(
-        at: memoryAddress, maximumCount: requestedByteCount)
-      do {
+    var bytes: [UInt8] = []
+    while bytes.count < maximumByteCount {
+      // Fetch the rest of the current 4 KiB linear page in one operation. Reading ahead within
+      // that page cannot expose an additional paging access, while stopping at the boundary
+      // prevents a short instruction or complete invalid encoding from setting Accessed on an
+      // otherwise irrelevant following page. If decoding proves that the instruction continues,
+      // the next iteration admits precisely that page and preserves its architectural fault.
+      let (fetchAddress, addressOverflow) = memoryAddress.addingReportingOverflow(
+        UInt64(bytes.count)
+      )
+      if addressOverflow {
+        // Reissue the complete admitted span so the translated-memory boundary selects the same
+        // architectural overflow fault as incremental decoding. A complete final-byte
+        // instruction returns before this path and may still advance RIP through zero.
+        _ = try memory.instructionBytes(
+          at: memoryAddress,
+          maximumCount: bytes.count + 1
+        )
+        throw DoryX86MemoryError.addressOverflow(
+          address: memoryAddress,
+          byteCount: bytes.count + 1
+        )
+      }
+      let pageByteCount = Int(4_096 - (fetchAddress & 0xFFF))
+      let requestedByteCount = min(maximumByteCount - bytes.count, pageByteCount)
+      let fetched = try memory.instructionBytes(
+        at: fetchAddress, maximumCount: requestedByteCount)
+      if fetched.isEmpty {
+        // A conforming instruction fetch normally throws for an unavailable first byte. Keep a
+        // defensive truncated decode for synthetic memories that report an empty mapped span.
         return try decoder.decode(bytes, at: address, mode: mode)
+      }
+      let candidate: [UInt8]
+      if bytes.isEmpty {
+        // Keep the ordinary single-page path copy-free. Array assignment shares the fetched
+        // storage, and only an instruction proven to cross a page needs a cumulative buffer.
+        candidate = fetched
+      } else {
+        bytes.append(contentsOf: fetched)
+        candidate = bytes
+      }
+      do {
+        return try decoder.decode(candidate, at: address, mode: mode)
       } catch DoryX86DecodeError.truncated {
-        if bytes.count < requestedByteCount {
+        bytes = candidate
+        if fetched.count < requestedByteCount {
           _ = try memory.instructionBytes(
-            at: memoryAddress &+ UInt64(bytes.count),
+            at: fetchAddress &+ UInt64(fetched.count),
             maximumCount: 1
           )
         }

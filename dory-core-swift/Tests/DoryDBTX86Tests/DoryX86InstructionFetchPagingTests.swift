@@ -102,6 +102,22 @@ import Testing
     #expect(try translated.physicalInstructionAddress(at: 0x401000) == 0xA000)
   }
 
+  @Test func translatedFetchStopsAtAShortPhysicalBoundary() throws {
+    let backing = try memory(secondPTE: 0x9007)
+    try backing.write(at: 0x8000, bytes: [0x90])
+    let physical = ShortInstructionFetchMemory(backing: backing, admittedAddress: 0x8000)
+    var architecturalState = try state(cpl: 3)
+    architecturalState.rip = 0x400000
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: physical,
+      pagingUnit: .init(),
+      context: .init(state: architecturalState, mode: .long64)
+    )
+
+    #expect(try translated.instructionBytes(at: architecturalState.rip, maximumCount: 15) == [0x90])
+    #expect(physical.fetchAddresses == [0x8000])
+  }
+
   private func memory(
     firstPTE: UInt64 = 0x8007,
     secondPTE: UInt64,
@@ -132,6 +148,44 @@ import Testing
       control: .init(cr0: 0x8001_0011, cr2: 0x1234, cr3: 0x1000, cr4: cr4,
         efer: efer))
   }
+}
+
+private final class ShortInstructionFetchMemory: DoryX86Memory, @unchecked Sendable {
+  let backing: DoryX86ByteArrayMemory
+  let admittedAddress: UInt64
+  var fetchAddresses: [UInt64] = []
+
+  init(backing: DoryX86ByteArrayMemory, admittedAddress: UInt64) {
+    self.backing = backing
+    self.admittedAddress = admittedAddress
+  }
+
+  func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    fetchAddresses.append(address)
+    guard address == admittedAddress else {
+      throw DoryX86MemoryError.unmapped(
+        address: address, byteCount: maximumCount, access: .instructionFetch)
+    }
+    return try backing.instructionBytes(at: address, maximumCount: min(1, maximumCount))
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    try backing.read(at: address, byteCount: byteCount)
+  }
+
+  func validateRead(at address: UInt64, byteCount: Int) throws {
+    try backing.validateRead(at: address, byteCount: byteCount)
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    try backing.write(at: address, bytes: bytes)
+  }
+
+  func validateWrite(at address: UInt64, byteCount: Int) throws {
+    try backing.validateWrite(at: address, byteCount: byteCount)
+  }
+
+  func synchronize() { backing.synchronize() }
 }
 
 private final class FetchPermissionMemory: DoryX86Memory, @unchecked Sendable {

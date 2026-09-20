@@ -1,6 +1,7 @@
 import Darwin
 import Dispatch
 import DoryJITRuntimeC
+import Foundation
 import Testing
 
 @testable import DoryDBTX86
@@ -13,7 +14,7 @@ import Testing
 
     let overlappingStarted = DispatchSemaphore(value: 0)
     let overlappingFinished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    startMemoryAccessThread {
       overlappingStarted.signal()
       let lease = coordinator.acquireOrdinary(ranges: [0x1010..<0x1018])
       lease.release()
@@ -22,7 +23,7 @@ import Testing
     overlappingStarted.wait()
 
     let disjointFinished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    startMemoryAccessThread {
       let lease = coordinator.acquireOrdinary(ranges: [0x2000..<0x2008])
       lease.release()
       disjointFinished.signal()
@@ -40,7 +41,7 @@ import Testing
     let writerEntered = DispatchSemaphore(value: 0)
     let releaseWriter = DispatchSemaphore(value: 0)
     let writerFinished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    startMemoryAccessThread {
       let lease = coordinator.acquireExclusive(ranges: [0x3010..<0x3020])
       writerEntered.signal()
       releaseWriter.wait()
@@ -50,7 +51,7 @@ import Testing
     try waitUntil(timeout: .now() + 2) { coordinator.waitingExclusiveCount == 1 }
 
     let secondReaderEntered = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    startMemoryAccessThread {
       let lease = coordinator.acquireOrdinary(ranges: [0x3018..<0x301C])
       secondReaderEntered.signal()
       lease.release()
@@ -74,6 +75,39 @@ import Testing
     exclusive.release()
   }
 
+  @Test func boundedOrdinaryBatchReusesItsCoveringLeaseButNotOutsideRanges() {
+    let coordinator = DoryX86MemoryAccessCoordinator()
+    coordinator.withOrdinaryBatchAccess(range: 0x1000..<0x2000) {
+      #expect(coordinator.activeLeaseCount == 1)
+      coordinator.withOrdinaryAccess(ranges: [0x1010..<0x1020, 0x1FF0..<0x2000]) {
+        #expect(coordinator.activeLeaseCount == 1)
+      }
+      coordinator.withOrdinaryAccess(ranges: [0x3000..<0x3010]) {
+        #expect(coordinator.activeLeaseCount == 2)
+      }
+      #expect(coordinator.activeLeaseCount == 1)
+    }
+    #expect(coordinator.activeLeaseCount == 0)
+  }
+
+  @Test func boundedOrdinaryBatchRetainsExclusiveConflictUntilItsBoundary() throws {
+    let coordinator = DoryX86MemoryAccessCoordinator()
+    let writerStarted = DispatchSemaphore(value: 0)
+    let writerFinished = DispatchSemaphore(value: 0)
+    coordinator.withOrdinaryBatchAccess(range: 0x1000..<0x2000) {
+      startMemoryAccessThread {
+        writerStarted.signal()
+        let lease = coordinator.acquireExclusive(ranges: [0x1800..<0x1810])
+        lease.release()
+        writerFinished.signal()
+      }
+      writerStarted.wait()
+      try! waitUntil(timeout: .now() + 2) { coordinator.waitingExclusiveCount == 1 }
+      #expect(writerFinished.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
+    }
+    #expect(writerFinished.wait(timeout: .now() + 2) == .success)
+  }
+
   @Test func nativeLeaseBoundaryUsesTheSameAuthority() throws {
     let coordinator = DoryX86MemoryAccessCoordinator()
     let nativeToken = doryX86MemoryAccessBegin(
@@ -84,7 +118,7 @@ import Testing
     )
     try #require(nativeToken != 0)
     let ordinaryFinished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    startMemoryAccessThread {
       let lease = coordinator.acquireOrdinary(ranges: [0x7008..<0x7010])
       lease.release()
       ordinaryFinished.signal()
@@ -102,7 +136,7 @@ import Testing
     let exclusive = memory.memoryAccessCoordinator.acquireExclusive(ranges: ranges)
     let writeStarted = DispatchSemaphore(value: 0)
     let writeFinished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    startMemoryAccessThread {
       writeStarted.signal()
       try! memory.writeScalar(at: 16, value: 0x8877_6655_4433_2211, byteCount: 8)
       writeFinished.signal()
@@ -147,7 +181,7 @@ import Testing
       ranges: [lowerBound..<(lowerBound + UInt64(MemoryLayout<UInt64>.size))])
     let storeStarted = DispatchSemaphore(value: 0)
     let storeFinished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    startMemoryAccessThread {
       storeStarted.signal()
       fixture.storeResult = dory_jit_ranged_store_from_context(
         UnsafePointer(fixture.context),
@@ -185,7 +219,7 @@ import Testing
     let ordinary = memory.memoryAccessCoordinator.acquireOrdinary(ranges: ranges)
     let started = DispatchSemaphore(value: 0)
     let finished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    startMemoryAccessThread {
       var state = try! DoryX86ArchitecturalState(
         registers: .init(rax: 5, rsi: 0x101),
         rip: 0
@@ -212,7 +246,7 @@ import Testing
     let ordinary = memory.memoryAccessCoordinator.acquireOrdinary(ranges: ranges)
     let started = DispatchSemaphore(value: 0)
     let finished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    startMemoryAccessThread {
       var state = try! DoryX86ArchitecturalState(
         registers: .init(
           rax: 0x1111,
@@ -258,7 +292,7 @@ import Testing
     let ordinary = memory.memoryAccessCoordinator.acquireOrdinary(ranges: [ranges[1]])
     let started = DispatchSemaphore(value: 0)
     let finished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    startMemoryAccessThread {
       var state = try! DoryX86ArchitecturalState(
         registers: .init(rax: 4, rsi: address),
         rip: 0
@@ -285,6 +319,12 @@ import Testing
     }
     Issue.record("Timed out waiting for coordinator state")
   }
+}
+
+private func startMemoryAccessThread(_ operation: @escaping @Sendable () -> Void) {
+  let thread = Thread(block: operation)
+  thread.name = "dev.dory.tests.x86-memory-access"
+  thread.start()
 }
 
 private final class NativeRangedScalarFixture: @unchecked Sendable {

@@ -10,6 +10,43 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+static _Thread_local const void *dory_memory_access_batch_coordinator;
+static _Thread_local uint64_t dory_memory_access_batch_lower_bound;
+static _Thread_local uint64_t dory_memory_access_batch_upper_bound;
+
+int32_t dory_memory_access_batch_begin(
+    const void *coordinator,
+    uint64_t lower_bound,
+    uint64_t upper_bound) {
+    if (coordinator == NULL || lower_bound >= upper_bound ||
+        dory_memory_access_batch_coordinator != NULL) {
+        return -1;
+    }
+    dory_memory_access_batch_lower_bound = lower_bound;
+    dory_memory_access_batch_upper_bound = upper_bound;
+    dory_memory_access_batch_coordinator = coordinator;
+    return 0;
+}
+
+void dory_memory_access_batch_end(const void *coordinator) {
+    if (dory_memory_access_batch_coordinator != coordinator) {
+        return;
+    }
+    dory_memory_access_batch_coordinator = NULL;
+    dory_memory_access_batch_lower_bound = 0;
+    dory_memory_access_batch_upper_bound = 0;
+}
+
+uint8_t dory_memory_access_batch_contains(
+    const void *coordinator,
+    uint64_t lower_bound,
+    uint64_t upper_bound) {
+    return dory_memory_access_batch_coordinator == coordinator &&
+           lower_bound < upper_bound &&
+           dory_memory_access_batch_lower_bound <= lower_bound &&
+           upper_bound <= dory_memory_access_batch_upper_bound;
+}
+
 enum {
     dory_jit_tlb_magic = 0x544c4231,
     dory_jit_tlb_access_count = 3,
