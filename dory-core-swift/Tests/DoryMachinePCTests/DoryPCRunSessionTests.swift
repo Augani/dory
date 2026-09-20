@@ -204,6 +204,11 @@ import Testing
 
     let quiescence = session.requestQuiescence()
     #expect(quiescence == 1)
+    let quiescencePending = session.snapshot.pendingRequiredGenerations
+    #expect(
+      try session.acknowledgePendingWork(processor: 0, generation: quiescencePending[0]))
+    #expect(
+      try session.acknowledgePendingWork(processor: 1, generation: quiescencePending[1]))
     #expect(try session.acknowledgeQuiescence(processor: 0, generation: quiescence))
     #expect(try session.acknowledgeQuiescence(processor: 1, generation: quiescence))
     #expect(
@@ -229,12 +234,15 @@ import Testing
     }
     #expect(coalesced.value.allSatisfy { $0 == first })
 
+    let firstPending = session.snapshot.pendingRequiredGenerations
+    #expect(try session.acknowledgePendingWork(processor: 0, generation: firstPending[0]))
     #expect(try session.acknowledgeQuiescence(processor: 0, generation: first))
     #expect(
       !session.waitForQuiescence(
         generation: first,
         until: Date(timeIntervalSinceNow: 0.025)
       ))
+    #expect(try session.acknowledgePendingWork(processor: 1, generation: firstPending[1]))
     #expect(try session.acknowledgeQuiescence(processor: 1, generation: first))
     #expect(
       session.waitForQuiescence(
@@ -247,8 +255,47 @@ import Testing
     #expect(try session.quiescenceGenerationRequired(forProcessor: 0) == second)
     #expect(try session.quiescenceGenerationRequired(forProcessor: 1) == second)
     #expect(try !session.acknowledgeQuiescence(processor: 0, generation: first))
+    let secondPending = session.snapshot.pendingRequiredGenerations
+    #expect(try session.acknowledgePendingWork(processor: 0, generation: secondPending[0]))
+    #expect(try session.acknowledgePendingWork(processor: 1, generation: secondPending[1]))
     #expect(try session.acknowledgeQuiescence(processor: 0, generation: second))
     #expect(try session.acknowledgeQuiescence(processor: 1, generation: second))
+  }
+
+  @Test func pendingWorkReopensAnAcknowledgedQuiescenceBarrier() throws {
+    let session = DoryPCRunSession(processorCount: 2, instructionBudget: 10)
+    let quiescence = session.requestQuiescence()
+    let initialPending = session.snapshot.pendingRequiredGenerations
+
+    for processor in 0..<2 {
+      #expect(
+        try session.acknowledgePendingWork(
+          processor: processor,
+          generation: initialPending[processor]
+        ))
+    }
+    #expect(try session.acknowledgeQuiescence(processor: 0, generation: quiescence))
+
+    let republished = try session.publishPendingWork(forProcessor: 0)
+    #expect(try !session.acknowledgeQuiescence(processor: 0, generation: quiescence))
+    #expect(try session.acknowledgeQuiescence(processor: 1, generation: quiescence))
+    #expect(
+      !session.waitForQuiescence(
+        generation: quiescence,
+        until: Date(timeIntervalSinceNow: 0.025)
+      ))
+
+    #expect(
+      try session.acknowledgePendingWork(
+        processor: 0,
+        generation: republished[0]
+      ))
+    #expect(try session.acknowledgeQuiescence(processor: 0, generation: quiescence))
+    #expect(
+      session.waitForQuiescence(
+        generation: quiescence,
+        until: Date(timeIntervalSinceNow: 0.1)
+      ))
   }
 
   @Test func tenThousandConcurrentTerminationRequestsSelectOneStableReason() {

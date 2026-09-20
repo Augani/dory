@@ -147,6 +147,7 @@ final class DoryPCRunSession: @unchecked Sendable {
   private var pendingRequiredGenerations: [UInt64]
   private var pendingAcknowledgedGenerations: [UInt64]
   private var pendingRepublishAfterAcknowledgement: [Bool]
+  private var hasRequestedQuiescence = false
   private var quiescenceGeneration: UInt64 = 0
   private var quiescenceRequiredGenerations: [UInt64]
   private var quiescenceAcknowledgedGenerations: [UInt64]
@@ -500,6 +501,7 @@ final class DoryPCRunSession: @unchecked Sendable {
     if quiescenceRequiredGenerations != quiescenceAcknowledgedGenerations {
       return quiescenceGeneration
     }
+    hasRequestedQuiescence = true
     quiescenceGeneration = nextGeneration(after: quiescenceGeneration)
     quiescenceRequiredGenerations = .init(
       repeating: quiescenceGeneration,
@@ -524,7 +526,8 @@ final class DoryPCRunSession: @unchecked Sendable {
     defer { condition.unlock() }
     try validate(processor)
     guard quiescenceRequiredGenerations[processor] == generation,
-      quiescenceAcknowledgedGenerations[processor] != generation
+      quiescenceAcknowledgedGenerations[processor] != generation,
+      pendingRequiredGenerations[processor] == pendingAcknowledgedGenerations[processor]
     else { return false }
     quiescenceAcknowledgedGenerations[processor] = generation
     changedLocked()
@@ -652,6 +655,17 @@ final class DoryPCRunSession: @unchecked Sendable {
         pendingRepublishAfterAcknowledgement[processor] = true
       } else {
         pendingRequiredGenerations[processor] = nextGeneration(after: required)
+      }
+      if hasRequestedQuiescence,
+        quiescenceAcknowledgedGenerations[processor]
+          == quiescenceRequiredGenerations[processor]
+      {
+        // Work published after this worker acknowledged the active barrier invalidates that
+        // acknowledgement. Reuse the barrier generation so every waiter observes one continuous
+        // quiescence request, but require the affected owner to drain and acknowledge again.
+        let quiescence = quiescenceRequiredGenerations[processor]
+        quiescenceAcknowledgedGenerations[processor] =
+          quiescence == 1 ? .max : quiescence - 1
       }
     }
   }
