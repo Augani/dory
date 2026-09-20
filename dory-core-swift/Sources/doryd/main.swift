@@ -138,6 +138,30 @@ let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { co
             "doryd: VM planning authority unavailable; existing machines require qualification "
                 .appending("(\(trustFailure.code.rawValue): \(trustFailure.message))\n").utf8
         ))
+        #if DEBUG
+        if DoryDaemonVirtualMachineProductionTrustFactory
+            .allowsUnsafeDevelopmentGraphicsAdmission(environment: env) {
+            do {
+                let broker = try DoryMachineStateBroker(
+                    canonicalStateRootPath: configuration.stateDirectory
+                )
+                let manager = MachineManager(
+                    unsafeDevelopmentConfiguration: configuration,
+                    machineStateBroker: broker
+                )
+                manager.installDesktopUpdateArtifactResolver(desktopUpdateArtifactResolver)
+                FileHandle.standardError.write(Data(
+                    "doryd: unsafe development graphics admission enabled for this DEBUG process\n"
+                        .utf8
+                ))
+                return manager
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "doryd: unsafe development graphics admission unavailable: \(error)\n".utf8
+                ))
+            }
+        }
+        #endif
         let manager = MachineManager(configuration: configuration)
         manager.installDesktopUpdateArtifactResolver(desktopUpdateArtifactResolver)
         return manager

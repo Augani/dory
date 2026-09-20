@@ -80,7 +80,7 @@ public enum DoryDaemonVirtualMachineProductionActivationResult: Sendable {
 }
 
 extension DoryDaemonVirtualMachineProductionTrustFactory {
-    static func allowsUnsafeDevelopmentGraphicsAdmission(
+    public static func allowsUnsafeDevelopmentGraphicsAdmission(
         environment: [String: String]
     ) -> Bool {
         #if DEBUG

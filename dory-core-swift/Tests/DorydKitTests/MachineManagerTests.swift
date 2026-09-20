@@ -3954,6 +3954,87 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(state)/linux/NVRAM"))
     }
 
+    func testARMQualificationOverrideDoesNotInterceptSoftwareInstaller() throws {
+        let base = "/tmp/dory-machine-arm-software-installer-\(getpid())-"
+            + "\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = base + "/ubuntu-arm64.iso"
+        let disk = base + "/disk.raw"
+        try portableARM64Installer().write(to: URL(fileURLWithPath: installer))
+        try Data("disk".utf8).write(to: URL(fileURLWithPath: disk))
+        let manager = MachineManager(
+            diagnosticConfiguration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base + "/machines",
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ),
+            allowsQualificationBootstrapLaunches: true
+        )
+        defer { try? manager.delete(id: "linux") }
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
+            id: "linux",
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop,
+            environment: [
+                DoryDesktopVMMPreference.environmentKey:
+                    DoryDesktopVMMPreference.accelerated.rawValue,
+                DoryDesktopGraphicsPreference.environmentKey:
+                    DoryDesktopGraphicsPreference.software.rawValue,
+            ]
+        ))
+
+        let running = try manager.start(id: "linux")
+        XCTAssertEqual(running.state, .running, running.lastError ?? "missing failure detail")
+        _ = try manager.stop(id: "linux")
+    }
+
+    func testUnsafeDevelopmentManagerAllowsPublicCreateWithoutProductionPlanning() throws {
+        let base = "/tmp/dory-machine-unsafe-public-create-\(getpid())-"
+            + "\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = base + "/ubuntu-arm64.iso"
+        try portableARM64Installer().write(to: URL(fileURLWithPath: installer))
+        let manager = MachineManager(
+            unsafeDevelopmentConfiguration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/false",
+                stateDirectory: base + "/machines",
+                requiresReadyHandoff: false
+            )
+        )
+
+        let created = try manager.create(DoryMachineConfiguration(
+            id: "linux",
+            guestArchitecture: .arm64,
+            kernelPath: "",
+            rootfsPath: "",
+            bootMode: .efi,
+            installerISOPath: installer,
+            diskSizeBytes: MachineManager.minimumEFIDiskSizeBytes,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop,
+            environment: [
+                "DORY_CUSTOM_LINUX": "1",
+                DoryDesktopGraphicsPreference.environmentKey:
+                    DoryDesktopGraphicsPreference.software.rawValue,
+            ]
+        ))
+
+        XCTAssertEqual(created.id, "linux")
+        XCTAssertEqual(created.state, .created)
+        XCTAssertTrue(created.installerMediaAttached)
+        XCTAssertNotNil(manager.status(id: "linux"))
+    }
+
     func testDoryPCInstallerEjectionUsesDescriptorVariableStoreAndBootableDisk() throws {
         let base = "/tmp/dory-machine-pc-eject-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)

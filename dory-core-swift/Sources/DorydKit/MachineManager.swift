@@ -1659,6 +1659,23 @@ public final class MachineManager: @unchecked Sendable {
     }
 
 #if DEBUG
+    /// Explicit daemon seam for the A1 stock-guest graphics trace. The exact environment opt-in
+    /// is checked by the caller; Release has neither this initializer nor the legacy launch
+    /// authority it exposes.
+    public convenience init(
+        unsafeDevelopmentConfiguration configuration: MachineManagerConfiguration,
+        machineStateBroker: DoryMachineStateBroker? = nil
+    ) {
+        self.init(
+            configuration: configuration,
+            launchPolicy: .legacyCompatibility,
+            allowsNewMachinesInLegacyCompatibility: true,
+            allowsLegacyCompatibilityLaunches: true,
+            allowsQualificationBootstrapLaunches: true,
+            machineStateBroker: machineStateBroker
+        )
+    }
+
     /// Historical fixtures and explicit local qualification diagnostics may construct legacy
     /// generations. This constructor and the legacy launch preparation do not exist in Release.
     convenience init(
@@ -2074,6 +2091,23 @@ public final class MachineManager: @unchecked Sendable {
         guard sandboxPolicy == nil || machine.displayMode == .headless else {
             throw MachineManagerError.persistence("sandbox policy is supported only for headless Linux machines")
         }
+#if DEBUG
+        // The stock-guest A1 trace must exercise the daemon's public create RPC, not the
+        // fixture-only bootstrap seam. Keep the bypass coupled to every capability granted only
+        // by unsafeDevelopmentConfiguration so ordinary diagnostic legacy managers still fail
+        // closed and Release continues to require production planning authority.
+        if launchPolicy == .legacyCompatibility,
+           allowsNewMachinesInLegacyCompatibility,
+           allowsLegacyCompatibilityLaunches,
+           allowsQualificationBootstrapLaunches {
+            return try createMachine(
+                machine,
+                typedSettings: typedSettings,
+                sandboxPolicy: sandboxPolicy,
+                cloneAuthority: nil
+            )
+        }
+#endif
         let controller = try creationPlanningController(productionPlanningController)
         let request = DoryMachineCreationRequest(configuration: machine, typedSettings: typedSettings,
             sandboxPolicy: sandboxPolicy, sourceMachineID: nil, sourceSnapshotID: nil)
@@ -13235,11 +13269,15 @@ public final class MachineManager: @unchecked Sendable {
         definition: DoryVirtualMachineDefinition?,
         operationID: UUID
     ) throws -> DoryQualificationBootstrapRuntimeAuthority? {
+        let desktopGraphicsPreference = try DoryDesktopGraphicsPreference(
+            environment: machine.environment
+        )
         guard allowsQualificationBootstrapLaunches,
               launchPolicy == .legacyCompatibility,
               machine.displayMode == .desktop,
               try DoryDesktopVMMPreference(environment: machine.environment)
-                == .accelerated else {
+                == .accelerated,
+              desktopGraphicsPreference.requiredBackend != .software else {
             return nil
         }
         guard let definition,
@@ -13257,8 +13295,7 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         guard machine.installerISOPath == nil,
-              try DoryDesktopGraphicsPreference(environment: machine.environment)
-                .requiredBackend == .virglVenus,
+              desktopGraphicsPreference.requiredBackend == .virglVenus,
               definition.graphics.acceptableLevels.contains(.hardwareAccelerated3D),
               let bootID = definition.boot.order.first,
               definition.boot.order.count == 1,
