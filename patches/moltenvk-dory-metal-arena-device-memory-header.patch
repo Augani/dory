@@ -1,0 +1,22 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.h b/MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.h
+index 7451cc63..45052b42 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.h
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.h
+@@ -119,6 +119,9 @@ public:
+ 	/** Returns the Metal buffer underlying this memory allocation. */
+ 	id<MTLBuffer> getMTLBuffer() { return _mtlBuffer; }
+ 
++	/** Returns the byte origin of this allocation within an imported Metal buffer. */
++	VkDeviceSize getMTLBufferBaseOffset() { return _mtlBufferBaseOffset; }
++
+ 	/** Returns the Metal heap underlying this memory allocation. */
+ 	id<MTLHeap> getMTLHeap() { return _mtlHeap; }
+ 
+@@ -166,6 +169,7 @@ protected:
+ 	MVKSmallVector<MVKImageMemoryBinding*, 4> _imageMemoryBindings;
+ 	std::mutex _rezLock;
+     VkDeviceSize _allocationSize = 0;
++	VkDeviceSize _mtlBufferBaseOffset = 0;
+ 	MVKMappedMemoryRange _mappedRange;
+ 	// Resource object that spans the whole VkDeviceMemory or supposedly does for the user.
+ 	// Due to MVKImages allocating the memory they'll use differently based on some criteria,

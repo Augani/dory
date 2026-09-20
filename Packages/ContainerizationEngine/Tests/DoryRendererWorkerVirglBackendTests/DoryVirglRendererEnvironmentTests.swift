@@ -32,8 +32,9 @@ struct DoryVirglRendererStaticConfigurationTests {
         let asyncFenceCallback = Int32(DORY_VIRGL_RENDERER_ASYNC_FENCE_CALLBACK)
         let renderServer = Int32(DORY_VIRGL_RENDERER_RENDER_SERVER)
         let nativeSharedTexture = Int32(DORY_VIRGL_RENDERER_NATIVE_SHARE_TEXTURE)
+        let guestVRAM = Int32(DORY_VIRGL_RENDERER_USE_GUEST_VRAM)
         let expected = threadSync | useGLES | externalBlob | venus |
-            asyncFenceCallback | renderServer | nativeSharedTexture
+            asyncFenceCallback | renderServer | nativeSharedTexture | guestVRAM
 
         let actual = Int32(DORY_VIRGL_RENDERER_DUAL_METAL_INITIALIZATION_FLAGS)
         #expect(actual == expected)
@@ -42,6 +43,7 @@ struct DoryVirglRendererStaticConfigurationTests {
         #expect((actual & useEGL) == 0)
         #expect((actual & noVirgl) == 0)
         #expect((actual & nativeSharedTexture) != 0)
+        #expect((actual & guestVRAM) != 0)
     }
 
     @Test

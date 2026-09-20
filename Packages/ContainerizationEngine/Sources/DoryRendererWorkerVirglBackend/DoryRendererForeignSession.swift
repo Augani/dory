@@ -269,6 +269,7 @@ public struct DoryRendererForeignExportedBlob: Sendable {
 }
 
 public protocol DoryRendererForeignSession: AnyObject, Sendable {
+    func configureGuestVRAM(fileDescriptor: Int32, byteCount: UInt64) throws
     func capset(id: UInt32) throws -> DoryRendererForeignCapset
     func createContext(id: UInt32, capsetID: UInt32, name: String) throws
     func destroyContext(id: UInt32)
@@ -290,6 +291,7 @@ public protocol DoryRendererForeignSession: AnyObject, Sendable {
     func unrefResource(id: UInt32)
     func mapInfo(resourceID: UInt32) throws -> UInt32
     func exportBlob(resourceID: UInt32) throws -> DoryRendererForeignExportedBlob
+    func bindGuestVRAM(contextID: UInt32, resourceID: UInt32, offset: UInt64) throws
     func resourceInfo(resourceID: UInt32) throws -> DoryRendererForeignResourceInfo
     func acquireScanoutMetalTexture(
         resourceID: UInt32,
@@ -360,6 +362,14 @@ private final class DoryRendererCForeignSession:
     }
 
     deinit { invalidate() }
+
+    func configureGuestVRAM(fileDescriptor: Int32, byteCount: UInt64) throws {
+        let session = try requiredSession()
+        try Self.check(
+            DoryVirglRendererConfigureGuestVRAM(session, fileDescriptor, byteCount),
+            "vkr_renderer_configure_guest_vram"
+        )
+    }
 
     func capset(id: UInt32) throws -> DoryRendererForeignCapset {
         let session = try requiredSession()
@@ -548,6 +558,14 @@ private final class DoryRendererCForeignSession:
         return DoryRendererForeignExportedBlob(
             type: type,
             ownedFileDescriptor: fileDescriptor
+        )
+    }
+
+    func bindGuestVRAM(contextID: UInt32, resourceID: UInt32, offset: UInt64) throws {
+        let session = try requiredSession()
+        try Self.check(
+            DoryVirglRendererBindGuestVRAM(session, contextID, resourceID, offset),
+            "render_state_bind_guest_vram"
         )
     }
 

@@ -203,12 +203,52 @@
         "upstreamRevision": "15d904dcb1d5a8d626ffe11e8f3339499d6f7b09"
       },
       {
+        "path": "patches/moltenvk-dory-metal-arena-buffer-offset.patch",
+        "resultBlob": "0a9c4685568d5629ea157991ebf20417c3906dee",
+        "sha256": "855edbe3ac570f982b69d41a5e2f59f241724eb5899ccf5a62e5fbda5041b5f7",
+        "source": "moltenVK",
+        "sourceBlob": "2a4bbe061b538cafaabcfc1d2c5d8c7b59f9317a",
+        "targetPath": "MoltenVK/MoltenVK/GPUObjects/MVKBuffer.h",
+        "upstreamRepository": "https://github.com/utmapp/MoltenVK.git",
+        "upstreamRevision": "ef1c5461774f5fbd224ddcfd91fd2c0ea23f0384"
+      },
+      {
         "path": "patches/moltenvk-fail-closed-robustness2.patch",
         "resultBlob": "110c542637a68618e797e5d8b83cf95f2ee6bb39",
         "sha256": "7c90f042dadd6fcb805843faa7b78fef835b16283a744652a2b9ead3e8b0d609",
         "source": "moltenVK",
         "sourceBlob": "612a527083ab6059c5349414457cd52e439f3cd7",
         "targetPath": "MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm",
+        "upstreamRepository": "https://github.com/utmapp/MoltenVK.git",
+        "upstreamRevision": "ef1c5461774f5fbd224ddcfd91fd2c0ea23f0384"
+      },
+      {
+        "path": "patches/moltenvk-dory-metal-arena-device-memory-header.patch",
+        "resultBlob": "55f0207db497d2f8bd016df9df8169f2622f7b04",
+        "sha256": "a55ca54cf92d64536909149f3cfbe2344ec0513cd1614aae8fd762f79d83affa",
+        "source": "moltenVK",
+        "sourceBlob": "7451cc633a7453a87f582e3b82a5cfb075aac19a",
+        "targetPath": "MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.h",
+        "upstreamRepository": "https://github.com/utmapp/MoltenVK.git",
+        "upstreamRevision": "ef1c5461774f5fbd224ddcfd91fd2c0ea23f0384"
+      },
+      {
+        "path": "patches/moltenvk-dory-metal-arena-device-memory-import.patch",
+        "resultBlob": "1358bee5ae0cd27d15bc37389f0c225c4741a0bf",
+        "sha256": "b3f0d59e8bcb082fe4f0631d60f19e203242d112a37cdcd9bf9a6d83de1d0f39",
+        "source": "moltenVK",
+        "sourceBlob": "95e20cd4f719fb738c03e47c6e41b483347aa1d4",
+        "targetPath": "MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.mm",
+        "upstreamRepository": "https://github.com/utmapp/MoltenVK.git",
+        "upstreamRevision": "ef1c5461774f5fbd224ddcfd91fd2c0ea23f0384"
+      },
+      {
+        "path": "patches/moltenvk-dory-metal-arena-image-offset.patch",
+        "resultBlob": "002b4111edb362fb77449b4f7dd514ec2ba11d77",
+        "sha256": "b93d720f262f5518abf6311945874051cde03047261d95742a93916192ab0cc3",
+        "source": "moltenVK",
+        "sourceBlob": "3063472fe631e3535f53320ac55176de22daeca7",
+        "targetPath": "MoltenVK/MoltenVK/GPUObjects/MVKImage.mm",
         "upstreamRepository": "https://github.com/utmapp/MoltenVK.git",
         "upstreamRevision": "ef1c5461774f5fbd224ddcfd91fd2c0ea23f0384"
       },
@@ -578,27 +618,43 @@
       },
       {
         "path": "patches/virglrenderer-metal-shm-external-memory.patch",
-        "sha256": "ec642b18929c9ee66e4b0ab073ebe0b86754bdbcca781f26dea485cbca10a497",
+        "sha256": "56da59b73fbf9e3a22070f4f42935b1680320c80b1a9e593f05d3db34c76d41a",
         "targets": {
+          "server/render_state.c": {
+            "resultBlob": "c3a4157ae04c36e7a15e0f77ad5bef4a6ef4fa58",
+            "sourceBlob": "f0f548734efb55565cb80b3f16c1c82dad78f526"
+          },
+          "server/render_state.h": {
+            "resultBlob": "b68e5933f8c2bc8270b95349a1b42a87e32a4633",
+            "sourceBlob": "bc562b87a70bce7bf1455a59308484f62d61d95a"
+          },
           "src/venus/vkr_context.c": {
-            "resultBlob": "5c79451cab9d6509d2a20d2c3e5e42222e97d010",
+            "resultBlob": "c6813ba238a783937d8eee00c120edbb9bec179d",
             "sourceBlob": "2ea589881710405f68819469f455133558b6f9e2"
           },
           "src/venus/vkr_context.h": {
-            "resultBlob": "e765a177f86613a5e6ccc026bbb17057f265329a",
+            "resultBlob": "787786524e926ae24bdef8aef3286994268afcd5",
             "sourceBlob": "12541a72d2e948b2ebf106702ae403c1a8cc073f"
           },
           "src/venus/vkr_device_memory.c": {
-            "resultBlob": "d65e979dc4875a63c9bb05e81c0eeffab6684e73",
+            "resultBlob": "87b42ae8aec9d7b0eb59b33fae0475ac20488807",
             "sourceBlob": "b2e606f738591ecd7561f44750bb921c14f316ef"
           },
           "src/venus/vkr_metal_helpers.h": {
-            "resultBlob": "a92ff8a1f9357655b45714ee438affd3fc58cafc",
+            "resultBlob": "0a5a11af45e902b2b60a4e9cfda73f0722af8371",
             "sourceBlob": "4f5208bd1720210c6d89ce4177a45b6887687b77"
           },
           "src/venus/vkr_metal_helpers.m": {
-            "resultBlob": "7cab45751332bdf26bd67176cf43edf2292c1ff7",
+            "resultBlob": "96b217cb55e9b239c23ee086ce6fd4188f1ebbba",
             "sourceBlob": "f0373ed10bf23bc0a8dde6e9a6a542325b93a4aa"
+          },
+          "src/venus/vkr_renderer.c": {
+            "resultBlob": "e3be43919245c5c6ee1e0eadfca7e745618b9d70",
+            "sourceBlob": "c0335ca52e943a42ab2bc9940fe9dd465d22cb8c"
+          },
+          "src/venus/vkr_renderer.h": {
+            "resultBlob": "0e2969cc998647906a80b60d9a80d6b2ccdc779c",
+            "sourceBlob": "be3ae04605efc75cddf2bde5b8254cd8160d312d"
           }
         }
       },

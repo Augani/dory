@@ -1,0 +1,72 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.mm b/MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.mm
+index 95e20cd4..1358bee5 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.mm
+@@ -28,6 +28,19 @@
+ 
+ using namespace std;
+ 
++// Private host-only pNext shared with Dory's pinned virglrenderer. It never crosses the Venus
++// wire protocol. The imported MTLBuffer covers complete 16 KiB host granules while this record
++// identifies the exact Vulkan allocation subrange inside it.
++static constexpr VkStructureType VK_STRUCTURE_TYPE_DORY_IMPORT_MEMORY_METAL_RANGE =
++	(VkStructureType)1000602999;
++
++struct MVKDoryImportMemoryMetalRange {
++	VkStructureType sType;
++	const void* pNext;
++	VkDeviceSize offset;
++	VkDeviceSize size;
++};
++
+ 
+ #pragma mark MVKDeviceMemory
+ 
+@@ -315,10 +328,20 @@ MVKDeviceMemory::MVKDeviceMemory(MVKDevice* device,
+ 
+ 	bool willExportMTLBuffer = false;
+ 	bool wantsHeap = true;
++	bool hasDoryMetalRange = false;
++	VkDeviceSize doryMetalRangeOffset = 0;
++	VkDeviceSize doryMetalRangeSize = 0;
+ 	MVKImage* dedicatedImage = nullptr;
+ 	VkBuffer dedicatedBuffer = VK_NULL_HANDLE;
+ 	for (const auto* next = (const VkBaseInStructure*)pAllocateInfo->pNext; next; next = next->pNext) {
+ 		switch (next->sType) {
++			case VK_STRUCTURE_TYPE_DORY_IMPORT_MEMORY_METAL_RANGE: {
++				const auto* pRange = (const MVKDoryImportMemoryMetalRange*)next;
++				hasDoryMetalRange = true;
++				doryMetalRangeOffset = pRange->offset;
++				doryMetalRangeSize = pRange->size;
++				break;
++			}
+ 			case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO: {
+ 				auto* pDedicatedInfo = (VkMemoryDedicatedAllocateInfo*)next;
+ 				dedicatedImage = reinterpret_cast<MVKImage*>(pDedicatedInfo->image);
+@@ -413,6 +436,26 @@ MVKDeviceMemory::MVKDeviceMemory(MVKDevice* device,
+ 		}
+ 	}
+ 
++	if (hasDoryMetalRange) {
++		VkDeviceSize rangeEnd = 0;
++		bool rangeOverflow = __builtin_add_overflow(doryMetalRangeOffset,
++		                                          doryMetalRangeSize,
++		                                          &rangeEnd);
++		if (!_mtlBuffer || !doryMetalRangeSize || rangeOverflow ||
++			rangeEnd > _mtlBuffer.length ||
++			doryMetalRangeSize != pAllocateInfo->allocationSize) {
++			setConfigurationResult(reportError(
++				VK_ERROR_INVALID_EXTERNAL_HANDLE,
++				"vkAllocateMemory(): Invalid Dory Metal arena subrange."));
++		} else {
++			_mtlBufferBaseOffset = doryMetalRangeOffset;
++			_allocationSize = doryMetalRangeSize;
++			_pMemory = isMemoryHostAccessible()
++				? (void*)((uintptr_t)_mtlBuffer.contents + _mtlBufferBaseOffset)
++				: nullptr;
++		}
++	}
++
+ 	initExternalMemory(dedicatedImage, wantsHeap);	// After setting _isDedicated
+ 
+ 	// "Dedicated" means this memory can only be used for this image or buffer.

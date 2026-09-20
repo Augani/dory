@@ -308,6 +308,8 @@ public final class DoryRendererWorkerVirglBackend:
         let baseAddress: UnsafeMutableRawPointer
         private let descriptor: Int32
 
+        var rendererDescriptor: Int32 { descriptor }
+
         init(byteCount: UInt64) throws {
             guard byteCount > 0, byteCount <= UInt64(Int.max) else {
                 throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
@@ -415,6 +417,7 @@ public final class DoryRendererWorkerVirglBackend:
 
     private final class ResourceState {
         let generation: UInt64
+        let contextID: UInt32
         let blobSize: UInt64?
         let resource3DBind: UInt32?
         var backing: OwnedBacking?
@@ -424,11 +427,13 @@ public final class DoryRendererWorkerVirglBackend:
 
         init(
             generation: UInt64,
+            contextID: UInt32,
             blobSize: UInt64?,
             resource3DBind: UInt32?,
             backing: OwnedBacking?
         ) {
             self.generation = generation
+            self.contextID = contextID
             self.blobSize = blobSize
             self.resource3DBind = resource3DBind
             self.backing = backing
@@ -503,6 +508,12 @@ public final class DoryRendererWorkerVirglBackend:
             }
             do {
                 session = try sessionFactory.create(attestation: attestation)
+                if let hostVisibleArena {
+                    try session.configureGuestVRAM(
+                        fileDescriptor: hostVisibleArena.rendererDescriptor,
+                        byteCount: hostVisibleArena.byteCount
+                    )
+                }
             } catch {
                 throw DoryRendererWorkerBackendActivationError.rendererInitialization
             }
@@ -757,6 +768,7 @@ public final class DoryRendererWorkerVirglBackend:
             )
             active.resources[command.resourceID] = ResourceState(
                 generation: generation,
+                contextID: 0,
                 blobSize: nil,
                 resource3DBind: payload.bind,
                 backing: nil
@@ -856,6 +868,7 @@ public final class DoryRendererWorkerVirglBackend:
             )
             active.resources[command.resourceID] = ResourceState(
                 generation: generation,
+                contextID: command.contextID,
                 blobSize: payload.size,
                 resource3DBind: nil,
                 backing: backing
@@ -915,6 +928,32 @@ public final class DoryRendererWorkerVirglBackend:
                 guard !overflow, end <= arena.byteCount else { return .rejected }
             }
             let mapInfo = try active.session.mapInfo(resourceID: command.resourceID) & 0x0f
+            if let arena = active.hostVisibleArena {
+                try active.session.bindGuestVRAM(
+                    contextID: resource.contextID,
+                    resourceID: command.resourceID,
+                    offset: mapPayload.hostVisibleOffset
+                )
+                let lease = try DoryRendererBlobMappingLease(
+                    workerGeneration: active.bootstrap.generation,
+                    resourceID: command.resourceID,
+                    resourceGeneration: resource.generation,
+                    sharedRegionID: DoryRendererSharedRegionID.random(),
+                    descriptorIndex: UInt16.max,
+                    mapInfo: mapInfo,
+                    declaredFileSize: arena.byteCount,
+                    mappingByteCount: blobSize,
+                    storage: .generationArena,
+                    arenaOffset: mapPayload.hostVisibleOffset,
+                    hostVisibleArenaByteCount: arena.byteCount,
+                    limits: active.bootstrap.limits
+                )
+                resource.mapped = true
+                return .success(
+                    payload: DoryRendererBlobMappingLeaseCodec.encode(lease),
+                    descriptors: []
+                )
+            }
             let exported = try active.session.exportBlob(resourceID: command.resourceID)
             let validated = try Self.validateExportedSHM(
                 exported,

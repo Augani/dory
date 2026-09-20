@@ -537,6 +537,63 @@ import Testing
         #expect(status.st_nlink == 0)
         #expect(UInt64(status.st_size) == arenaBytes)
         #expect(DoryRendererSharedMemoryDescriptorPolicy.accepts(mode: status.st_mode))
+        #expect(session.guestVRAMConfigurations.count == 1)
+        #expect(session.guestVRAMConfigurations[0].byteCount == arenaBytes)
+    }
+
+    @Test func mapBlobBindsExactGuestOffsetIntoGenerationArena() throws {
+        let session = FakeRendererForeignSession()
+        let backend = makeBackend(session: session)
+        let arenaBytes = DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
+        _ = try backend.activate(bootstrap: makeBootstrap(
+            hostVisibleArenaByteCount: arenaBytes
+        ))
+        try expectSuccess(backend.execute(
+            command: createContextCommand(requestID: 1),
+            descriptors: []
+        ))
+        let blob = try DoryRendererBlobCreatePayload(
+            blobMemory: 2,
+            blobFlags: 3,
+            blobID: 100,
+            size: 8_192
+        )
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 2,
+                operation: .createBlob,
+                contextID: 7,
+                resourceID: 42,
+                payload: blob.encoded
+            ),
+            descriptors: []
+        ))
+        let mapped = try requireSuccess(backend.execute(
+            command: command(
+                requestID: 3,
+                operation: .mapBlob,
+                resourceID: 42,
+                resourceGeneration: 1,
+                payload: try DoryRendererBlobMapPayload(
+                    hostVisibleOffset: 4_096
+                ).encoded
+            ),
+            descriptors: []
+        ))
+        let lease = try DoryRendererBlobMappingLeaseCodec.decode(
+            mapped.payload,
+            hostVisibleArenaByteCount: arenaBytes
+        )
+        #expect(mapped.descriptors.isEmpty)
+        #expect(lease.storage == .generationArena)
+        #expect(lease.arenaOffset == 4_096)
+        #expect(lease.mappingByteCount == 8_192)
+        #expect(lease.declaredFileSize == arenaBytes)
+        #expect(session.guestVRAMBinds.count == 1)
+        #expect(session.guestVRAMBinds[0].contextID == 7)
+        #expect(session.guestVRAMBinds[0].resourceID == 42)
+        #expect(session.guestVRAMBinds[0].offset == 4_096)
+        #expect(!session.exportedResourceIDs.contains(42))
     }
 
     @Test func surfaceLifecycleFailureFailsClosedBeforeAdvertisingVirGL2() throws {
@@ -1892,6 +1949,8 @@ private final class FakeRendererForeignSession:
     private(set) var createdContextCapsets = [UInt32: UInt32]()
     private(set) var createdContextHistory = [UInt32: UInt32]()
     private(set) var exportedResourceIDs = [UInt32]()
+    private(set) var guestVRAMConfigurations = [(descriptor: Int32, byteCount: UInt64)]()
+    private(set) var guestVRAMBinds = [(contextID: UInt32, resourceID: UInt32, offset: UInt64)]()
     private(set) var acquiredScanoutResourceIDs = [UInt32]()
     private(set) var createdFenceFlags = [UInt32]()
     private(set) var createdGlobalFenceIDs = [UInt64]()
@@ -1956,6 +2015,11 @@ private final class FakeRendererForeignSession:
 
     var foreignThreadIDs: Set<UInt64> {
         foreignThreadRecorder.snapshot
+    }
+
+    func configureGuestVRAM(fileDescriptor: Int32, byteCount: UInt64) throws {
+        recordForeignCallThread()
+        guestVRAMConfigurations.append((fileDescriptor, byteCount))
     }
 
     func capset(id: UInt32) throws -> DoryRendererForeignCapset {
@@ -2076,6 +2140,11 @@ private final class FakeRendererForeignSession:
                 byteCount: blobSizes[resourceID] ?? UInt64(getpagesize())
             )
         )
+    }
+
+    func bindGuestVRAM(contextID: UInt32, resourceID: UInt32, offset: UInt64) throws {
+        recordForeignCallThread()
+        guestVRAMBinds.append((contextID, resourceID, offset))
     }
 
     func resourceInfo(resourceID: UInt32) throws -> DoryRendererForeignResourceInfo {

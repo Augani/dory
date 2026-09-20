@@ -1,0 +1,17 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKBuffer.h b/MoltenVK/MoltenVK/GPUObjects/MVKBuffer.h
+index 2a4bbe06..75427be9 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKBuffer.h
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKBuffer.h
+@@ -71,7 +71,11 @@ public:
+     id<MTLBuffer> getMTLBuffer();
+ 
+ 	/** Returns the offset at which the contents of this instance starts within the underlying Metal buffer. */
+-	inline NSUInteger getMTLBufferOffset() { return !_deviceMemory || _deviceMemory->getMTLHeap() ? 0 : _deviceMemoryOffset; }
++	inline NSUInteger getMTLBufferOffset() {
++		return !_deviceMemory || _deviceMemory->getMTLHeap()
++			? 0
++			: _deviceMemory->getMTLBufferBaseOffset() + _deviceMemoryOffset;
++	}
+     
+ 	/** Returns the GPU address for this MTLBuffer, respecting its offset. */
+ 	uint64_t getMTLBufferGPUAddress();

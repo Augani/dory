@@ -117,6 +117,7 @@ enum {
     DORY_VIRGL_RENDERER_ASYNC_FENCE_CALLBACK = 1 << 8,
     DORY_VIRGL_RENDERER_RENDER_SERVER = 1 << 9,
     DORY_VIRGL_RENDERER_NATIVE_SHARE_TEXTURE = 1 << 12,
+    DORY_VIRGL_RENDERER_USE_GUEST_VRAM = 1 << 14,
     DORY_VIRGL_RENDERER_VENUS_ONLY_INITIALIZATION_FLAGS =
         DORY_VIRGL_RENDERER_THREAD_SYNC |
         DORY_VIRGL_RENDERER_USE_EXTERNAL_BLOB |
@@ -131,7 +132,8 @@ enum {
         DORY_VIRGL_RENDERER_VENUS |
         DORY_VIRGL_RENDERER_NATIVE_SHARE_TEXTURE |
         DORY_VIRGL_RENDERER_ASYNC_FENCE_CALLBACK |
-        DORY_VIRGL_RENDERER_RENDER_SERVER,
+        DORY_VIRGL_RENDERER_RENDER_SERVER |
+        DORY_VIRGL_RENDERER_USE_GUEST_VRAM,
     DORY_VIRGL_RENDERER_CAPSET_VIRGL2 = 2,
     DORY_VIRGL_RENDERER_CAPSET_VENUS = 4,
     DORY_VIRGL_RENDERER_BLOB_MEMORY_HOST3D = 0x0002,
@@ -366,6 +368,20 @@ int32_t DoryVirglRendererGetPollFileDescriptor(
     DoryVirglRendererSession *session
 );
 void DoryVirglRendererPoll(DoryVirglRendererSession *session);
+
+/* Configure one borrowed generation-arena descriptor before any Venus context is created. */
+int32_t DoryVirglRendererConfigureGuestVRAM(
+    DoryVirglRendererSession *session,
+    int32_t file_descriptor,
+    uint64_t byte_count
+);
+/* Bind a pending Venus resource to its exact 4 KiB-aligned guest-aperture offset. */
+int32_t DoryVirglRendererBindGuestVRAM(
+    DoryVirglRendererSession *session,
+    uint32_t context_id,
+    uint32_t resource_id,
+    uint64_t offset
+);
 
 /* Exported for a Swift test that proves it is using this imported C layout. */
 size_t DoryVirglRendererResourceInfoSize(void);

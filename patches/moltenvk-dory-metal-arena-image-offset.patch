@@ -1,0 +1,24 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKImage.mm b/MoltenVK/MoltenVK/GPUObjects/MVKImage.mm
+index 3063472f..002b4111 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKImage.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKImage.mm
+@@ -483,7 +483,8 @@ VkResult MVKImageMemoryBinding::bindDeviceMemory(MVKDeviceMemory* mvkMem, VkDevi
+     if (_image->_isLinearForAtomics || (usesTexelBuffer && mtlFeats.placementHeaps)) {
+         if (usesTexelBuffer && _deviceMemory->ensureMTLBuffer()) {
+             _mtlTexelBuffer = _deviceMemory->_mtlBuffer;
+-            _mtlTexelBufferOffset = getDeviceMemoryOffset();
++            _mtlTexelBufferOffset = _deviceMemory->getMTLBufferBaseOffset() +
++                                    getDeviceMemoryOffset();
+         } else {
+             // Create our own buffer for this.
+             if (_ownsTexelBuffer) { [_mtlTexelBuffer release]; }
+@@ -503,7 +504,8 @@ VkResult MVKImageMemoryBinding::bindDeviceMemory(MVKDeviceMemory* mvkMem, VkDevi
+         }
+     } else if (usesTexelBuffer && _deviceMemory->_mtlBuffer) {
+         _mtlTexelBuffer = _deviceMemory->_mtlBuffer;
+-        _mtlTexelBufferOffset = getDeviceMemoryOffset();
++        _mtlTexelBufferOffset = _deviceMemory->getMTLBufferBaseOffset() +
++                                getDeviceMemoryOffset();
+     }
+     flushToDevice(getDeviceMemoryOffset(), getByteCount());
+     return _deviceMemory->addImageMemoryBinding(this);

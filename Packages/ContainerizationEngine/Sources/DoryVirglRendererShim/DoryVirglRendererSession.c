@@ -176,6 +176,9 @@ extern void virgl_set_log_callback(
     void *,
     DoryVirglRendererFreeDataCallback
 );
+extern bool vkr_renderer_configure_guest_vram(int, uint64_t);
+extern void vkr_renderer_clear_guest_vram(void);
+extern bool render_state_bind_guest_vram(uint32_t, uint32_t, uint64_t);
 #endif
 
 typedef struct DoryVirglRendererFunctions {
@@ -270,6 +273,7 @@ struct DoryVirglRendererSession {
     bool submit_in_progress;
     bool log_callback_installed;
     bool renderer_initialized;
+    bool guest_vram_configured;
     bool owns_process_slot;
 #if defined(DORY_VIRGL_RENDERER_DUAL_METAL)
     pthread_mutex_t angle_context_lock;
@@ -1626,6 +1630,12 @@ static void dory_destroy_partial_session(DoryVirglRendererSession *session)
         session->functions.cleanup(session);
         session->renderer_initialized = false;
     }
+#if defined(DORY_VIRGL_RENDERER_STATIC_LINKED)
+    if (session->guest_vram_configured) {
+        vkr_renderer_clear_guest_vram();
+        session->guest_vram_configured = false;
+    }
+#endif
 #if defined(DORY_VIRGL_RENDERER_DUAL_METAL)
     dory_terminate_angle(session);
 #endif
@@ -1746,6 +1756,42 @@ int32_t DoryVirglRendererSessionCreate(DoryVirglRendererSession **out_session)
 void DoryVirglRendererSessionDestroy(DoryVirglRendererSession *session)
 {
     dory_destroy_partial_session(session);
+}
+
+int32_t DoryVirglRendererConfigureGuestVRAM(
+    DoryVirglRendererSession *session,
+    int32_t file_descriptor,
+    uint64_t byte_count
+)
+{
+    if (session == NULL || !session->renderer_initialized ||
+        session->guest_vram_configured || file_descriptor < 0 || byte_count == 0)
+        return -EINVAL;
+#if defined(DORY_VIRGL_RENDERER_STATIC_LINKED)
+    if (!vkr_renderer_configure_guest_vram(file_descriptor, byte_count))
+        return -EINVAL;
+    session->guest_vram_configured = true;
+    return 0;
+#else
+    return -ENOSYS;
+#endif
+}
+
+int32_t DoryVirglRendererBindGuestVRAM(
+    DoryVirglRendererSession *session,
+    uint32_t context_id,
+    uint32_t resource_id,
+    uint64_t offset
+)
+{
+    if (session == NULL || !session->guest_vram_configured || context_id == 0 ||
+        resource_id == 0 || (offset & 4095U) != 0)
+        return -EINVAL;
+#if defined(DORY_VIRGL_RENDERER_STATIC_LINKED)
+    return render_state_bind_guest_vram(context_id, resource_id, offset) ? 0 : -EINVAL;
+#else
+    return -ENOSYS;
+#endif
 }
 
 int32_t DoryVirglRendererGetCapset(
