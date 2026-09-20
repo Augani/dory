@@ -1,0 +1,34 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputValues {
+    uint values[];
+} input_values;
+
+layout(set = 0, binding = 1, std430) writeonly buffer OutputValues {
+    uint values[];
+} output_values;
+
+layout(push_constant) uniform ReductionParameters {
+    uint value_count;
+} parameters;
+
+shared uint partial[256];
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    uint lane = gl_LocalInvocationID.x;
+    partial[lane] = index < parameters.value_count ? input_values.values[index] : 0u;
+    barrier();
+
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (lane < stride)
+            partial[lane] += partial[lane + stride];
+        barrier();
+    }
+
+    if (lane == 0u)
+        output_values.values[gl_WorkGroupID.x] = partial[0];
+}
