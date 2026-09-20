@@ -108,6 +108,52 @@ import Testing
     #expect(memory.hasPendingPageTableWrite == false)
   }
 
+  @Test(arguments: [false, true])
+  func walkerWriteSuppressionDoesNotHideAnotherOwnersGuestWrite(mmap: Bool) throws {
+    let memory: any DoryX86PageTableWriteTrackingMemory
+    if mmap {
+      memory = try DoryX86MmapMemory(validatingByteCount: 0x4_000)
+    } else {
+      memory = try DoryX86ByteArrayMemory(byteCount: 0x4_000)
+    }
+    memory.trackPageTablePage(containing: 0x1000)
+
+    let walkerWriteFinished = DispatchSemaphore(value: 0)
+    let releaseWalker = DispatchSemaphore(value: 0)
+    let walkerFinished = DispatchSemaphore(value: 0)
+    let walkerResult = PagingLockedValue<Result<Void, Error>?>(nil)
+    let walker = Thread {
+      memory.beginPageTableWalkerWrite()
+      defer {
+        memory.endPageTableWalkerWrite()
+        walkerFinished.signal()
+      }
+      do {
+        try memory.write(at: 0x1000, bytes: [0x20])
+        walkerResult.set(.success(()))
+      } catch {
+        walkerResult.set(.failure(error))
+      }
+      walkerWriteFinished.signal()
+      releaseWalker.wait()
+    }
+    walker.start()
+    defer { releaseWalker.signal() }
+
+    try #require(walkerWriteFinished.wait(timeout: .now() + 2) == .success)
+    try #require(walkerResult.value).get()
+    #expect(memory.hasPendingPageTableWrite == false)
+
+    // This ordinary guest write belongs to a different owner. A machine-global suppression
+    // depth would incorrectly hide it while the walker thread remains inside its A/D update.
+    try memory.write(at: 0x1000, bytes: [0x40])
+    #expect(memory.hasPendingPageTableWrite)
+    #expect(memory.consumePendingPageTableWrite())
+
+    releaseWalker.signal()
+    #expect(walkerFinished.wait(timeout: .now() + 2) == .success)
+  }
+
   @Test func diagnosticsSeparateRecentDictionaryWalkAndInvalidationPaths() throws {
     let memory = try DoryX86ByteArrayMemory(byteCount: 0x20_000)
     let first: UInt64 = 0x0040_0123
@@ -903,6 +949,17 @@ import Testing
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
     }
   }
+}
+
+private final class PagingLockedValue<Value>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage: Value
+
+  init(_ value: Value) { storage = value }
+
+  var value: Value { lock.withLock { storage } }
+
+  func set(_ value: Value) { lock.withLock { storage = value } }
 }
 
 /// The second data page behaves like a device: reads have effects and writes

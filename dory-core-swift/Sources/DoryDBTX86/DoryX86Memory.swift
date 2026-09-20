@@ -397,7 +397,7 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
   // Reserve generation metadata only for pages actually written, independently of virtual size.
   private var codePageGenerations: [Int: UInt64] = [:]
   private var trackedPageTablePages: Set<Int> = []
-  private var pageTableWalkerWriteDepth = 0
+  private var pageTableWalkerWriteDepths: [ObjectIdentifier: Int] = [:]
   private var pendingPageTableWrite = false
 
   var trackedCodePageCount: Int { lock.withLock { codePageGenerations.count } }
@@ -708,11 +708,12 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
 
   private func markCodePagesWritten(offset: Int, byteCount: Int) {
     guard byteCount > 0 else { return }
+    let walkerWriteDepth = pageTableWalkerWriteDepths[ObjectIdentifier(Thread.current), default: 0]
     let first = offset / 4_096
     let last = (offset + byteCount - 1) / 4_096
     for page in first...last {
       codePageGenerations[page, default: 0] &+= 1
-      if pageTableWalkerWriteDepth == 0, trackedPageTablePages.contains(page) {
+      if walkerWriteDepth == 0, trackedPageTablePages.contains(page) {
         pendingPageTableWrite = true
       }
     }
@@ -733,13 +734,22 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
   }
 
   public func beginPageTableWalkerWrite() {
-    lock.withLock { pageTableWalkerWriteDepth += 1 }
+    lock.withLock {
+      let owner = ObjectIdentifier(Thread.current)
+      pageTableWalkerWriteDepths[owner, default: 0] += 1
+    }
   }
 
   public func endPageTableWalkerWrite() {
     lock.withLock {
-      precondition(pageTableWalkerWriteDepth > 0)
-      pageTableWalkerWriteDepth -= 1
+      let owner = ObjectIdentifier(Thread.current)
+      let depth = pageTableWalkerWriteDepths[owner, default: 0]
+      precondition(depth > 0)
+      if depth == 1 {
+        pageTableWalkerWriteDepths.removeValue(forKey: owner)
+      } else {
+        pageTableWalkerWriteDepths[owner] = depth - 1
+      }
     }
   }
 
