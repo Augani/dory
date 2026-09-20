@@ -745,6 +745,199 @@ import Testing
     #expect(machine.state(forProcessor: 1)?.registers.rax == 2)
   }
 
+  @Test func qualifiedInterpreterPairExecutesOrdinaryMemoryOnBothOwners() throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    try machine.enableQualifiedInterpreterPairExecution()
+    try machine.memory.write(at: 0x100, bytes: [0x34, 0x12, 0, 0])
+    // BSP is protected32; AP is real16. Both execute a non-frozen memory operand against the same
+    // shared RAM bytes, proving this is the general interpreter path rather than register preflight.
+    try machine.memory.write(at: 0x10_0000, bytes: [0xA1, 0, 1, 0, 0])
+    try machine.memory.write(at: 0x8000, bytes: [0xA1, 0, 1])
+    let probe = HostWorkerProbe(holdConcurrentExecution: true)
+    machine.observeWorkers { probe.observe($0) }
+
+    #expect(try machine.run(maximumInstructions: 2) == .instructionBudget(2))
+    let snapshot = probe.snapshot()
+    #expect(snapshot.maximumActive == 2)
+    #expect(snapshot.distinctThreads == 2)
+    #expect(snapshot.executions == 2)
+    #expect(snapshot.active == 0)
+    #expect(snapshot.stopped == Set([0, 1]))
+    #expect(!snapshot.timedOut)
+    #expect(machine.state(forProcessor: 0)?.registers.rax == 0x1234)
+    #expect(machine.state(forProcessor: 1)?.registers.rax == 0x1234)
+    #expect(machine.executionStatistics.interpreterInstructions == 2)
+  }
+
+  @Test(arguments: [UInt64(2), 3, 65, 127, 129])
+  func qualifiedInterpreterPairHonorsExactGlobalBudget(budget: UInt64) throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    try machine.enableQualifiedInterpreterPairExecution()
+    try machine.memory.write(at: 0x10_0000, bytes: [0xEB, 0xFE])
+    try machine.memory.write(at: 0x8000, bytes: [0xEB, 0xFE])
+    let probe = HostWorkerProbe(holdConcurrentExecution: true)
+    machine.observeWorkers { probe.observe($0) }
+
+    #expect(try machine.run(maximumInstructions: budget) == .instructionBudget(budget))
+    let snapshot = probe.snapshot()
+    #expect(snapshot.maximumActive == 2)
+    #expect(snapshot.distinctThreads == 2)
+    #expect(snapshot.active == 0)
+    #expect(snapshot.stopped == Set([0, 1]))
+    #expect(!snapshot.timedOut)
+    #expect(machine.executionStatistics.interpreterInstructions == budget)
+  }
+
+  @Test func qualifiedInterpreterPairSelectsFaultDeterministicallyAfterRendezvous() throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    try machine.enableQualifiedInterpreterPairExecution()
+    try machine.memory.write(at: 0x10_0000, bytes: [0x0F, 0x0B])
+    try machine.memory.write(at: 0x8000, bytes: [0x0F, 0x0B])
+    let probe = HostWorkerProbe(holdConcurrentExecution: true)
+    machine.observeWorkers { probe.observe($0) }
+
+    let stop = try machine.run(maximumInstructions: 2)
+    guard case .exception(let exception, let instructionCount) = stop else {
+      Issue.record("Expected deterministic BSP exception, got \(stop)")
+      return
+    }
+    #expect(exception.kind == .invalidOpcode)
+    #expect(exception.instructionPointer == 0x10_0000)
+    #expect(instructionCount == 0)
+    #expect(machine.state(forProcessor: 0)?.rip == 0x10_0000)
+    #expect(machine.state(forProcessor: 1)?.rip == 0)
+    #expect(probe.snapshot().maximumActive == 2)
+    #expect(probe.snapshot().active == 0)
+    #expect(probe.snapshot().stopped == Set([0, 1]))
+  }
+
+  @Test func qualifiedInterpreterPairTripleFaultUsesLowestFaultingProcessor() throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    try machine.enableQualifiedInterpreterPairExecution()
+    try machine.memory.write(at: 0x10_0000, bytes: [0x0F, 0x0B])
+    try machine.memory.write(at: 0x8000, bytes: [0x0F, 0x0B])
+
+    let stop = try machine.run(maximumInstructions: 2, exceptionPolicy: .deliver)
+    guard case .tripleFault(let source, let instructionCount) = stop,
+      case .exception(let evidence) = source
+    else {
+      Issue.record("Expected deterministic BSP triple fault, got \(stop)")
+      return
+    }
+    #expect(evidence.processor == 0)
+    #expect(evidence.exception.kind == .invalidOpcode)
+    #expect(instructionCount == 0)
+  }
+
+  @Test func qualifiedInterpreterPairJoinsAsynchronousPowerAndPageTableInvalidation() throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    try machine.enableQualifiedInterpreterPairExecution()
+    try machine.memory.write(at: 0x10_0000, bytes: [0xEB, 0xFE])
+    try machine.memory.write(at: 0x8000, bytes: [0xEB, 0xFE])
+    machine.physicalMemory.trackPageTablePage(containing: 0x2000)
+    let probe = HostWorkerProbe(hold: true, holdConcurrentExecution: true)
+    machine.observeWorkers { probe.observe($0) }
+    let run = HaltedMachineRun(machine: machine, maximumInstructions: 1_000_000_000)
+    defer {
+      probe.release()
+      machine.powerController.request(.powerOff)
+    }
+
+    try #require(probe.arrived.wait(timeout: .now() + 2) == .success)
+    try machine.physicalMemory.write(at: 0x2000, bytes: [1])
+    machine.powerController.request(.powerOff)
+    probe.release()
+    guard case .poweredOff(let instructionCount) = try run.finish() else {
+      Issue.record("Expected concurrent poweroff")
+      return
+    }
+    #expect(instructionCount == 2)
+    let invalidation = machine.translationInvalidationDiagnostics
+    #expect(invalidation.generation == 1)
+    #expect(invalidation.requiredGenerations == [1, 1])
+    #expect(invalidation.acknowledgedGenerations == [1, 1])
+    let snapshot = probe.snapshot()
+    #expect(snapshot.maximumActive == 2)
+    #expect(Set(snapshot.translationInvalidationAcknowledgements.map(\.processor)) == [0, 1])
+    #expect(snapshot.active == 0)
+    #expect(snapshot.stopped == Set([0, 1]))
+    #expect(!snapshot.timedOut)
+  }
+
+  @Test func qualifiedInterpreterPairSerializesLockedSharedMemoryUpdates() throws {
+    let machine = try workerMachine(clock: .hostMonotonic { 0 })
+    try machine.enableQualifiedInterpreterPairExecution()
+    try machine.memory.write(at: 0x200, bytes: [0, 0, 0, 0])
+    // lock inc dword ptr [0x200]; jmp back
+    try machine.memory.write(
+      at: 0x10_0000,
+      bytes: [0xF0, 0xFF, 0x05, 0, 2, 0, 0, 0xEB, 0xF7]
+    )
+    // operand-size override gives the real16 AP the same dword transaction.
+    try machine.memory.write(
+      at: 0x8000,
+      bytes: [0x66, 0xF0, 0xFF, 0x06, 0, 2, 0xEB, 0xF8]
+    )
+    let budget: UInt64 = 10_000
+
+    #expect(try machine.run(maximumInstructions: budget) == .instructionBudget(budget))
+    #expect(try machine.memory.readScalar(at: 0x200, byteCount: 4) == budget / 2)
+    #expect(machine.executionStatistics.interpreterInstructions == budget)
+  }
+
+  @Test func qualifiedInterpreterPairAdmissionFailsClosed() throws {
+    let deterministic = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 2
+    )
+    #expect(
+      throws: DoryPCConcurrentExecutionAdmissionError.requiresHostMonotonicClock
+    ) {
+      try deterministic.enableQualifiedInterpreterPairExecution()
+    }
+
+    for processorCount in [1, 3] {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        processorCount: processorCount,
+        clockSource: .hostMonotonic { 0 }
+      )
+      #expect(
+        throws: DoryPCConcurrentExecutionAdmissionError.requiresExactlyTwoProcessors(
+          processorCount
+        )
+      ) {
+        try machine.enableQualifiedInterpreterPairExecution()
+      }
+    }
+
+    for tier in [DoryPCExecutionTier.baselineJIT, .optimizingJIT] {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        processorCount: 2,
+        executionTier: tier,
+        clockSource: .hostMonotonic { 0 }
+      )
+      #expect(
+        throws: DoryPCConcurrentExecutionAdmissionError.requiresInterpreter(tier)
+      ) {
+        try machine.enableQualifiedInterpreterPairExecution()
+      }
+    }
+
+    let extensionMachine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 2,
+      platformMMIODevices: [QualificationMMIODevice()],
+      clockSource: .hostMonotonic { 0 }
+    )
+    #expect(
+      throws: DoryPCConcurrentExecutionAdmissionError.callerExtensionDevicesPresent
+    ) {
+      try extensionMachine.enableQualifiedInterpreterPairExecution()
+    }
+  }
+
   @Test func physicalDiagnosticsPublishDuringConcurrentReads() throws {
     let machine = try workerMachine(clock: .deterministic)
     let bus = machine.physicalMemory
@@ -2182,11 +2375,13 @@ private final class HostWorkerProbe: @unchecked Sendable {
   let arrived = DispatchSemaphore(value: 0)
   private let condition = NSCondition()
   private let hold: Bool
+  private let holdConcurrentExecution: Bool
   private var released = false
   private var threads: [Int: ObjectIdentifier] = [:]
   private var active = 0
   private var maximumActive = 0
   private var parallelEntries = 0
+  private var concurrentExecutionEntries = 0
   private var stopped: Set<Int> = []
   private var order: [Int] = []
   private var timedOut = false
@@ -2203,7 +2398,10 @@ private final class HostWorkerProbe: @unchecked Sendable {
   private var interruptDeliveries: [(processor: Int, vector: UInt8)] = []
   private var interruptDeliveryThreads: Set<ObjectIdentifier> = []
 
-  init(hold: Bool = false) { self.hold = hold }
+  init(hold: Bool = false, holdConcurrentExecution: Bool = false) {
+    self.hold = hold
+    self.holdConcurrentExecution = holdConcurrentExecution
+  }
 
   func observe(_ event: DoryPCDirectKernelMachine.WorkerEvent) {
     condition.lock()
@@ -2222,11 +2420,25 @@ private final class HostWorkerProbe: @unchecked Sendable {
     case .deliveringInterrupt(let processor, let vector):
       interruptDeliveries.append((processor, vector))
       interruptDeliveryThreads.insert(ObjectIdentifier(Thread.current))
-    case .executing(let processor, _):
+    case .executing(let processor, let concurrent):
       threads[processor] = ObjectIdentifier(Thread.current)
       order.append(processor)
       active += 1
       maximumActive = max(maximumActive, active)
+      if concurrent && holdConcurrentExecution {
+        concurrentExecutionEntries += 1
+        if concurrentExecutionEntries == 2 {
+          arrived.signal()
+          condition.broadcast()
+        }
+        let deadline = Date(timeIntervalSinceNow: 2)
+        while concurrentExecutionEntries < 2 || (hold && !released) {
+          if !condition.wait(until: deadline) {
+            timedOut = true
+            break
+          }
+        }
+      }
     case .frozenInstructionFetch, .nativeInstructionFetch:
       parallelEntries += 1
       if parallelEntries == 2 {
@@ -2285,4 +2497,15 @@ private final class WorkerSampleClock: @unchecked Sendable {
       return count * 100
     }
   }
+}
+
+private final class QualificationMMIODevice: DoryPCMMIODevice, @unchecked Sendable {
+  let baseAddress: UInt64 = 0xFEC1_0000
+  let byteCount: UInt64 = 0x1000
+
+  func read(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    .init(repeating: 0, count: byteCount)
+  }
+
+  func write(offset: UInt64, bytes: [UInt8]) throws {}
 }

@@ -9,12 +9,14 @@ import Foundation
 final class DoryPCRunCommandBus: @unchecked Sendable {
   enum Command: Sendable, Equatable {
     case execute(maximumInstructions: UInt64)
+    case executeConcurrent(maximumInstructions: UInt64, batch: UInt64)
     case prepareFrozenInstruction
     case executeFrozenInstruction
 
     var maximumInstructions: UInt64 {
       switch self {
       case .execute(let maximumInstructions): maximumInstructions
+      case .executeConcurrent(let maximumInstructions, _): maximumInstructions
       case .prepareFrozenInstruction, .executeFrozenInstruction: 1
       }
     }
@@ -67,6 +69,24 @@ final class DoryPCRunCommandBus: @unchecked Sendable {
     }
     return try publish(
       .execute(maximumInstructions: maximumInstructions),
+      forProcessor: processor
+    )
+  }
+
+  /// Publishes one member of an explicitly admitted concurrent batch. The batch identifier is
+  /// consumed by the run-local start gate, which prevents either owner entering guest code until
+  /// every member has secured its disjoint global-budget reservation.
+  @discardableResult
+  func publishConcurrentExecution(
+    forProcessor processor: Int,
+    maximumInstructions: UInt64,
+    batch: UInt64
+  ) throws -> Envelope {
+    guard maximumInstructions > 0 else {
+      throw CommandError.invalidMaximumInstructions(maximumInstructions)
+    }
+    return try publish(
+      .executeConcurrent(maximumInstructions: maximumInstructions, batch: batch),
       forProcessor: processor
     )
   }

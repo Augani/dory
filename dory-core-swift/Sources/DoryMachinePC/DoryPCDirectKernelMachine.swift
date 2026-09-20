@@ -243,6 +243,21 @@ public enum DoryPCExecutionTier: String, Codable, Sendable, Hashable {
   case optimizingJIT
 }
 
+/// Internal qualification boundary for scheduler modes that are not yet part of the supported
+/// product matrix. Production construction remains serialized unless an in-module qualification
+/// harness explicitly enables the narrowly admitted interpreter pair.
+enum DoryPCMultiprocessorExecutionPolicy: Sendable, Equatable {
+  case serialized
+  case qualifiedInterpreterPair
+}
+
+enum DoryPCConcurrentExecutionAdmissionError: Error, Sendable, Equatable {
+  case requiresExactlyTwoProcessors(Int)
+  case requiresInterpreter(DoryPCExecutionTier)
+  case requiresHostMonotonicClock
+  case callerExtensionDevicesPresent
+}
+
 /// Selects the source of guest machine time without changing the DoryPC-v1 clock frequencies.
 /// Deterministic time is reserved for conformance, replay, and unit tests. Product UEFI machines
 /// use host-monotonic time so a slow translated CPU cannot also make firmware timers run slowly.
@@ -884,6 +899,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private let processorSlots: [ProcessorSlot]
   private var roundRobinCursor = 0
   private var runGeneration: UInt64 = 0
+  private var multiprocessorExecutionPolicy: DoryPCMultiprocessorExecutionPolicy = .serialized
+  private let hasCallerExtensionDevices: Bool
   private var consumedPayload = false
   private let baselineJITs: [DoryARM64BaselineExecutor]
   private let optimizingJITs: [DoryARM64BaselineExecutor]
@@ -988,6 +1005,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     self.processorCount = processorCount
     self.executionTier = executionTier
     self.jitWriteCoherencePolicy = jitWriteCoherencePolicy
+    hasCallerExtensionDevices = !pciFunctions.isEmpty || !platformMMIODevices.isEmpty
     atomicCoordinator = machineAtomicCoordinator
     self.optimizingJITWarmupDispatches = optimizingJITWarmupDispatches
     self.clockSource = clockSource
@@ -1613,10 +1631,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
-  /// Runs every vCPU as one host-worker job for the duration of this public run. General guest
-  /// execution remains serialized; only the existing preflighted register-only instruction path
-  /// may overlap. This changes ownership and handoff mechanics without prematurely admitting
-  /// shared-memory SMP instructions that have not passed the tier/device matrix.
+  /// Runs every vCPU as one host-worker job for the duration of this public run. Product/default
+  /// guest execution remains serialized; only the existing preflighted register-only path may
+  /// overlap. An internal qualification policy can additionally admit exactly two interpreter
+  /// owners after its topology/tier/clock/device checks pass.
   private func runMultipleProcessorSession(
     maximumInstructions: UInt64,
     exceptionPolicy: DoryPCExceptionPolicy,
@@ -1639,6 +1657,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       processorCount: processorCount,
       runGeneration: generation
     )
+    let concurrentExecutionGate = DoryPCRunConcurrentExecutionGate()
     let failureBox = RunFailureBox()
     let parallelPlanBox = RunParallelPlanBox()
     var completions: [DoryPCHostWorker.Completion<Void>] = []
@@ -1647,8 +1666,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       count: processorCount
     )
     var completed: UInt64 = 0
+    var concurrentBatch: UInt64 = 0
 
     func stopWorkers() throws {
+      concurrentExecutionGate.close()
       commandBus.close()
       parallelPlanBox.removeAll()
       for processor in 0..<processorCount {
@@ -1703,6 +1724,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           forProcessor: processor,
           maximumInstructions: maximumInstructions
         )
+      case .executeConcurrent(let maximumInstructions, let batch):
+        try commandBus.publishConcurrentExecution(
+          forProcessor: processor,
+          maximumInstructions: maximumInstructions,
+          batch: batch
+        )
       case .prepareFrozenInstruction:
         try commandBus.publishFrozenInstructionPreparation(forProcessor: processor)
       case .executeFrozenInstruction:
@@ -1730,6 +1757,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           session: session,
           processor: processor,
           commandBus: commandBus,
+          concurrentExecutionGate: concurrentExecutionGate,
           failureBox: failureBox,
           parallelPlanBox: parallelPlanBox,
           observer: observer
@@ -1824,6 +1852,124 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           }
           if pendingWorkWake.snapshot() != pendingWorkGeneration { continue }
           return try finish(.halted(instructionCount: completed))
+        }
+
+        // This path is reachable only through the internal, fail-closed qualification switch.
+        // Split one bounded global reservation between both runnable owners, release them only
+        // after both reservations exist, and do not inspect either architectural state until both
+        // results are parked. Product/default execution continues through the serialized and
+        // frozen-register paths below.
+        if multiprocessorExecutionPolicy == .qualifiedInterpreterPair,
+          maximumInstructions - completed >= 2
+        {
+          var participants = [processor]
+          for displacement in 1..<processorCount {
+            let candidate = (processor + displacement) % processorCount
+            let slot = processorSlots[candidate]
+            if slot.state != nil, !slot.isHalted, slot.lifecycle == .running {
+              participants.append(candidate)
+            }
+          }
+          if participants.count == 2 {
+            let totalLimit = min(maximumInstructions - completed, 128)
+            let firstLimit = (totalLimit + 1) / 2
+            let limits = [firstLimit, totalLimit - firstLimit]
+            concurrentBatch = concurrentBatch == .max ? 1 : concurrentBatch + 1
+            let batch = concurrentBatch
+            try concurrentExecutionGate.begin(batch: batch, participants: participants)
+            let executionSample = hostTimeSample()
+            for (candidate, limit) in zip(participants, limits) {
+              try dispatch(
+                .executeConcurrent(maximumInstructions: limit, batch: batch),
+                to: candidate
+              )
+            }
+
+            var results: [DoryPCRunSession.WorkerResult] = []
+            for candidate in participants {
+              let result = try waitForWorkerResult(
+                session: session,
+                processor: candidate,
+                completion: completions[candidate]
+              )
+              outstandingResults[candidate] = result
+              results.append(result)
+            }
+            try concurrentExecutionGate.finish(batch: batch)
+            recordHostTime(.processorExecution, since: executionSample)
+
+            for result in results {
+              recordSessionCounters(result.counters)
+            }
+            // A host failure has the strongest termination priority. Wait for the complete batch
+            // first, then select by vCPU number so scheduling order cannot alter the surfaced error.
+            for result in results.sorted(by: { $0.processor < $1.processor }) {
+              try hostFailure(from: result)
+            }
+            for result in results {
+              completed += result.counters.instructionCount
+              switch result.outcome {
+              case .retired, .yielded:
+                processorSlots[result.processor].isHalted = false
+              case .halted:
+                processorSlots[result.processor].isHalted = true
+              case .exception, .tripleFault:
+                processorSlots[result.processor].isHalted = false
+              case .preparedFrozenInstruction:
+                preconditionFailure("concurrent execution published a preparation result")
+              case .hostFailure:
+                preconditionFailure("host failure handled before concurrent result dispatch")
+              }
+            }
+            // Alternate the first owner (and the extra reservation when a batch total is odd).
+            roundRobinCursor = (participants[0] + 1) % processorCount
+
+            let clockSample = hostTimeSample()
+            synchronizeHostClock()
+            recordHostTime(.clockAdvancement, since: clockSample)
+
+            let exceptionResults = results.compactMap { result -> (Int, DoryX86Exception)? in
+              guard case .exception(let exception) = result.outcome else { return nil }
+              return (result.processor, exception)
+            }.sorted { $0.0 < $1.0 }
+            let completedBeforeFaults = completed - UInt64(exceptionResults.count)
+            if let tripleFault = results.compactMap({ result -> (Int, DoryPCTripleFaultSource)? in
+              guard case .tripleFault(let source) = result.outcome else { return nil }
+              return (result.processor, source)
+            }).min(by: { $0.0 < $1.0 }) {
+              return try finish(
+                .tripleFault(source: tripleFault.1, instructionCount: completedBeforeFaults),
+                termination: .tripleFault(processor: tripleFault.0)
+              )
+            }
+            if let stop = powerStop(instructionCount: completedBeforeFaults) {
+              let reason: DoryPCRunSession.TerminationReason =
+                switch stop {
+                case .poweredOff: .powerOff
+                case .reset: .reset
+                default: .cancelled
+                }
+              return try finish(stop, termination: reason)
+            }
+            if let firstException = exceptionResults.first, exceptionPolicy == .stop {
+              return try finish(
+                .exception(firstException.1, instructionCount: completedBeforeFaults)
+              )
+            }
+            for (faultingProcessor, exception) in exceptionResults {
+              if let stop = try deliverException(
+                exception,
+                forProcessor: faultingProcessor,
+                instructionCountBeforeFault: completedBeforeFaults
+              ) {
+                return try finish(
+                  stop,
+                  termination: .tripleFault(processor: faultingProcessor)
+                )
+              }
+            }
+            continue
+          }
         }
 
         if clockSource.monotonicNanoseconds != nil {
@@ -1985,54 +2131,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           guard exceptionPolicy == .deliver else {
             return try finish(.exception(exception, instructionCount: completed - 1))
           }
-          guard let processorState = processorSlots[processor].state else {
-            throw DoryPCMachineError.notLoaded
-          }
-          let faultMode = executionMode(processorState.value)
-          translatedMemories[processor].updateContext(
-            .init(state: processorState.value, mode: faultMode, profile: interpreter.profile)
-          )
-          let faultLinearInstructionPointer =
-            faultMode == .long64
-            ? exception.instructionPointer
-            : processorState.value.cs.base &+ exception.instructionPointer
-          let faultBytes =
-            (try? translatedMemories[processor].instructionBytes(
-              at: faultLinearInstructionPointer,
-              maximumCount: 15
-            )) ?? []
-          let evidence = DoryPCTripleFaultExceptionEvidence(
-            exception: exception,
-            processor: processor,
-            executionMode: faultMode,
-            state: processorState.value,
-            instructionBytes: faultBytes
-          )
-          do {
-            if instrumentationEnabled {
-              let sample = hostTimeSample()
-              try DoryX86InterruptDelivery(profile: interpreter.profile).deliverException(
-                exception,
-                state: &processorState.value,
-                physicalMemory: physicalMemories[processor],
-                pagingUnit: pagingUnits[processor],
-                mode: executionMode(processorState.value)
-              )
-              recordHostTime(.interruptDelivery, since: sample)
-            } else {
-              try DoryX86InterruptDelivery(profile: interpreter.profile).deliverException(
-                exception,
-                state: &processorState.value,
-                physicalMemory: physicalMemories[processor],
-                pagingUnit: pagingUnits[processor],
-                mode: executionMode(processorState.value)
-              )
-            }
-          } catch DoryX86InterruptDeliveryError.processorShutdown {
-            return try finish(
-              .tripleFault(source: .exception(evidence), instructionCount: completed - 1),
-              termination: .tripleFault(processor: processor)
-            )
+          if let stop = try deliverException(
+            exception,
+            forProcessor: processor,
+            instructionCountBeforeFault: completed - 1
+          ) {
+            return try finish(stop, termination: .tripleFault(processor: processor))
           }
         }
       }
@@ -2347,6 +2451,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     session: DoryPCRunSession,
     processor: Int,
     commandBus: DoryPCRunCommandBus,
+    concurrentExecutionGate: DoryPCRunConcurrentExecutionGate? = nil,
     failureBox: RunFailureBox,
     parallelPlanBox: RunParallelPlanBox,
     observer: (@Sendable (WorkerEvent) -> Void)?
@@ -2376,7 +2481,17 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       var executionStartedCPU: UInt64?
       do {
         switch command.command {
-        case .execute:
+        case .execute, .executeConcurrent:
+          let isConcurrent: Bool
+          if case .executeConcurrent(_, let batch) = command.command {
+            guard let concurrentExecutionGate else {
+              throw WorkerError.missingConcurrentExecutionGate
+            }
+            try concurrentExecutionGate.arriveAndWait(processor: processor, batch: batch)
+            isConcurrent = true
+          } else {
+            isConcurrent = false
+          }
           let boundary = try serviceProcessorBoundary(
             session: session,
             processor: processor,
@@ -2408,7 +2523,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             if instrumentationEnabled {
               executionStartedCPU = dory_thread_cpu_time_nanoseconds()
             }
-            observer?(.executing(processor, concurrent: false))
+            observer?(.executing(processor, concurrent: isConcurrent))
             let execution: ProcessorExecution
             do {
               execution = try execute(
@@ -2419,10 +2534,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
                   ? nil : Int(reservation.instructionCount)
               )
             } catch {
-              observer?(.executed(processor, concurrent: false))
+              observer?(.executed(processor, concurrent: isConcurrent))
               throw error
             }
-            observer?(.executed(processor, concurrent: false))
+            observer?(.executed(processor, concurrent: isConcurrent))
             observeWorkerTranslationReconciliation(
               afterExecuting: processor,
               observer: observer
@@ -2758,6 +2873,66 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
+  /// Delivers one fault only after its owner is parked and, for a concurrent batch, every peer has
+  /// rendezvoused. The supplied count excludes every non-retired faulting instruction selected by
+  /// the coordinator, so a delivery failure reports the same architectural boundary as stop mode.
+  private func deliverException(
+    _ exception: DoryX86Exception,
+    forProcessor processor: Int,
+    instructionCountBeforeFault: UInt64
+  ) throws -> DoryPCMachineStop? {
+    guard let processorState = processorSlots[processor].state else {
+      throw DoryPCMachineError.notLoaded
+    }
+    let faultMode = executionMode(processorState.value)
+    translatedMemories[processor].updateContext(
+      .init(state: processorState.value, mode: faultMode, profile: interpreter.profile)
+    )
+    let faultLinearInstructionPointer =
+      faultMode == .long64
+      ? exception.instructionPointer
+      : processorState.value.cs.base &+ exception.instructionPointer
+    let faultBytes =
+      (try? translatedMemories[processor].instructionBytes(
+        at: faultLinearInstructionPointer,
+        maximumCount: 15
+      )) ?? []
+    let evidence = DoryPCTripleFaultExceptionEvidence(
+      exception: exception,
+      processor: processor,
+      executionMode: faultMode,
+      state: processorState.value,
+      instructionBytes: faultBytes
+    )
+    do {
+      if instrumentationEnabled {
+        let sample = hostTimeSample()
+        try DoryX86InterruptDelivery(profile: interpreter.profile).deliverException(
+          exception,
+          state: &processorState.value,
+          physicalMemory: physicalMemories[processor],
+          pagingUnit: pagingUnits[processor],
+          mode: executionMode(processorState.value)
+        )
+        recordHostTime(.interruptDelivery, since: sample)
+      } else {
+        try DoryX86InterruptDelivery(profile: interpreter.profile).deliverException(
+          exception,
+          state: &processorState.value,
+          physicalMemory: physicalMemories[processor],
+          pagingUnit: pagingUnits[processor],
+          mode: executionMode(processorState.value)
+        )
+      }
+      return nil
+    } catch DoryX86InterruptDeliveryError.processorShutdown {
+      return .tripleFault(
+        source: .exception(evidence),
+        instructionCount: instructionCountBeforeFault
+      )
+    }
+  }
+
   private func tripleFaultProcessor(_ stop: DoryPCMachineStop) -> Int {
     guard case .tripleFault(let source, _) = stop else {
       preconditionFailure("processor requested for a non-triple-fault stop")
@@ -2832,9 +3007,31 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     lock.withLock { workerObserver = observer }
   }
 
+  /// Enables the first internal SMP qualification slice. This is intentionally not a public
+  /// product option: every unsupported topology, tier, clock, or extension configuration fails
+  /// closed and the default scheduler remains serialized.
+  func enableQualifiedInterpreterPairExecution() throws {
+    try lock.withLock {
+      guard processorCount == 2 else {
+        throw DoryPCConcurrentExecutionAdmissionError.requiresExactlyTwoProcessors(processorCount)
+      }
+      guard executionTier == .interpreter else {
+        throw DoryPCConcurrentExecutionAdmissionError.requiresInterpreter(executionTier)
+      }
+      guard clockSource.monotonicNanoseconds != nil else {
+        throw DoryPCConcurrentExecutionAdmissionError.requiresHostMonotonicClock
+      }
+      guard !hasCallerExtensionDevices else {
+        throw DoryPCConcurrentExecutionAdmissionError.callerExtensionDevicesPresent
+      }
+      multiprocessorExecutionPolicy = .qualifiedInterpreterPair
+    }
+  }
+
   private enum WorkerError: Error {
     case inconsistentFrozenInstruction, inconsistentNativeInstruction
     case missingRunReservation, runLoopExitedWithoutResult, missingHostFailure
+    case missingConcurrentExecutionGate
     case missingFrozenInstruction(Int)
     case outstandingFrozenInstruction(Int)
   }

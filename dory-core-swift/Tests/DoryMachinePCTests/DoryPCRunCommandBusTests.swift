@@ -170,6 +170,35 @@ import Testing
     #expect(execution.command.maximumInstructions == 1)
     #expect(try bus.nextCommand(forProcessor: 0) == execution)
   }
+
+  @Test func concurrentExecutionCarriesExactBatchAndBudget() throws {
+    let bus = DoryPCRunCommandBus(processorCount: 2, runGeneration: 19)
+    #expect(
+      throws: DoryPCRunCommandBus.CommandError.invalidMaximumInstructions(0)
+    ) {
+      try bus.publishConcurrentExecution(
+        forProcessor: 0,
+        maximumInstructions: 0,
+        batch: 7
+      )
+    }
+    let command = try bus.publishConcurrentExecution(
+      forProcessor: 1,
+      maximumInstructions: 64,
+      batch: 7
+    )
+    #expect(
+      command
+        == .init(
+          runGeneration: 19,
+          processor: 1,
+          sequence: 1,
+          command: .executeConcurrent(maximumInstructions: 64, batch: 7)
+        )
+    )
+    #expect(command.command.maximumInstructions == 64)
+    #expect(try bus.nextCommand(forProcessor: 1) == command)
+  }
 }
 
 private final class CommandBusLockedValue<Value: Sendable>: @unchecked Sendable {
