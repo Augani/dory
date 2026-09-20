@@ -398,24 +398,109 @@ public final class DoryRuntimeReconnectRecordStore: @unchecked Sendable {
                   previous.operationID == launchIdentity.operationID,
                   previous.resolvedPlanSHA256 == launchIdentity.resolvedPlanSHA256,
                   previous.planRevision == launchIdentity.planRevision,
-                  let oldGeneration = previous.rendererGeneration,
-                  let newGeneration = replacement.rendererGeneration,
-                  newGeneration > oldGeneration else {
+                  Self.acceptsGraphicsRenewal(
+                    previous: previous,
+                    replacement: replacement
+                  ) else {
                 throw DoryRuntimeReconnectError.invalidIdentity
             }
-            var expectedGraphics = previous
-            expectedGraphics.rendererGeneration = replacement.rendererGeneration
-            expectedGraphics.rendererWorkerReceiptSHA256 = replacement.rendererWorkerReceiptSHA256
-            expectedGraphics.guestProducerFenceProofSHA256 = replacement.guestProducerFenceProofSHA256
             var expectedReadiness = previousReady
             expectedReadiness.graphicsSelection = replacement
-            guard replacement == expectedGraphics, readiness == expectedReadiness else {
+            guard readiness == expectedReadiness else {
                 throw DoryRuntimeReconnectError.invalidIdentity
             }
             record.readiness = readiness
             try writeUnlocked(record)
             return record
         }
+    }
+
+    static func acceptsGraphicsRenewal(
+        previous: DoryRuntimeGraphicsSelection,
+        replacement: DoryRuntimeGraphicsSelection
+    ) -> Bool {
+        guard previous != replacement,
+              previous.schemaVersion == replacement.schemaVersion,
+              previous.operationID == replacement.operationID,
+              previous.resolvedPlanSHA256 == replacement.resolvedPlanSHA256,
+              previous.planRevision == replacement.planRevision,
+              previous.requestedGraphics == replacement.requestedGraphics,
+              previous.admittedGraphics == replacement.admittedGraphics,
+              observationDoesNotRegress(
+                previous.firstShaderCompletedAtUnixMilliseconds,
+                replacement.firstShaderCompletedAtUnixMilliseconds
+              ),
+              observationDoesNotRegress(
+                previous.firstPresentationCompletedAtUnixMilliseconds,
+                replacement.firstPresentationCompletedAtUnixMilliseconds
+              ) else {
+            return false
+        }
+
+        if let oldGeneration = previous.rendererGeneration,
+           let newGeneration = replacement.rendererGeneration,
+           newGeneration > oldGeneration {
+            var expected = previous
+            expected.rendererGeneration = newGeneration
+            expected.rendererWorkerReceiptSHA256 = replacement.rendererWorkerReceiptSHA256
+            expected.guestProducerFenceProofSHA256 = replacement.guestProducerFenceProofSHA256
+            expected.firstShaderCompletedAtUnixMilliseconds =
+                replacement.firstShaderCompletedAtUnixMilliseconds
+            expected.firstPresentationCompletedAtUnixMilliseconds =
+                replacement.firstPresentationCompletedAtUnixMilliseconds
+            return replacement == expected
+        }
+
+        switch (previous.verificationState, replacement.verificationState) {
+        case (.provisional, .provisional), (.verified, .verified):
+            var expected = previous
+            expected.firstShaderCompletedAtUnixMilliseconds =
+                replacement.firstShaderCompletedAtUnixMilliseconds
+            expected.firstPresentationCompletedAtUnixMilliseconds =
+                replacement.firstPresentationCompletedAtUnixMilliseconds
+            return replacement == expected
+        case (.provisional, .verified):
+            var expected = previous
+            expected.verificationState = .verified
+            expected.guestProducerFenceProofSHA256 =
+                replacement.guestProducerFenceProofSHA256
+            expected.firstShaderCompletedAtUnixMilliseconds =
+                replacement.firstShaderCompletedAtUnixMilliseconds
+            expected.firstPresentationCompletedAtUnixMilliseconds =
+                replacement.firstPresentationCompletedAtUnixMilliseconds
+            return replacement == expected
+        case (.provisional, .downgraded(.guestKernelLacksPrepareFB)):
+            var expected = previous
+            expected.accelerationLevel = .software
+            expected.backend = .software
+            expected.rendererGeneration = nil
+            expected.rendererWorkerReceiptSHA256 = nil
+            expected.guestProducerFenceProofSHA256 = nil
+            expected.verificationState = .downgraded(.guestKernelLacksPrepareFB)
+            expected.guestDriver = .software
+            expected.firstShaderCompletedAtUnixMilliseconds =
+                replacement.firstShaderCompletedAtUnixMilliseconds
+            expected.firstPresentationCompletedAtUnixMilliseconds =
+                replacement.firstPresentationCompletedAtUnixMilliseconds
+            return replacement == expected
+        case let (.downgraded(previousReason), .downgraded(replacementReason)):
+            guard previousReason == replacementReason else { return false }
+            var expected = previous
+            expected.firstShaderCompletedAtUnixMilliseconds =
+                replacement.firstShaderCompletedAtUnixMilliseconds
+            expected.firstPresentationCompletedAtUnixMilliseconds =
+                replacement.firstPresentationCompletedAtUnixMilliseconds
+            return replacement == expected
+        default:
+            return false
+        }
+    }
+
+    private static func observationDoesNotRegress(
+        _ previous: UInt64?,
+        _ replacement: UInt64?
+    ) -> Bool {
+        previous == nil || previous == replacement
     }
 
     public func read(machineID: String) throws -> DoryRuntimeReconnectRecord {

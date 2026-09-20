@@ -20437,8 +20437,10 @@ public final class MachineManager: @unchecked Sendable {
                 processToStop = entry.process
                 break
             }
-            if let admittedGeneration = entry.lastAdmittedRendererGeneration,
-               handoff.ready.graphicsSelection?.rendererGeneration != admittedGeneration {
+            if !Self.rendererGenerationMatches(
+                handoff.ready.graphicsSelection,
+                admittedGeneration: entry.lastAdmittedRendererGeneration
+            ) {
                 entry.state = .failed
                 setFailure(
                     on: &entry,
@@ -20460,7 +20462,9 @@ public final class MachineManager: @unchecked Sendable {
                 break
             }
             entry.handoff = handoff
-            entry.lastAdmittedRendererGeneration = handoff.ready.graphicsSelection?.rendererGeneration
+            if let rendererGeneration = handoff.ready.graphicsSelection?.rendererGeneration {
+                entry.lastAdmittedRendererGeneration = rendererGeneration
+            }
             clearFailure(on: &entry)
             requiresAdmissionCommit = admissionPlan != nil
                 && hasProductionAdmissionLedger
@@ -20631,8 +20635,10 @@ public final class MachineManager: @unchecked Sendable {
               handoff.ready.machineID == machineID,
               handoff.ready.operationID == expectedOperationToken,
               handoff.ready.controlSocketPath == snapshot.controlSocketPath,
-              handoff.ready.graphicsSelection?.rendererGeneration
-                == snapshot.lastAdmittedRendererGeneration,
+              Self.rendererGenerationMatches(
+                handoff.ready.graphicsSelection,
+                admittedGeneration: snapshot.lastAdmittedRendererGeneration
+              ),
               let peer = handoff.peerIdentity,
               Self.runtimePeerMatches(
                 process: snapshot.process,
@@ -20668,8 +20674,10 @@ public final class MachineManager: @unchecked Sendable {
                   entry.process === snapshot.process,
                   entry.process?.isRunning == true,
                   entry.lastAdmittedRendererGeneration == snapshot.lastAdmittedRendererGeneration,
-                  entry.lastAdmittedRendererGeneration
-                    == handoff.ready.graphicsSelection?.rendererGeneration,
+                  Self.rendererGenerationMatches(
+                    handoff.ready.graphicsSelection,
+                    admittedGeneration: entry.lastAdmittedRendererGeneration
+                  ),
                   let currentHandoff = entry.handoff,
                   currentHandoff.ready.controlSocketPath == snapshot.controlSocketPath else {
                 return
@@ -20683,8 +20691,10 @@ public final class MachineManager: @unchecked Sendable {
                 readiness: renewedReady
             )
             guard let persistedReady = renewed.readiness,
-                  entry.lastAdmittedRendererGeneration
-                    == persistedReady.graphicsSelection?.rendererGeneration,
+                  Self.rendererGenerationMatches(
+                    persistedReady.graphicsSelection,
+                    admittedGeneration: entry.lastAdmittedRendererGeneration
+                  ),
                   let refreshed = try? currentHandoff.replacingReady(persistedReady) else {
                 return
             }
@@ -20788,6 +20798,25 @@ public final class MachineManager: @unchecked Sendable {
         default:
             return false
         }
+    }
+
+    static func rendererGenerationMatches(
+        _ selection: DoryRuntimeGraphicsSelection?,
+        admittedGeneration: UInt64?
+    ) -> Bool {
+        guard let admittedGeneration else {
+            guard selection?.rendererGeneration == nil else { return false }
+            if let verificationState = selection?.verificationState,
+               case .downgraded = verificationState {
+                return false
+            }
+            return true
+        }
+        if selection?.rendererGeneration == admittedGeneration { return true }
+        guard selection?.rendererGeneration == nil,
+              let verificationState = selection?.verificationState,
+              case .downgraded = verificationState else { return false }
+        return true
     }
 
     /// Completes an accepted readiness transition while the caller owns the workspace coordinator.

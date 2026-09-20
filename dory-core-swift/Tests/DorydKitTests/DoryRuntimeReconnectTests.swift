@@ -197,6 +197,58 @@ final class DoryRuntimeReconnectTests: XCTestCase {
         }
     }
 
+    func testRendererRenewalAcceptsOnlyMonotonicStockObservationTransitions() {
+        var provisional = DoryRuntimeGraphicsSelection(
+            operationID: UUID().uuidString.lowercased(),
+            resolvedPlanSHA256: String(repeating: "a", count: 64),
+            planRevision: 1,
+            accelerationLevel: .hardwareAccelerated3D,
+            backend: .virglVenus,
+            rendererGeneration: 9,
+            rendererWorkerReceiptSHA256: String(repeating: "b", count: 64),
+            requestedGraphics: .hardwareAccelerated3D,
+            admittedGraphics: .hardwareAccelerated3D,
+            verificationState: .provisional,
+            guestDriver: .venus
+        )
+        var observed = provisional
+        observed.firstShaderCompletedAtUnixMilliseconds = 10
+        XCTAssertTrue(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: provisional,
+            replacement: observed
+        ))
+
+        var verified = observed
+        verified.verificationState = .verified
+        verified.guestProducerFenceProofSHA256 = String(repeating: "c", count: 64)
+        XCTAssertTrue(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: observed,
+            replacement: verified
+        ))
+
+        var downgraded = provisional
+        downgraded.accelerationLevel = .software
+        downgraded.backend = .software
+        downgraded.rendererGeneration = nil
+        downgraded.rendererWorkerReceiptSHA256 = nil
+        downgraded.verificationState = .downgraded(.guestKernelLacksPrepareFB)
+        downgraded.guestDriver = .software
+        XCTAssertTrue(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: provisional,
+            replacement: downgraded
+        ))
+
+        provisional.firstShaderCompletedAtUnixMilliseconds = 11
+        XCTAssertFalse(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: provisional,
+            replacement: provisional
+        ))
+        XCTAssertFalse(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: verified,
+            replacement: downgraded
+        ))
+    }
+
     func testAdoptionRejectsStaleProcessGenerationBeforeInstallingSupervisor() throws {
         let current = try DoryHostProcessIdentity.capture()
         XCTAssertThrowsError(try HvProcess.adopting(

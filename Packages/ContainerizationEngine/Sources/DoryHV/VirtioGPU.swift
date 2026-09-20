@@ -105,6 +105,29 @@ private final class DoryRendererWorkerBlobMappingAuthority: @unchecked Sendable 
     }
 }
 
+private final class VirtioGPUStockFallbackFenceBarrier: @unchecked Sendable {
+    private let lock = NSLock()
+    private var remaining: Int
+    private var completion: (@Sendable () -> Void)?
+
+    init(count: Int, completion: @escaping @Sendable () -> Void) {
+        precondition(count > 0)
+        remaining = count
+        self.completion = completion
+    }
+
+    func arrive() {
+        let action = lock.withLock { () -> (@Sendable () -> Void)? in
+            guard remaining > 0 else { return nil }
+            remaining -= 1
+            guard remaining == 0 else { return nil }
+            defer { completion = nil }
+            return completion
+        }
+        action?()
+    }
+}
+
 public struct VirtioGPUResourceCreate3D {
     public var resourceID: UInt32
     public var target: UInt32
@@ -1704,11 +1727,12 @@ public final class VirtioGPUHostVisibleMemory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if let previous = mappings.removeValue(forKey: resourceID) {
-            _ = hv_vm_unmap(guestBase + previous.offset, Int(previous.size))
+            arenaUnmapOperation(guestBase + previous.offset, Int(previous.size))
         }
-        try hvCheck(
-            hv_vm_map(hostPointer, guestBase + offset, Int(mapSize), hv_memory_flags_t(HV_MEMORY_READ | HV_MEMORY_WRITE)),
-            "virtio-gpu host-visible blob hv_vm_map"
+        try arenaMapOperation(
+            hostPointer,
+            guestBase + offset,
+            Int(mapSize)
         )
         mappings[resourceID] = (offset, mapSize)
     }
@@ -1812,7 +1836,7 @@ public final class VirtioGPUHostVisibleMemory: @unchecked Sendable {
             return
         }
         if let mapping = mappings.removeValue(forKey: resourceID) {
-            _ = hv_vm_unmap(guestBase + mapping.offset, Int(mapping.size))
+            arenaUnmapOperation(guestBase + mapping.offset, Int(mapping.size))
         }
     }
 
@@ -1826,7 +1850,7 @@ public final class VirtioGPUHostVisibleMemory: @unchecked Sendable {
         arenaMappings.removeAll(keepingCapacity: false)
         arenaGranuleReferences.removeAll(keepingCapacity: false)
         for (_, mapping) in mappings {
-            _ = hv_vm_unmap(guestBase + mapping.offset, Int(mapping.size))
+            arenaUnmapOperation(guestBase + mapping.offset, Int(mapping.size))
         }
         mappings.removeAll(keepingCapacity: false)
     }
@@ -1870,6 +1894,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private let stockFenceVerifier: VirtioGPUStockFenceVerifier?
     private let onStockFenceVerification:
         (@Sendable (VirtioGPUStockFenceVerificationOutcome) -> Void)?
+    private var stockFenceFallbackActive = false
+    private var stockFirstShaderCompletionReported = false
+    private let onStockFirstShaderCompletion: (@Sendable () -> Void)?
     private let rendererExecutor: VirtioGPURendererCommandExecutor?
     private let rendererWorkerCandidate: DoryRendererWorkerVirtioCommandLane?
     private let configuredRendererDeviceFeatures: UInt64
@@ -1945,6 +1972,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private var rendererWorkerScanoutDiagnosticStages = Set<String>()
     private let softwareScanoutMetricsLock = NSLock()
     private var softwareScanoutCopiedBytes: UInt64 = 0
+    private var rendererWorkerScanoutCopiedBytes: UInt64 = 0
     private let rendererWorkerPresentationLock = NSLock()
     private var rendererWorkerPendingScanouts = [
         DoryRendererScanoutReleaseToken: DoryRendererWorkerSharedScanoutCore
@@ -1977,6 +2005,12 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         var chain: VirtqueueChain
         var createdAtMonotonicNanoseconds: UInt64
         var timeoutReported: Bool
+    }
+
+    private struct StockFallbackFenceWaiter {
+        let targetToken: UInt64
+        let epoch: UInt64
+        let barrier: VirtioGPUStockFallbackFenceBarrier
     }
 
     private struct FenceRequest {
@@ -2135,6 +2169,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         let resourceID: UInt32
         let workerResourceGeneration: UInt64
         let displayResourceGeneration: UInt64
+        let dirtyRect: VirtioGPURect
         let surface: WorkerScanoutSurface?
         let targets: [WorkerFlushTarget]
         let fence: FenceRequest?
@@ -2185,6 +2220,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
 
     private let fenceLock = NSLock()
     private var pendingFences: [FenceKey: [PendingFence]] = [:]
+    private var stockFallbackFenceWaiters: [FenceKey: [StockFallbackFenceWaiter]] = [:]
     /// Fence creation failed after the renderer command crossed its mutation boundary. These
     /// chains remain owned until queue revocation/reset, but are kept out of callback lookup so a
     /// late signal from an older fence can never fabricate their completion.
@@ -2356,7 +2392,11 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
 
     private enum WorkerBlobMapping {
         case descriptor(DoryRendererWorkerBlobMappingAuthority)
-        case generationArena
+        case generationArena(
+            DoryRendererWorkerHostVisibleArena,
+            offset: UInt64,
+            byteCount: UInt64
+        )
     }
 
     /// - Parameters:
@@ -2392,7 +2432,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         onCursorUpdate: (@Sendable (VirtioGPUCursorUpdate?) -> Void)? = nil,
         onRendererWorkerFailure: (@Sendable (String) -> Void)? = nil,
         onStockFenceVerification:
-            (@Sendable (VirtioGPUStockFenceVerificationOutcome) -> Void)? = nil
+            (@Sendable (VirtioGPUStockFenceVerificationOutcome) -> Void)? = nil,
+        onStockFirstShaderCompletion: (@Sendable () -> Void)? = nil
     ) {
         let boundedScanoutSizes: [VirtioGPUScanoutSize]
         if let scanoutSizes {
@@ -2485,6 +2526,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             ? nil
             : VirtioGPUStockFenceVerifier()
         self.onStockFenceVerification = onStockFenceVerification
+        self.onStockFirstShaderCompletion = onStockFirstShaderCompletion
         rendererExecutor?.installCallbacks(
             fence: { [weak self] generation, contextID, ringIndex, fenceID in
                 self?.fenceSignaled(
@@ -2625,6 +2667,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             () -> (UInt64, UInt64, Bool) in
             let revokedWorkerGeneration = lifecycleEpoch
             let fenceStateIsPristine = pendingFenceCount == 0
+                && stockFallbackFenceWaiters.isEmpty
                 && uncertainFences.isEmpty
                 && uncertainRendererCommandChains.isEmpty
                 && lastTransport == nil
@@ -2640,6 +2683,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 count: UInt64(uncertainRendererCommandChains.count)
             )
             pendingFences.removeAll()
+            stockFallbackFenceWaiters.removeAll()
             uncertainFences.removeAll()
             uncertainRendererCommandChains.removeAll()
             pendingFenceCount = 0
@@ -2841,6 +2885,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 count: UInt64(pendingFenceCount)
             )
             pendingFences.removeAll()
+            stockFallbackFenceWaiters.removeAll()
             uncertainFences.removeAll()
             recordTelemetryWhileLocked(
                 .revokedUncertainRendererCommand,
@@ -3582,7 +3627,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         WorkerScanoutSurface?,
                         UInt64,
                         UInt64,
-                        [WorkerFlushTarget]
+                        [WorkerFlushTarget],
+                        VirtioGPURect
                     )? in
                         guard let workerGeneration =
                                 rendererWorkerResourceGenerations[resourceID],
@@ -3624,7 +3670,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                             surface,
                             workerGeneration,
                             displayGeneration,
-                            targets
+                            targets,
+                            requestedRect
                         )
                     }
                     if let workerState {
@@ -3650,6 +3697,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                             resourceID: resourceID,
                             workerResourceGeneration: workerState.1,
                             displayResourceGeneration: workerState.2,
+                            dirtyRect: workerState.4,
                             surface: workerState.0,
                             targets: workerState.3,
                             fence: flags == HeaderFlag.fence
@@ -5933,7 +5981,11 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                             offset: mapping.lease.arenaOffset,
                             size: mapping.lease.mappingByteCount
                         )
-                        retainedMapping = .generationArena
+                        retainedMapping = .generationArena(
+                            arena,
+                            offset: mapping.lease.arenaOffset,
+                            byteCount: mapping.lease.mappingByteCount
+                        )
                     }
                     guard var updated = blobResources[admission.resourceID] else {
                         hostVisibleMemory.unmap(resourceID: admission.resourceID)
@@ -6208,6 +6260,156 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         }
     }
 
+    private func startRendererWorkerSoftwareFallback(
+        admission: WorkerFlushScanoutAdmission,
+        producerContextID: UInt32?,
+        chain: VirtqueueChain,
+        claim: RendererWorkerControlCommandClaim,
+        pendingFence: PendingFence?,
+        transport: VirtioMMIOTransport
+    ) {
+        let publish: @Sendable () -> Void = { [weak self, weak transport] in
+            guard let self, let transport else { return }
+            self.rendererWorkerPresentationQueue.async { [weak self, weak transport] in
+                guard let self, let transport else { return }
+                self.finishRendererWorkerSoftwareFallback(
+                    admission: admission,
+                    chain: chain,
+                    claim: claim,
+                    pendingFence: pendingFence,
+                    transport: transport
+                )
+            }
+        }
+        guard let producerContextID,
+              deferStockFallback(
+                contextID: producerContextID,
+                generation: claim.generation,
+                completion: publish
+              ) else {
+            publish()
+            return
+        }
+    }
+
+    private func reportStockFirstShaderCompletion() {
+        let shouldReport = commandLock.withLock { () -> Bool in
+            guard !stockFirstShaderCompletionReported else { return false }
+            stockFirstShaderCompletionReported = true
+            return true
+        }
+        if shouldReport { onStockFirstShaderCompletion?() }
+    }
+
+    private func deferStockFallback(
+        contextID: UInt32,
+        generation: UInt64,
+        completion: @escaping @Sendable () -> Void
+    ) -> Bool {
+        fenceLock.withLock {
+            let targets = pendingFences.compactMap { key, fences -> (FenceKey, UInt64)? in
+                guard key.contextID == contextID,
+                      let pending = fences.last(where: { $0.epoch == generation }) else {
+                    return nil
+                }
+                return (key, pending.token)
+            }
+            guard !targets.isEmpty else { return false }
+            let barrier = VirtioGPUStockFallbackFenceBarrier(
+                count: targets.count,
+                completion: completion
+            )
+            for (key, targetToken) in targets {
+                stockFallbackFenceWaiters[key, default: []].append(
+                    StockFallbackFenceWaiter(
+                        targetToken: targetToken,
+                        epoch: generation,
+                        barrier: barrier
+                    )
+                )
+            }
+            return true
+        }
+    }
+
+    private func finishRendererWorkerSoftwareFallback(
+        admission: WorkerFlushScanoutAdmission,
+        chain: VirtqueueChain,
+        claim: RendererWorkerControlCommandClaim,
+        pendingFence: PendingFence?,
+        transport: VirtioMMIOTransport
+    ) {
+        let generation = claim.generation
+        do {
+            let frames = try commandLock.withLock { () throws -> [VirtioGPUScanoutFrame] in
+                let isCurrentGeneration = fenceLock.withLock {
+                    lifecycleEpoch == generation
+                }
+                guard isCurrentGeneration,
+                      stockFenceFallbackActive,
+                      rendererWorkerResourceGenerations[admission.resourceID]
+                        == admission.workerResourceGeneration,
+                      resourceGenerations[admission.resourceID]
+                        == admission.displayResourceGeneration,
+                      let blob = blobResources[admission.resourceID] else {
+                    throw VMError.invalidConfiguration(
+                        "stock graphics fallback resource is no longer current"
+                    )
+                }
+                return try blobScanoutFrames(
+                    resourceID: admission.resourceID,
+                    blob: blob,
+                    dirtyRect: admission.dirtyRect
+                )
+            }
+            reportStockFirstShaderCompletion()
+            for frame in frames { onScanoutFrame?(frame) }
+            if let fence = admission.fence {
+                guard let pendingFence else {
+                    throw VMError.invalidConfiguration(
+                        "stock graphics fallback lost its guest fence"
+                    )
+                }
+                startRendererWorkerGlobalFenceAfterMutation(
+                    fence,
+                    pending: pendingFence,
+                    claim: claim,
+                    generation: generation,
+                    transport: transport
+                )
+                return
+            }
+            _ = publishRendererWorkerCompletion(
+                chain: chain,
+                response: responseHeader(type: Response.okNoData, request: admission.request),
+                generation: generation,
+                controlClaim: claim,
+                transport: transport
+            )
+        } catch {
+            logRendererWorkerScanoutFailure(
+                resourceID: admission.resourceID,
+                stage: "stock-cpu-copy-fallback",
+                detail: String(describing: error)
+            )
+            abandonRendererWorkerMutationFence(
+                admission.fence,
+                pending: pendingFence,
+                outcomeUnknown: false
+            )
+            _ = publishRendererWorkerCompletion(
+                chain: chain,
+                response: responseHeader(
+                    type: Response.errorInvalidParameter,
+                    request: admission.request
+                ),
+                generation: generation,
+                controlClaim: claim,
+                transport: transport
+            )
+        }
+    }
+
     /// Acquires one descriptor-backed scanout lease after the qualified guest's producer-complete
     /// RESOURCE_FLUSH. Metal import and command-buffer submission remain asynchronous and off the
     /// vCPU, but the guest chain is not acknowledged until every target has accepted that command
@@ -6253,24 +6455,31 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 queue: transport.queues[0]
             )
         }
+        let producerContextID = commandLock.withLock { () -> UInt32? in
+            guard blobResources[admission.resourceID] != nil,
+                  let contexts = rendererWorkerResourceContextIDs[admission.resourceID],
+                  contexts.count == 1 else { return nil }
+            return contexts.first
+        }
         if !admission.targets.isEmpty,
            let verifier = stockFenceVerifier,
-           let producerContextID = commandLock.withLock({ () -> UInt32? in
-               guard blobResources[admission.resourceID] != nil,
-                     let contexts = rendererWorkerResourceContextIDs[admission.resourceID],
-                     contexts.count == 1 else { return nil }
-               return contexts.first
-           }) {
+           let producerContextID {
             let producerFencePending = fenceLock.withLock {
                 pendingFences.contains { key, fences in
                     key.contextID == producerContextID && !fences.isEmpty
                 }
+            }
+            if !producerFencePending {
+                reportStockFirstShaderCompletion()
             }
             if let outcome = verifier.observeScanoutBlobFlush(
                 resourceID: admission.resourceID,
                 resourceGeneration: admission.workerResourceGeneration,
                 producerFencePending: producerFencePending
             ) {
+                if outcome == .violated {
+                    commandLock.withLock { stockFenceFallbackActive = true }
+                }
                 onStockFenceVerification?(outcome)
             }
         }
@@ -6331,6 +6540,17 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 ),
                 queue: transport.queues[0]
             )
+        }
+        if commandLock.withLock({ stockFenceFallbackActive }) {
+            startRendererWorkerSoftwareFallback(
+                admission: admission,
+                producerContextID: producerContextID,
+                chain: chain,
+                claim: claim,
+                pendingFence: pendingFence,
+                transport: transport
+            )
+            return nil
         }
         guard onMetalScanout != nil else {
             // The accelerated candidate is never allowed to silently fall back through the legacy
@@ -7376,8 +7596,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         let snapshots = rendererWorkerMetricsLock.withLock {
             rendererWorkerSnapshotMetrics
         }
-        let softwareCopies = softwareScanoutMetricsLock.withLock {
-            softwareScanoutCopiedBytes
+        let scanoutCopies = softwareScanoutMetricsLock.withLock {
+            (softwareScanoutCopiedBytes, rendererWorkerScanoutCopiedBytes)
         }
         return fenceLock.withLock {
             let now = DispatchTime.now().uptimeNanoseconds
@@ -7448,9 +7668,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 rendererWorkerCompletedSubmissions: worker?.completedSubmissions ?? 0,
                 rendererWorkerArmedFences: worker?.armedFences ?? 0,
                 rendererWorkerCompletedFences: worker?.completedFences ?? 0,
-                // The accelerated presentation contract has no copied-frame operation.
-                rendererWorkerScanoutCopyBytes: 0,
-                softwareScanoutCopiedBytes: softwareCopies
+                rendererWorkerScanoutCopyBytes: scanoutCopies.1,
+                softwareScanoutCopiedBytes: scanoutCopies.0
             )
         }
     }
@@ -7580,6 +7799,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         let key = FenceKey(contextID: contextID, ringIndex: ringIndex)
         fenceLock.lock()
         var completed = [PendingFence]()
+        var fallbackBarriers = [VirtioGPUStockFallbackFenceBarrier]()
         if var waiting = pendingFences[key] {
             if let target = waiting.firstIndex(where: {
                 $0.epoch == generation && $0.fenceID == fenceID
@@ -7596,6 +7816,21 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 waiting = survivors
             }
             pendingFences[key] = waiting.isEmpty ? nil : waiting
+        }
+        if var waiters = stockFallbackFenceWaiters[key], !completed.isEmpty {
+            let completedTokens = Set(completed.lazy.map(\.token))
+            var survivors = [StockFallbackFenceWaiter]()
+            survivors.reserveCapacity(waiters.count)
+            for waiter in waiters {
+                if waiter.epoch == generation,
+                   completedTokens.contains(waiter.targetToken) {
+                    fallbackBarriers.append(waiter.barrier)
+                } else {
+                    survivors.append(waiter)
+                }
+            }
+            waiters = survivors
+            stockFallbackFenceWaiters[key] = waiters.isEmpty ? nil : waiters
         }
         let transport = lastTransport
         pendingFenceCount = max(0, pendingFenceCount - completed.count)
@@ -7661,6 +7896,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 lastTransport = nil
             }
         }
+        for barrier in fallbackBarriers { barrier.arrive() }
     }
 
     private func registerResourceGeneration(_ resourceID: UInt32) {
@@ -9254,6 +9490,19 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         blob: BlobResource,
         dirtyRect: VirtioGPURect
     ) throws {
+        let frames = try blobScanoutFrames(
+            resourceID: resourceID,
+            blob: blob,
+            dirtyRect: dirtyRect
+        )
+        for frame in frames { onScanoutFrame?(frame) }
+    }
+
+    private func blobScanoutFrames(
+        resourceID: UInt32,
+        blob: BlobResource,
+        dirtyRect: VirtioGPURect
+    ) throws -> [VirtioGPUScanoutFrame] {
         let bindings = scanouts.sorted(by: { $0.key < $1.key }).compactMap {
             (scanoutID, binding) -> (UInt32, ScanoutBinding, UInt32, UInt32, UInt32, UInt32, UInt32)? in
             guard binding.resourceID == resourceID,
@@ -9262,17 +9511,33 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             }
             return (scanoutID, binding, format, width, height, stride, offset)
         }
-        guard !bindings.isEmpty else { return }
+        guard !bindings.isEmpty else { return [] }
+        var frames = [VirtioGPUScanoutFrame]()
+        frames.reserveCapacity(bindings.count)
 
         let guestEntries = blob.memory == 1 ? (resourceEntries[resourceID] ?? []) : []
-        let mapping: VirtioGPUBlobMapping?
+        let mapping: (pointer: UnsafeMutableRawPointer, size: UInt64)?
+        let usesWorkerMapping: Bool
         if guestEntries.isEmpty {
-            guard rendererExecutor != nil else {
-                throw VMError.invalidConfiguration("virtio-gpu blob scanout has no accessible backing")
+            if let workerMapping = try workerBlobMapping(blob) {
+                mapping = workerMapping
+                usesWorkerMapping = true
+            } else {
+                guard rendererExecutor != nil else {
+                    throw VMError.invalidConfiguration(
+                        "virtio-gpu blob scanout has no accessible backing"
+                    )
+                }
+                let rendererMapping = try ensureBlobMapping(resourceID: resourceID)
+                mapping = (
+                    rendererMapping.hostPointer,
+                    rendererMapping.size == 0 ? blob.size : rendererMapping.size
+                )
+                usesWorkerMapping = false
             }
-            mapping = try ensureBlobMapping(resourceID: resourceID)
         } else {
             mapping = nil
+            usesWorkerMapping = false
         }
 
         for (scanoutID, binding, format, width, height, stride, offset) in bindings {
@@ -9287,14 +9552,13 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     + (UInt64(dirty.y) + row) * UInt64(stride)
                     + UInt64(dirty.x) * 4
                 if let mapping {
-                    let mappingSize = mapping.size == 0 ? blob.size : mapping.size
-                    guard UInt64(outputStride) <= mappingSize,
-                          sourceOffset <= mappingSize - UInt64(outputStride),
+                    guard UInt64(outputStride) <= mapping.size,
+                          sourceOffset <= mapping.size - UInt64(outputStride),
                           sourceOffset <= UInt64(Int.max) else {
                         throw VMError.invalidConfiguration("virtio-gpu blob mapping is smaller than its scanout")
                     }
                     pixels.append(
-                        mapping.hostPointer.advanced(by: Int(sourceOffset)).assumingMemoryBound(to: UInt8.self),
+                        mapping.pointer.advanced(by: Int(sourceOffset)).assumingMemoryBound(to: UInt8.self),
                         count: outputStride
                     )
                 } else {
@@ -9305,7 +9569,19 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     ))
                 }
             }
-            onScanoutFrame?(VirtioGPUScanoutFrame(
+            softwareScanoutMetricsLock.withLock {
+                softwareScanoutCopiedBytes = Self.saturatingAdd(
+                    softwareScanoutCopiedBytes,
+                    UInt64(pixels.count)
+                )
+                if usesWorkerMapping {
+                    rendererWorkerScanoutCopiedBytes = Self.saturatingAdd(
+                        rendererWorkerScanoutCopiedBytes,
+                        UInt64(pixels.count)
+                    )
+                }
+            }
+            frames.append(VirtioGPUScanoutFrame(
                 scanoutID: scanoutID,
                 resourceID: resourceID,
                 resourceGeneration: resourceGenerations[resourceID] ?? 0,
@@ -9321,6 +9597,33 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 ),
                 bytes: pixels
             ))
+        }
+        return frames
+    }
+
+    private func workerBlobMapping(
+        _ blob: BlobResource
+    ) throws -> (pointer: UnsafeMutableRawPointer, size: UInt64)? {
+        guard let mapping = blob.workerMapping else { return nil }
+        switch mapping {
+        case .descriptor(let authority):
+            let byteCount = min(blob.size, UInt64(authority.mappedByteCount))
+            guard byteCount > 0 else {
+                throw VMError.invalidConfiguration("worker blob descriptor mapping is empty")
+            }
+            return (authority.hostPointer, byteCount)
+        case let .generationArena(arena, offset, byteCount):
+            let (end, overflow) = offset.addingReportingOverflow(byteCount)
+            guard byteCount > 0,
+                  !overflow,
+                  end <= arena.byteCount,
+                  offset <= UInt64(Int.max) else {
+                throw VMError.invalidConfiguration("worker blob arena mapping exceeds authority")
+            }
+            return (
+                arena.baseAddress.advanced(by: Int(offset)),
+                min(blob.size, byteCount)
+            )
         }
     }
 

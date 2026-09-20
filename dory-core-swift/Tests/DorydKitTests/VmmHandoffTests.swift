@@ -220,6 +220,30 @@ final class VmmHandoffTests: XCTestCase {
         XCTAssertTrue(decoded.isValid)
     }
 
+    func testAdmittedRendererGenerationAllowsTruthfulRuntimeDowngrade() {
+        let operationID = UUID().uuidString.lowercased()
+        let downgraded = DoryRuntimeGraphicsSelection(
+            operationID: operationID,
+            resolvedPlanSHA256: String(repeating: "a", count: 64),
+            planRevision: 1,
+            accelerationLevel: .software,
+            backend: .software,
+            requestedGraphics: .hardwareAccelerated3D,
+            admittedGraphics: .hardwareAccelerated3D,
+            verificationState: .downgraded(.guestKernelLacksPrepareFB),
+            guestDriver: .software
+        )
+
+        XCTAssertTrue(MachineManager.rendererGenerationMatches(
+            downgraded,
+            admittedGeneration: 9
+        ))
+        XCTAssertFalse(MachineManager.rendererGenerationMatches(
+            downgraded,
+            admittedGeneration: nil
+        ))
+    }
+
     func testReceivesReadyMessageAndFileDescriptor() throws {
         let base = "/tmp/dory-vmm-handoff-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)

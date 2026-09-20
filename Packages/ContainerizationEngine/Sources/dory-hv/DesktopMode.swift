@@ -1327,7 +1327,7 @@ enum DesktopMode {
         private let firstFrame: FirstFrameGate
         private let deviceTelemetry: RawDeviceTelemetryRegistry
         private let lifecycleReceiptServer: VmmLifecycleReceiptServer
-        private let graphicsSelection: DoryRuntimeGraphicsSelection?
+        private let graphicsReadinessState: DesktopRuntimeGraphicsReadinessState
         private let guestFSEventBridge: GuestFSEventBridge?
         private var filesystemWorker: DoryFilesystemWorkerLaunch?
         private var hostShareCoherence: DoryHostShareCoherenceBridge?
@@ -1395,11 +1395,22 @@ enum DesktopMode {
             let rendererRuntimeFailureLatch = resolvedGraphics.rendererWorkerLaunch == nil
                 ? nil : DesktopRendererRuntimeFailureLatch()
             self.rendererRuntimeFailureLatch = rendererRuntimeFailureLatch
-            self.graphicsSelection = try Self.graphicsSelection(
+            let initialGraphicsSelection = try Self.graphicsSelection(
                 configuration: configuration,
                 resolvedBackend: resolvedGraphics.backend,
                 rendererWorkerLaunch: resolvedGraphics.rendererWorkerLaunch
             )
+            let handoffSocketPath = configuration.handoffSocketPath
+            let graphicsReadinessState = DesktopRuntimeGraphicsReadinessState(
+                selection: initialGraphicsSelection,
+                sender: { ready in
+                    try VmmHandoffClient.send(path: handoffSocketPath, ready: ready)
+                },
+                renewalFailureHandler: { error in
+                    Self.log("dory-hv desktop: graphics readiness renewal failed: \(error)")
+                }
+            )
+            self.graphicsReadinessState = graphicsReadinessState
             let networkPlan = try NetworkPlan(resolvedDevices: configuration.resolvedDevices)
             let networkInterface = configuration.resolvedDevices?.networkInterface
             if let networkInterface, !networkInterface.isValid {
@@ -1487,6 +1498,9 @@ enum DesktopMode {
                     scanoutID: plan.scanoutID,
                     sharedCPUPresentationBudget: presentationBudget
                 )
+                mailbox.installCPUFramePresentationObserver { _ in
+                    graphicsReadinessState.recordFirstPresentationCompletion()
+                }
                 let cursorMailbox = DesktopCursorMailbox()
                 let metalDisplay = try DesktopMetalView(
                     frame: NSRect(origin: .zero, size: plan.windowSize),
@@ -1511,10 +1525,11 @@ enum DesktopMode {
                     machine?.requestStop(.crash("Metal display failed closed: \(reason)"))
                 }
                 metalDisplay.onWorkerPresentationCompleted = {
-                    [weak rendererWorkerLaunch] workerGeneration in
+                    [weak rendererWorkerLaunch, graphicsReadinessState] workerGeneration in
                     rendererWorkerLaunch?.recordSynchronizedPresentation(
                         workerGeneration: workerGeneration
                     )
+                    graphicsReadinessState.recordFirstPresentationCompletion()
                 }
                 let display: DesktopDisplayView = metalDisplay
                 mailbox.view = display
@@ -1625,6 +1640,12 @@ enum DesktopMode {
                     machine?.requestStop(.crash(
                         "renderer worker failed closed: \(reason)"
                     ))
+                },
+                onStockFenceVerification: { [graphicsReadinessState] outcome in
+                    graphicsReadinessState.apply(outcome)
+                },
+                onStockFirstShaderCompletion: { [graphicsReadinessState] in
+                    graphicsReadinessState.recordFirstShaderCompletion()
                 }
             )
             self.gpu = gpu
@@ -2417,6 +2438,7 @@ enum DesktopMode {
             let cameraAttachment = self.cameraAttachment
             let guestFSEventBridge = self.guestFSEventBridge
             let filesystemWorker = self.filesystemWorker
+            let graphicsReadinessState = self.graphicsReadinessState
             Task.detached(priority: .userInitiated) { [weak self] in
                 do {
                     if let guestFSEventBridge {
@@ -2445,12 +2467,17 @@ enum DesktopMode {
                                 )
                             },
                             waitForSynchronizedPresentation: {
-                                if let rendererWorkerLaunch =
-                                    configuration.rendererWorkerLaunch {
+                                if configuration.rendererWorkerLaunch != nil {
                                     // Generic media has no Dory-owned display-manager barrier, so
-                                    // retain the existing renderer-first readiness contract.
-                                    try rendererWorkerLaunch
-                                        .waitForFirstSynchronizedPresentation(timeout: 90)
+                                    // require either the Metal path or the verified CPU fallback
+                                    // to complete a real presentation before readiness.
+                                    guard graphicsReadinessState.waitForFirstPresentation(
+                                        timeout: 90
+                                    ) else {
+                                        throw VMError.bootFailure(
+                                            "generic Linux guest did not complete a graphics presentation within 90s"
+                                        )
+                                    }
                                 }
                             },
                             publish: { integration in
@@ -2459,11 +2486,13 @@ enum DesktopMode {
                                     DesktopAppRunLoop.perform { [weak self] in
                                         self?.clipboard?.markGuestReady()
                                     }
-                                    try configuration.rendererWorkerLaunch?
-                                        .claimSynchronizedPresentationForPublication()
-                                    try VmmHandoffClient.send(
-                                        path: configuration.handoffSocketPath,
-                                        ready: VmmReadyMessage(
+                                    if graphicsReadinessState
+                                        .requiresRendererSynchronizedPublication {
+                                        try configuration.rendererWorkerLaunch?
+                                            .claimSynchronizedPresentationForPublication()
+                                    }
+                                    try graphicsReadinessState.publish(
+                                        VmmReadyMessage(
                                             machineID: configuration.machineID,
                                             operationID: DoryOperationIdentity.canonical(
                                                 configuration.operationID
@@ -2474,7 +2503,7 @@ enum DesktopMode {
                                             agentSocketPath: configuration.agentSocketPath,
                                             shellSocketPath: configuration.shellSocketPath,
                                             controlSocketPath: configuration.controlSocketPath,
-                                            graphicsSelection: self?.graphicsSelection,
+                                            graphicsSelection: graphicsReadinessState.snapshot,
                                             guestBooted: true,
                                             toolsConnected: true,
                                             desktopVisible: true,
@@ -2487,18 +2516,20 @@ enum DesktopMode {
                                         .unavailableMissingTools(
                                             configuration.attachedShares.map(\.tag)
                                         )
-                                    try configuration.rendererWorkerLaunch?
-                                        .claimSynchronizedPresentationForPublication()
-                                    try VmmHandoffClient.send(
-                                        path: configuration.handoffSocketPath,
-                                        ready: VmmReadyMessage(
+                                    if graphicsReadinessState
+                                        .requiresRendererSynchronizedPublication {
+                                        try configuration.rendererWorkerLaunch?
+                                            .claimSynchronizedPresentationForPublication()
+                                    }
+                                    try graphicsReadinessState.publish(
+                                        VmmReadyMessage(
                                             machineID: configuration.machineID,
                                             operationID: DoryOperationIdentity.canonical(
                                                 configuration.operationID
                                             ),
                                             agentBuild: "dory-hv/generic-linux",
                                             controlSocketPath: configuration.controlSocketPath,
-                                            graphicsSelection: self?.graphicsSelection,
+                                            graphicsSelection: graphicsReadinessState.snapshot,
                                             guestBooted: true,
                                             desktopVisible: true,
                                             workloadReady: true,
@@ -2527,24 +2558,30 @@ enum DesktopMode {
                             try Self.prepareGuest(configuration: configuration)
                         },
                         waitForSynchronizedPresentation: {
-                            if let rendererWorkerLaunch =
-                                configuration.rendererWorkerLaunch {
+                            if configuration.rendererWorkerLaunch != nil {
                                 // The immutable receipt and kernel/fence authority select the
                                 // candidate, but handoff still requires a real worker-backed frame
                                 // across the producer-fence wait and Metal completion boundary.
-                                try rendererWorkerLaunch
-                                    .waitForFirstSynchronizedPresentation(timeout: 90)
+                                guard graphicsReadinessState.waitForFirstPresentation(
+                                    timeout: 90
+                                ) else {
+                                    throw VMError.bootFailure(
+                                        "desktop did not complete a graphics presentation within 90s"
+                                    )
+                                }
                             }
                         },
                         publish: { info in
                             DesktopAppRunLoop.perform { [weak self] in
                                 self?.clipboard?.markGuestReady()
                             }
-                            try configuration.rendererWorkerLaunch?
-                                .claimSynchronizedPresentationForPublication()
-                            try VmmHandoffClient.send(
-                                path: configuration.handoffSocketPath,
-                                ready: VmmReadyMessage(
+                            if graphicsReadinessState
+                                .requiresRendererSynchronizedPublication {
+                                try configuration.rendererWorkerLaunch?
+                                    .claimSynchronizedPresentationForPublication()
+                            }
+                            try graphicsReadinessState.publish(
+                                VmmReadyMessage(
                                     machineID: configuration.machineID,
                                     operationID: DoryOperationIdentity.canonical(
                                         configuration.operationID
@@ -2555,7 +2592,7 @@ enum DesktopMode {
                                     agentSocketPath: configuration.agentSocketPath,
                                     shellSocketPath: configuration.shellSocketPath,
                                     controlSocketPath: configuration.controlSocketPath,
-                                    graphicsSelection: self?.graphicsSelection,
+                                    graphicsSelection: graphicsReadinessState.snapshot,
                                     guestBooted: true,
                                     toolsConnected: true,
                                     desktopVisible: true,

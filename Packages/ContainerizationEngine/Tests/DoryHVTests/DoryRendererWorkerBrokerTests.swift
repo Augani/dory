@@ -4018,6 +4018,171 @@ import Testing
         #expect(queue.gpu.statistics.rendererWorkerScanoutCopyBytes == 0)
     }
 
+    @Test func stockFenceViolationWaitsThenCopiesWorkerBlobWithoutMetalLease() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 1
+        )
+        let frames = RendererSoftwareScanoutRecorder()
+        let metalFrames = RendererMetalScanoutRecorder()
+        let outcomes = RendererStockFenceOutcomeRecorder()
+        let guestBase: UInt64 = 0xA_1000_0000
+        let apertureBase = guestBase + 0x1_0000_0000
+        let hostVisibleMemory = try VirtioGPUHostVisibleMemory(
+            guestBase: apertureBase,
+            length: 4 * HostPage.size,
+            arenaMapOperation: { _, _, _ in },
+            arenaUnmapOperation: { _, _ in }
+        )
+        let queue = try RendererWorkerGPUQueueFixture(
+            lane: lane,
+            guestBase: guestBase,
+            scanoutCount: 1,
+            hostVisibleMemory: hostVisibleMemory,
+            onScanoutFrame: { frames.record($0) },
+            onMetalScanout: { metalFrames.record($0) },
+            onStockFenceVerification: { outcomes.record($0) }
+        )
+        let contextID: UInt32 = 23
+        let resourceID: UInt32 = 47
+        let resourceGeneration: UInt64 = 31
+        let byteCount = 64 * 64 * 4
+        let rect = VirtioGPURect(x: 0, y: 0, width: 64, height: 64)
+
+        try queue.submit(rendererGPUContextCreateRequest(
+            contextID: contextID,
+            name: "stock-fallback",
+            capsetID: 4
+        ))
+        #expect(await rendererEventually { fixture.channel.sendCount == 1 })
+        fixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 1 })
+
+        try queue.submit(rendererGPUCreateBlobRequest(
+            resourceID: resourceID,
+            contextID: contextID,
+            blobMemory: 2,
+            blobFlags: 1,
+            blobID: 0,
+            size: UInt64(byteCount),
+            entries: []
+        ))
+        #expect(await rendererEventually { fixture.channel.sendCount == 2 })
+        var littleGeneration = resourceGeneration.littleEndian
+        fixture.channel.complete(
+            at: 1,
+            with: .success(DoryRendererWorkerChannelReply(
+                payload: withUnsafeBytes(of: &littleGeneration) { Data($0) },
+                descriptors: []
+            ))
+        )
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 2 })
+
+        try queue.submit(rendererGPUContextResourceRequest(
+            command: 0x0202,
+            contextID: contextID,
+            resourceID: resourceID
+        ))
+        #expect(await rendererEventually { fixture.channel.sendCount == 3 })
+        fixture.channel.complete(
+            at: 2,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 3 })
+
+        try queue.submit(rendererGPUMapBlobRequest(resourceID: resourceID, offset: 0))
+        #expect(await rendererEventually { fixture.channel.sendCount == 4 })
+        let (mappingDescriptor, fileSize) = try makeUnlinkedRegion(
+            byteCount: UInt64(byteCount),
+            readOnly: false
+        )
+        let pixels = Data(repeating: 0xA7, count: byteCount)
+        try mappingDescriptor.write(contentsOf: pixels)
+        try mappingDescriptor.seek(toOffset: 0)
+        let mappingLease = try DoryRendererBlobMappingLease(
+            workerGeneration: fixture.bootstrap.generation,
+            resourceID: resourceID,
+            resourceGeneration: resourceGeneration,
+            sharedRegionID: .random(),
+            descriptorIndex: 0,
+            mapInfo: 3,
+            declaredFileSize: fileSize,
+            mappingByteCount: fileSize,
+            limits: fixture.bootstrap.limits
+        )
+        fixture.channel.complete(
+            at: 3,
+            with: .success(DoryRendererWorkerChannelReply(
+                payload: DoryRendererBlobMappingLeaseCodec.encode(mappingLease),
+                descriptors: [mappingDescriptor]
+            ))
+        )
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 4 })
+
+        try queue.submit(rendererGPUSetScanoutBlobRequest(
+            scanoutID: 0,
+            resourceID: resourceID,
+            width: rect.width,
+            height: rect.height,
+            format: 2,
+            stride: 256,
+            offset: 0
+        ))
+        #expect(try queue.usedIndex() == 5)
+
+        try queue.submit(rendererGPUSubmitRequest(
+            contextID: contextID,
+            command: [0x10, 0x20, 0x30, 0x40],
+            fenceID: 0x5566,
+            contextFence: true
+        ))
+        #expect(await rendererEventually { fixture.channel.sendCount == 5 })
+        fixture.channel.complete(
+            at: 4,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        #expect(await rendererEventually { fixture.channel.sendCount == 6 })
+        let fenceCommand = try fixture.channel.command(
+            at: 5,
+            limits: fixture.bootstrap.limits
+        )
+        #expect(fenceCommand.operation == .createFence)
+        let (completionDescriptor, signalDescriptor) = try makeUnsignaledFenceDescriptor()
+        fixture.channel.complete(
+            at: 5,
+            with: .success(DoryRendererWorkerChannelReply(
+                payload: fenceCommand.payload,
+                descriptors: [completionDescriptor]
+            ))
+        )
+        #expect(await rendererEventually { lane.snapshot().armedFences == 1 })
+
+        try queue.submitDistinct(
+            rendererGPUResourceFlushRequest(resourceID: resourceID, rect: rect),
+            chainIndex: 1
+        )
+        #expect(await rendererEventually { outcomes.values == [.violated] })
+        #expect(fixture.channel.sendCount == 6)
+        #expect(frames.values.isEmpty)
+        #expect(metalFrames.values.isEmpty)
+        #expect(try queue.usedIndex() == 5)
+
+        close(signalDescriptor)
+        #expect(await rendererEventually { frames.values.count == 1 })
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 7 })
+        let frame = try #require(frames.values.first)
+        #expect(frame.resourceID == resourceID)
+        #expect(frame.dirtyRect == rect)
+        #expect(frame.bytes == pixels)
+        #expect(metalFrames.values.isEmpty)
+        #expect(fixture.channel.sendCount == 6)
+        #expect(queue.gpu.statistics.rendererWorkerScanoutCopyBytes == UInt64(byteCount))
+    }
+
     @Test func queueResetRevokesArmedWorkerFenceWithoutGuestCompletion() async throws {
         let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
         let lane = try DoryRendererWorkerVirtioCommandLane(
@@ -4409,6 +4574,19 @@ private final class RendererMetalScanoutRecorder: @unchecked Sendable {
     }
 }
 
+private final class RendererStockFenceOutcomeRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded = [VirtioGPUStockFenceVerificationOutcome]()
+
+    var values: [VirtioGPUStockFenceVerificationOutcome] {
+        lock.withLock { recorded }
+    }
+
+    func record(_ outcome: VirtioGPUStockFenceVerificationOutcome) {
+        lock.withLock { recorded.append(outcome) }
+    }
+}
+
 private final class RendererScanoutDisableRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recorded = [UInt32]()
@@ -4448,9 +4626,12 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
         fenceTimeoutNanoseconds: UInt64 = 10_000_000_000,
         graphicsTraceContext: VirtioGPUGraphicsTraceContext? = nil,
         onGraphicsTrace: (@Sendable (VirtioGPUGraphicsTraceEvent) -> Void)? = nil,
+        hostVisibleMemory: VirtioGPUHostVisibleMemory? = nil,
         onScanoutFrame: (@Sendable (VirtioGPUScanoutFrame) -> Void)? = nil,
         onMetalScanout: (@Sendable (VirtioGPUMetalScanoutUpdate) -> Void)? = nil,
-        onScanoutDisabled: (@Sendable (UInt32) -> Void)? = nil
+        onScanoutDisabled: (@Sendable (UInt32) -> Void)? = nil,
+        onStockFenceVerification:
+            (@Sendable (VirtioGPUStockFenceVerificationOutcome) -> Void)? = nil
     ) throws {
         descriptorTable = guestBase + 0x1_000
         availableRing = guestBase + 0x4_000
@@ -4468,12 +4649,14 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
             hostMemoryBase: guestBase + 0x1_0000_0000,
             scanoutCount: scanoutCount,
             rendererWorkerCandidate: lane,
+            hostVisibleMemory: hostVisibleMemory,
             graphicsTraceContext: graphicsTraceContext,
             onGraphicsTrace: onGraphicsTrace,
             fenceTimeoutNanoseconds: fenceTimeoutNanoseconds,
             onScanoutFrame: onScanoutFrame,
             onMetalScanout: onMetalScanout,
-            onScanoutDisabled: onScanoutDisabled
+            onScanoutDisabled: onScanoutDisabled,
+            onStockFenceVerification: onStockFenceVerification
         )
         transport = VirtioMMIOTransport(
             baseAddress: GuestLayout.virtioBase,
@@ -4591,6 +4774,36 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
             try memory.write(availableIndex, at: availableRing + 2)
             gpu.handleKick(queue: 0, transport: transport)
         }
+    }
+
+    func submitDistinct(_ request: [UInt8], chainIndex: Int) throws {
+        guard (0..<4).contains(chainIndex) else {
+            throw VMError.invalidConfiguration("invalid distinct renderer-worker chain")
+        }
+        let head = UInt64(chainIndex * 2)
+        let requestAddress = requestBuffer + UInt64(chainIndex) * 0x1_000
+        let responseAddress = responseBuffer + UInt64(chainIndex) * 0x1_000
+        try writeDescriptor(
+            index: head,
+            address: requestAddress,
+            length: UInt32(request.count),
+            flags: 0x1,
+            next: UInt16(head + 1)
+        )
+        try writeDescriptor(
+            index: head + 1,
+            address: responseAddress,
+            length: 512,
+            flags: 0x2,
+            next: 0
+        )
+        try memory.write(request, at: requestAddress)
+        try memory.write([UInt8](repeating: 0, count: 512), at: responseAddress)
+        let slot = UInt64(availableIndex % 8)
+        try memory.write(UInt16(head), at: availableRing + 4 + slot * 2)
+        availableIndex &+= 1
+        try memory.write(availableIndex, at: availableRing + 2)
+        gpu.handleKick(queue: 0, transport: transport)
     }
 
     func usedIndex() throws -> UInt16 {
