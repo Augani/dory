@@ -28,6 +28,84 @@ import Testing
         == coordinator.diagnostics.acknowledgedGenerations)
   }
 
+  @Test func publisherMustDrainOrWaitBehindTheExactInflightPublication() {
+    let coordinator = DoryPCTranslationInvalidationCoordinator(processorCount: 2)
+    let first: DoryPCTranslationInvalidationCoordinator.Publication
+    switch coordinator.attemptPublication(linearAddress: 0x1000, forProcessor: 0) {
+    case .published(let publication):
+      first = publication
+    case .drain, .wait:
+      Issue.record("the first request did not publish")
+      return
+    }
+
+    #expect(
+      coordinator.attemptPublication(linearAddress: 0x2000, forProcessor: 1)
+        == .drain(first))
+    coordinator.acknowledge(processor: 1, generation: first.generation)
+    #expect(
+      coordinator.attemptPublication(linearAddress: 0x2000, forProcessor: 1)
+        == .wait(first))
+
+    coordinator.acknowledge(processor: 0, generation: first.generation)
+    switch coordinator.attemptPublication(linearAddress: 0x2000, forProcessor: 1) {
+    case .published(let second):
+      #expect(second.generation == first.generation + 1)
+      #expect(second.linearAddress == 0x2000)
+    case .drain, .wait:
+      Issue.record("the second request did not publish after the first completed")
+    }
+  }
+
+  @Test func concurrentPublishersDrainEachOtherBeforeWaiting() {
+    let coordinator = DoryPCTranslationInvalidationCoordinator(processorCount: 2)
+    let start = DispatchSemaphore(value: 0)
+    let finishedPublishers = LockedCount()
+    let group = DispatchGroup()
+
+    for processor in 0..<2 {
+      group.enter()
+      DispatchQueue.global().async {
+        start.wait()
+        var ownPublicationFinished = false
+        while true {
+          if !ownPublicationFinished {
+            switch coordinator.attemptPublication(
+              linearAddress: UInt64(0x1000 * (processor + 1)),
+              forProcessor: processor
+            ) {
+            case .published(let publication):
+              coordinator.acknowledge(processor: processor, generation: publication.generation)
+              coordinator.wait(for: publication)
+              ownPublicationFinished = true
+              finishedPublishers.increment()
+            case .drain(let publication):
+              coordinator.acknowledge(processor: processor, generation: publication.generation)
+            case .wait(let publication):
+              coordinator.wait(for: publication)
+            }
+            continue
+          }
+
+          if let publication = coordinator.pending(for: processor) {
+            coordinator.acknowledge(processor: processor, generation: publication.generation)
+          } else if finishedPublishers.load() == 2 {
+            break
+          } else {
+            Thread.sleep(forTimeInterval: 0.0001)
+          }
+        }
+        group.leave()
+      }
+    }
+
+    start.signal()
+    start.signal()
+    #expect(group.wait(timeout: .now() + 2) == .success)
+    #expect(coordinator.diagnostics.requiredGenerations == [2, 2])
+    #expect(coordinator.diagnostics.acknowledgedGenerations == [2, 2])
+  }
+
   @Test func targetedInvalidationIsPublishedAndAcknowledgedByRemoteVCPU() throws {
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: 2 * 1024 * 1024,
@@ -43,7 +121,8 @@ import Testing
     #expect(
       machine.pagingUnits[1].diagnostics.linearInvalidations
         == remoteBefore.linearInvalidations + 1)
-    #expect(machine.pagingUnits[1].diagnostics.globalInvalidations == remoteBefore.globalInvalidations)
+    #expect(
+      machine.pagingUnits[1].diagnostics.globalInvalidations == remoteBefore.globalInvalidations)
     let diagnostics = machine.translationInvalidationDiagnostics
     #expect(diagnostics.generation == 1)
     #expect(diagnostics.requiredGenerations == [1, 1])
@@ -84,4 +163,13 @@ import Testing
     #expect(machine.pagingUnits[1].diagnostics.globalInvalidations == before[1] + 1)
     #expect(machine.translationInvalidationDiagnostics.acknowledgedGenerations == [1, 1])
   }
+}
+
+private final class LockedCount: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = 0
+
+  func increment() { lock.withLock { value += 1 } }
+
+  func load() -> Int { lock.withLock { value } }
 }

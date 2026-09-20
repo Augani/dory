@@ -163,6 +163,18 @@ final class DoryPCPendingWorkWake: @unchecked Sendable {
   }
 }
 
+/// One vCPU's last architecturally published paging invalidation. Each worker owns one cursor;
+/// the lock also permits quiescent diagnostics and the serialized fallback scheduler to inspect it
+/// without relying on concurrent mutation of Swift Array storage.
+final class DoryPCPagingInvalidationCursor: @unchecked Sendable {
+  private let lock = NSLock()
+  private var sequence: UInt64 = 0
+
+  func load() -> UInt64 { lock.withLock { sequence } }
+
+  func store(_ sequence: UInt64) { lock.withLock { self.sequence = sequence } }
+}
+
 public enum DoryPCMachineError: Error, Sendable, Equatable {
   case invalidMemorySize(Int)
   case invalidProcessorCount(Int)
@@ -799,7 +811,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   // it cannot affect architectural behavior or cache correctness.
   private var jitHotness = [JITHotnessEntry](repeating: .init(), count: 1 << 16)
   private let translatedMemories: [DoryX86TranslatedMemory]
-  private var reconciledPagingInvalidationSequences: [UInt64]
+  private let reconciledPagingInvalidationSequences: [DoryPCPagingInvalidationCursor]
   private var interpreterInstructionCount: UInt64 = 0
   private var baselineJITInstructionCount: UInt64 = 0
   private var baselineJITBlockCount: UInt64 = 0
@@ -912,7 +924,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     )
     pendingWorkWake = .init(processorCount: processorCount)
     translationInvalidationCoordinator = .init(processorCount: processorCount)
-    reconciledPagingInvalidationSequences = .init(repeating: 0, count: processorCount)
+    reconciledPagingInvalidationSequences = (0..<processorCount).map { _ in
+      DoryPCPagingInvalidationCursor()
+    }
     publishedHostExecutionDiagnostics = .init(
       enabled: instrumentationEnabled,
       runCalls: 0,
@@ -2134,8 +2148,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       )
       observer?(.servicingPendingWork(processor))
       let startedCPU = instrumentationEnabled ? dory_thread_cpu_time_nanoseconds() : 0
+      _ = servicePendingTranslationInvalidation(forProcessor: processor, observer: observer)
       applyProcessorEvents(forProcessor: processor)
-      observeWorkerPageTableWriteReconciliation(processor: processor, observer: observer)
+      _ = reconcilePendingPageTableWritesFromWorker(processor: processor, observer: observer)
       if tripleFault == nil,
         let stop = try deliverPendingInterrupt(
           forProcessor: processor,
@@ -2146,7 +2161,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       {
         tripleFault = source
       }
-      observeWorkerPageTableWriteReconciliation(processor: processor, observer: observer)
+      _ = reconcilePendingPageTableWritesFromWorker(processor: processor, observer: observer)
+      _ = servicePendingTranslationInvalidation(forProcessor: processor, observer: observer)
       if instrumentationEnabled {
         let elapsed = dory_thread_cpu_time_nanoseconds() &- startedCPU
         saturatingAdd(elapsed, to: &eventCPUNanoseconds)
@@ -2180,28 +2196,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
-  private func observeWorkerPageTableWriteReconciliation(
-    processor: Int,
-    observer: (@Sendable (WorkerEvent) -> Void)?
-  ) {
-    let before = translationInvalidationCoordinator.diagnostics.generation
-    reconcilePendingPageTableWrites()
-    let after = translationInvalidationCoordinator.diagnostics.generation
-    if after != before {
-      observer?(.acknowledgedTranslationInvalidation(processor, generation: after))
-    }
-  }
-
   private func observeWorkerTranslationReconciliation(
     afterExecuting processor: Int,
     observer: (@Sendable (WorkerEvent) -> Void)?
   ) {
-    let before = translationInvalidationCoordinator.diagnostics.generation
-    reconcileTranslationInvalidations(afterExecuting: processor)
-    let after = translationInvalidationCoordinator.diagnostics.generation
-    if after != before {
-      observer?(.acknowledgedTranslationInvalidation(processor, generation: after))
-    }
+    reconcileTranslationInvalidationsFromWorker(
+      afterExecuting: processor,
+      observer: observer
+    )
   }
 
   private func waitForWorkerResult(
@@ -2590,7 +2592,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       return
     }
     let snapshot = pagingUnits[processor].invalidationSnapshot
-    let previous = reconciledPagingInvalidationSequences[processor]
+    let previous = reconciledPagingInvalidationSequences[processor].load()
     guard snapshot.sequence != previous else { return }
     let next = previous.addingReportingOverflow(1)
     let linearAddress =
@@ -2616,27 +2618,152 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       guard let pending = translationInvalidationCoordinator.pending(for: processor) else {
         continue
       }
-      if !sourceAlreadyInvalidated || processor != sourceProcessor {
-        if let linearAddress = pending.linearAddress {
-          pagingUnits[processor].invalidate(linearAddress: linearAddress)
-        } else {
-          pagingUnits[processor].invalidateAll()
-        }
-      }
-      if baselineJITs.indices.contains(processor) {
-        baselineJITs[processor].synchronizeTranslationCache(with: pagingUnits[processor])
-      }
-      if optimizingJITs.indices.contains(processor) {
-        optimizingJITs[processor].synchronizeTranslationCache(with: pagingUnits[processor])
-      }
-      translationInvalidationCoordinator.acknowledge(
-        processor: processor,
-        generation: pending.generation)
+      acknowledgeTranslationInvalidation(
+        pending,
+        forProcessor: processor,
+        pagingAlreadyInvalidated: sourceAlreadyInvalidated && processor == sourceProcessor
+      )
     }
     translationInvalidationCoordinator.wait(for: publication)
-    reconciledPagingInvalidationSequences = pagingUnits.map {
-      $0.invalidationSnapshot.sequence
+  }
+
+  private func acknowledgeTranslationInvalidation(
+    _ publication: DoryPCTranslationInvalidationCoordinator.Publication,
+    forProcessor processor: Int,
+    pagingAlreadyInvalidated: Bool
+  ) {
+    if !pagingAlreadyInvalidated {
+      if let linearAddress = publication.linearAddress {
+        pagingUnits[processor].invalidate(linearAddress: linearAddress)
+      } else {
+        pagingUnits[processor].invalidateAll()
+      }
     }
+    if baselineJITs.indices.contains(processor) {
+      baselineJITs[processor].synchronizeTranslationCache(with: pagingUnits[processor])
+    }
+    if optimizingJITs.indices.contains(processor) {
+      optimizingJITs[processor].synchronizeTranslationCache(with: pagingUnits[processor])
+    }
+    reconciledPagingInvalidationSequences[processor].store(
+      pagingUnits[processor].invalidationSnapshot.sequence)
+    translationInvalidationCoordinator.acknowledge(
+      processor: processor,
+      generation: publication.generation)
+  }
+
+  private func publishTranslationPendingWork(excluding sourceProcessor: Int) {
+    for processor in pagingUnits.indices where processor != sourceProcessor {
+      pendingWorkWake.signal(forProcessor: processor) {
+        if baselineJITs.indices.contains(processor) {
+          baselineJITs[processor].requestPendingWork()
+        }
+        if optimizingJITs.indices.contains(processor) {
+          optimizingJITs[processor].requestPendingWork()
+        }
+      }
+    }
+  }
+
+  /// Publishes from an owning worker without ever blocking behind work that worker still owes.
+  /// The source acknowledges only after leaving generated code and synchronizing its native TLB;
+  /// the publication cannot complete until every remote worker performs the same boundary.
+  private func publishTranslationInvalidationFromWorker(
+    sourceProcessor: Int,
+    sourceAlreadyInvalidated: Bool,
+    linearAddress: UInt64?,
+    observer: (@Sendable (WorkerEvent) -> Void)?
+  ) {
+    while true {
+      switch translationInvalidationCoordinator.attemptPublication(
+        linearAddress: linearAddress,
+        forProcessor: sourceProcessor
+      ) {
+      case .published(let publication):
+        publishTranslationPendingWork(excluding: sourceProcessor)
+        acknowledgeTranslationInvalidation(
+          publication,
+          forProcessor: sourceProcessor,
+          pagingAlreadyInvalidated: sourceAlreadyInvalidated
+        )
+        observer?(
+          .acknowledgedTranslationInvalidation(
+            sourceProcessor,
+            generation: publication.generation
+          ))
+        translationInvalidationCoordinator.wait(for: publication)
+        return
+      case .drain(let publication):
+        acknowledgeTranslationInvalidation(
+          publication,
+          forProcessor: sourceProcessor,
+          pagingAlreadyInvalidated: false
+        )
+        observer?(
+          .acknowledgedTranslationInvalidation(
+            sourceProcessor,
+            generation: publication.generation
+          ))
+      case .wait(let publication):
+        translationInvalidationCoordinator.wait(for: publication)
+      }
+    }
+  }
+
+  @discardableResult
+  private func servicePendingTranslationInvalidation(
+    forProcessor processor: Int,
+    observer: (@Sendable (WorkerEvent) -> Void)?
+  ) -> Bool {
+    guard let publication = translationInvalidationCoordinator.pending(for: processor) else {
+      return false
+    }
+    acknowledgeTranslationInvalidation(
+      publication,
+      forProcessor: processor,
+      pagingAlreadyInvalidated: false
+    )
+    observer?(
+      .acknowledgedTranslationInvalidation(processor, generation: publication.generation))
+    return true
+  }
+
+  @discardableResult
+  private func reconcilePendingPageTableWritesFromWorker(
+    processor: Int,
+    observer: (@Sendable (WorkerEvent) -> Void)?
+  ) -> Bool {
+    guard translatedMemories[processor].consumePendingPageTableWrite() else { return false }
+    publishTranslationInvalidationFromWorker(
+      sourceProcessor: processor,
+      sourceAlreadyInvalidated: false,
+      linearAddress: nil,
+      observer: observer
+    )
+    return true
+  }
+
+  private func reconcileTranslationInvalidationsFromWorker(
+    afterExecuting processor: Int,
+    observer: (@Sendable (WorkerEvent) -> Void)?
+  ) {
+    _ = servicePendingTranslationInvalidation(forProcessor: processor, observer: observer)
+    if reconcilePendingPageTableWritesFromWorker(processor: processor, observer: observer) {
+      return
+    }
+    let snapshot = pagingUnits[processor].invalidationSnapshot
+    let previous = reconciledPagingInvalidationSequences[processor].load()
+    guard snapshot.sequence != previous else { return }
+    let next = previous.addingReportingOverflow(1)
+    let linearAddress =
+      !next.overflow && next.partialValue == snapshot.sequence
+      ? snapshot.linearAddress : nil
+    publishTranslationInvalidationFromWorker(
+      sourceProcessor: processor,
+      sourceAlreadyInvalidated: true,
+      linearAddress: linearAddress,
+      observer: observer
+    )
   }
 
   private func execute(

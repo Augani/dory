@@ -4,9 +4,9 @@ import Foundation
 ///
 /// Only one publication may be in flight. This deliberately conservative rule gives generation
 /// wrap a safe reset point: every older publication is acknowledged before generation one can be
-/// reused, and the wrap publication is forced to a global flush. A future free-running dispatcher
-/// can use the same pending/acknowledge boundary while delivering requests through per-vCPU
-/// pending work instead of the current coordinator rendezvous.
+/// reused, and the wrap publication is forced to a global flush. Free-running workers use the
+/// atomic publish-or-drain decision below so a publisher can never sleep behind an invalidation it
+/// still owes an acknowledgement.
 final class DoryPCTranslationInvalidationCoordinator: @unchecked Sendable {
   struct Publication: Sendable, Equatable {
     let generation: UInt64
@@ -17,6 +17,12 @@ final class DoryPCTranslationInvalidationCoordinator: @unchecked Sendable {
     let generation: UInt64
     let requiredGenerations: [UInt64]
     let acknowledgedGenerations: [UInt64]
+  }
+
+  enum PublicationAttempt: Sendable, Equatable {
+    case published(Publication)
+    case drain(Publication)
+    case wait(Publication)
   }
 
   private let condition = NSCondition()
@@ -34,6 +40,33 @@ final class DoryPCTranslationInvalidationCoordinator: @unchecked Sendable {
   func publish(linearAddress requestedLinearAddress: UInt64?) -> Publication {
     condition.lock()
     while requiredGenerations != acknowledgedGenerations { condition.wait() }
+    let next = publishLocked(linearAddress: requestedLinearAddress)
+    condition.unlock()
+    return next
+  }
+
+  /// Atomically either publishes the caller's request, returns the older request this processor
+  /// must drain first, or identifies an older request this already-acknowledged processor may wait
+  /// behind. Splitting these observations across separate lock acquisitions can deadlock when a
+  /// new publication wins the gap.
+  func attemptPublication(
+    linearAddress requestedLinearAddress: UInt64?,
+    forProcessor processor: Int
+  ) -> PublicationAttempt {
+    condition.lock()
+    defer { condition.unlock() }
+    precondition(requiredGenerations.indices.contains(processor))
+    if requiredGenerations == acknowledgedGenerations {
+      return .published(publishLocked(linearAddress: requestedLinearAddress))
+    }
+    let current = publication!
+    if requiredGenerations[processor] != acknowledgedGenerations[processor] {
+      return .drain(current)
+    }
+    return .wait(current)
+  }
+
+  private func publishLocked(linearAddress requestedLinearAddress: UInt64?) -> Publication {
     let linearAddress: UInt64?
     if generation == .max {
       // Every old request is acknowledged under the same lock, so reuse cannot mistake a delayed
@@ -48,7 +81,6 @@ final class DoryPCTranslationInvalidationCoordinator: @unchecked Sendable {
     publication = next
     requiredGenerations = .init(repeating: generation, count: requiredGenerations.count)
     condition.broadcast()
-    condition.unlock()
     return next
   }
 
