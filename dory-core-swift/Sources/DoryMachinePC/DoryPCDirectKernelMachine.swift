@@ -3,9 +3,10 @@ import DoryDBTX86
 import DoryPlatformC
 import Foundation
 
-/// Device callbacks may hold their own locks. This leaf lock never calls out or acquires the
-/// machine execution lock, and the dispatcher releases it before touching any device state.
-private final class DoryPCPendingWorkWake: @unchecked Sendable {
+/// Device callbacks may hold their own locks. This leaf lock never calls a device or acquires the
+/// machine execution lock. Its synchronous closures may only publish or clear native atomic poll
+/// bytes, coupling those bytes to the wake generation without a lost-clear window.
+final class DoryPCPendingWorkWake: @unchecked Sendable {
   private let condition = NSCondition()
   private var generation: UInt64 = 0
   private var waiting = false
@@ -23,16 +24,29 @@ private final class DoryPCPendingWorkWake: @unchecked Sendable {
     return generation
   }
 
-  func signal() {
+  func signal(publishing publication: () -> Void) {
     condition.lock()
+    publication()
     // Synchronous device work is already owned by this dispatch pass. In particular PIC
     // acknowledgement republishes masked requests: treating that as an asynchronous edge
     // would spin forever on an undeliverable IRQ (and advance deterministic time).
     if dispatchThread !== Thread.current {
-      generation &+= 1
+      generation = generation == .max ? 1 : generation + 1
       condition.broadcast()
     }
     condition.unlock()
+  }
+
+  /// Clears native poll bytes only if no asynchronous edge was published after `observed`.
+  /// Publication and acknowledgement use the same lock, so either the clear happens first and a
+  /// later publisher restores the byte, or the publication happens first and the clear declines.
+  @discardableResult
+  func acknowledge(after observed: UInt64, clearing clear: () -> Void) -> Bool {
+    condition.lock()
+    defer { condition.unlock() }
+    guard generation == observed else { return false }
+    clear()
+    return true
   }
 
   func wait(after observed: UInt64, until deadline: Date) {
@@ -877,19 +891,21 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     ioBus = DoryPCPortIOBus()
     let requestPendingWorkForProcessor: @Sendable (Int) -> Void = {
       [createdBaselineJITs, createdOptimizingJITs, pendingWorkWake] processor in
-      if createdBaselineJITs.indices.contains(processor) {
-        createdBaselineJITs[processor].requestPendingWork()
+      pendingWorkWake.signal {
+        if createdBaselineJITs.indices.contains(processor) {
+          createdBaselineJITs[processor].requestPendingWork()
+        }
+        if createdOptimizingJITs.indices.contains(processor) {
+          createdOptimizingJITs[processor].requestPendingWork()
+        }
       }
-      if createdOptimizingJITs.indices.contains(processor) {
-        createdOptimizingJITs[processor].requestPendingWork()
-      }
-      pendingWorkWake.signal()
     }
     let requestPendingWorkForAllProcessors: @Sendable () -> Void = {
       [createdBaselineJITs, createdOptimizingJITs, pendingWorkWake] in
-      for jit in createdBaselineJITs { jit.requestPendingWork() }
-      for jit in createdOptimizingJITs { jit.requestPendingWork() }
-      pendingWorkWake.signal()
+      pendingWorkWake.signal {
+        for jit in createdBaselineJITs { jit.requestPendingWork() }
+        for jit in createdOptimizingJITs { jit.requestPendingWork() }
+      }
     }
     localAPICs = (0..<processorCount).map { processor in
       DoryPCLocalAPIC(
@@ -1387,10 +1403,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           interruptStop = try deliverPendingInterrupts(instructionCount: completed)
         }
         if let interruptStop { return interruptStop }
-        // Every pending controller and lifecycle source has crossed the dispatcher boundary. A
-        // later device edge sets the byte again and is observed at the next native block entry.
-        for jit in baselineJITs { jit.clearPendingWork() }
-        for jit in optimizingJITs { jit.clearPendingWork() }
+        // Couple the native poll-byte clear to the generation captured before the drain. An edge
+        // racing this boundary either prevents the clear or republishes the byte after it.
+        let acknowledgedPendingWork = pendingWorkWake.acknowledge(
+          after: pendingWorkGeneration
+        ) {
+          for jit in baselineJITs { jit.clearPendingWork() }
+          for jit in optimizingJITs { jit.clearPendingWork() }
+        }
+        if !acknowledgedPendingWork { continue }
         guard let processor = nextRunnableProcessor() else {
           let resumed: Bool
           if instrumentationEnabled {
