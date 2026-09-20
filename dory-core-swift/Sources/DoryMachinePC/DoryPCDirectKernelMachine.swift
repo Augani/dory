@@ -586,6 +586,42 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
+  private final class RunBudgetMailbox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var maximumInstructions: UInt64?
+
+    func publish(_ maximumInstructions: UInt64) {
+      precondition(maximumInstructions > 0)
+      lock.withLock {
+        precondition(self.maximumInstructions == nil)
+        self.maximumInstructions = maximumInstructions
+      }
+    }
+
+    func consume() throws -> UInt64 {
+      try lock.withLock {
+        guard let maximumInstructions else { throw WorkerError.missingRunBudget }
+        self.maximumInstructions = nil
+        return maximumInstructions
+      }
+    }
+  }
+
+  private final class RunFailureBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failure: (any Error)?
+
+    func store(_ failure: any Error) {
+      lock.withLock {
+        if self.failure == nil { self.failure = failure }
+      }
+    }
+
+    var storedFailure: (any Error)? {
+      lock.withLock { failure }
+    }
+  }
+
   // A worker exclusively borrows its processor's state during a job. The coordinator may
   // access it only after completion (including clock/interrupt delivery and lifecycle setup).
   // The same rendezvous protects shared translation metadata and collection mutations.
@@ -654,6 +690,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var processorLifecycles: [DoryPCProcessorLifecycle]
   private var pendingNMIs: Set<Int> = []
   private var roundRobinCursor = 0
+  private var runGeneration: UInt64 = 0
   private var consumedPayload = false
   private let baselineJITs: [DoryARM64BaselineExecutor]
   private let optimizingJITs: [DoryARM64BaselineExecutor]
@@ -1365,6 +1402,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         publishExecutionStatistics()
         publishHostExecutionDiagnostics()
       }
+      if processorCount == 1 {
+        return try runSingleProcessorSession(
+          maximumInstructions: maximumInstructions,
+          exceptionPolicy: exceptionPolicy,
+          observer: observer,
+          worker: workers[0]
+        )
+      }
       var completed: UInt64 = 0
       while completed < maximumInstructions {
         reconcilePendingPageTableWrites()
@@ -1595,9 +1640,410 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
+  /// Runs one vCPU as a single host-worker job. The worker owns architectural state only between
+  /// exact result/directive handoffs; clocks, devices, interrupts, lifecycle changes, and stop
+  /// selection remain coordinator-owned while the worker is parked at that boundary.
+  private func runSingleProcessorSession(
+    maximumInstructions: UInt64,
+    exceptionPolicy: DoryPCExceptionPolicy,
+    observer: (@Sendable (WorkerEvent) -> Void)?,
+    worker: DoryPCHostWorker
+  ) throws -> DoryPCMachineStop {
+    runGeneration = runGeneration == .max ? 1 : runGeneration + 1
+    let generation = runGeneration
+    let session = DoryPCRunSession(
+      processorCount: 1,
+      instructionBudget: maximumInstructions,
+      runGeneration: generation,
+      exceptionPolicy: exceptionPolicy,
+      clockMode: clockSource.monotonicNanoseconds == nil ? .deterministic : .hostMonotonic
+    )
+    let budgetMailbox = RunBudgetMailbox()
+    let failureBox = RunFailureBox()
+    var workerCompletion: DoryPCHostWorker.Completion<Void>?
+    var outstandingResult: DoryPCRunSession.WorkerResult?
+    var completed: UInt64 = 0
+
+    func stopWorker() throws {
+      defer { pendingWorkWake.setDispatchThread(Thread.current) }
+      let result = try outstandingResult ?? session.workerResult(forProcessor: 0)
+      if let result {
+        _ = try session.respond(to: result, with: .stop)
+        outstandingResult = nil
+      }
+      if let workerCompletion { _ = try workerCompletion.wait() }
+    }
+
+    func finish(
+      _ stop: DoryPCMachineStop,
+      termination: DoryPCRunSession.TerminationReason? = nil
+    ) throws -> DoryPCMachineStop {
+      if let termination { try session.requestTermination(termination) }
+      try stopWorker()
+      return stop
+    }
+
+    func dispatchWorker(maximumInstructions: UInt64) throws {
+      budgetMailbox.publish(maximumInstructions)
+      pendingWorkWake.setDispatchThread(nil)
+      if let result = outstandingResult {
+        _ = try session.respond(to: result, with: .resume)
+        outstandingResult = nil
+      } else {
+        precondition(workerCompletion == nil)
+        workerCompletion = worker.submit(kind: .runLoop) { [self] in
+          try runSingleProcessorWorkerLoop(
+            session: session,
+            budgetMailbox: budgetMailbox,
+            failureBox: failureBox,
+            observer: observer
+          )
+        }
+      }
+    }
+
+    do {
+      while completed < maximumInstructions {
+        reconcilePendingPageTableWrites()
+        let pendingWorkGeneration = pendingWorkWake.snapshot()
+        if let stop = powerStop(instructionCount: completed) {
+          let reason: DoryPCRunSession.TerminationReason =
+            switch stop {
+            case .poweredOff: .powerOff
+            case .reset: .reset
+            default: .cancelled
+            }
+          return try finish(stop, termination: reason)
+        }
+        if instrumentationEnabled {
+          let sample = hostTimeSample()
+          applyProcessorEvents()
+          recordHostTime(.processorEvent, since: sample)
+        } else {
+          applyProcessorEvents()
+        }
+        if instrumentationEnabled {
+          let sample = hostTimeSample()
+          if clockSource.monotonicNanoseconds != nil {
+            synchronizeHostClock()
+          } else {
+            advanceClocks(by: 1)
+          }
+          recordHostTime(.clockAdvancement, since: sample)
+        } else if clockSource.monotonicNanoseconds != nil {
+          synchronizeHostClock()
+        } else {
+          advanceClocks(by: 1)
+        }
+        let interruptStop: DoryPCMachineStop?
+        if instrumentationEnabled {
+          let sample = hostTimeSample()
+          interruptStop = try deliverPendingInterrupts(instructionCount: completed)
+          recordHostTime(.interruptDelivery, since: sample)
+        } else {
+          interruptStop = try deliverPendingInterrupts(instructionCount: completed)
+        }
+        if let interruptStop {
+          return try finish(interruptStop, termination: .tripleFault(processor: 0))
+        }
+        let acknowledgedPendingWork = pendingWorkWake.acknowledge(
+          after: pendingWorkGeneration
+        ) {
+          for jit in baselineJITs { jit.clearPendingWork() }
+          for jit in optimizingJITs { jit.clearPendingWork() }
+        }
+        if !acknowledgedPendingWork { continue }
+
+        guard nextRunnableProcessor() != nil else {
+          let resumed: Bool
+          if instrumentationEnabled {
+            let sample = hostTimeSample()
+            resumed = waitForNextInterrupt(after: pendingWorkGeneration)
+            recordHostTime(.idleWait, since: sample)
+          } else {
+            resumed = waitForNextInterrupt(after: pendingWorkGeneration)
+          }
+          if resumed { continue }
+          if let stop = powerStop(instructionCount: completed) {
+            let reason: DoryPCRunSession.TerminationReason =
+              switch stop {
+              case .poweredOff: .powerOff
+              case .reset: .reset
+              default: .cancelled
+              }
+            return try finish(stop, termination: reason)
+          }
+          if pendingWorkWake.snapshot() != pendingWorkGeneration { continue }
+          return try finish(.halted(instructionCount: completed))
+        }
+
+        let remaining = maximumInstructions - completed
+        let reservationLimit =
+          baselineJITs.isEmpty
+          ? UInt64(1)
+          : UInt64(baselineInstructionBudget(maximumInstructions: remaining))
+        let executionSample = hostTimeSample()
+        try dispatchWorker(maximumInstructions: min(remaining, reservationLimit))
+        let result = try waitForWorkerResult(session: session, completion: workerCompletion!)
+        pendingWorkWake.setDispatchThread(Thread.current)
+        recordHostTime(.processorExecution, since: executionSample)
+        outstandingResult = result
+        recordSessionCounters(result.counters)
+
+        if case .hostFailure = result.outcome {
+          guard let failure = failureBox.storedFailure else { throw WorkerError.missingHostFailure }
+          throw failure
+        }
+
+        reconcileTranslationInvalidations(afterExecuting: 0)
+        completed += result.counters.instructionCount
+        if instrumentationEnabled {
+          let sample = hostTimeSample()
+          if clockSource.monotonicNanoseconds != nil {
+            synchronizeHostClock()
+          } else {
+            if result.counters.instructionCount > 1 {
+              advanceClocks(by: result.counters.instructionCount - 1)
+            }
+            advanceTSCs(byMachineTicks: result.counters.instructionCount)
+          }
+          recordHostTime(.clockAdvancement, since: sample)
+        } else if clockSource.monotonicNanoseconds != nil {
+          synchronizeHostClock()
+        } else {
+          if result.counters.instructionCount > 1 {
+            advanceClocks(by: result.counters.instructionCount - 1)
+          }
+          advanceTSCs(byMachineTicks: result.counters.instructionCount)
+        }
+        if let stop = powerStop(instructionCount: completed) {
+          let reason: DoryPCRunSession.TerminationReason =
+            switch stop {
+            case .poweredOff: .powerOff
+            case .reset: .reset
+            default: .cancelled
+            }
+          return try finish(stop, termination: reason)
+        }
+
+        switch result.outcome {
+        case .retired, .yielded:
+          haltedProcessors[0] = false
+        case .halted:
+          haltedProcessors[0] = true
+        case .hostFailure:
+          preconditionFailure("host failure handled before architectural result dispatch")
+        case .exception(let exception):
+          guard exceptionPolicy == .deliver else {
+            return try finish(.exception(exception, instructionCount: completed - 1))
+          }
+          guard let processorState = loadedStates[0] else {
+            throw DoryPCMachineError.notLoaded
+          }
+          let faultMode = executionMode(processorState.value)
+          translatedMemories[0].updateContext(
+            .init(state: processorState.value, mode: faultMode, profile: interpreter.profile)
+          )
+          let faultLinearInstructionPointer =
+            faultMode == .long64
+            ? exception.instructionPointer
+            : processorState.value.cs.base &+ exception.instructionPointer
+          let faultBytes =
+            (try? translatedMemories[0].instructionBytes(
+              at: faultLinearInstructionPointer,
+              maximumCount: 15
+            )) ?? []
+          let evidence = DoryPCTripleFaultExceptionEvidence(
+            exception: exception,
+            processor: 0,
+            executionMode: faultMode,
+            state: processorState.value,
+            instructionBytes: faultBytes
+          )
+          do {
+            if instrumentationEnabled {
+              let sample = hostTimeSample()
+              try DoryX86InterruptDelivery(profile: interpreter.profile).deliverException(
+                exception,
+                state: &processorState.value,
+                physicalMemory: physicalMemories[0],
+                pagingUnit: pagingUnits[0],
+                mode: executionMode(processorState.value)
+              )
+              recordHostTime(.interruptDelivery, since: sample)
+            } else {
+              try DoryX86InterruptDelivery(profile: interpreter.profile).deliverException(
+                exception,
+                state: &processorState.value,
+                physicalMemory: physicalMemories[0],
+                pagingUnit: pagingUnits[0],
+                mode: executionMode(processorState.value)
+              )
+            }
+          } catch DoryX86InterruptDeliveryError.processorShutdown {
+            return try finish(
+              .tripleFault(source: .exception(evidence), instructionCount: completed - 1),
+              termination: .tripleFault(processor: 0)
+            )
+          }
+        }
+      }
+      return try finish(.instructionBudget(maximumInstructions), termination: .instructionBudget)
+    } catch {
+      let originalFailure = error
+      try? session.requestTermination(.cancelled)
+      try? stopWorker()
+      throw originalFailure
+    }
+  }
+
+  private func runSingleProcessorWorkerLoop(
+    session: DoryPCRunSession,
+    budgetMailbox: RunBudgetMailbox,
+    failureBox: RunFailureBox,
+    observer: (@Sendable (WorkerEvent) -> Void)?
+  ) throws {
+    let processor = 0
+    observer?(.runLoopStarted(processor, generation: session.runGeneration))
+    defer { observer?(.runLoopStopped(processor, generation: session.runGeneration)) }
+    while true {
+      let maximumInstructions = try budgetMailbox.consume()
+      guard
+        let reservation = try session.reserve(
+          processor: processor,
+          maximumInstructions: maximumInstructions
+        )
+      else { throw WorkerError.missingRunReservation }
+      guard let processorState = loadedStates[processor] else {
+        throw DoryPCMachineError.notLoaded
+      }
+      let startedCPU = instrumentationEnabled ? dory_thread_cpu_time_nanoseconds() : 0
+      pendingWorkWake.setDispatchThread(Thread.current)
+      observer?(.executing(processor, concurrent: false))
+      let execution: ProcessorExecution
+      do {
+        execution = try execute(
+          processor: processor,
+          state: &processorState.value,
+          maximumInstructions: reservation.instructionCount,
+          jitInstructionBudget: baselineJITs.isEmpty
+            ? nil : Int(reservation.instructionCount)
+        )
+      } catch {
+        observer?(.executed(processor, concurrent: false))
+        pendingWorkWake.setDispatchThread(nil)
+        let elapsedCPU =
+          instrumentationEnabled
+          ? dory_thread_cpu_time_nanoseconds() &- startedCPU : 0
+        failureBox.store(error)
+        try session.requestTermination(.hostFailure(processor: processor))
+        let result = try session.completeAndPublish(
+          reservation,
+          outcome: .hostFailure,
+          counters: .init(executionCPUNanoseconds: elapsedCPU)
+        )
+        _ = try session.waitForDirective(
+          processor: processor,
+          forResultSequence: result.sequence
+        )
+        return
+      }
+      observer?(.executed(processor, concurrent: false))
+      pendingWorkWake.setDispatchThread(nil)
+      let elapsedCPU =
+        instrumentationEnabled
+        ? dory_thread_cpu_time_nanoseconds() &- startedCPU : 0
+      let result = try session.completeAndPublish(
+        reservation,
+        outcome: sessionOutcome(for: execution.result),
+        counters: sessionCounters(for: execution, executionCPUNanoseconds: elapsedCPU)
+      )
+      switch try session.waitForDirective(
+        processor: processor,
+        forResultSequence: result.sequence
+      ) {
+      case .resume:
+        continue
+      case .stop:
+        return
+      }
+    }
+  }
+
+  private func waitForWorkerResult(
+    session: DoryPCRunSession,
+    completion: DoryPCHostWorker.Completion<Void>
+  ) throws -> DoryPCRunSession.WorkerResult {
+    var snapshot = session.snapshot
+    while true {
+      if let result = snapshot.workerResults[0] { return result }
+      if completion.isFinished {
+        _ = try completion.wait()
+        throw WorkerError.runLoopExitedWithoutResult
+      }
+      snapshot = session.waitForChange(
+        after: snapshot.changeGeneration,
+        until: Date(timeIntervalSinceNow: 0.05)
+      )
+    }
+  }
+
+  private func sessionOutcome(for result: ProcessorResult) -> DoryPCRunSession.WorkerOutcome {
+    switch result {
+    case .retired: .retired
+    case .yielded: .yielded
+    case .halted: .halted
+    case .exception(let exception): .exception(exception)
+    }
+  }
+
+  private func sessionCounters(
+    for execution: ProcessorExecution,
+    executionCPUNanoseconds: UInt64
+  ) -> DoryPCRunSession.WorkerCounters {
+    var counters = DoryPCRunSession.WorkerCounters(
+      instructionCount: execution.instructionCount,
+      interpreterInstructions: execution.interpreterInstructionCount,
+      executionCPUNanoseconds: executionCPUNanoseconds
+    )
+    switch execution.jitTier {
+    case .baseline, .tier1:
+      counters.baselineJITInstructions = execution.jitInstructionCount
+      counters.baselineJITBlocks = execution.jitBlockCount
+    case .optimizing:
+      counters.optimizingJITInstructions = execution.jitInstructionCount
+      counters.optimizingJITBlocks = execution.jitBlockCount
+    case .interpreterFallback:
+      counters.interpreterFallbackJITInstructions = execution.jitInstructionCount
+    case nil:
+      break
+    }
+    return counters
+  }
+
+  private func recordSessionCounters(_ counters: DoryPCRunSession.WorkerCounters) {
+    interpreterInstructionCount &+= counters.interpreterInstructions
+    baselineJITInstructionCount &+= counters.baselineJITInstructions
+    baselineJITBlockCount &+= counters.baselineJITBlocks
+    optimizingJITInstructionCount &+= counters.optimizingJITInstructions
+    optimizingJITBlockCount &+= counters.optimizingJITBlocks
+    saturatingAdd(counters.executionCPUNanoseconds, to: &hostThreadCPUTime.totalNanoseconds)
+    saturatingAdd(
+      counters.executionCPUNanoseconds,
+      to: &hostThreadCPUTime.processorExecutionNanoseconds
+    )
+    saturatingAdd(counters.eventCPUNanoseconds, to: &hostThreadCPUTime.totalNanoseconds)
+    saturatingAdd(
+      counters.eventCPUNanoseconds,
+      to: &hostThreadCPUTime.processorEventNanoseconds
+    )
+  }
+
   // Test observation is installed only while quiescent and copied before workers start.
   // Callbacks must not reenter gate-protected public machine operations.
   enum WorkerEvent: Sendable {
+    case runLoopStarted(Int, generation: UInt64)
+    case runLoopStopped(Int, generation: UInt64)
     case executing(Int, concurrent: Bool)
     case executed(Int, concurrent: Bool)
     case frozenInstructionFetch(Int)
@@ -1614,6 +2060,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   private enum WorkerError: Error {
     case inconsistentFrozenInstruction, inconsistentNativeInstruction
+    case missingRunBudget, missingRunReservation, runLoopExitedWithoutResult, missingHostFailure
   }
 
   struct ParallelInstruction: Sendable {
@@ -1918,9 +2365,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       linearAddress: linearAddress)
   }
 
-  var translationInvalidationDiagnostics:
-    DoryPCTranslationInvalidationCoordinator.Diagnostics
-  {
+  var translationInvalidationDiagnostics: DoryPCTranslationInvalidationCoordinator.Diagnostics {
     translationInvalidationCoordinator.diagnostics
   }
 

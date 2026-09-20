@@ -49,9 +49,13 @@ final class DoryPCHostWorker: @unchecked Sendable {
       while result == nil { condition.wait() }
       return try result!.get()
     }
+
+    var isFinished: Bool {
+      condition.withLock { result != nil }
+    }
   }
 
-  enum WorkKind: Sendable { case execution, processorEvent }
+  enum WorkKind: Sendable { case execution, processorEvent, runLoop }
 
   private let condition = NSCondition()
   private var job: (kind: WorkKind, body: @Sendable () -> Void)?
@@ -87,7 +91,7 @@ final class DoryPCHostWorker: @unchecked Sendable {
       { [self] in
         let started = instrumentationEnabled ? dory_thread_cpu_time_nanoseconds() : 0
         let result = Result { try body() }
-        if instrumentationEnabled {
+        if instrumentationEnabled, kind != .runLoop {
           let elapsed = dory_thread_cpu_time_nanoseconds() &- started
           cpuTimeLock.withLock {
             switch kind {
@@ -97,6 +101,8 @@ final class DoryPCHostWorker: @unchecked Sendable {
             case .processorEvent:
               let (sum, overflow) = eventCPUNanoseconds.addingReportingOverflow(elapsed)
               eventCPUNanoseconds = overflow ? .max : sum
+            case .runLoop:
+              break
             }
           }
         }
@@ -167,9 +173,8 @@ final class DoryPCHostWorker: @unchecked Sendable {
 }
 
 /// Machine-owned persistent worker set. Construction and teardown occur once per VM rather than
-/// once per public `run` call. This is the lifetime foundation for a later long-running guest
-/// dispatch protocol; today the coordinator still submits bounded slices and rendezvous with every
-/// completion before mutating global machine state.
+/// once per public `run` call. A single-vCPU run lends its worker one long-running loop; SMP still
+/// uses bounded submissions until the same result/directive protocol is extended across vCPUs.
 final class DoryPCVCPURuntime: @unchecked Sendable {
   let workers: [DoryPCHostWorker]
 

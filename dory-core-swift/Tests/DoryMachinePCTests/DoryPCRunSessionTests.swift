@@ -374,7 +374,8 @@ import Testing
 
     let firstDirective = try session.respond(to: first, with: .resume)
     #expect(firstDirective.resultSequence == first.sequence)
-    #expect(try session.consumeDirective(processor: 0, forResultSequence: first.sequence) == .resume)
+    #expect(
+      try session.consumeDirective(processor: 0, forResultSequence: first.sequence) == .resume)
     #expect(try session.respond(to: second, with: .stop).directive == .stop)
     #expect(try session.consumeDirective(processor: 1, forResultSequence: second.sequence) == .stop)
     snapshot = session.snapshot
@@ -507,9 +508,35 @@ import Testing
     #expect(
       try session.waitForDirective(
         processor: 0,
-        forResultSequence: result.sequence,
-        until: Date(timeIntervalSinceNow: 0.1)
+        forResultSequence: result.sequence
       ) == .stop)
+    #expect(session.snapshot.workerDirectives == [nil])
+  }
+
+  @Test func hostFailureCanReturnItsReservationAndCompleteTheExactStopHandshake() throws {
+    let session = DoryPCRunSession(
+      processorCount: 1,
+      instructionBudget: 64,
+      runGeneration: 23
+    )
+    let reservation = try #require(
+      try session.reserve(processor: 0, maximumInstructions: 32))
+    try session.requestTermination(.hostFailure(processor: 0))
+    let result = try session.completeAndPublish(
+      reservation,
+      outcome: .hostFailure,
+      counters: .init(executionCPUNanoseconds: 17)
+    )
+    #expect(session.snapshot.remainingInstructionBudget == 64)
+    #expect(session.snapshot.terminationReason == .hostFailure(processor: 0))
+
+    _ = try session.respond(to: result, with: .stop)
+    #expect(
+      try session.waitForDirective(
+        processor: 0,
+        forResultSequence: result.sequence
+      ) == .stop)
+    #expect(session.snapshot.workerResults == [nil])
     #expect(session.snapshot.workerDirectives == [nil])
   }
 

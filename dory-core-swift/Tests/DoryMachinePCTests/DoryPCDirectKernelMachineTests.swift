@@ -14,6 +14,56 @@ import Testing
     #expect(!options.contains(.shadowReturnStack))
   }
 
+  @Test(arguments: [
+    DoryPCExecutionTier.interpreter,
+    .baselineJIT,
+    .optimizingJIT,
+  ])
+  func singleProcessorRunUsesOneLongRunningWorkerJob(tier: DoryPCExecutionTier) throws {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      executionTier: tier,
+      baselineJITMaximumCodeBytes: 32 * 1024,
+      optimizingJITWarmupDispatches: 0,
+      instrumentationEnabled: true
+    )
+    try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+    let budget: UInt64 = tier == .interpreter ? 17 : 8_193
+
+    #expect(try machine.run(maximumInstructions: budget) == .instructionBudget(budget))
+    let snapshot = probe.snapshot()
+    #expect(snapshot.runLoopStarts.count == 1)
+    #expect(snapshot.runLoopStops.count == 1)
+    #expect(snapshot.runLoopStarts[0].processor == 0)
+    #expect(snapshot.runLoopStops[0].processor == 0)
+    #expect(snapshot.runLoopStarts[0].generation == snapshot.runLoopStops[0].generation)
+    #expect(snapshot.executions > 1)
+    #expect(snapshot.distinctThreads == 1)
+    #expect(snapshot.active == 0)
+    #expect(snapshot.stopped == Set([0]))
+    #expect(
+      machine.executionStatistics.interpreterInstructions
+        + machine.executionStatistics.baselineJITInstructions
+        + machine.executionStatistics.optimizingJITInstructions == budget)
+  }
+
+  @Test func singleProcessorRunGenerationAdvancesAcrossPersistentWorkerLoans() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+
+    #expect(try machine.run(maximumInstructions: 3) == .instructionBudget(3))
+    #expect(try machine.run(maximumInstructions: 5) == .instructionBudget(5))
+    let snapshot = probe.snapshot()
+    #expect(snapshot.runLoopStarts.map(\.generation) == [1, 2])
+    #expect(snapshot.runLoopStops.map(\.generation) == [1, 2])
+    #expect(snapshot.distinctThreads == 1)
+    #expect(snapshot.executions == 8)
+  }
+
   @Test func atomicCoordinatorIsSharedWithinOneMachineAndIsolatedAcrossMachines() throws {
     let injected = DoryX86AtomicCoordinator()
     let first = try DoryPCDirectKernelMachine(
@@ -1928,6 +1978,8 @@ private final class HostWorkerProbe: @unchecked Sendable {
     let order: [Int]
     let timedOut: Bool
     let nativeRetirements: [Int: [UInt64]]
+    let runLoopStarts: [(processor: Int, generation: UInt64)]
+    let runLoopStops: [(processor: Int, generation: UInt64)]
   }
 
   let arrived = DispatchSemaphore(value: 0)
@@ -1942,6 +1994,8 @@ private final class HostWorkerProbe: @unchecked Sendable {
   private var order: [Int] = []
   private var timedOut = false
   private var nativeRetirements: [Int: [UInt64]] = [:]
+  private var runLoopStarts: [(processor: Int, generation: UInt64)] = []
+  private var runLoopStops: [(processor: Int, generation: UInt64)] = []
 
   init(hold: Bool = false) { self.hold = hold }
 
@@ -1949,6 +2003,10 @@ private final class HostWorkerProbe: @unchecked Sendable {
     condition.lock()
     defer { condition.unlock() }
     switch event {
+    case .runLoopStarted(let processor, let generation):
+      runLoopStarts.append((processor, generation))
+    case .runLoopStopped(let processor, let generation):
+      runLoopStops.append((processor, generation))
     case .executing(let processor, _):
       threads[processor] = ObjectIdentifier(Thread.current)
       order.append(processor)
@@ -1989,7 +2047,9 @@ private final class HostWorkerProbe: @unchecked Sendable {
     return .init(
       threads: threads, distinctThreads: Set(threads.values).count, maximumActive: maximumActive,
       active: active, stopped: stopped, executions: order.count, order: order, timedOut: timedOut,
-      nativeRetirements: nativeRetirements)
+      nativeRetirements: nativeRetirements,
+      runLoopStarts: runLoopStarts,
+      runLoopStops: runLoopStops)
   }
 }
 

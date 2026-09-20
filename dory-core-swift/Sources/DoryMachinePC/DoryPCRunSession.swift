@@ -1,7 +1,7 @@
 import DoryDBTX86
 import Foundation
 
-/// Machine-scoped coordination state for one future free-running vCPU run.
+/// Machine-scoped coordination state for one free-running vCPU run.
 ///
 /// The condition protects metadata only. Callers must not enter guest code, call a device, acquire
 /// RAM range authority, or deliver an interrupt while holding it. Architectural state remains
@@ -24,6 +24,7 @@ final class DoryPCRunSession: @unchecked Sendable {
     case yielded
     case halted
     case exception(DoryX86Exception)
+    case hostFailure
   }
 
   /// Run-local counters are published by the owning worker with its architectural result. The
@@ -35,6 +36,7 @@ final class DoryPCRunSession: @unchecked Sendable {
     var baselineJITBlocks: UInt64 = 0
     var optimizingJITInstructions: UInt64 = 0
     var optimizingJITBlocks: UInt64 = 0
+    var interpreterFallbackJITInstructions: UInt64 = 0
     var executionCPUNanoseconds: UInt64 = 0
     var eventCPUNanoseconds: UInt64 = 0
 
@@ -371,6 +373,34 @@ final class DoryPCRunSession: @unchecked Sendable {
     }
   }
 
+  /// Waits without a policy timeout. Production workers leave this boundary only after consuming
+  /// the exact coordinator response paired with their published result.
+  func waitForDirective(processor: Int, forResultSequence sequence: UInt64) throws
+    -> WorkerDirective
+  {
+    condition.lock()
+    defer { condition.unlock() }
+    try validate(processor)
+    while true {
+      if let envelope = workerDirectives[processor] {
+        guard envelope.resultSequence == sequence else {
+          throw SessionError.staleWorkerDirective(
+            processor: processor,
+            expected: envelope.resultSequence,
+            actual: sequence
+          )
+        }
+        workerDirectives[processor] = nil
+        changedLocked()
+        return envelope.directive
+      }
+      guard workerResults[processor]?.sequence == sequence else {
+        throw SessionError.missingWorkerDirective(processor)
+      }
+      condition.wait()
+    }
+  }
+
   /// Selects one stable terminal reason independent of arrival order. More authoritative reasons
   /// replace less authoritative ones; equal processor-scoped reasons choose the lower vCPU index.
   func requestTermination(_ reason: TerminationReason) throws {
@@ -542,9 +572,13 @@ final class DoryPCRunSession: @unchecked Sendable {
   private func validateCountersLocked(_ counters: WorkerCounters, processor: Int) throws {
     let (translated, translatedOverflow) = counters.baselineJITInstructions.addingReportingOverflow(
       counters.optimizingJITInstructions)
-    let (accounted, accountedOverflow) = translated.addingReportingOverflow(
+    let (withFallback, fallbackOverflow) = translated.addingReportingOverflow(
+      counters.interpreterFallbackJITInstructions)
+    let (accounted, accountedOverflow) = withFallback.addingReportingOverflow(
       counters.interpreterInstructions)
-    guard !translatedOverflow, !accountedOverflow, accounted == counters.instructionCount else {
+    guard !translatedOverflow, !fallbackOverflow, !accountedOverflow,
+      accounted == counters.instructionCount
+    else {
       throw SessionError.inconsistentWorkerCounters(processor: processor)
     }
   }
@@ -569,6 +603,8 @@ final class DoryPCRunSession: @unchecked Sendable {
       optimizingJITInstructions: add(
         lhs.optimizingJITInstructions, rhs.optimizingJITInstructions),
       optimizingJITBlocks: add(lhs.optimizingJITBlocks, rhs.optimizingJITBlocks),
+      interpreterFallbackJITInstructions: add(
+        lhs.interpreterFallbackJITInstructions, rhs.interpreterFallbackJITInstructions),
       executionCPUNanoseconds: add(
         lhs.executionCPUNanoseconds, rhs.executionCPUNanoseconds),
       eventCPUNanoseconds: add(lhs.eventCPUNanoseconds, rhs.eventCPUNanoseconds)
