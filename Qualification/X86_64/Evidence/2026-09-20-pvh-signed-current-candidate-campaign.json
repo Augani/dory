@@ -32,7 +32,8 @@
     "secureTimestamp": "2026-09-20T00:15:17+00:00",
     "codesignStrictVerification": "passed",
     "notarized": false,
-    "gatekeeperAssessment": "rejected: Unnotarized Developer ID"
+    "gatekeeperAssessment": "rejected: Unnotarized Developer ID",
+    "notarizationPreflight": "blocked: Apple notarytool HTTP 403; developer-team agreement missing or expired"
   },
   "configuration": {
     "cpuProfile": "dory.x86_64.compat-v1",

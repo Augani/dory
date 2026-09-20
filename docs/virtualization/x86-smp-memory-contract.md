@@ -5,7 +5,8 @@ Status: **normative target; release qualification incomplete**
 This document defines the guest-visible contract that the translated x86 PC runtime must satisfy
 before free-running SMP can become a supported configuration. It also records which parts are
 implemented today. Passing an individual unit test or booting a guest does not weaken any rule
-below.
+below. The implementation sequence and lifecycle/ownership design are recorded in
+`x86-free-running-vcpu-plan.md`.
 
 ## Scope and terms
 

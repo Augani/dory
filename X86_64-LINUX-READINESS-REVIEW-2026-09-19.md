@@ -100,7 +100,10 @@ The runner is signed by `Developer ID Application: Augustus Otu (864H636QW4)` wi
 timestamp, hardened runtime, and `com.apple.security.cs.allow-jit`. Strict `codesign` verification
 passes. It is not notarized: `spctl` rejects it as `Unnotarized Developer ID`. The diagnostic schema
 therefore correctly remains `releaseQualified=false`; this is strong internal exact-candidate
-evidence, not a distributable product release qualification.
+evidence, not a distributable product release qualification. The configured `dory-notary`
+credential is present, but Apple's service rejected the read-only history preflight with HTTP 403
+because the developer team has a missing or expired agreement. A team account holder must resolve
+that agreement before any exact candidate can be submitted.
 
 The earlier clean `121d86faa` two-run campaign remains retained as predecessor evidence, but it is
 no longer used to stand in for current-candidate coverage.
@@ -211,6 +214,9 @@ translation/code-lifetime proof, UEFI lifecycle, or supported-matrix campaigns.
 
 ### P0 — Extend persistent workers into free-running vCPU dispatch
 
+The bisectable implementation sequence and ownership invariants are recorded in
+`docs/virtualization/x86-free-running-vcpu-plan.md`.
+
 - Move bounded guest dispatch into one long-running loop per existing persistent host worker. Each
   worker must own its architectural state, JIT context, native TLB, and code-cache cursor without
   returning ownership to the coordinator after every slice.
@@ -258,7 +264,8 @@ XSAVE images, exception behavior, and two-half NEON lowering in a later profile.
 
 - Package and notarize the production candidate. The reviewed internal runner is Developer-ID
   signed with hardened runtime and `allow-jit`, but Gatekeeper correctly rejects it while
-  unnotarized.
+  unnotarized. The installed notary credential currently reaches Apple but is blocked by a missing
+  or expired developer-team agreement (HTTP 403), which must be resolved by an account holder.
 - Repeat PVH correctness on every supported host class and every admitted production tier/config;
   the reviewed host's current single-vCPU baseline-JIT/no-predictor tuple has two clean signed
   passes.
