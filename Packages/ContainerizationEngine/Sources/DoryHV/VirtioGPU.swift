@@ -1867,6 +1867,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private let onScanoutDisabled: (@Sendable (UInt32) -> Void)?
     private let onCursorUpdate: (@Sendable (VirtioGPUCursorUpdate?) -> Void)?
     private let onRendererWorkerFailure: (@Sendable (String) -> Void)?
+    private let stockFenceVerifier: VirtioGPUStockFenceVerifier?
+    private let onStockFenceVerification:
+        (@Sendable (VirtioGPUStockFenceVerificationOutcome) -> Void)?
     private let rendererExecutor: VirtioGPURendererCommandExecutor?
     private let rendererWorkerCandidate: DoryRendererWorkerVirtioCommandLane?
     private let configuredRendererDeviceFeatures: UInt64
@@ -2387,7 +2390,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         onScanoutResourceReleased: (@Sendable (VirtioGPUScanoutResourceRelease) -> Void)? = nil,
         onScanoutDisabled: (@Sendable (UInt32) -> Void)? = nil,
         onCursorUpdate: (@Sendable (VirtioGPUCursorUpdate?) -> Void)? = nil,
-        onRendererWorkerFailure: (@Sendable (String) -> Void)? = nil
+        onRendererWorkerFailure: (@Sendable (String) -> Void)? = nil,
+        onStockFenceVerification:
+            (@Sendable (VirtioGPUStockFenceVerificationOutcome) -> Void)? = nil
     ) {
         let boundedScanoutSizes: [VirtioGPUScanoutSize]
         if let scanoutSizes {
@@ -2476,6 +2481,10 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         self.onScanoutDisabled = onScanoutDisabled
         self.onCursorUpdate = onCursorUpdate
         self.onRendererWorkerFailure = onRendererWorkerFailure
+        self.stockFenceVerifier = onStockFenceVerification == nil
+            ? nil
+            : VirtioGPUStockFenceVerifier()
+        self.onStockFenceVerification = onStockFenceVerification
         rendererExecutor?.installCallbacks(
             fence: { [weak self] generation, contextID, ringIndex, fenceID in
                 self?.fenceSignaled(
@@ -6243,6 +6252,27 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 ),
                 queue: transport.queues[0]
             )
+        }
+        if !admission.targets.isEmpty,
+           let verifier = stockFenceVerifier,
+           let producerContextID = commandLock.withLock({ () -> UInt32? in
+               guard blobResources[admission.resourceID] != nil,
+                     let contexts = rendererWorkerResourceContextIDs[admission.resourceID],
+                     contexts.count == 1 else { return nil }
+               return contexts.first
+           }) {
+            let producerFencePending = fenceLock.withLock {
+                pendingFences.contains { key, fences in
+                    key.contextID == producerContextID && !fences.isEmpty
+                }
+            }
+            if let outcome = verifier.observeScanoutBlobFlush(
+                resourceID: admission.resourceID,
+                resourceGeneration: admission.workerResourceGeneration,
+                producerFencePending: producerFencePending
+            ) {
+                onStockFenceVerification?(outcome)
+            }
         }
         let pendingFence = admission.fence.flatMap {
             reserveRendererWorkerFence(
