@@ -28,7 +28,9 @@ import Testing
     }
   }
 
-  @Test(arguments: [false, true]) func routingRemainsExactAcrossSealedTablePublication(mmap: Bool) throws {
+  @Test(arguments: [false, true]) func routingRemainsExactAcrossSealedTablePublication(mmap: Bool)
+    throws
+  {
     let ram = try backing(mmap: mmap, byteCount: 0x4000)
     let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     let first = TestMMIODevice(baseAddress: 0x1000, byteCount: 0x100)
@@ -76,6 +78,7 @@ import Testing
     _ = try bus.codeGeneration(at: 0x100, byteCount: 1)
     _ = try bus.compareExchangeScalar(at: 0x100, expected: 1, desired: 2, byteCount: 1)
     _ = bus.bulkCopyRAMSpan(at: 0x100, maximumByteCount: 4)
+    bus.synchronize()
     try bus.validateDMA(at: 0x100, byteCount: 1, deviceWillWrite: false)
 
     bus.publishDiagnostics()
@@ -87,8 +90,9 @@ import Testing
     #expect(diagnostics.codeGenerationHelperCalls == 1)
     #expect(diagnostics.atomicHelperCalls == 1)
     #expect(diagnostics.bulkHelperCalls == 1)
+    #expect(diagnostics.synchronizationHelperCalls == 1)
     #expect(diagnostics.dmaValidationCalls == 1)
-    #expect(diagnostics.totalMemoryHelperCalls == 15)
+    #expect(diagnostics.totalMemoryHelperCalls == 16)
     #expect(diagnostics.mmioInstructionFetchExits == 1)
     #expect(diagnostics.mmioReadExits == 3)
     #expect(diagnostics.mmioWriteExits == 2)
@@ -139,7 +143,7 @@ import Testing
     let mode: UInt8 = periodic ? 2 : 0
     try mmio.write(offset: 0x320, bytes: [0x40, 0, mode, 0])
     try mmio.write(offset: 0x380, bytes: [10, 0, 0, 0])
-    local.advanceTimer(byBaseClockTicks: 7) // Three divided ticks and one partial tick.
+    local.advanceTimer(byBaseClockTicks: 7)  // Three divided ticks and one partial tick.
 
     try mmio.write(offset: 0x320, bytes: [0x41, 0, mode | 1, 0])
     #expect(local.snapshot().timer.currentCount == 7)
@@ -217,7 +221,9 @@ import Testing
     #expect(local.acknowledge(interruptsEnabled: true) == 0x45)
   }
 
-  @Test(arguments: [false, true]) func busRejectsOverlapCrossBoundaryAndMMIOInstructionFetch(mmap: Bool) throws {
+  @Test(arguments: [false, true]) func busRejectsOverlapCrossBoundaryAndMMIOInstructionFetch(
+    mmap: Bool
+  ) throws {
     let ram = try backing(mmap: mmap, byteCount: 0x1000)
     let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     let local = DoryPCLocalAPIC(apicID: 0)
@@ -288,10 +294,13 @@ import Testing
 
     try bus.writeScalar(at: 0x2008, value: 0x8877_6655_4433_2211, byteCount: 8)
     #expect(try bus.readScalar(at: 0x2008, byteCount: 8) == 0x8877_6655_4433_2211)
-    #expect(try ram.read(at: 0x1008, byteCount: 8) == [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88])
+    #expect(
+      try ram.read(at: 0x1008, byteCount: 8) == [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88])
   }
 
-  @Test(arguments: [false, true]) func highRAMDMAAndBulkCopiesUseTheCompactBackingRange(mmap: Bool) throws {
+  @Test(arguments: [false, true]) func highRAMDMAAndBulkCopiesUseTheCompactBackingRange(mmap: Bool)
+    throws
+  {
     let ram = try backing(mmap: mmap, byteCount: 0x1200)
     let bus = try DoryPCPhysicalMemoryBus(
       ram: ram,

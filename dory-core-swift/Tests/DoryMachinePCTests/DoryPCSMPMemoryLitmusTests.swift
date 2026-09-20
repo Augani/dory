@@ -126,6 +126,82 @@ import Testing
     #expect(overlap.maximumActive == 2)
   }
 
+  @Test func storeFencePublishesOlderStoresBeforeYoungerStores() throws {
+    let machine = try makeMachine(
+      bsp: loop([
+        store(payload, 1),
+        [0x0F, 0xAE, 0xF8],  // sfence
+        store(flag, 1),
+      ]),
+      ap: loop([
+        loadEAX(flag),
+        loadEBX(payload),
+        [0x90],  // keep both owners on the same four-instruction loop boundary
+      ])
+    )
+    let overlap = LitmusOverlapProbe()
+    machine.observeWorkers { overlap.observe($0) }
+    let synchronizationsBefore = machine.physicalMemories.map {
+      $0.diagnostics.synchronizationHelperCalls
+    }
+
+    for _ in 0..<iterations {
+      try zero([payload, flag], in: machine)
+      #expect(try machine.run(maximumInstructions: 8) == .instructionBudget(8))
+      let observedFlag = try register(.rax, processor: 1, in: machine)
+      let observedPayload = try register(.rbx, processor: 1, in: machine)
+      #expect(observedFlag <= 1)
+      #expect(observedPayload <= 1)
+      if observedFlag == 1 { #expect(observedPayload == 1) }
+    }
+
+    let synchronizationsAfter = machine.physicalMemories.map {
+      $0.diagnostics.synchronizationHelperCalls
+    }
+    #expect(
+      synchronizationsAfter
+        == [synchronizationsBefore[0] + UInt64(iterations), synchronizationsBefore[1]])
+    #expect(overlap.maximumActive == 2)
+  }
+
+  @Test func loadFenceOrdersPublicationReadsAtTheProductionMemoryBoundary() throws {
+    let machine = try makeMachine(
+      bsp: loop([
+        store(payload, 1),
+        store(flag, 1),
+        [0x90],  // keep both owners on the same four-instruction loop boundary
+      ]),
+      ap: loop([
+        loadEAX(flag),
+        [0x0F, 0xAE, 0xE8],  // lfence
+        loadEBX(payload),
+      ])
+    )
+    let overlap = LitmusOverlapProbe()
+    machine.observeWorkers { overlap.observe($0) }
+    let synchronizationsBefore = machine.physicalMemories.map {
+      $0.diagnostics.synchronizationHelperCalls
+    }
+
+    for _ in 0..<iterations {
+      try zero([payload, flag], in: machine)
+      #expect(try machine.run(maximumInstructions: 8) == .instructionBudget(8))
+      let observedFlag = try register(.rax, processor: 1, in: machine)
+      let observedPayload = try register(.rbx, processor: 1, in: machine)
+      #expect(observedFlag <= 1)
+      #expect(observedPayload <= 1)
+      if observedFlag == 1 { #expect(observedPayload == 1) }
+    }
+
+    let synchronizationsAfter = machine.physicalMemories.map {
+      $0.diagnostics.synchronizationHelperCalls
+    }
+    #expect(
+      synchronizationsAfter
+        == [synchronizationsBefore[0], synchronizationsBefore[1] + UInt64(iterations)])
+    #expect(overlap.maximumActive == 2)
+  }
+
   @Test func implicitLockedExchangeHasOneTotalOrder() throws {
     let machine = try makeMachine(
       bsp: loop([

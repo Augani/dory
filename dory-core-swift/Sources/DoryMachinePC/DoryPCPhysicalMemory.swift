@@ -22,6 +22,7 @@ public struct DoryPCPhysicalMemoryDiagnostics: Sendable, Hashable {
   public let codeGenerationHelperCalls: UInt64
   public let atomicHelperCalls: UInt64
   public let bulkHelperCalls: UInt64
+  public let synchronizationHelperCalls: UInt64
   public let dmaValidationCalls: UInt64
   public let mmioInstructionFetchExits: UInt64
   public let mmioReadExits: UInt64
@@ -31,7 +32,7 @@ public struct DoryPCPhysicalMemoryDiagnostics: Sendable, Hashable {
     [
       instructionFetchHelperCalls, readHelperCalls, writeHelperCalls,
       validationHelperCalls, codeGenerationHelperCalls, atomicHelperCalls,
-      bulkHelperCalls, dmaValidationCalls,
+      bulkHelperCalls, synchronizationHelperCalls, dmaValidationCalls,
     ].reduce(0) { partial, value in
       let (sum, overflow) = partial.addingReportingOverflow(value)
       return overflow ? .max : sum
@@ -105,6 +106,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     case codeGenerationHelperCalls
     case atomicHelperCalls
     case bulkHelperCalls
+    case synchronizationHelperCalls
     case dmaValidationCalls
     case mmioInstructionFetchExits
     case mmioReadExits
@@ -157,6 +159,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     codeGenerationHelperCalls: 0,
     atomicHelperCalls: 0,
     bulkHelperCalls: 0,
+    synchronizationHelperCalls: 0,
     dmaValidationCalls: 0,
     mmioInstructionFetchExits: 0,
     mmioReadExits: 0,
@@ -231,6 +234,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       codeGenerationHelperCalls: diagnosticValue(.codeGenerationHelperCalls),
       atomicHelperCalls: diagnosticValue(.atomicHelperCalls),
       bulkHelperCalls: diagnosticValue(.bulkHelperCalls),
+      synchronizationHelperCalls: diagnosticValue(.synchronizationHelperCalls),
       dmaValidationCalls: diagnosticValue(.dmaValidationCalls),
       mmioInstructionFetchExits: diagnosticValue(.mmioInstructionFetchExits),
       mmioReadExits: diagnosticValue(.mmioReadExits),
@@ -508,6 +512,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   public func synchronize() {
+    incrementDiagnostic(.synchronizationHelperCalls)
     let devices = withMappings { $0.map(\.device) }
     ram.synchronize()
     // DMA backends use this same memory boundary to publish writes. Do not require the guest
