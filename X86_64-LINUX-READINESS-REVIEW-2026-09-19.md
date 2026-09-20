@@ -1,7 +1,7 @@
-# Dory x86_64 Linux readiness review — 2026-09-19
+# Dory x86_64 Linux readiness review — 2026-09-19 (updated 2026-09-20)
 
 Reviewed on branch `codex/virtual-workspace-foundation` through implementation commit
-`fa7368ac8`. Host: Apple M2 Pro, macOS 27.2, Xcode 27.0, Swift 6.4. The working checkout also
+`c9fa7e1eb`. Host: Apple M2 Pro, macOS 27.2, Xcode 27.0, Swift 6.4. The working checkout also
 contains a pre-existing user modification to `scripts/arm-ubuntu-scenario-driver.sh`; it was not
 changed, staged, or used as release evidence during this review.
 
@@ -16,11 +16,12 @@ availability gate closed.**
 
 The single-vCPU engine is suitable for continued internal Linux qualification. Reproducible PVH
 inputs exist, the optimized qualification graph executes, the safe no-raw-predictor production
-boundary has repeated predecessor-candidate userspace evidence, and CPU RAM paths now share a
+boundary has repeated current-candidate userspace evidence, and CPU RAM paths now share a
 machine-scoped byte-range authority for ordinary and locked access. Direct native loads and stores
-also have explicit Arm ordering. The current post-campaign implementation head has focused unit and
-integration evidence, but has not yet repeated the clean PVH campaign. None of this proves a
-free-running multiprocessor runtime.
+also have explicit Arm ordering. The current implementation candidate has focused unit/integration
+evidence and two clean repeated PVH workload plus ACPI-poweroff passes with one Developer-ID-signed
+hardened-runtime runner. None of this proves a free-running multiprocessor runtime or a notarized
+production package.
 
 Release remains blocked by four boundaries:
 
@@ -28,34 +29,36 @@ Release remains blocked by four boundaries:
    slice/coordinator driven. It does not provide sustained, shared-memory execution in which every
    vCPU stays in its own dispatch loop.
 2. CPU ordinary accesses and unaligned, split-backing, and interpreter 16-byte locked fallbacks now
-   share a machine-scoped range authority. Remote TLB acknowledgement, executable-code retirement,
-   complete DMA/shared-mapping participation, and self-modifying-code protocols still need
-   free-running SMP proof.
+   share a machine-scoped range authority. Coordinated dispatch now publishes and acknowledges
+   remote translation invalidations; current Virtio/xHCI DMA paths enter the same RAM authority;
+   private executor storage cannot be invalidated or recycled during native entry. Free-running
+   delivery/acknowledgement, cross-vCPU self-modifying-code proof, external/shared mappings, and the
+   complete tier-pair matrix remain open.
 3. Only `compat-v1` is launchable. The selected x86-64-v2 feature set is not yet completely
    implemented, independently referenced, migration-stable, and registered as a guest ABI.
-4. Predecessor implementation commit `121d86faa` has two clean, repeated single-vCPU PVH userspace
-   and ACPI-poweroff passes on this host. Current implementation head `fa7368ac8` has not repeated
-   that campaign and still lacks production signing, the supported-host/tier matrix, and the
-   complete UEFI install/reboot/cold-boot/update lifecycle campaign.
+4. Current implementation commit `c9fa7e1eb` has two clean, repeated single-vCPU PVH userspace and
+   ACPI-poweroff passes on this host using a Developer-ID-signed hardened-runtime runner. The runner
+   is not notarized and Gatekeeper rejects it as `Unnotarized Developer ID`; the supported-host/tier
+   matrix and complete UEFI install/reboot/cold-boot/update lifecycle campaign still do not exist.
 
 ## Gate status
 
 | Gate | Status | Evidence / reason |
 |---|---|---|
 | Public product admission | **Safe, closed** | `DoryReleaseSupportPolicy` keeps translated x86_64 Linux unavailable; daemon bootstrap requires explicit qualification authority. |
-| Focused debug atomic/interpreter validation | **Pass** | 331 tests in 5 suites passed at the current implementation head: 116 interpreter/range/native-atomic tests plus 215 baseline-JIT and compare/exchange write/fault tests. |
-| Optimized x86 qualification graph | **Pass** | 2,050 tests passed at current implementation head `fa7368ac8` across `DoryDBTX86Tests` (1,464), decode audit (135), PC (361), firmware (48), Linux boot runner (35), and PC qualification (7). The graph excludes unrelated `DorydKitTests` without exposing debug-only injection hooks in production. |
+| Focused debug atomic/interpreter validation | **Pass** | The current candidate passes the full 209-test baseline-JIT suite and 367-test PC suite, including remote invalidation, DMA range/lifetime, and deterministic code-cache retirement hazard coverage. Earlier focused interpreter/range/native-atomic suites also remain green. |
+| Optimized x86 qualification graph | **Pass** | 2,058 tests passed at implementation candidate `c9fa7e1eb` across `DoryDBTX86Tests` (1,466), decode audit (135), PC (367), firmware (48), Linux boot runner (35), and PC qualification (7). The graph excludes unrelated `DorydKitTests` without exposing debug-only injection hooks in production. |
 | Release Linux runner build | **Pass** | The release PVH runner and content-addressed fixture importer build in the optimized qualification graph. |
 | Release register-loop benchmark | **Provisional pass** | Current 5,000,000-instruction run: interpreter 1.13 MIPS, baseline JIT 746.17 MIPS, tier-one JIT 380.92 MIPS. This is a regression probe, not a ship gate. |
 | Reproducible PVH inputs | **Pass on reviewed host** | A clean checkout reproduced and re-verified the pinned ISO-derived kernel, initrd, and symbols, then published all three through the content-addressed importer with exact manifest hashes. |
-| Recent PVH boot/userspace | **Predecessor pass; current head pending** | Two consecutive `rawTargetPrediction=none` runs at `121d86faa` completed all seven userspace workloads and ACPI S5 from a clean tree with the same release runner. Current head `fa7368ac8` has not been rerun. Receipts remain internal (`releaseQualified=false`), ad-hoc signed, single-vCPU evidence for one host and one tier/configuration. |
+| Recent PVH boot/userspace | **Current candidate internal pass** | Two consecutive `rawTargetPrediction=none` runs at clean `c9fa7e1eb` completed all seven userspace workloads and ACPI S5 with the same Developer-ID-signed hardened-runtime runner. Receipts remain internal (`releaseQualified=false`), single-vCPU evidence for one host and one tier/configuration; the runner is not notarized. |
 | UEFI install, reboot, cold boot, update | **Fail: no exact-candidate evidence** | No retained campaign covers the complete installer and installed-disk lifecycle for this candidate. |
 | Production predictor boundary | **Pass, conservative** | Production raw target prediction is disabled. Enabled `all` and `tier1-direct-chain` configurations reproduced a native slice that failed to return before the watchdog; neither is admitted. |
 | Real SMP | **Fail** | Machine-owned host workers persist across `run` calls, but the coordinator still submits and awaits bounded slices. The narrow frozen register-only overlap probe is not a Linux SMP runtime. |
 | x86-64-v2 guest ABI | **Fail** | Profile registry still exposes only `baselineV1` / `compatibleV1`. |
 | CPU scalar/locked range domain | **Pass at unit/integration scope** | Checked byte-array/mmap/translated/PC RAM, direct native loads/stores, aligned native atomics, interpreter unaligned and split-backing locked fallbacks, and interpreter/native CMPXCHG16B all enter one backing-address range authority. Missing authority makes direct native atomics fail closed. |
-| Complete SMP memory contract | **Fail** | CPU exclusion is implemented and focused contention tests pass, but remote invalidation acknowledgement, code epoch retirement, the complete DMA/shared-mapping audit, and the full tier-pair litmus matrix remain open. |
-| Release reproducibility | **Partial** | Fixture and predecessor-candidate identities are content-addressed, and two clean `121d86faa` PVH receipts are retained. The current head has no clean PVH receipt; twenty-run stability, production signing, the supported-host/tier matrix, and UEFI lifecycle receipts do not yet exist. |
+| Complete SMP memory contract | **Fail** | Coordinated translation publication/acknowledgement, current-device DMA range participation, and private-executor code-storage hazard protection are implemented and tested. Free-running acknowledgement, cross-vCPU SMC, external/shared mappings, and the full tier-pair litmus matrix remain open. |
+| Release reproducibility | **Partial** | Fixture and candidate identities are content-addressed, and two clean current-candidate PVH receipts bind one Developer-ID-signed runner. Twenty-run stability, notarized product packaging, the supported-host/tier matrix, and UEFI lifecycle receipts do not yet exist. |
 
 ## Measurements that must not be conflated
 
@@ -75,26 +78,32 @@ loads/stores, locked operations, interrupts, devices, firmware, or Linux. Tier o
 51% of baseline on this workload; qualification must explain or remove that inversion instead of
 selecting the better result after the fact.
 
-### Clean predecessor-candidate PVH evidence
+### Clean signed current-candidate PVH evidence
 
-`Qualification/X86_64/Evidence/2026-09-19-pvh-clean-exact-candidate-campaign.json` binds the
-clean predecessor implementation candidate, fixture-import receipt, release runner, complete diagnostic
+`Qualification/X86_64/Evidence/2026-09-20-pvh-signed-current-candidate-campaign.json` binds the
+clean implementation candidate, fixture-import receipt, signed release runner, complete diagnostic
 receipts, and reviewed configuration:
 
 | Run | Source | Result | Elapsed | Retired instructions |
 |---|---|---|---:|---:|
-| `66b9e8bc-37cb-4871-bf96-ce2f218690c2` | clean `121d86faa` | seven workloads + ACPI S5 | 259.61 s | 733,197,676 |
-| `ebea26bd-60d8-4a20-b6e3-c4c59c2c9fe5` | clean `121d86faa` | seven workloads + ACPI S5 | 268.34 s | 733,659,790 |
+| `87e92048-b056-41c8-b0d3-25c541253b77` | clean `c9fa7e1eb` | seven workloads + ACPI S5 | 390.31 s | 732,913,933 |
+| `75d4e9c2-89a4-44f7-93d4-52f39aa9f0a5` | clean `c9fa7e1eb` | seven workloads + ACPI S5 | 393.56 s | 733,475,204 |
 
 Both used runner SHA-256
-`02ca94e747a5e04732f6a48e5726349307b1b0847b5aec53ca35a113c8bb7948`, protected host pages,
+`cb8c099bfe9466d97a19e41f0b0b792811dcdb30c295d1c2ceb627fd4e618a18`, protected host pages,
 `compat-v1`, baseline JIT with tier one enabled, one vCPU, no raw target prediction, and the exact
 content-addressed Alpine fixture. Both full receipts report a clean source tree, a matching guest
 receipt, all requested workloads passed, and terminal `powered-off`; raw prediction counters and
-pending work's maximum retired-instruction delay remained zero. The runner is linker-signed ad hoc,
-and the diagnostic schema correctly reports `releaseQualified=false`, so this closes the clean PVH
-evidence gap for the `121d86faa` tuple without claiming product release qualification or current-
-head coverage.
+pending work's maximum retired-instruction delay remained zero.
+
+The runner is signed by `Developer ID Application: Augustus Otu (864H636QW4)` with a secure
+timestamp, hardened runtime, and `com.apple.security.cs.allow-jit`. Strict `codesign` verification
+passes. It is not notarized: `spctl` rejects it as `Unnotarized Developer ID`. The diagnostic schema
+therefore correctly remains `releaseQualified=false`; this is strong internal exact-candidate
+evidence, not a distributable product release qualification.
+
+The earlier clean `121d86faa` two-run campaign remains retained as predecessor evidence, but it is
+no longer used to stand in for current-candidate coverage.
 
 ### Raw-predictor boundary evidence
 
@@ -173,10 +182,30 @@ keeps all raw host-address prediction disabled.
     fallbacks acquire one exclusive multi-range lease only after complete fault preflight. Focused
     contention tests cover overlapping/disjoint admission, sparse backing, direct native helpers,
     fail-closed authority loss, unaligned locked operations, and 16-byte compare/exchange.
+19. `DoryX86PhysicalRAM` now requires range-coordinated backing memory at its type boundary instead
+    of allowing the PC bus to fabricate an unrelated coordinator. Direct translated host mapping
+    fails closed when the physical-memory implementation cannot prove the same range authority.
+20. Every current Virtio and xHCI DMA transfer was traced through `DoryPCPhysicalMemoryBus` into
+    range-coordinated RAM and translated-code lifetime invalidation. Integration tests prove
+    overlapping exclusion, disjoint progress, and protected-code generation revocation.
+21. A machine-scoped translation-invalidation coordinator now publishes targeted/global
+    invalidations to every paging unit and baseline/optimizing native TLB, records required and
+    acknowledged generations per vCPU, coalesces page-table-write flushes before the next dispatch,
+    and handles generation wrap with a global reset. This closes the serialized coordinator path,
+    not the future free-running delivery protocol.
+22. Baseline and optimizing executable regions remain private to each vCPU executor, and the
+    executor lock spans native entry, invalidation, retirement, and storage rotation. A
+    deterministic blocked-native-execution test proves `invalidateAll()` cannot return or recycle
+    storage while generated code is still executing.
+23. A clean detached `c9fa7e1eb` checkout rebuilt the universal FFI artifact and release runner,
+    re-imported every manifest-bound PVH object, signed the runner with Developer ID plus hardened
+    runtime/`allow-jit`, and completed two consecutive seven-workload plus ACPI-poweroff runs. The
+    retained campaign records the successful strict signature check and the still-open notarization
+    boundary.
 
 These fixes make the current single-vCPU and CPU memory-exclusion signal substantially stronger.
-They do not substitute for the missing free-running SMP, remote translation/code-lifetime
-protocols, UEFI lifecycle, or supported-matrix campaigns.
+They do not substitute for the missing free-running SMP delivery protocol, concurrent cross-vCPU
+translation/code-lifetime proof, UEFI lifecycle, or supported-matrix campaigns.
 
 ## Remaining engineering work
 
@@ -198,17 +227,19 @@ protocols, UEFI lifecycle, or supported-matrix campaigns.
 The normative target is `docs/virtualization/x86-smp-memory-contract.md`. CPU byte-range exclusion
 is implemented; the remaining contract is not just more stress on that lock:
 
-- Inventory every DMA and shared-mapping read/write path and make each ordinary RAM access enter the
-  existing backing-address authority. Fail closed when an adapter cannot prove the same coordinate
-  system, and test overlapping plus disjoint device traffic.
+- Keep the audited Virtio/xHCI DMA paths on the existing backing-address authority. Inventory every
+  external and shared-mapping adapter before admission, fail closed when it cannot prove the same
+  coordinate system, and extend overlap/disjoint tests to each admitted adapter.
 - Extend split-cache-line, split-page, and 16-byte contention/fault tests across translated memory,
   PC physical routing, every admitted execution tier, and code-protected pages.
-- Publish remote TLB/address-space generations and require target acknowledgement before a vCPU can
-  retire an access under an invalidated translation.
-- Add epoch/hazard retirement for native code so invalidated storage cannot be recycled while
-  another vCPU can still execute it.
-- Audit every DMA/shared-memory writer for RAM ordering, page-table invalidation, and translated-code
-  generation revocation.
+- Move the existing remote TLB/address-space generation publication and acknowledgement into the
+  free-running dispatch protocol so a target cannot retire an access under an invalidated
+  translation without returning to the central coordinator.
+- Add cross-vCPU code mutation/fetch and page-table-write campaigns. Preserve the current private
+  executor storage invariant; require explicit epoch/hazard retirement before any future shared
+  executable cache can recycle storage.
+- Audit every external/shared-memory writer for RAM ordering, page-table invalidation, and
+  translated-code generation revocation.
 - Execute the full interpreter/baseline/optimizing pair matrix for TSO, locks, fences, TLBs, DMA,
   self-modifying code, and code-cache rotation at 1, 2, and 4 vCPUs.
 
@@ -225,9 +256,12 @@ XSAVE images, exception behavior, and two-half NEON lowering in a later profile.
 
 ### P0 — Complete the exact-candidate PVH matrix and UEFI campaigns
 
-- Replace the reviewed ad-hoc runner with the production-signed candidate and retain its identity.
+- Package and notarize the production candidate. The reviewed internal runner is Developer-ID
+  signed with hardened runtime and `allow-jit`, but Gatekeeper correctly rejects it while
+  unnotarized.
 - Repeat PVH correctness on every supported host class and every admitted production tier/config;
-  the reviewed host's predecessor single-vCPU baseline-JIT/no-predictor tuple has two clean passes.
+  the reviewed host's current single-vCPU baseline-JIT/no-predictor tuple has two clean signed
+  passes.
 - For UEFI, retain installer boot, install, installer reboot, cold boot from disk, package update,
   shutdown, recovery, and negative/fault injection evidence.
 - Exercise storage, network, entropy, clock, console/input, and graphics where applicable.
@@ -276,12 +310,14 @@ establish the execution and memory foundations together:
 1. Extend `DoryPCVCPURuntime` from persistent mailbox workers to long-running guest dispatch, with
    explicit deterministic mode, per-vCPU pending-work state, and fully specified
    lifecycle/failure ownership.
-2. Complete the DMA/shared-mapping inventory against the existing range rendezvous, then add
-   translated/PC split-range, page-fault, and code-protection contention campaigns.
-3. Add remote translation-generation publication/acknowledgement and native-code epoch retirement.
+2. Carry the existing remote translation-generation publication/acknowledgement through that
+   free-running loop, including pause/stop/error rendezvous and wrap-safe global flush.
+3. Finish the external/shared-mapping inventory against the existing range rendezvous, then add
+   translated/PC split-range, page-fault, DMA, and cross-vCPU code-protection campaigns. Preserve
+   private executable storage or add explicit epoch retirement before sharing it.
 4. Add two-vCPU shared-memory litmus and throughput campaigns that fail against the current
    coordinator path and pass only with genuine overlap and architectural ordering.
 5. Re-run the content-addressed PVH fixture after each slice, preserve exact receipts, and execute
-   the clean production-signed PVH/UEFI matrix once the production tuple is frozen.
+   the clean notarized production PVH/UEFI matrix once the production tuple is frozen.
 
 Until those gates pass, x86_64 Linux should remain visible only to internal qualification tooling.
