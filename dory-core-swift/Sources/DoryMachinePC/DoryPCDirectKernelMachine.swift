@@ -709,39 +709,18 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
-  private final class RunBudgetMailbox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var maximumInstructions: UInt64?
-
-    func publish(_ maximumInstructions: UInt64) {
-      precondition(maximumInstructions > 0)
-      lock.withLock {
-        precondition(self.maximumInstructions == nil)
-        self.maximumInstructions = maximumInstructions
-      }
-    }
-
-    func consume() throws -> UInt64 {
-      try lock.withLock {
-        guard let maximumInstructions else { throw WorkerError.missingRunBudget }
-        self.maximumInstructions = nil
-        return maximumInstructions
-      }
-    }
-  }
-
   private final class RunFailureBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var failure: (any Error)?
+    private var failures: [Int: any Error] = [:]
 
-    func store(_ failure: any Error) {
+    func store(_ failure: any Error, forProcessor processor: Int) {
       lock.withLock {
-        if self.failure == nil { self.failure = failure }
+        if failures[processor] == nil { failures[processor] = failure }
       }
     }
 
-    var storedFailure: (any Error)? {
-      lock.withLock { failure }
+    func failure(forProcessor processor: Int) -> (any Error)? {
+      lock.withLock { failures[processor] }
     }
   }
 
@@ -1820,7 +1799,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       exceptionPolicy: exceptionPolicy,
       clockMode: clockSource.monotonicNanoseconds == nil ? .deterministic : .hostMonotonic
     )
-    let budgetMailbox = RunBudgetMailbox()
+    let commandBus = DoryPCRunCommandBus(processorCount: 1, runGeneration: generation)
     let failureBox = RunFailureBox()
     var workerCompletion: DoryPCHostWorker.Completion<Void>?
     var outstandingResult: DoryPCRunSession.WorkerResult?
@@ -1829,14 +1808,32 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     var advanceClockBeforeBoundary = true
 
     func stopWorker() throws {
+      commandBus.close()
       defer { pendingWorkWake.setDispatchThread(nil) }
-      let result = try outstandingResult ?? session.workerResult(forProcessor: 0)
-      if let result {
-        _ = try session.respond(to: result, with: .stop)
-        pendingWorkWake.notify(forProcessor: result.processor)
+      if let workerCompletion {
+        let result: DoryPCRunSession.WorkerResult?
+        if let outstandingResult {
+          result = outstandingResult
+        } else if let published = try session.workerResult(forProcessor: 0) {
+          result = published
+        } else if workerCompletion.isFinished {
+          result = nil
+        } else {
+          // Close prevents any new guest entry. If an owner already consumed a command, rendezvous
+          // with that exact result before asking it to stop.
+          result = try waitForWorkerResult(
+            session: session,
+            processor: 0,
+            completion: workerCompletion
+          )
+        }
+        if let result {
+          _ = try session.respond(to: result, with: .stop)
+          pendingWorkWake.notify(forProcessor: result.processor)
+        }
         outstandingResult = nil
+        _ = try workerCompletion.wait()
       }
-      if let workerCompletion { _ = try workerCompletion.wait() }
     }
 
     func finish(
@@ -1849,7 +1846,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
 
     func dispatchWorker(maximumInstructions: UInt64) throws {
-      budgetMailbox.publish(maximumInstructions)
+      try commandBus.publishExecution(
+        forProcessor: 0,
+        maximumInstructions: maximumInstructions
+      )
       pendingWorkWake.setDispatchThread(nil)
       if let result = outstandingResult {
         _ = try session.respond(to: result, with: .resume)
@@ -1860,7 +1860,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         workerCompletion = worker.submit(kind: .runLoop) { [self] in
           try runSingleProcessorWorkerLoop(
             session: session,
-            budgetMailbox: budgetMailbox,
+            processor: 0,
+            commandBus: commandBus,
             failureBox: failureBox,
             observer: observer
           )
@@ -1936,7 +1937,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           : UInt64(baselineInstructionBudget(maximumInstructions: remaining))
         let executionSample = hostTimeSample()
         try dispatchWorker(maximumInstructions: min(remaining, reservationLimit))
-        let result = try waitForWorkerResult(session: session, completion: workerCompletion!)
+        let result = try waitForWorkerResult(
+          session: session,
+          processor: 0,
+          completion: workerCompletion!
+        )
         pendingWorkWake.setDispatchThread(nil)
         recordHostTime(.processorExecution, since: executionSample)
         outstandingResult = result
@@ -1945,7 +1950,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         recordSessionCounters(result.counters)
 
         if case .hostFailure = result.outcome {
-          guard let failure = failureBox.storedFailure else { throw WorkerError.missingHostFailure }
+          guard let failure = failureBox.failure(forProcessor: result.processor) else {
+            throw WorkerError.missingHostFailure
+          }
           throw failure
         }
 
@@ -2057,19 +2064,22 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   private func runSingleProcessorWorkerLoop(
     session: DoryPCRunSession,
-    budgetMailbox: RunBudgetMailbox,
+    processor: Int,
+    commandBus: DoryPCRunCommandBus,
     failureBox: RunFailureBox,
     observer: (@Sendable (WorkerEvent) -> Void)?
   ) throws {
-    let processor = 0
+    precondition((0..<session.processorCount).contains(processor))
+    precondition(commandBus.processorCount == session.processorCount)
+    precondition(commandBus.runGeneration == session.runGeneration)
     observer?(.runLoopStarted(processor, generation: session.runGeneration))
     defer { observer?(.runLoopStopped(processor, generation: session.runGeneration)) }
     while true {
-      let maximumInstructions = try budgetMailbox.consume()
+      guard let command = try commandBus.nextCommand(forProcessor: processor) else { return }
       guard
         let reservation = try session.reserve(
           processor: processor,
-          maximumInstructions: maximumInstructions
+          maximumInstructions: command.maximumInstructions
         )
       else { throw WorkerError.missingRunReservation }
       pendingWorkWake.setDispatchThread(Thread.current, forProcessor: processor)
@@ -2077,7 +2087,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       var failureCounters = DoryPCRunSession.WorkerCounters.zero
       var executionStartedCPU: UInt64?
       do {
-        let boundary = try serviceSingleProcessorBoundary(
+        let boundary = try serviceProcessorBoundary(
           session: session,
           processor: processor,
           observer: observer
@@ -2150,7 +2160,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           failureCounters.executionCPUNanoseconds =
             dory_thread_cpu_time_nanoseconds() &- executionStartedCPU
         }
-        failureBox.store(error)
+        failureBox.store(error, forProcessor: processor)
         try session.requestTermination(.hostFailure(processor: processor))
         let failureResult = try session.completeAndPublish(
           reservation,
@@ -2220,7 +2230,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   /// byte are acknowledged only after lifecycle events, translation work, and interrupt delivery
   /// have all completed. A racing publisher either makes the wake acknowledgement fail or restores
   /// the poll byte after the clear, so the next execution cannot erase that edge.
-  private func serviceSingleProcessorBoundary(
+  private func serviceProcessorBoundary(
     session: DoryPCRunSession,
     processor: Int,
     observer: (@Sendable (WorkerEvent) -> Void)?
@@ -2296,11 +2306,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   private func waitForWorkerResult(
     session: DoryPCRunSession,
+    processor: Int,
     completion: DoryPCHostWorker.Completion<Void>
   ) throws -> DoryPCRunSession.WorkerResult {
+    precondition((0..<session.processorCount).contains(processor))
     var snapshot = session.snapshot
     while true {
-      if let result = snapshot.workerResults[0] { return result }
+      if let result = snapshot.workerResults[processor] { return result }
       if completion.isFinished {
         _ = try completion.wait()
         throw WorkerError.runLoopExitedWithoutResult
@@ -2387,7 +2399,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   private enum WorkerError: Error {
     case inconsistentFrozenInstruction, inconsistentNativeInstruction
-    case missingRunBudget, missingRunReservation, runLoopExitedWithoutResult, missingHostFailure
+    case missingRunReservation, runLoopExitedWithoutResult, missingHostFailure
   }
 
   struct ParallelInstruction: Sendable {
