@@ -3,7 +3,7 @@
 Status: **machine and built-in callback boundaries implemented; lifecycle and external-adapter
 qualification open**
 
-Implementation checkpoint: `6e941dfa0` on 2026-09-20. This document is a source inventory and
+Implementation checkpoint: `d0c930fb7` on 2026-09-20. This document is a source inventory and
 admission contract, not a release claim. It covers objects reachable from
 `DoryPCPhysicalMemoryBus` and `DoryPCPortIOBus` in `DoryPCDirectKernelMachine` and records the work
 that remains before general free-running SMP may use them.
@@ -93,10 +93,10 @@ audit below does not qualify any extension, direct shared mapping, or future bac
 
 ## Evidence at this checkpoint
 
-- The complete PC target passes 444 tests across 56 Swift Testing suites in debug and optimized
+- The complete PC target passes 446 tests across 56 Swift Testing suites in debug and optimized
   release modes. The pinned Linux integration test is separately skipped when its four artifact
   environment variables are absent; that skip is not boot evidence.
-- The complete current 444-test PC target passes under Thread Sanitizer with no race report. This
+- The complete current 446-test PC target passes under Thread Sanitizer with no race report. This
   includes the device-domain, physical-memory, port-I/O, PCI, Virtio, xHCI, APIC, translation,
   concurrent run-session, and new guest-code litmus suites rather than only the older 99-test
   device subset.

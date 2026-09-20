@@ -1,7 +1,7 @@
 # Dory x86_64 Linux readiness review — 2026-09-19 (updated 2026-09-20)
 
 Reviewed on branch `codex/virtual-workspace-foundation` through implementation commit
-`6e941dfa07123dc1258d43588661185bf5434d2b`. Host: Apple M2
+`d0c930fb7eaf75b7b44f4c925fdebbd9d8e897b3`. Host: Apple M2
 Pro, macOS 27.2, Xcode 27.0, Swift 6.4. The working checkout also contains a pre-existing user
 modification to `scripts/arm-ubuntu-scenario-driver.sh`; it was not changed, staged, or used as
 release evidence during this review.
@@ -45,10 +45,12 @@ replacement after the required publication and serializing handshake. A producti
 code-generation, host-protection-generation, and publication visibility before the remote owner
 fetches the replacement. A second production DMA cell rewrites a live, tracked page-table entry;
 both active owners acknowledge its global invalidation and the AP observes the replacement physical
-page instead of its warmed translation. The complete current 444-test PC suite passes in debug,
-optimized release, and under Thread Sanitizer. None of this
-proves a production free-running multiprocessor runtime, ordinary installed Linux lifecycle, or a
-notarized production package.
+page instead of its warmed translation. Dedicated `SFENCE` and `LFENCE` cells now run 2,000
+overlapped iterations each and prove that the expected vCPU crosses its production physical-memory
+synchronization boundary exactly once per fence while the other owner does not. The complete
+current 446-test PC suite passes in debug, optimized release, and under Thread Sanitizer. None of
+this proves a production free-running multiprocessor runtime, ordinary installed Linux lifecycle,
+or a notarized production package.
 
 Release remains blocked by four boundaries:
 
@@ -85,8 +87,8 @@ Release remains blocked by four boundaries:
 | Gate | Status | Evidence / reason |
 |---|---|---|
 | Public product admission | **Safe, closed** | `DoryReleaseSupportPolicy` keeps translated x86_64 Linux unavailable; daemon bootstrap requires explicit qualification authority. |
-| Current PC/device concurrency validation | **Pass at source-test scope** | Current head passes all 444 PC tests across 56 suites in debug, optimized release, and under Thread Sanitizer with no race report. The retained runner graph passes 35 tests across 4 suites in debug and release; it was not relabeled as current boot evidence. The artifact-backed Linux integration is separate and is not counted as boot evidence. |
-| Optimized x86 qualification graph | **Pass; current PC and DBT slices refreshed** | With `DORY_X86_OPTIMIZED_QUALIFICATION=1`, current head passes PC 444/56. The DBT bundle passes 1 XCTest case plus 1,471 Swift Testing cases across 141 suites (1,472 total cases). The previously retained unchanged groups pass decode audit 135/22, firmware 48/12, runner 35/4, and qualification 7/2. The graph excludes unrelated `DorydKitTests` without exposing debug-only injection hooks in production. This is source-test evidence, not a signed boot receipt. |
+| Current PC/device concurrency validation | **Pass at source-test scope** | Current head passes all 446 PC tests across 56 suites in debug, optimized release, and under Thread Sanitizer with no race report. The retained runner graph passes 35 tests across 4 suites in debug and release; it was not relabeled as current boot evidence. The artifact-backed Linux integration is separate and is not counted as boot evidence. |
+| Optimized x86 qualification graph | **Pass; current PC and DBT slices refreshed** | With `DORY_X86_OPTIMIZED_QUALIFICATION=1`, current head passes PC 446/56. The DBT bundle passes 1 XCTest case plus 1,471 Swift Testing cases across 141 suites (1,472 total cases). The previously retained unchanged groups pass decode audit 135/22, firmware 48/12, runner 35/4, and qualification 7/2. The graph excludes unrelated `DorydKitTests` without exposing debug-only injection hooks in production. This is source-test evidence, not a signed boot receipt. |
 | Release Linux runner build | **Pass** | The release PVH runner and content-addressed fixture importer build in the optimized qualification graph. |
 | Release register-loop benchmark | **Provisional pass** | Current 5,000,000-instruction run: interpreter 1.13 MIPS, baseline JIT 746.17 MIPS, tier-one JIT 380.92 MIPS. This is a regression probe, not a ship gate. |
 | Reproducible PVH inputs | **Pass on reviewed host** | A clean checkout reproduced and re-verified the pinned ISO-derived kernel, initrd, and symbols, then published all three through the content-addressed importer with exact manifest hashes. |
@@ -97,7 +99,7 @@ Release remains blocked by four boundaries:
 | x86-64-v2 guest ABI | **Fail** | Profile registry still exposes only `baselineV1` / `compatibleV1`. |
 | CPU scalar/locked range domain | **Pass at unit/integration scope** | Checked byte-array/mmap/translated/PC RAM, direct native loads/stores, aligned native atomics, interpreter unaligned and split-backing locked fallbacks, and interpreter/native CMPXCHG16B all enter one backing-address range authority. Missing authority makes direct native atomics fail closed. |
 | Guest device-entry domain | **Pass at source-test scope** | All vCPU physical buses and the port bus share one recursive per-machine domain for MMIO, ECAM, PCI BAR, and PIO callbacks. Ordinary RAM and DMA synchronization stay outside it. Full PC testing retained the xHCI MMIO/DMA lock-cycle regression; the built-in source-callback audit found and repaired APIC/PIC callback-under-lock defects. Re-entry and concurrent two-owner callback tests pass under TSan. Lifecycle and extension-device qualification remains open. |
-| Complete SMP memory contract | **Fail** | Worker-owned translation acknowledgement, current-device DMA range participation, private-executor code-storage hazard protection, the conservative guest device-entry boundary, and the built-in callback source-lock audit are implemented and tested. The interpreter pair passes initial SB/LB/message-passing/MFENCE and XCHG/XADD/CMPXCHG cells, exact budget/fault tests, external and guest-driven page-table invalidation cells, protected CPU and production guest-memory-interface DMA code and page-table mutation cells, async callback traffic, and async poweroff join. The guest TLB cell revokes a remote interpreted hit through a tracked PTE rewrite/global flush, then separately proves guest `INVLPG` publishes one exact linear invalidation to both owners. The DMA TLB cell rewrites an already tracked PTE through `DoryVirtioGuestMemory` and requires both owners to acknowledge the global invalidation before the AP may retain the new observation. The SMC cells advance code/protection generations and execute replacement bytes after their publication/serialization handshakes. Page-walker write suppression is owner-scoped, so one owner's walk cannot hide another owner's page-table write. IRIW, remaining fence/locked/split cases, native/mixed TLB and SMC, isolated invalidation states, configured device-backend code/page-table DMA mutation, code-cache rotation, lifecycle/teardown races, public extensions, and every other tier/count remain open. |
+| Complete SMP memory contract | **Fail** | Worker-owned translation acknowledgement, current-device DMA range participation, private-executor code-storage hazard protection, the conservative guest device-entry boundary, and the built-in callback source-lock audit are implemented and tested. The interpreter pair passes initial SB/LB/message-passing/MFENCE/SFENCE/LFENCE and XCHG/XADD/CMPXCHG cells, exact budget/fault tests, external and guest-driven page-table invalidation cells, protected CPU and production guest-memory-interface DMA code and page-table mutation cells, async callback traffic, and async poweroff join. The guest TLB cell revokes a remote interpreted hit through a tracked PTE rewrite/global flush, then separately proves guest `INVLPG` publishes one exact linear invalidation to both owners. The DMA TLB cell rewrites an already tracked PTE through `DoryVirtioGuestMemory` and requires both owners to acknowledge the global invalidation before the AP may retain the new observation. The SMC cells advance code/protection generations and execute replacement bytes after their publication/serialization handshakes. Page-walker write suppression is owner-scoped, so one owner's walk cannot hide another owner's page-table write. IRIW, remaining locked/split cases, native/mixed TLB and SMC, isolated invalidation states, configured device-backend code/page-table DMA mutation, code-cache rotation, lifecycle/teardown races, public extensions, and every other tier/count remain open. |
 | Release reproducibility | **Partial** | Fixture and candidate identities are content-addressed, and four clean exact-commit `5c07bcf44` PVH receipts bind one Developer-ID-signed runner across baseline JIT and interpreter. Twenty-run stability, notarized product packaging, the supported-host/guest/device matrix, and UEFI lifecycle receipts do not yet exist. |
 
 ## Measurements that must not be conflated
@@ -400,8 +402,8 @@ keeps all raw host-address prediction disabled.
     second owner writes the tracked page and must publish invalidation.
 43. A parked-owner test no longer depends on prompt scheduling by the process-wide dispatch pool;
     its command owner uses a dedicated host thread. This removes sanitizer scheduling noise without
-    weakening any production deadline or concurrency assertion. The complete current PC target
-    passes 444 tests in 56 suites in debug, optimized release, and under Thread Sanitizer. The DBT
+    weakening any production deadline or concurrency assertion. At that checkpoint, the PC target
+    passed 444 tests in 56 suites in debug, optimized release, and under Thread Sanitizer. The DBT
     bundle passes 1 XCTest case plus 1,472 Swift Testing cases in 141 suites in debug and under
     Thread Sanitizer; optimized release passes 1 XCTest case plus 1,471 Swift Testing cases in the
     same 141 suites.
@@ -412,6 +414,11 @@ keeps all raw host-address prediction disabled.
     observes the replacement physical page, real owner overlap is required, and guest S5 joins the
     run. This qualifies the shared guest-memory interface; configured Virtio/xHCI queue, completion,
     and interrupt paths remain open.
+45. Dedicated interpreter-pair `SFENCE` and `LFENCE` publication cells now run 2,000 protected-mode
+    guest iterations apiece with real owner overlap. A new per-vCPU physical-memory synchronization
+    diagnostic proves exactly one production memory-boundary crossing per fence on the executing
+    owner and none on the peer; the forbidden stale-payload observation never occurs. The complete
+    446-test/56-suite PC target passes in debug, optimized release, and under Thread Sanitizer.
 
 These fixes establish a genuine but narrow concurrent interpreter pair. They do not substitute for
 pause/reset/snapshot/hot-unplug/teardown proof, public-extension callback qualification, complete
@@ -538,18 +545,18 @@ Do not change public availability until all of these are true:
 Persistent owner jobs, the conservative machine device-entry boundary, single-vCPU PVH parity,
 interpreter viability, an internal exact-two-vCPU interpreter admission, the built-in callback
 source-lock audit, and one guest-driven remote interpreted-TLB invalidation cell are implemented.
-The guest-code cells cover SB, LB, message passing, MFENCE, XCHG, XADD, CMPXCHG, a live guest PTE
-remap, protected CPU mutation/fetch, protected DMA mutation/fetch, and a DMA PTE remap through the
-production guest-memory interface with proven owner overlap. Baseline, mixed, optimizing,
-configured device backends, caller extension devices, and product admission remain denied by
-default. The next slice is:
+The guest-code cells cover SB, LB, message passing, MFENCE, SFENCE, LFENCE, XCHG, XADD, CMPXCHG, a
+live guest PTE remap, protected CPU mutation/fetch, protected DMA mutation/fetch, and a DMA PTE
+remap through the production guest-memory interface with proven owner overlap. Baseline, mixed,
+optimizing, configured device backends, caller extension devices, and product admission remain
+denied by default. The next slice is:
 
 1. Drive code and page-table DMA through configured Virtio/xHCI queue/backend paths; add
    native/mixed resident-block SMC, protected-page rotation, and generation-publication tests.
    Extend TLB coverage to isolated targeted/global operations, halted/quiescing/fault/stop races,
    active native hits, and every admitted tier pair.
-2. Complete the interpreter-pair memory matrix: IRIW, SFENCE/LFENCE, the remaining locked families,
-   ordinary-reader mixtures, unaligned/cache-line/page splits, faulting second pages, and 8/16-byte
+2. Complete the interpreter-pair memory matrix: IRIW, the remaining locked families, ordinary-reader
+   mixtures, unaligned/cache-line/page splits, faulting second pages, and 8/16-byte
    compare/exchange. Add pause/reset/snapshot/teardown races and exact stop arbitration for each.
 3. Extend the callback work through concurrent reset, completion/interrupt, hot-unplug, snapshot,
    and teardown. Require each admitted `platformMMIODevices`/`pciFunctions` implementation to
