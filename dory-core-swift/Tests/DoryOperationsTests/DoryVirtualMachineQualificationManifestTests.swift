@@ -146,6 +146,34 @@ final class DoryVirtualMachineQualificationManifestTests: XCTestCase {
             )
         }
     }
+
+    func testStockARMHardwareRecordRejectsManagedGuestAuthority() throws {
+        let fixture = try QualificationFixture()
+        defer { fixture.cleanup() }
+        var stock = fixture.record
+        stock.graphics = .hardwareAccelerated3D
+        stock.virtioGPUKernelAndDeviceSupportQualified = false
+        stock.producerFenceBeforeFlushQualified = nil
+        stock.venusVulkanGuestRuntimeQualified = false
+        stock.rendererProducerFenceContract = .stockLinux613RuntimeVerifiedV1
+
+        XCTAssertTrue(
+            DoryVirtualMachineQualificationAuthorityResolver
+                .hardware3DQualificationIsStructurallyValid(stock)
+        )
+
+        stock.rendererGuestKernelSHA256 = String(repeating: "1", count: 64)
+        XCTAssertFalse(
+            DoryVirtualMachineQualificationAuthorityResolver
+                .hardware3DQualificationIsStructurallyValid(stock)
+        )
+        stock.rendererGuestKernelSHA256 = nil
+        stock.rendererGuestMesaSHA256 = String(repeating: "2", count: 64)
+        XCTAssertFalse(
+            DoryVirtualMachineQualificationAuthorityResolver
+                .hardware3DQualificationIsStructurallyValid(stock)
+        )
+    }
 }
 
 private enum RawBackendContract {

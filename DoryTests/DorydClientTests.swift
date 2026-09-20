@@ -2250,6 +2250,10 @@ struct DorydClientTests {
             "rendererGeneration": UInt64(1),
             "rendererWorkerReceiptSHA256": String(repeating: "7", count: 64),
             "guestProducerFenceProofSHA256": String(repeating: "8", count: 64),
+            "requestedGraphics": "hardware-accelerated-3d",
+            "admittedGraphics": "hardware-accelerated-3d",
+            "verificationState": "verified",
+            "guestDriver": "venus",
         ]
         service.setMachineRuntimeGraphicsSelection("dev", selection)
 
@@ -7215,6 +7219,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "planRevision": planRevision,
             "accelerationLevel": graphics,
             "backend": backend,
+            "requestedGraphics": graphics,
+            "admittedGraphics": graphics,
+            "verificationState": graphics == "software" ? "not-required" : "verified",
+            "guestDriver": graphics == "software"
+                ? "software"
+                : (backend == "virgl-venus" ? "venus" : "virgl"),
         ]
         if graphics != "software" {
             selection["rendererGeneration"] = UInt64(1)

@@ -15090,8 +15090,9 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
-    /// Mints one immutable renderer-worker bootstrap only from the exact signed runtime component
-    /// graph and the expanded kernel bytes admitted for this launch. The descriptor is reopened
+    /// Mints one immutable renderer-worker bootstrap from the exact signed host component graph.
+    /// Historical managed/PC profiles additionally bind the admitted kernel bytes; the stock ARM
+    /// profile deliberately carries no managed-kernel authority. The descriptor is reopened
     /// read-only and unlinked before it can cross the process boundary.
     static func stageResolvedRawHVRendererBootstrap(
         machineDirectoryDescriptor: Int32,
@@ -15108,13 +15109,29 @@ public final class MachineManager: @unchecked Sendable {
             runtimeBuildIdentifier: request.runtimeBuildIdentifier,
             components: request.components
         )
-        let kernel = try DoryRendererArtifactDigest(
-            lowercaseSHA256: exactKernelSHA256,
-            field: "managedGuestKernel"
-        )
+        let kernel: DoryRendererArtifactDigest?
+        if request.producerFenceContract == .stockLinux613RuntimeVerifiedV1 {
+            kernel = nil
+        } else {
+            kernel = try DoryRendererArtifactDigest(
+                lowercaseSHA256: exactKernelSHA256,
+                field: "managedGuestKernel"
+            )
+        }
+        let guestMesaSHA256: String
+        if request.producerFenceContract == .stockLinux613RuntimeVerifiedV1 {
+            guard request.guestMesaSHA256 == nil else {
+                throw MachineManagerError.persistence(
+                    "stock renderer bootstrap cannot bind a managed guest Mesa artifact"
+                )
+            }
+            guestMesaSHA256 = DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256
+        } else {
+            guestMesaSHA256 = request.guestMesaSHA256
+                ?? renderer.guestMesa.lowercaseSHA256
+        }
         let guestMesa = try DoryRendererArtifactDigest(
-            lowercaseSHA256: request.guestMesaSHA256
-                ?? renderer.guestMesa.lowercaseSHA256,
+            lowercaseSHA256: guestMesaSHA256,
             field: "guestMesa"
         )
         let requestedCapabilities: DoryRendererRequestedCapabilities

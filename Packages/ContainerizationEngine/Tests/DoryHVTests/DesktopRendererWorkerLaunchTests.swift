@@ -119,7 +119,7 @@ struct DesktopRendererWorkerLaunchTests {
                 resolvedGraphics: .hardwareAccelerated3D,
                 rendererBootstrapAuthority: slot,
                 exactManagedKernelSHA256: rendererLaunchHex(
-                    bootstrap.artifacts.managedGuestKernel.bytes
+                    try #require(bootstrap.artifacts.managedGuestKernel).bytes
                 ),
                 requiredBootstrapDescriptor: fixture.descriptor,
                 connector: { exactBytes in
@@ -177,7 +177,9 @@ struct DesktopRendererWorkerLaunchTests {
         // Worker generation is intentionally not part of durable guest-fence authority. A
         // process restart must not manufacture a different kernel/contract qualification proof.
         #expect(first == successorDigest)
-        #expect(first != rendererLaunchHex(bootstrap.artifacts.managedGuestKernel.bytes))
+        #expect(first != rendererLaunchHex(
+            try #require(bootstrap.artifacts.managedGuestKernel).bytes
+        ))
     }
 
     @Test func liveQualificationRequiresExactRealDualCapsetFacts() throws {
@@ -227,8 +229,7 @@ struct DesktopRendererWorkerLaunchTests {
             "--output", "/fixture/renderer-bootstrap-qualification.json",
         ][...])
         #expect(stockOptions.profile == .stockLinux613)
-        #expect(stockOptions.managedKernelSHA256
-            == DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256)
+        #expect(stockOptions.managedKernelSHA256 == nil)
 
         let arm = RendererBootstrapQualificationCommand.Profile.managedLinux612106
         #expect(try arm.guestMesaDigest(nil).lowercaseSHA256

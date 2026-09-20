@@ -432,7 +432,9 @@ import Testing
         let session = FakeRendererForeignSession()
         let backend = makeBackend(session: session)
 
-        let receipt = try backend.activate(bootstrap: makeBootstrap())
+        let receipt = try backend.activate(bootstrap: makeBootstrap(
+            producerFenceContract: .stockLinux613RuntimeVerifiedV1
+        ))
 
         #expect(receipt.productionAccelerationIsAdmissible)
         #expect(receipt.capsets.map(\.id) == [2, 4])
@@ -763,7 +765,9 @@ import Testing
         let backend = makeBackend(session: session)
 
         #expect(throws: DoryRendererWorkerBackendActivationError.venusCapability) {
-            _ = try backend.activate(bootstrap: makeBootstrap())
+            _ = try backend.activate(bootstrap: makeBootstrap(
+                producerFenceContract: .stockLinux613RuntimeVerifiedV1
+            ))
         }
         #expect(session.invalidated)
         #expect(try isRejected(backend.execute(
@@ -1774,7 +1778,9 @@ import Testing
 
     private func makeBootstrap(
         limits: DoryRendererWorkerLimits = .production,
-        hostVisibleArenaByteCount: UInt64 = 0
+        hostVisibleArenaByteCount: UInt64 = 0,
+        producerFenceContract: DoryRendererProducerFenceContract =
+            .managedLinux612106PrepareFBV1
     ) throws -> DoryRendererWorkerBootstrap {
         func digest(_ byte: UInt8) throws -> DoryRendererArtifactDigest {
             try DoryRendererArtifactDigest(bytes: Data(repeating: byte, count: 32))
@@ -1783,11 +1789,12 @@ import Testing
             workspaceID: .random(),
             generation: DoryRendererWorkerGeneration(rawValue: 9),
             sourceTuple: .productionCandidate,
-            producerFenceContract: .managedLinux612106PrepareFBV1,
+            producerFenceContract: producerFenceContract,
             requestedCapabilities: .productionAcceleration,
             artifacts: DoryRendererArtifactManifest(
                 candidateInventory: digest(1),
-                managedGuestKernel: digest(2),
+                managedGuestKernel: producerFenceContract
+                    == .stockLinux613RuntimeVerifiedV1 ? nil : digest(2),
                 guestMesa: digest(3),
                 rendererWorkerExecutable: digest(4),
                 rendererWorkerCodeDirectoryHash: try DoryCodeDirectoryHash(

@@ -3287,8 +3287,10 @@ enum DesktopMode {
                     rendererGeneration: launch.workerGeneration.rawValue,
                     rendererWorkerReceiptSHA256:
                         launch.rendererWorkerReceiptSHA256,
-                    guestProducerFenceProofSHA256:
-                        launch.qualifiedProducerFenceAuthoritySHA256
+                    requestedGraphics: .hardwareAccelerated3D,
+                    admittedGraphics: .hardwareAccelerated3D,
+                    verificationState: .provisional,
+                    guestDriver: .venus
                 )
             default:
                 throw VMError.bootFailure(

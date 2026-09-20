@@ -29,6 +29,12 @@ public enum DoryRuntimeGraphicsBackend: String, Codable, Sendable, Equatable, Ha
     case virglVenus = "virgl-venus"
 }
 
+public enum DoryRuntimeGraphicsGuestDriver: String, Codable, Sendable, Equatable, Hashable {
+    case software
+    case virgl
+    case venus
+}
+
 /// Operation-bound proof of the graphics backend that actually reached guest readiness.
 ///
 /// The durable resolved plan remains desired launch authority. This receipt is the live result
@@ -47,6 +53,21 @@ public struct DoryRuntimeGraphicsSelection: Codable, Sendable, Equatable, Hashab
     public var rendererGeneration: UInt64?
     public var rendererWorkerReceiptSHA256: String?
     public var guestProducerFenceProofSHA256: String?
+    public var requestedGraphics: DoryGraphicsAccelerationLevel
+    public var admittedGraphics: DoryGraphicsAccelerationLevel
+    public var verificationState: DoryGraphicsVerificationState
+    public var guestDriver: DoryRuntimeGraphicsGuestDriver
+    public var firstShaderCompletedAtUnixMilliseconds: UInt64?
+    public var firstPresentationCompletedAtUnixMilliseconds: UInt64?
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, operationID, resolvedPlanSHA256, planRevision
+        case accelerationLevel, backend, rendererGeneration
+        case rendererWorkerReceiptSHA256, guestProducerFenceProofSHA256
+        case requestedGraphics, admittedGraphics, verificationState, guestDriver
+        case firstShaderCompletedAtUnixMilliseconds
+        case firstPresentationCompletedAtUnixMilliseconds
+    }
 
     public init(
         schemaVersion: UInt16 = Self.currentSchemaVersion,
@@ -57,7 +78,13 @@ public struct DoryRuntimeGraphicsSelection: Codable, Sendable, Equatable, Hashab
         backend: DoryRuntimeGraphicsBackend,
         rendererGeneration: UInt64? = nil,
         rendererWorkerReceiptSHA256: String? = nil,
-        guestProducerFenceProofSHA256: String? = nil
+        guestProducerFenceProofSHA256: String? = nil,
+        requestedGraphics: DoryGraphicsAccelerationLevel? = nil,
+        admittedGraphics: DoryGraphicsAccelerationLevel? = nil,
+        verificationState: DoryGraphicsVerificationState? = nil,
+        guestDriver: DoryRuntimeGraphicsGuestDriver? = nil,
+        firstShaderCompletedAtUnixMilliseconds: UInt64? = nil,
+        firstPresentationCompletedAtUnixMilliseconds: UInt64? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.operationID = operationID
@@ -68,6 +95,94 @@ public struct DoryRuntimeGraphicsSelection: Codable, Sendable, Equatable, Hashab
         self.rendererGeneration = rendererGeneration
         self.rendererWorkerReceiptSHA256 = rendererWorkerReceiptSHA256?.lowercased()
         self.guestProducerFenceProofSHA256 = guestProducerFenceProofSHA256?.lowercased()
+        self.requestedGraphics = requestedGraphics ?? accelerationLevel
+        self.admittedGraphics = admittedGraphics ?? accelerationLevel
+        self.verificationState = verificationState ?? (
+            accelerationLevel == .software ? .notRequired : .verified
+        )
+        self.guestDriver = guestDriver ?? {
+            switch backend {
+            case .software: .software
+            case .virgl: .virgl
+            case .virglVenus: .venus
+            }
+        }()
+        self.firstShaderCompletedAtUnixMilliseconds = firstShaderCompletedAtUnixMilliseconds
+        self.firstPresentationCompletedAtUnixMilliseconds =
+            firstPresentationCompletedAtUnixMilliseconds
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let accelerationLevel = try values.decode(
+            DoryGraphicsAccelerationLevel.self,
+            forKey: .accelerationLevel
+        )
+        let backend = try values.decode(DoryRuntimeGraphicsBackend.self, forKey: .backend)
+        self.init(
+            schemaVersion: try values.decode(UInt16.self, forKey: .schemaVersion),
+            operationID: try values.decode(String.self, forKey: .operationID),
+            resolvedPlanSHA256: try values.decode(String.self, forKey: .resolvedPlanSHA256),
+            planRevision: try values.decode(UInt64.self, forKey: .planRevision),
+            accelerationLevel: accelerationLevel,
+            backend: backend,
+            rendererGeneration: try values.decodeIfPresent(
+                UInt64.self, forKey: .rendererGeneration
+            ),
+            rendererWorkerReceiptSHA256: try values.decodeIfPresent(
+                String.self, forKey: .rendererWorkerReceiptSHA256
+            ),
+            guestProducerFenceProofSHA256: try values.decodeIfPresent(
+                String.self, forKey: .guestProducerFenceProofSHA256
+            ),
+            requestedGraphics: try values.decodeIfPresent(
+                DoryGraphicsAccelerationLevel.self, forKey: .requestedGraphics
+            ),
+            admittedGraphics: try values.decodeIfPresent(
+                DoryGraphicsAccelerationLevel.self, forKey: .admittedGraphics
+            ),
+            verificationState: try values.decodeIfPresent(
+                DoryGraphicsVerificationState.self, forKey: .verificationState
+            ),
+            guestDriver: try values.decodeIfPresent(
+                DoryRuntimeGraphicsGuestDriver.self, forKey: .guestDriver
+            ),
+            firstShaderCompletedAtUnixMilliseconds: try values.decodeIfPresent(
+                UInt64.self, forKey: .firstShaderCompletedAtUnixMilliseconds
+            ),
+            firstPresentationCompletedAtUnixMilliseconds: try values.decodeIfPresent(
+                UInt64.self, forKey: .firstPresentationCompletedAtUnixMilliseconds
+            )
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(schemaVersion, forKey: .schemaVersion)
+        try values.encode(operationID, forKey: .operationID)
+        try values.encode(resolvedPlanSHA256, forKey: .resolvedPlanSHA256)
+        try values.encode(planRevision, forKey: .planRevision)
+        try values.encode(accelerationLevel, forKey: .accelerationLevel)
+        try values.encode(backend, forKey: .backend)
+        try values.encodeIfPresent(rendererGeneration, forKey: .rendererGeneration)
+        try values.encodeIfPresent(
+            rendererWorkerReceiptSHA256, forKey: .rendererWorkerReceiptSHA256
+        )
+        try values.encodeIfPresent(
+            guestProducerFenceProofSHA256, forKey: .guestProducerFenceProofSHA256
+        )
+        try values.encode(requestedGraphics, forKey: .requestedGraphics)
+        try values.encode(admittedGraphics, forKey: .admittedGraphics)
+        try values.encode(verificationState, forKey: .verificationState)
+        try values.encode(guestDriver, forKey: .guestDriver)
+        try values.encodeIfPresent(
+            firstShaderCompletedAtUnixMilliseconds,
+            forKey: .firstShaderCompletedAtUnixMilliseconds
+        )
+        try values.encodeIfPresent(
+            firstPresentationCompletedAtUnixMilliseconds,
+            forKey: .firstPresentationCompletedAtUnixMilliseconds
+        )
     }
 
     public static func resolvedSoftware(
@@ -91,6 +206,34 @@ public struct DoryRuntimeGraphicsSelection: Codable, Sendable, Equatable, Hashab
               planRevision > 0 else {
             return false
         }
+        if let firstShaderCompletedAtUnixMilliseconds,
+           let firstPresentationCompletedAtUnixMilliseconds,
+           firstShaderCompletedAtUnixMilliseconds > firstPresentationCompletedAtUnixMilliseconds {
+            return false
+        }
+        switch verificationState {
+        case .notRequired:
+            guard requestedGraphics == admittedGraphics,
+                  admittedGraphics == accelerationLevel else { return false }
+        case .provisional:
+            guard requestedGraphics == .hardwareAccelerated3D,
+                  admittedGraphics == .hardwareAccelerated3D,
+                  accelerationLevel == .hardwareAccelerated3D,
+                  rendererWorkerReceiptSHA256.map(Self.isLowercaseSHA256) == true,
+                  guestProducerFenceProofSHA256 == nil else { return false }
+        case .verified:
+            guard requestedGraphics == admittedGraphics,
+                  admittedGraphics == accelerationLevel else { return false }
+        case .downgraded:
+            guard requestedGraphics == .hardwareAccelerated3D,
+                  admittedGraphics == .hardwareAccelerated3D,
+                  accelerationLevel == .software,
+                  backend == .software,
+                  guestDriver == .software,
+                  rendererGeneration == nil,
+                  rendererWorkerReceiptSHA256 == nil,
+                  guestProducerFenceProofSHA256 == nil else { return false }
+        }
         switch (accelerationLevel, backend) {
         case (.software, .software):
             return rendererGeneration == nil
@@ -99,9 +242,12 @@ public struct DoryRuntimeGraphicsSelection: Codable, Sendable, Equatable, Hashab
         case (.hostAcceleratedDisplay, .virgl),
              (.hardwareAccelerated3D, .virgl),
              (.hardwareAccelerated3D, .virglVenus):
-            return rendererGeneration.map { $0 > 0 } == true
+            return guestDriver != .software
+                && rendererGeneration.map { $0 > 0 } == true
                 && rendererWorkerReceiptSHA256.map(Self.isLowercaseSHA256) == true
-                && guestProducerFenceProofSHA256.map(Self.isLowercaseSHA256) == true
+                && (verificationState == .provisional
+                    ? guestProducerFenceProofSHA256 == nil
+                    : guestProducerFenceProofSHA256.map(Self.isLowercaseSHA256) == true)
         default:
             return false
         }
@@ -117,7 +263,7 @@ public struct DoryRuntimeGraphicsSelection: Codable, Sendable, Equatable, Hashab
             && operationID == DoryOperationIdentity.canonical(expectedOperationID)
             && resolvedPlanSHA256 == planSHA256
             && planRevision == expectedPlanRevision
-            && accelerationLevel == expectedAccelerationLevel
+            && requestedGraphics == expectedAccelerationLevel
     }
 
     private static func isLowercaseSHA256(_ value: String) -> Bool {

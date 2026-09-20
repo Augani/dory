@@ -132,20 +132,6 @@ require_kernel() {
     exit 1
   }
 }
-require_arm64_linux_kernel() {
-  local path="$1"
-  python3 - "$path" <<'PY'
-import pathlib
-import sys
-
-with pathlib.Path(sys.argv[1]).open("rb") as handle:
-    header = handle.read(64)
-if len(header) < 64 or header[56:60] != b"ARM\x64":
-    raise SystemExit(
-        "error: DORY_RENDERER_MANAGED_KERNEL must be an arm64 Linux kernel Image"
-    )
-PY
-}
 require_pc_linux_kernel() {
   local path="$1"
   [ "$(basename "$path")" = vmlinux-x86-pc-virgl2 ] || {
@@ -196,11 +182,6 @@ require_pc_mesa_runtime() {
       exit 1
     }
 }
-
-MANAGED_KERNEL_SHA256="${DORY_RENDERER_MANAGED_KERNEL_SHA256:-}"
-MANAGED_KERNEL="${DORY_RENDERER_MANAGED_KERNEL:-}"
-require_kernel "$MANAGED_KERNEL" "$MANAGED_KERNEL_SHA256" "DORY_RENDERER_MANAGED_KERNEL"
-require_arm64_linux_kernel "$MANAGED_KERNEL"
 
 PC_MANAGED_KERNEL_SHA256="${DORY_RENDERER_PC_MANAGED_KERNEL_SHA256:-}"
 PC_MANAGED_KERNEL="${DORY_RENDERER_PC_MANAGED_KERNEL:-}"
@@ -322,8 +303,8 @@ STAGED_PC_RECEIPT="$QUALIFICATION_SCRATCH/renderer-bootstrap-qualification-pc-x8
 STAGED_PC_SIGNATURE="$QUALIFICATION_SCRATCH/renderer-bootstrap-qualification-pc-x86_64-virgl2.json.sig"
 rm -f "$STAGED_RECEIPT" "$STAGED_SIGNATURE" "$STAGED_PC_RECEIPT" "$STAGED_PC_SIGNATURE"
 "$RUNNER_APP/Contents/MacOS/dory-hv" renderer-qualify \
+  --producer-fence-contract stock-linux-6.13-runtime-verified \
   --inventory "$RUNNER_APP/Contents/Resources/renderer-production-inventory.json" \
-  --managed-kernel-sha256 "$MANAGED_KERNEL_SHA256" \
   --issued-at "$ISSUED_AT" \
   --expires-at "$EXPIRES_AT" \
   --output "$STAGED_RECEIPT"
@@ -406,7 +387,6 @@ if [ "$PC_QUALIFICATION_ENABLED" = 1 ]; then
 fi
 python3 "$ROOT/scripts/package-renderer-production-bundle.py" seal-evidence \
   --runner-app "$RUNNER_APP_CANONICAL" \
-  --managed-kernel "$MANAGED_KERNEL" \
   --expected-team "$EXPECTED_TEAM" \
   "${PC_EVIDENCE_ARGUMENTS[@]+"${PC_EVIDENCE_ARGUMENTS[@]}"}" \
   "${ADHOC_ARGUMENTS[@]+"${ADHOC_ARGUMENTS[@]}"}" \
@@ -428,7 +408,6 @@ python3 "$ROOT/scripts/package-renderer-production-bundle.py" seal-evidence \
 /usr/bin/codesign --verify --strict --deep "$RUNNER_APP"
 python3 "$ROOT/scripts/package-renderer-production-bundle.py" verify \
   --runner-app "$RUNNER_APP" \
-  --managed-kernel "$MANAGED_KERNEL" \
   --expected-team "$EXPECTED_TEAM" \
   "${PC_EVIDENCE_ARGUMENTS[@]+"${PC_EVIDENCE_ARGUMENTS[@]}"}" \
   "${ADHOC_ARGUMENTS[@]+"${ADHOC_ARGUMENTS[@]}"}" \

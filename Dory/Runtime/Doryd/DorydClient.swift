@@ -776,22 +776,70 @@ nonisolated struct DorydMachineRuntimeGraphicsSelection: Sendable, Equatable, Ha
     var rendererGeneration: UInt64?
     var rendererWorkerReceiptSHA256: String?
     var guestProducerFenceProofSHA256: String?
+    var requestedGraphics: String
+    var admittedGraphics: String
+    var verificationState: String
+    var downgradeReason: String?
+    var downgradeMessage: String?
+    var guestDriver: String
+    var firstShaderCompletedAtUnixMilliseconds: UInt64?
+    var firstPresentationCompletedAtUnixMilliseconds: UInt64?
 
     var isValid: Bool {
         guard schemaVersion == Self.currentSchemaVersion,
               operationID.isCanonicalLowercaseUUID,
               resolvedPlanSHA256.isLowercaseSHA256,
               planRevision > 0 else { return false }
+        if let firstShaderCompletedAtUnixMilliseconds,
+           let firstPresentationCompletedAtUnixMilliseconds,
+           firstShaderCompletedAtUnixMilliseconds > firstPresentationCompletedAtUnixMilliseconds {
+            return false
+        }
+        switch verificationState {
+        case "not-required":
+            guard requestedGraphics == admittedGraphics,
+                  admittedGraphics == accelerationLevel,
+                  downgradeReason == nil,
+                  downgradeMessage == nil else { return false }
+        case "provisional":
+            guard requestedGraphics == "hardware-accelerated-3d",
+                  admittedGraphics == "hardware-accelerated-3d",
+                  accelerationLevel == "hardware-accelerated-3d",
+                  guestProducerFenceProofSHA256 == nil,
+                  downgradeReason == nil,
+                  downgradeMessage == nil else { return false }
+        case "verified":
+            guard requestedGraphics == admittedGraphics,
+                  admittedGraphics == accelerationLevel,
+                  downgradeReason == nil,
+                  downgradeMessage == nil else { return false }
+        case "downgraded":
+            guard requestedGraphics == "hardware-accelerated-3d",
+                  admittedGraphics == "hardware-accelerated-3d",
+                  accelerationLevel == "software",
+                  backend == "software",
+                  guestDriver == "software",
+                  downgradeReason?.isEmpty == false,
+                  downgradeMessage?.isEmpty == false,
+                  rendererGeneration == nil,
+                  rendererWorkerReceiptSHA256 == nil,
+                  guestProducerFenceProofSHA256 == nil else { return false }
+        default:
+            return false
+        }
         switch (accelerationLevel, backend) {
         case ("software", "software"):
             return rendererGeneration == nil
                 && rendererWorkerReceiptSHA256 == nil
                 && guestProducerFenceProofSHA256 == nil
         case ("host-accelerated-display", "virgl"),
+             ("hardware-accelerated-3d", "virgl"),
              ("hardware-accelerated-3d", "virgl-venus"):
             return rendererGeneration.map { $0 > 0 } == true
                 && rendererWorkerReceiptSHA256?.isLowercaseSHA256 == true
-                && guestProducerFenceProofSHA256?.isLowercaseSHA256 == true
+                && (verificationState == "provisional"
+                    ? guestProducerFenceProofSHA256 == nil
+                    : guestProducerFenceProofSHA256?.isLowercaseSHA256 == true)
         default:
             return false
         }
@@ -4114,13 +4162,21 @@ nonisolated final class DorydClient: @unchecked Sendable {
                   "schemaVersion", "operationID", "resolvedPlanSHA256", "planRevision",
                   "accelerationLevel", "backend", "rendererGeneration",
                   "rendererWorkerReceiptSHA256", "guestProducerFenceProofSHA256",
+                  "requestedGraphics", "admittedGraphics", "verificationState",
+                  "downgradeReason", "downgradeMessage", "guestDriver",
+                  "firstShaderCompletedAtUnixMilliseconds",
+                  "firstPresentationCompletedAtUnixMilliseconds",
               ]),
               let schemaVersion = uint16(dictionary["schemaVersion"]),
               let operationID = dictionary["operationID"] as? String,
               let resolvedPlanSHA256 = dictionary["resolvedPlanSHA256"] as? String,
               let planRevision = strictUInt64(dictionary["planRevision"]),
               let accelerationLevel = dictionary["accelerationLevel"] as? String,
-              let backend = dictionary["backend"] as? String else {
+              let backend = dictionary["backend"] as? String,
+              let requestedGraphics = dictionary["requestedGraphics"] as? String,
+              let admittedGraphics = dictionary["admittedGraphics"] as? String,
+              let verificationState = dictionary["verificationState"] as? String,
+              let guestDriver = dictionary["guestDriver"] as? String else {
             return nil
         }
         let selection = DorydMachineRuntimeGraphicsSelection(
@@ -4134,7 +4190,17 @@ nonisolated final class DorydClient: @unchecked Sendable {
             rendererWorkerReceiptSHA256:
                 dictionary["rendererWorkerReceiptSHA256"] as? String,
             guestProducerFenceProofSHA256:
-                dictionary["guestProducerFenceProofSHA256"] as? String
+                dictionary["guestProducerFenceProofSHA256"] as? String,
+            requestedGraphics: requestedGraphics,
+            admittedGraphics: admittedGraphics,
+            verificationState: verificationState,
+            downgradeReason: dictionary["downgradeReason"] as? String,
+            downgradeMessage: dictionary["downgradeMessage"] as? String,
+            guestDriver: guestDriver,
+            firstShaderCompletedAtUnixMilliseconds:
+                dictionary["firstShaderCompletedAtUnixMilliseconds"].flatMap(strictUInt64),
+            firstPresentationCompletedAtUnixMilliseconds:
+                dictionary["firstPresentationCompletedAtUnixMilliseconds"].flatMap(strictUInt64)
         )
         guard selection.isValid else { return nil }
         switch runtimeIdentity.mode {
@@ -4145,7 +4211,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
                     == DoryVirtualizationBackendIdentity.doryHypervisor.rawValue,
                   selection.resolvedPlanSHA256 == runtimeIdentity.planSHA256,
                   selection.planRevision == runtimeIdentity.planRevision,
-                  selection.accelerationLevel == runtimeIdentity.graphics else {
+                  selection.requestedGraphics == runtimeIdentity.graphics else {
                 return nil
             }
         default:

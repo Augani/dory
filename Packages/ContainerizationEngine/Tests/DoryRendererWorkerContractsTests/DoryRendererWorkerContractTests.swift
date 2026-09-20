@@ -12,7 +12,7 @@ import Testing
         #expect(!DoryRendererSharedMemoryDescriptorPolicy.accepts(mode: S_IFIFO | 0o600))
     }
 
-    @Test func bootstrapV4IsCanonicalAndPinsArenaAuthorityAndStaticTuple() throws {
+    @Test func bootstrapV5IsCanonicalAndPinsArenaAuthorityAndStaticTuple() throws {
         #expect(
             DoryRendererSourceTuple.virglrendererRevision
                 == "65cc14eb896f121ffc5130ce04815a923a03c41d"
@@ -30,7 +30,7 @@ import Testing
         let encoded = DoryRendererWorkerBootstrapCodec.encode(bootstrap)
         #expect(DoryRendererWorkerBootstrapCodec.fixedByteCount == 236)
         #expect(encoded.count == DoryRendererWorkerBootstrapCodec.fixedByteCount)
-        #expect(Data(encoded[0..<4]) == Data("DRB4".utf8))
+        #expect(Data(encoded[0..<4]) == Data("DRB5".utf8))
         #expect(Data(encoded[172..<192])
             == bootstrap.artifacts.rendererWorkerCodeDirectoryHash.bytes)
         #expect(try DoryRendererWorkerBootstrapCodec.decode(encoded) == bootstrap)
@@ -67,6 +67,44 @@ import Testing
         )) {
             _ = try DoryRendererWorkerBootstrapCodec.decode(zeroCodeDirectoryHash)
         }
+    }
+
+    @Test func stockLinuxBootstrapRoundTripsAndRequiresDualCapsetArena() throws {
+        let bootstrap = try makeBootstrap(
+            producerFenceContract: .stockLinux613RuntimeVerifiedV1,
+            requestedCapabilities: .productionAcceleration,
+            guestMesa: try DoryRendererArtifactDigest(
+                lowercaseSHA256: DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256,
+                field: "guestMesa"
+            ),
+            hostVisibleArenaByteCount:
+                DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
+        )
+        let decoded = try DoryRendererWorkerBootstrapCodec.decode(
+            DoryRendererWorkerBootstrapCodec.encode(bootstrap)
+        )
+        #expect(decoded == bootstrap)
+        #expect(decoded.producerFenceContract == .stockLinux613RuntimeVerifiedV1)
+        #expect(decoded.artifacts.managedGuestKernel == nil)
+        #expect(decoded.requestedCapabilities == .productionAcceleration)
+        #expect(decoded.hostVisibleArenaByteCount >=
+            DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount)
+
+        let virgl2 = try capset(id: 2, seed: 20)
+        let venus = try capset(id: 4, seed: 40)
+        let complete = try DoryRendererCapabilityReceipt(
+            accepting: decoded,
+            features: .productionAcceleration,
+            capsets: [virgl2, venus]
+        )
+        #expect(complete.isAdmissible(for: decoded))
+
+        let missingVenus = try DoryRendererCapabilityReceipt(
+            accepting: decoded,
+            features: .productionAcceleration,
+            capsets: [virgl2]
+        )
+        #expect(!missingVenus.isAdmissible(for: decoded))
     }
 
     @Test func commandRoundTripOwnsBoundedDescriptorRegions() throws {
@@ -777,7 +815,8 @@ import Testing
             requestedCapabilities: requestedCapabilities,
             artifacts: DoryRendererArtifactManifest(
                 candidateInventory: digest(1),
-                managedGuestKernel: digest(2),
+                managedGuestKernel: producerFenceContract
+                    == .stockLinux613RuntimeVerifiedV1 ? nil : digest(2),
                 guestMesa: guestMesa ?? digest(3),
                 rendererWorkerExecutable: digest(4),
                 rendererWorkerCodeDirectoryHash: try codeDirectoryHash(5)

@@ -100,7 +100,7 @@ enum RendererBootstrapQualificationCommand {
     struct Options {
         let profile: Profile
         let inventoryPath: String
-        let managedKernelSHA256: String
+        let managedKernelSHA256: String?
         let guestMesaSHA256: String?
         let issuedAt: Date
         let expiresAt: Date
@@ -205,15 +205,14 @@ enum RendererBootstrapQualificationCommand {
             requirement: DoryRendererWorkerIdentity.workerCodeSigningRequirement,
             checkNestedCode: false
         )
-        let managedKernel: DoryRendererArtifactDigest
+        let managedKernel: DoryRendererArtifactDigest?
         do {
-            managedKernel = try DoryRendererArtifactDigest(
-                lowercaseSHA256: options.profile == .stockLinux613
-                    ? DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256
-                    : options.managedKernelSHA256,
-                field: options.profile == .stockLinux613
-                    ? "stockGuestKernelUnbound" : "managedGuestKernel"
-            )
+            managedKernel = try options.managedKernelSHA256.map {
+                try DoryRendererArtifactDigest(
+                    lowercaseSHA256: $0,
+                    field: "managedGuestKernel"
+                )
+            }
         } catch {
             throw RendererBootstrapQualificationCommandError.invalidKernelDigest
         }
@@ -249,7 +248,7 @@ enum RendererBootstrapQualificationCommand {
     static func makeBootstrap(
         profile: Profile,
         candidateInventory: DoryRendererArtifactDigest,
-        managedKernel: DoryRendererArtifactDigest,
+        managedKernel: DoryRendererArtifactDigest?,
         guestMesa: DoryRendererArtifactDigest,
         rendererWorkerExecutable: DoryRendererArtifactDigest,
         rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash
@@ -329,8 +328,7 @@ enum RendererBootstrapQualificationCommand {
         return Options(
             profile: profile,
             inventoryPath: inventory,
-            managedKernelSHA256: values["--managed-kernel-sha256"]
-                ?? DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256,
+            managedKernelSHA256: values["--managed-kernel-sha256"],
             guestMesaSHA256: values["--guest-mesa-sha256"],
             issuedAt: issued,
             expiresAt: expires,

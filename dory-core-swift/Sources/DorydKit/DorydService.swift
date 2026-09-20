@@ -3177,7 +3177,22 @@ private extension DoryRuntimeGraphicsSelection {
             "planRevision": planRevision,
             "accelerationLevel": accelerationLevel.rawValue,
             "backend": backend.rawValue,
+            "requestedGraphics": requestedGraphics.rawValue,
+            "admittedGraphics": admittedGraphics.rawValue,
+            "guestDriver": guestDriver.rawValue,
         ]
+        switch verificationState {
+        case .notRequired:
+            dictionary["verificationState"] = "not-required"
+        case .provisional:
+            dictionary["verificationState"] = "provisional"
+        case .verified:
+            dictionary["verificationState"] = "verified"
+        case .downgraded(let reason):
+            dictionary["verificationState"] = "downgraded"
+            dictionary["downgradeReason"] = reason.rawValue
+            dictionary["downgradeMessage"] = reason.userMessage
+        }
         if let rendererGeneration {
             dictionary["rendererGeneration"] = rendererGeneration
         }
@@ -3186,6 +3201,14 @@ private extension DoryRuntimeGraphicsSelection {
         }
         if let guestProducerFenceProofSHA256 {
             dictionary["guestProducerFenceProofSHA256"] = guestProducerFenceProofSHA256
+        }
+        if let firstShaderCompletedAtUnixMilliseconds {
+            dictionary["firstShaderCompletedAtUnixMilliseconds"] =
+                firstShaderCompletedAtUnixMilliseconds
+        }
+        if let firstPresentationCompletedAtUnixMilliseconds {
+            dictionary["firstPresentationCompletedAtUnixMilliseconds"] =
+                firstPresentationCompletedAtUnixMilliseconds
         }
         return dictionary as NSDictionary
     }

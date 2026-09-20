@@ -544,10 +544,22 @@ public enum DoryVirtualMachineQualificationAuthorityResolver {
             && hardware3DQualificationIsStructurallyValid(record)
     }
 
-    private static func hardware3DQualificationIsStructurallyValid(
+    static func hardware3DQualificationIsStructurallyValid(
         _ record: DoryVirtualMachineQualificationRecord
     ) -> Bool {
         guard record.graphics == .hardwareAccelerated3D else { return true }
+        if record.guest == DoryGuestPlatform(family: .linux, architecture: .arm64),
+           record.backend == .doryHypervisor {
+            // Stock guests are never authorized by a Dory-built kernel or Mesa digest. Their
+            // Venus compatibility and prepare-fb ordering are established by the live worker
+            // generation, so a signed catalog record may describe the host/runtime cell but must
+            // not smuggle the retired managed-guest authority back into admission.
+            return record.rendererGuestKernelSHA256 == nil
+                && record.rendererGuestMesaSHA256 == nil
+                && (record.rendererProducerFenceContract == nil
+                    || record.rendererProducerFenceContract
+                        == .stockLinux613RuntimeVerifiedV1)
+        }
         guard record.virtioGPUKernelAndDeviceSupportQualified,
               record.producerFenceBeforeFlushQualified == true else {
             return false

@@ -145,6 +145,81 @@ final class VmmHandoffTests: XCTestCase {
         XCTAssertTrue(pcVirGL2.isValid)
     }
 
+    func testStockGraphicsSelectionSurfacesProvisionalVerifiedAndDowngradedStates() throws {
+        let operationID = UUID().uuidString.lowercased()
+        let planSHA256 = String(repeating: "a", count: 64)
+        let rendererReceipt = String(repeating: "b", count: 64)
+        let fenceProof = String(repeating: "c", count: 64)
+        let provisional = DoryRuntimeGraphicsSelection(
+            operationID: operationID,
+            resolvedPlanSHA256: planSHA256,
+            planRevision: 1,
+            accelerationLevel: .hardwareAccelerated3D,
+            backend: .virglVenus,
+            rendererGeneration: 1,
+            rendererWorkerReceiptSHA256: rendererReceipt,
+            requestedGraphics: .hardwareAccelerated3D,
+            admittedGraphics: .hardwareAccelerated3D,
+            verificationState: .provisional,
+            guestDriver: .venus
+        )
+        XCTAssertTrue(provisional.isValid)
+        XCTAssertNil(provisional.guestProducerFenceProofSHA256)
+
+        var verified = provisional
+        verified.verificationState = .verified
+        verified.guestProducerFenceProofSHA256 = fenceProof
+        verified.firstShaderCompletedAtUnixMilliseconds = 10
+        verified.firstPresentationCompletedAtUnixMilliseconds = 11
+        XCTAssertTrue(verified.isValid)
+
+        let downgraded = DoryRuntimeGraphicsSelection(
+            operationID: operationID,
+            resolvedPlanSHA256: planSHA256,
+            planRevision: 1,
+            accelerationLevel: .software,
+            backend: .software,
+            requestedGraphics: .hardwareAccelerated3D,
+            admittedGraphics: .hardwareAccelerated3D,
+            verificationState: .downgraded(.guestKernelLacksPrepareFB),
+            guestDriver: .software
+        )
+        XCTAssertTrue(downgraded.isValid)
+        XCTAssertTrue(downgraded.matchesResolvedRawHVLaunch(
+            operationID: UUID(uuidString: operationID)!,
+            planSHA256: planSHA256,
+            planRevision: 1,
+            accelerationLevel: .hardwareAccelerated3D
+        ))
+
+        let roundTrip = try JSONDecoder().decode(
+            DoryRuntimeGraphicsSelection.self,
+            from: JSONEncoder().encode(downgraded)
+        )
+        XCTAssertEqual(roundTrip, downgraded)
+    }
+
+    func testLegacyGraphicsSelectionDecodesWithTruthfulDefaults() throws {
+        let operationID = UUID().uuidString.lowercased()
+        let legacy: [String: Any] = [
+            "schemaVersion": 1,
+            "operationID": operationID,
+            "resolvedPlanSHA256": String(repeating: "a", count: 64),
+            "planRevision": 1,
+            "accelerationLevel": DoryGraphicsAccelerationLevel.software.rawValue,
+            "backend": DoryRuntimeGraphicsBackend.software.rawValue,
+        ]
+        let decoded = try JSONDecoder().decode(
+            DoryRuntimeGraphicsSelection.self,
+            from: JSONSerialization.data(withJSONObject: legacy)
+        )
+        XCTAssertEqual(decoded.requestedGraphics, .software)
+        XCTAssertEqual(decoded.admittedGraphics, .software)
+        XCTAssertEqual(decoded.verificationState, .notRequired)
+        XCTAssertEqual(decoded.guestDriver, .software)
+        XCTAssertTrue(decoded.isValid)
+    }
+
     func testReceivesReadyMessageAndFileDescriptor() throws {
         let base = "/tmp/dory-vmm-handoff-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)

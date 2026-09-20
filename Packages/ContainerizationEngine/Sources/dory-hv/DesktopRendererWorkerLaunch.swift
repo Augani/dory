@@ -278,7 +278,8 @@ final class DesktopRendererWorkerLaunch: @unchecked Sendable {
             throw DesktopRendererWorkerLaunchError.bootstrapQualificationMismatch
         }
         if let exactManagedKernelSHA256 {
-            guard hexadecimal(bootstrap.artifacts.managedGuestKernel.bytes)
+            guard let managedGuestKernel = bootstrap.artifacts.managedGuestKernel,
+                  hexadecimal(managedGuestKernel.bytes)
                     == exactManagedKernelSHA256 else {
                 throw DesktopRendererWorkerLaunchError.managedKernelDigestMismatch
             }
@@ -395,7 +396,10 @@ final class DesktopRendererWorkerLaunch: @unchecked Sendable {
         var contract = bootstrap.producerFenceContract.rawValue.littleEndian
         withUnsafeBytes(of: &contract) { authority.append(contentsOf: $0) }
         if bootstrap.producerFenceContract == .managedLinux612106PrepareFBV1 {
-            authority.append(bootstrap.artifacts.managedGuestKernel.bytes)
+            guard let managedGuestKernel = bootstrap.artifacts.managedGuestKernel else {
+                preconditionFailure("managed producer-fence contract has no kernel authority")
+            }
+            authority.append(managedGuestKernel.bytes)
         }
         return sha256(authority)
     }

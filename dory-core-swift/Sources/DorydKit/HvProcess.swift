@@ -576,6 +576,9 @@ public final class HvProcess: @unchecked Sendable {
 
     #if DEBUG
     var launchArguments: [String] { configuration.arguments }
+    var inheritedFileDescriptorsForTesting: [HvProcessInheritedFileDescriptor] {
+        configuration.inheritedFileDescriptors
+    }
     #endif
     private var restartCount = 0
     private var restartPending = false

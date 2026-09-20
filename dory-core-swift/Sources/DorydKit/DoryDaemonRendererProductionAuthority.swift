@@ -73,7 +73,7 @@ struct DoryDaemonRendererAccelerationAdmission: Sendable, Equatable {
     }
 
     func artifactManifest(
-        managedGuestKernel: DoryRendererArtifactDigest,
+        managedGuestKernel: DoryRendererArtifactDigest?,
         rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash
     ) -> DoryRendererArtifactManifest {
         DoryRendererArtifactManifest(

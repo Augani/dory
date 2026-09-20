@@ -651,6 +651,65 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("resolved ARM hardware-3D launch emits a stock-only renderer bootstrap")
+    func resolvedARMHardware3DLaunchEmitsStockRendererBootstrap() throws {
+        try withHarness(
+            "stock-arm-renderer-bootstrap",
+            admittedDesktopFixture: true,
+            guestArchitecture: .arm64,
+            initialEnvironment: [
+                DoryDesktopVMMPreference.environmentKey:
+                    DoryDesktopVMMPreference.accelerated.rawValue,
+                DoryDesktopGraphicsPreference.environmentKey:
+                    DoryDesktopGraphicsPreference.virglVenus.rawValue,
+            ]
+        ) { manager, starter, _ in
+            let plans = MutablePlanStore()
+            let operations = manager.resolvedLaunchCompatibilityOperations(
+                for: .doryHypervisor
+            )
+            let registry = try rawRegistry(operations: operations)
+            let rendererReleaseIdentity = try rendererReleaseIdentityFixture()
+            manager.installLaunchGatedChildCodeValidatorForTesting(
+                AcceptingLaunchGatedChildCodeValidator()
+            )
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(
+                    request: request,
+                    rendererReleaseIdentity: rendererReleaseIdentity,
+                    graphics: .hardwareAccelerated3D
+                )
+                plans.set(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: registry,
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+
+            let status = try manager.start(id: "dev")
+            #expect(status.state == .running)
+            #expect(starter.count == 1)
+            let plan = try plans.read(id: "dev")
+            #expect(plan.graphics == .hardwareAccelerated3D)
+            #expect(plan.qualificationEvidence.graphics == nil)
+            #expect(plan.qualificationEvidence.runtime != nil)
+            #expect(starter.lastArguments?.contains("--runtime-launch-envelope") == true)
+
+            let encoded = try #require(starter.lastRendererBootstrap)
+            let bootstrap = try DoryRendererWorkerBootstrapCodec.decode(encoded)
+            #expect(bootstrap.producerFenceContract == .stockLinux613RuntimeVerifiedV1)
+            #expect(bootstrap.requestedCapabilities == .productionAcceleration)
+            #expect(bootstrap.artifacts.managedGuestKernel == nil)
+            #expect(
+                bootstrap.artifacts.guestMesa.lowercaseSHA256
+                    == DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256
+            )
+        }
+    }
+
     @Test("resolved USB control rejects attach without desired-state authority")
     func resolvedUSBControlRejectsMissingAuthorization() throws {
         let usb = ResolvedPlanRecordingUSBController()
@@ -3861,20 +3920,31 @@ struct MachineManagerResolvedPlanIntegrationTests {
         let runtime = graphics == .hardwareAccelerated3D
             ? "sha256:\(launcherSHA256)"
             : "raw-runtime-1"
-        let pcRendererQualification = graphics == .hardwareAccelerated3D
-            ? try pcRendererQualificationOverride ?? pcVirGL2RendererQualificationFixture()
-            : nil
+        let isPCVirGL2 = graphics == .hardwareAccelerated3D
+            && request.definition.guest.architecture == .x86_64
+        let isStockARMHardware3D = graphics == .hardwareAccelerated3D
+            && request.definition.guest
+                == DoryGuestPlatform(family: .linux, architecture: .arm64)
+        let rendererQualification: DoryVerifiedRendererBootstrapQualification?
+        if isPCVirGL2 {
+            rendererQualification = try pcRendererQualificationOverride
+                ?? pcVirGL2RendererQualificationFixture()
+        } else if isStockARMHardware3D {
+            rendererQualification = try stockRendererQualificationFixture()
+        } else {
+            rendererQualification = nil
+        }
         let rendererAdmissionComponents: [DoryResolvedBackendComponentEvidence]
-        if let pcRendererQualification {
+        if let rendererQualification {
             let admission = try DoryDaemonRendererAccelerationAdmission(
                 runtimeBuildIdentifier: runtime,
-                candidateInventory: pcRendererQualification.candidateInventorySHA256,
+                candidateInventory: rendererQualification.candidateInventorySHA256,
                 guestMesa: DoryRendererArtifactDigest(
                     lowercaseSHA256: DoryRendererSourceTuple.guestMesaRuntimeSHA256,
                     field: "guestMesa"
                 ),
-                rendererWorkerExecutable: pcRendererQualification.workerExecutableSHA256,
-                bootstrapQualification: pcRendererQualification.receiptSHA256
+                rendererWorkerExecutable: rendererQualification.workerExecutableSHA256,
+                bootstrapQualification: rendererQualification.receiptSHA256
             )
             rendererAdmissionComponents = admission.qualifiedComponents.map {
                 DoryResolvedBackendComponentEvidence(
@@ -3893,16 +3963,19 @@ struct MachineManagerResolvedPlanIntegrationTests {
         )]).sorted { lhs, rhs in
             lhs.componentIdentifier < rhs.componentIdentifier
         }
-        let graphicsEvidence = DorySignedArtifactQualificationEvidence(
-            manifestIdentity: "graphics-qualification-1",
-            artifactSHA256: artifact,
-            manifestSHA256: digest("b"),
-            signingKeyID: "dory-release-1",
-            manifestFormatVersion: 1,
-            rendererGuestKernelSHA256: pcRendererQualification?.managedGuestKernelSHA256.lowercaseSHA256,
-            rendererGuestMesaSHA256: pcRendererQualification?.guestMesaSHA256.lowercaseSHA256,
-            rendererProducerFenceContract: pcRendererQualification?.producerFenceContract
-        )
+        let graphicsEvidence = isStockARMHardware3D ? nil
+            : DorySignedArtifactQualificationEvidence(
+                manifestIdentity: "graphics-qualification-1",
+                artifactSHA256: artifact,
+                manifestSHA256: digest("b"),
+                signingKeyID: "dory-release-1",
+                manifestFormatVersion: 1,
+                rendererGuestKernelSHA256:
+                    rendererQualification?.managedGuestKernelSHA256.lowercaseSHA256,
+                rendererGuestMesaSHA256:
+                    rendererQualification?.guestMesaSHA256.lowercaseSHA256,
+                rendererProducerFenceContract: rendererQualification?.producerFenceContract
+            )
         let plan = DoryResolvedMachinePlan(
             machineID: request.machine.id,
             definitionRevision: request.definition.lifecycle.revision,
@@ -4345,6 +4418,59 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    private func stockRendererQualificationFixture() throws
+        -> DoryVerifiedRendererBootstrapQualification
+    {
+        let now = Date(timeIntervalSince1970: 1_788_048_000)
+        let bootstrap = try DoryRendererWorkerBootstrap(
+            workspaceID: DoryRendererWorkspaceID(
+                rawValue: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+            ),
+            generation: DoryRendererWorkerGeneration(rawValue: 7),
+            sourceTuple: .productionCandidate,
+            producerFenceContract: .stockLinux613RuntimeVerifiedV1,
+            requestedCapabilities: .productionAcceleration,
+            artifacts: DoryRendererArtifactManifest(
+                candidateInventory: try rendererDigest("1"),
+                managedGuestKernel: nil,
+                guestMesa: try DoryRendererArtifactDigest(
+                    lowercaseSHA256: DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256
+                ),
+                rendererWorkerExecutable: try rendererDigest("2"),
+                rendererWorkerCodeDirectoryHash: try DoryCodeDirectoryHash(
+                    lowercaseHexadecimal: String(repeating: "ab", count: 20)
+                )
+            )
+        )
+        let liveReceipt = try DoryRendererCapabilityReceipt(
+            accepting: bootstrap,
+            features: .productionAcceleration,
+            capsets: [
+                try DoryRendererCapsetAttestation(
+                    id: 2,
+                    maximumVersion: 2,
+                    data: Data("stock-virgl2-capset".utf8)
+                ),
+                try DoryRendererCapsetAttestation(
+                    id: 4,
+                    maximumVersion: 0,
+                    data: Data("stock-venus-capset".utf8)
+                ),
+            ]
+        )
+        let receipt = try DoryVerifiedRendererBootstrapQualification.makeCandidateReceipt(
+            bootstrap: bootstrap,
+            liveReceipt: liveReceipt,
+            issuedAt: now.addingTimeInterval(-60),
+            expiresAt: now.addingTimeInterval(24 * 60 * 60)
+        )
+        return try DoryVerifiedRendererBootstrapQualification
+            .decodeDeveloperIDSignedCandidateForTesting(
+                receiptData: receipt,
+                now: now
+            )
+    }
+
     private func pcVirGL2RendererQualificationFixture() throws
         -> DoryVerifiedRendererBootstrapQualification
     {
@@ -4585,6 +4711,7 @@ private final class CountingProcessStarter: @unchecked Sendable {
     private let lock = NSLock()
     private var starts = 0
     private var arguments: [[String]] = []
+    private var rendererBootstraps: [Data] = []
     private let startImplementation: Start
 
     init(startImplementation: @escaping Start = { process in try process.start() }) {
@@ -4593,11 +4720,31 @@ private final class CountingProcessStarter: @unchecked Sendable {
 
     var count: Int { lock.withLock { starts } }
     var lastArguments: [String]? { lock.withLock { arguments.last } }
+    var lastRendererBootstrap: Data? { lock.withLock { rendererBootstraps.last } }
 
     func start(_ process: HvProcess) throws {
+        let rendererBootstrap = try process.inheritedFileDescriptorsForTesting
+            .first { $0.name == RuntimeLaunchEnvelope.rendererBootstrapSlotName }?
+            .withBorrowedDescriptor { descriptor in
+                guard lseek(descriptor, 0, SEEK_SET) >= 0 else {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                var output = Data()
+                var buffer = [UInt8](repeating: 0, count: 512)
+                while true {
+                    let count = Darwin.read(descriptor, &buffer, buffer.count)
+                    if count == 0 { break }
+                    guard count > 0 else {
+                        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                    }
+                    output.append(contentsOf: buffer.prefix(count))
+                }
+                return output
+            }
         lock.withLock {
             starts += 1
             arguments.append(process.launchArguments)
+            if let rendererBootstrap { rendererBootstraps.append(rendererBootstrap) }
         }
         try startImplementation(process)
     }

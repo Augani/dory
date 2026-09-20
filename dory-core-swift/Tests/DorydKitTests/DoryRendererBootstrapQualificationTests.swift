@@ -92,7 +92,6 @@ struct DoryRendererBootstrapQualificationTests {
         )
         let qualification = try DoryVerifiedRendererBootstrapQualification
             .decodeDeveloperIDSignedCandidate(receiptData: bytes, now: fixture.now)
-
         #expect(!qualification.releaseSignatureVerified)
         #expect(qualification.managedGuestKernelSHA256 == bootstrap.artifacts.managedGuestKernel)
         #expect(qualification.authorizes(bootstrap: bootstrap, liveReceipt: liveReceipt))
@@ -131,7 +130,7 @@ struct DoryRendererBootstrapQualificationTests {
             requestedCapabilities: .productionAcceleration,
             artifacts: DoryRendererArtifactManifest(
                 candidateInventory: try fixture.digest("1"),
-                managedGuestKernel: try fixture.digest("7"),
+                managedGuestKernel: nil,
                 guestMesa: try fixture.digest("8"),
                 rendererWorkerExecutable: try fixture.digest("2"),
                 rendererWorkerCodeDirectoryHash: try DoryCodeDirectoryHash(
@@ -152,6 +151,7 @@ struct DoryRendererBootstrapQualificationTests {
         )
         let qualification = try DoryVerifiedRendererBootstrapQualification
             .decodeDeveloperIDSignedCandidate(receiptData: bytes, now: fixture.now)
+        #expect(qualificationBootstrap.artifacts.managedGuestKernel == nil)
 
         let liveBootstrap = try DoryRendererWorkerBootstrap(
             workspaceID: qualificationBootstrap.workspaceID,
@@ -161,7 +161,7 @@ struct DoryRendererBootstrapQualificationTests {
             requestedCapabilities: .productionAcceleration,
             artifacts: DoryRendererArtifactManifest(
                 candidateInventory: qualificationBootstrap.artifacts.candidateInventory,
-                managedGuestKernel: try fixture.digest("9"),
+                managedGuestKernel: nil,
                 guestMesa: try fixture.digest("a"),
                 rendererWorkerExecutable:
                     qualificationBootstrap.artifacts.rendererWorkerExecutable,

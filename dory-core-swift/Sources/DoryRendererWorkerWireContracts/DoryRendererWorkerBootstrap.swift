@@ -4,14 +4,14 @@ import Foundation
 /// bind the exact built bytes that are allowed to participate in one renderer generation.
 public struct DoryRendererArtifactManifest: Equatable, Sendable {
     public let candidateInventory: DoryRendererArtifactDigest
-    public let managedGuestKernel: DoryRendererArtifactDigest
+    public let managedGuestKernel: DoryRendererArtifactDigest?
     public let guestMesa: DoryRendererArtifactDigest
     public let rendererWorkerExecutable: DoryRendererArtifactDigest
     public let rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash
 
     public init(
         candidateInventory: DoryRendererArtifactDigest,
-        managedGuestKernel: DoryRendererArtifactDigest,
+        managedGuestKernel: DoryRendererArtifactDigest?,
         guestMesa: DoryRendererArtifactDigest,
         rendererWorkerExecutable: DoryRendererArtifactDigest,
         rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash
@@ -67,12 +67,19 @@ public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
             )
         }
         switch producerFenceContract {
-        case .managedLinux612106PrepareFBV1, .stockLinux613RuntimeVerifiedV1:
-            guard requestedCapabilities == .productionAcceleration else {
+        case .managedLinux612106PrepareFBV1:
+            guard artifacts.managedGuestKernel != nil,
+                  requestedCapabilities == .productionAcceleration else {
+                throw DoryRendererWorkerContractError.incompleteAccelerationRequest
+            }
+        case .stockLinux613RuntimeVerifiedV1:
+            guard artifacts.managedGuestKernel == nil,
+                  requestedCapabilities == .productionAcceleration else {
                 throw DoryRendererWorkerContractError.incompleteAccelerationRequest
             }
         case .doryPCX8664LinuxVirGL2PrepareFBV1:
-            guard requestedCapabilities == .pcVirGL2Acceleration else {
+            guard artifacts.managedGuestKernel != nil,
+                  requestedCapabilities == .pcVirGL2Acceleration else {
                 throw DoryRendererWorkerContractError.incompleteAccelerationRequest
             }
         }
@@ -102,8 +109,8 @@ public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
 /// resources.
 public enum DoryRendererWorkerBootstrapCodec {
     public static let fixedByteCount = 236
-    private static let magic: [UInt8] = [0x44, 0x52, 0x42, 0x34] // "DRB4"
-    private static let version: UInt16 = 4
+    private static let magic: [UInt8] = [0x44, 0x52, 0x42, 0x35] // "DRB5"
+    private static let version: UInt16 = 5
 
     public static func encode(_ bootstrap: DoryRendererWorkerBootstrap) -> Data {
         var bytes = [UInt8]()
@@ -118,7 +125,7 @@ public enum DoryRendererWorkerBootstrapCodec {
         bytes.appendLE(bootstrap.generation.rawValue)
         bytes.append(contentsOf: bootstrap.workspaceID.rawValue.doryRendererBytes)
         append(bootstrap.artifacts.candidateInventory, to: &bytes)
-        append(bootstrap.artifacts.managedGuestKernel, to: &bytes)
+        appendOptional(bootstrap.artifacts.managedGuestKernel, to: &bytes)
         append(bootstrap.artifacts.guestMesa, to: &bytes)
         append(bootstrap.artifacts.rendererWorkerExecutable, to: &bytes)
         bytes.append(contentsOf: bootstrap.artifacts.rendererWorkerCodeDirectoryHash.bytes)
@@ -193,7 +200,11 @@ public enum DoryRendererWorkerBootstrapCodec {
         )
         let artifacts = try DoryRendererArtifactManifest(
             candidateInventory: digest(bytes, at: 44, field: "candidateInventory"),
-            managedGuestKernel: digest(bytes, at: 76, field: "managedGuestKernel"),
+            managedGuestKernel: optionalDigest(
+                bytes,
+                at: 76,
+                field: "managedGuestKernel"
+            ),
             guestMesa: digest(bytes, at: 108, field: "guestMesa"),
             rendererWorkerExecutable: digest(
                 bytes,
@@ -236,6 +247,20 @@ public enum DoryRendererWorkerBootstrapCodec {
         bytes.append(contentsOf: digest.bytes)
     }
 
+    private static func appendOptional(
+        _ digest: DoryRendererArtifactDigest?,
+        to bytes: inout [UInt8]
+    ) {
+        if let digest {
+            append(digest, to: &bytes)
+        } else {
+            bytes.append(contentsOf: repeatElement(
+                0,
+                count: DoryRendererArtifactDigest.byteCount
+            ))
+        }
+    }
+
     private static func digest(
         _ bytes: [UInt8],
         at offset: Int,
@@ -245,5 +270,17 @@ public enum DoryRendererWorkerBootstrapCodec {
             bytes: Data(bytes[offset..<(offset + DoryRendererArtifactDigest.byteCount)]),
             field: field
         )
+    }
+
+
+    private static func optionalDigest(
+        _ bytes: [UInt8],
+        at offset: Int,
+        field: String
+    ) throws -> DoryRendererArtifactDigest? {
+        let encoded = Data(bytes[offset..<(offset + DoryRendererArtifactDigest.byteCount)])
+        return encoded.allSatisfy { $0 == 0 }
+            ? nil
+            : try DoryRendererArtifactDigest(bytes: encoded, field: field)
     }
 }

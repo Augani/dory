@@ -362,8 +362,12 @@ class StaticTupleTests(unittest.TestCase):
         ]
         positions = [xcode.index(fragment) for fragment in order]
         self.assertEqual(positions, sorted(positions))
-        self.assertIn("DORY_RENDERER_MANAGED_KERNEL_SHA256", xcode)
-        self.assertIn("DORY_RENDERER_MANAGED_KERNEL", xcode)
+        self.assertNotIn("DORY_RENDERER_MANAGED_KERNEL_SHA256", xcode)
+        self.assertNotIn('DORY_RENDERER_MANAGED_KERNEL="', xcode)
+        self.assertIn(
+            "--producer-fence-contract stock-linux-6.13-runtime-verified",
+            xcode,
+        )
         self.assertIn("DORY_RENDERER_QUALIFICATION_MODE", xcode)
         self.assertIn("--require-release-signature", xcode)
 

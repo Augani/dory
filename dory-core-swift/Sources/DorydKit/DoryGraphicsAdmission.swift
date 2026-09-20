@@ -162,7 +162,7 @@ public enum DoryGraphicsAdmissionDowngradeReason: String, Sendable, Equatable, C
     }
 }
 
-public enum DoryGraphicsVerificationState: Sendable, Equatable {
+public enum DoryGraphicsVerificationState: Sendable, Equatable, Hashable, Codable {
     case notRequired
     case provisional
     case verified

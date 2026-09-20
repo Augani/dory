@@ -225,8 +225,9 @@ public struct DoryVerifiedRendererBootstrapQualification: Equatable, Sendable {
             "guestMesaSHA256": bootstrap.artifacts.guestMesa.lowercaseSHA256,
             "issuedAt": canonicalTimestamp(issuedAt),
             "kind": kind,
-            "managedGuestKernelSHA256":
-                bootstrap.artifacts.managedGuestKernel.lowercaseSHA256,
+            "managedGuestKernelSHA256": bootstrap.artifacts.managedGuestKernel?
+                .lowercaseSHA256
+                ?? DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256,
             "producerFenceContract": Int(bootstrap.producerFenceContract.rawValue),
             "qualificationIdentity": "dory-renderer-bootstrap:\(transcriptHex)",
             "revocationKeyID": keyID,
