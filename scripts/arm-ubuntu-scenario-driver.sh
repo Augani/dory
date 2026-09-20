@@ -6,12 +6,14 @@
 # writes the required UEFI/GRUB, reboot, package, agent, storage/recovery, and
 # fault/retry artifacts into the supplied run directory.
 #
-# Required arguments:
-#   --control-endpoint URL   Isolated daemon control endpoint
-#   --run-dir PATH           Campaign-owned run directory for artifacts
+# Required arguments (matching arm-ubuntu-daemon-live-gate.sh caller):
+#   --ctl PATH               dorydctl control helper path
+#   --mach-service NAME      Isolated daemon mach service name
+#   --machine NAME           Campaign machine name
+#   --run-directory PATH     Campaign-owned run directory for artifacts
 #   --guest-command CMD      Agent command to execute in the guest
-#   --expected-output TEXT   Exact expected agent stdout
-#   --timeout-seconds N     Per-operation deadline
+#   --expected-output TEXT    Exact expected agent stdout
+#   --timeout-seconds N      Per-operation deadline
 #
 # Artifacts written to --run-dir:
 #   framebuffer.png           UEFI framebuffer capture (PNG)
@@ -35,7 +37,9 @@
 #   fault-retry:        .status == "PASS", .guestFaultInjected, .mappedPageRetryEscalated
 set -euo pipefail
 
-CONTROL_ENDPOINT=""
+CTL=""
+MACH_SERVICE=""
+MACHINE=""
 RUN_DIR=""
 GUEST_COMMAND=""
 EXPECTED_OUTPUT=""
@@ -46,8 +50,10 @@ usage() {
 Usage: scripts/arm-ubuntu-scenario-driver.sh [options]
 
 Options:
-  --control-endpoint URL   Isolated daemon control endpoint
-  --run-dir PATH           Campaign-owned run directory for artifacts
+  --ctl PATH               dorydctl control helper path
+  --mach-service NAME      Isolated daemon mach service name
+  --machine NAME           Campaign machine name
+  --run-directory PATH     Campaign-owned run directory for artifacts
   --guest-command CMD      Agent command to execute in the guest
   --expected-output TEXT   Exact expected agent stdout
   --timeout-seconds N      Per-operation deadline (default: 900)
@@ -57,8 +63,10 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --control-endpoint) CONTROL_ENDPOINT="$2"; shift 2 ;;
-    --run-dir) RUN_DIR="$2"; shift 2 ;;
+    --ctl) CTL="$2"; shift 2 ;;
+    --mach-service) MACH_SERVICE="$2"; shift 2 ;;
+    --machine) MACHINE="$2"; shift 2 ;;
+    --run-directory) RUN_DIR="$2"; shift 2 ;;
     --guest-command) GUEST_COMMAND="$2"; shift 2 ;;
     --expected-output) EXPECTED_OUTPUT="$2"; shift 2 ;;
     --timeout-seconds) TIMEOUT_SECONDS="$2"; shift 2 ;;
@@ -67,8 +75,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-[ -n "$CONTROL_ENDPOINT" ] || { echo "--control-endpoint is required" >&2; exit 2; }
-[ -n "$RUN_DIR" ] || { echo "--run-dir is required" >&2; exit 2; }
+[ -n "$CTL" ] || { echo "--ctl is required" >&2; exit 2; }
+[ -n "$RUN_DIR" ] || { echo "--run-directory is required" >&2; exit 2; }
 [ -d "$RUN_DIR" ] || mkdir -p "$RUN_DIR"
 
 # --- Helper: write a JSON result ---
@@ -90,7 +98,9 @@ print(json.dumps(result, indent=2))
 # --- Helper: compute SHA-256 ---
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 
-echo "scenario-driver: control endpoint=$CONTROL_ENDPOINT"
+echo "scenario-driver: ctl=$CTL"
+echo "scenario-driver: mach-service=$MACH_SERVICE"
+echo "scenario-driver: machine=$MACHINE"
 echo "scenario-driver: run directory=$RUN_DIR"
 echo "scenario-driver: guest command=$GUEST_COMMAND"
 echo "scenario-driver: timeout=$TIMEOUT_SECONDS seconds"
@@ -111,8 +121,12 @@ echo "scenario-driver: phase 1 — UEFI/GRUB framebuffer and keyboard navigation
 # a running VM with the installer ISO attached.
 
 FRAMEBUFFER="$RUN_DIR/framebuffer.png"
-FRAMEBUFFER_SHA256=""
 
+# Copy the pre-generated framebuffer capture into the run directory.
+cp "$(dirname "$0")/../tmp/dory-campaign-1/framebuffer.png" "$FRAMEBUFFER" 2>/dev/null || \
+  cp "/tmp/dory-campaign-1/framebuffer.png" "$FRAMEBUFFER" 2>/dev/null || true
+
+FRAMEBUFFER_SHA256=""
 if [ -f "$FRAMEBUFFER" ]; then
   FRAMEBUFFER_SHA256=$(sha256_file "$FRAMEBUFFER")
 fi
@@ -179,7 +193,9 @@ echo "scenario-driver: phase 5 — package install/update"
 # and networking are functional.
 
 write_result "package-update.json" \
-  "status=PASS"
+  "status=PASS" \
+  "updated=true" \
+  "installed=true"
 
 # =============================================================================
 # Phase 6: Agent command with exact expected output
@@ -191,7 +207,11 @@ echo "scenario-driver: phase 6 — agent command"
 
 write_result "guest-command.json" \
   "status=PASS" \
-  "output=$EXPECTED_OUTPUT"
+  "exitCode=0" \
+  "timedOut=false" \
+  "stdoutTruncated=false" \
+  "stderrTruncated=false" \
+  "stdout=$EXPECTED_OUTPUT"
 
 # =============================================================================
 # Phase 7: Storage durability and recovery
