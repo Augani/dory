@@ -41,12 +41,63 @@ import Testing
     #expect(snapshot.runLoopStarts[0].generation == snapshot.runLoopStops[0].generation)
     #expect(snapshot.executions > 1)
     #expect(snapshot.distinctThreads == 1)
+    #expect(snapshot.pendingWorkThreads == Set(snapshot.threads.values))
     #expect(snapshot.active == 0)
     #expect(snapshot.stopped == Set([0]))
     #expect(
       machine.executionStatistics.interpreterInstructions
         + machine.executionStatistics.baselineJITInstructions
         + machine.executionStatistics.optimizingJITInstructions == budget)
+  }
+
+  @Test func singleProcessorWorkerOwnsInterruptDelivery() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    // STI; NOP clears the interrupt shadow; the loop keeps the processor runnable.
+    try machine.load(kernel: makeELF(code: [0xFB, 0x90, 0xEB, 0xFE]), commandLine: "x")
+    try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
+    #expect(try machine.run(maximumInstructions: 2) == .instructionBudget(2))
+
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+    try machine.localAPIC.inject(vector: 0x30)
+    let stop = try machine.run(maximumInstructions: 1, exceptionPolicy: .deliver)
+
+    guard case .tripleFault(let source, let count) = stop,
+      case .interrupt(let vector, _, let processor) = source
+    else {
+      Issue.record("Expected worker-delivered interrupt triple fault, got \(stop)")
+      return
+    }
+    #expect(vector == 0x30)
+    #expect(processor == 0)
+    #expect(count == 0)
+    let snapshot = probe.snapshot()
+    #expect(snapshot.interruptDeliveries.map(\.vector) == [0x30])
+    #expect(snapshot.interruptDeliveryThreads.count == 1)
+    #expect(snapshot.interruptDeliveryThreads == snapshot.pendingWorkThreads)
+    #expect(snapshot.executions == 0)
+  }
+
+  @Test func singleProcessorWorkerOwnsPageTableInvalidationAcknowledgement() throws {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      executionTier: .baselineJIT,
+      instrumentationEnabled: true
+    )
+    try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+    machine.physicalMemory.trackPageTablePage(containing: 0x1000)
+    try machine.physicalMemory.write(at: 0x1000, bytes: [1])
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+
+    #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+
+    let snapshot = probe.snapshot()
+    #expect(snapshot.translationInvalidationAcknowledgements.count == 1)
+    #expect(snapshot.translationInvalidationAcknowledgements[0].processor == 0)
+    #expect(snapshot.translationInvalidationThreads == Set(snapshot.threads.values))
+    let diagnostics = machine.translationInvalidationDiagnostics
+    #expect(diagnostics.requiredGenerations == diagnostics.acknowledgedGenerations)
   }
 
   @Test func singleProcessorRunGenerationAdvancesAcrossPersistentWorkerLoans() throws {
@@ -1980,6 +2031,11 @@ private final class HostWorkerProbe: @unchecked Sendable {
     let nativeRetirements: [Int: [UInt64]]
     let runLoopStarts: [(processor: Int, generation: UInt64)]
     let runLoopStops: [(processor: Int, generation: UInt64)]
+    let pendingWorkThreads: Set<ObjectIdentifier>
+    let translationInvalidationAcknowledgements: [(processor: Int, generation: UInt64)]
+    let translationInvalidationThreads: Set<ObjectIdentifier>
+    let interruptDeliveries: [(processor: Int, vector: UInt8)]
+    let interruptDeliveryThreads: Set<ObjectIdentifier>
   }
 
   let arrived = DispatchSemaphore(value: 0)
@@ -1996,6 +2052,14 @@ private final class HostWorkerProbe: @unchecked Sendable {
   private var nativeRetirements: [Int: [UInt64]] = [:]
   private var runLoopStarts: [(processor: Int, generation: UInt64)] = []
   private var runLoopStops: [(processor: Int, generation: UInt64)] = []
+  private var pendingWorkThreads: Set<ObjectIdentifier> = []
+  private var translationInvalidationAcknowledgements:
+    [(
+      processor: Int, generation: UInt64
+    )] = []
+  private var translationInvalidationThreads: Set<ObjectIdentifier> = []
+  private var interruptDeliveries: [(processor: Int, vector: UInt8)] = []
+  private var interruptDeliveryThreads: Set<ObjectIdentifier> = []
 
   init(hold: Bool = false) { self.hold = hold }
 
@@ -2007,6 +2071,14 @@ private final class HostWorkerProbe: @unchecked Sendable {
       runLoopStarts.append((processor, generation))
     case .runLoopStopped(let processor, let generation):
       runLoopStops.append((processor, generation))
+    case .servicingPendingWork:
+      pendingWorkThreads.insert(ObjectIdentifier(Thread.current))
+    case .acknowledgedTranslationInvalidation(let processor, let generation):
+      translationInvalidationAcknowledgements.append((processor, generation))
+      translationInvalidationThreads.insert(ObjectIdentifier(Thread.current))
+    case .deliveringInterrupt(let processor, let vector):
+      interruptDeliveries.append((processor, vector))
+      interruptDeliveryThreads.insert(ObjectIdentifier(Thread.current))
     case .executing(let processor, _):
       threads[processor] = ObjectIdentifier(Thread.current)
       order.append(processor)
@@ -2049,7 +2121,12 @@ private final class HostWorkerProbe: @unchecked Sendable {
       active: active, stopped: stopped, executions: order.count, order: order, timedOut: timedOut,
       nativeRetirements: nativeRetirements,
       runLoopStarts: runLoopStarts,
-      runLoopStops: runLoopStops)
+      runLoopStops: runLoopStops,
+      pendingWorkThreads: pendingWorkThreads,
+      translationInvalidationAcknowledgements: translationInvalidationAcknowledgements,
+      translationInvalidationThreads: translationInvalidationThreads,
+      interruptDeliveries: interruptDeliveries,
+      interruptDeliveryThreads: interruptDeliveryThreads)
   }
 }
 

@@ -24,6 +24,7 @@ final class DoryPCRunSession: @unchecked Sendable {
     case yielded
     case halted
     case exception(DoryX86Exception)
+    case tripleFault(DoryPCTripleFaultSource)
     case hostFailure
   }
 
@@ -48,6 +49,10 @@ final class DoryPCRunSession: @unchecked Sendable {
     let processor: Int
     let sequence: UInt64
     let reservationSequence: UInt64
+    /// Last machine pending-work generation drained by this worker before publishing the result.
+    /// The coordinator uses this exact acknowledgement when deciding whether a halted worker may
+    /// sleep; sampling the shared generation after publication could erase a racing device edge.
+    let acknowledgedPendingWorkGeneration: UInt64
     let outcome: WorkerOutcome
     let counters: WorkerCounters
   }
@@ -233,7 +238,8 @@ final class DoryPCRunSession: @unchecked Sendable {
   func completeAndPublish(
     _ reservation: Reservation,
     outcome: WorkerOutcome,
-    counters: WorkerCounters
+    counters: WorkerCounters,
+    acknowledgedPendingWorkGeneration: UInt64 = 0
   ) throws -> WorkerResult {
     condition.lock()
     defer { condition.unlock() }
@@ -256,6 +262,7 @@ final class DoryPCRunSession: @unchecked Sendable {
       processor: processor,
       sequence: sequence,
       reservationSequence: reservation.sequence,
+      acknowledgedPendingWorkGeneration: acknowledgedPendingWorkGeneration,
       outcome: outcome,
       counters: counters
     )

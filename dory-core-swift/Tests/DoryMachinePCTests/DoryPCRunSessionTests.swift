@@ -425,6 +425,7 @@ import Testing
       processor: result.processor,
       sequence: result.sequence,
       reservationSequence: result.reservationSequence,
+      acknowledgedPendingWorkGeneration: result.acknowledgedPendingWorkGeneration,
       outcome: result.outcome,
       counters: result.counters
     )
@@ -443,6 +444,7 @@ import Testing
       processor: result.processor,
       sequence: result.sequence,
       reservationSequence: result.reservationSequence,
+      acknowledgedPendingWorkGeneration: result.acknowledgedPendingWorkGeneration,
       outcome: .retired,
       counters: result.counters
     )
@@ -456,11 +458,31 @@ import Testing
     }
     #expect(session.snapshot == published)
 
+    let mismatchedAcknowledgement = DoryPCRunSession.WorkerResult(
+      runGeneration: result.runGeneration,
+      processor: result.processor,
+      sequence: result.sequence,
+      reservationSequence: result.reservationSequence,
+      acknowledgedPendingWorkGeneration: result.acknowledgedPendingWorkGeneration &+ 1,
+      outcome: result.outcome,
+      counters: result.counters
+    )
+    #expect(
+      throws: DoryPCRunSession.SessionError.mismatchedWorkerResult(
+        processor: 0,
+        sequence: result.sequence
+      )
+    ) {
+      try session.respond(to: mismatchedAcknowledgement, with: .stop)
+    }
+    #expect(session.snapshot == published)
+
     let stale = DoryPCRunSession.WorkerResult(
       runGeneration: result.runGeneration,
       processor: result.processor,
       sequence: result.sequence &+ 1,
       reservationSequence: result.reservationSequence,
+      acknowledgedPendingWorkGeneration: result.acknowledgedPendingWorkGeneration,
       outcome: result.outcome,
       counters: result.counters
     )
