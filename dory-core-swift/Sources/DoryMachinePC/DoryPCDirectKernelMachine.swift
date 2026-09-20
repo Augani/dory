@@ -2125,10 +2125,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   ) throws -> WorkerBoundaryService {
     var eventCPUNanoseconds: UInt64 = 0
     var tripleFault: DoryPCTripleFaultSource?
-    _ = try session.publishPendingWork(forProcessor: processor)
 
     while true {
       let observedWakeGeneration = pendingWorkWake.snapshot(forProcessor: processor)
+      _ = try session.observePendingWork(
+        processor: processor,
+        sourceGeneration: observedWakeGeneration
+      )
       observer?(.servicingPendingWork(processor))
       let startedCPU = instrumentationEnabled ? dory_thread_cpu_time_nanoseconds() : 0
       applyProcessorEvents(forProcessor: processor)
@@ -2161,7 +2164,6 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         }
       }
       guard acknowledgedWake else {
-        _ = try session.publishPendingWork(forProcessor: processor)
         continue
       }
       if let required = try session.pendingWorkGeneration(forProcessor: processor) {

@@ -117,6 +117,7 @@ final class DoryPCRunSession: @unchecked Sendable {
     let outstandingReservations: [Reservation?]
     let retiredInstructions: [UInt64]
     let totalRetiredInstructions: UInt64
+    let pendingSourceGenerations: [UInt64?]
     let pendingRequiredGenerations: [UInt64]
     let pendingAcknowledgedGenerations: [UInt64]
     let pendingRepublishAfterAcknowledgement: [Bool]
@@ -142,6 +143,7 @@ final class DoryPCRunSession: @unchecked Sendable {
   private var reservations: [Reservation?]
   private var retiredInstructions: [UInt64]
   private var totalRetiredInstructions: UInt64 = 0
+  private var pendingSourceGenerations: [UInt64?]
   private var pendingRequiredGenerations: [UInt64]
   private var pendingAcknowledgedGenerations: [UInt64]
   private var pendingRepublishAfterAcknowledgement: [Bool]
@@ -174,6 +176,7 @@ final class DoryPCRunSession: @unchecked Sendable {
     reservationSequences = .init(repeating: initialGeneration, count: processorCount)
     reservations = .init(repeating: nil, count: processorCount)
     retiredInstructions = .init(repeating: 0, count: processorCount)
+    pendingSourceGenerations = .init(repeating: nil, count: processorCount)
     pendingRequiredGenerations = .init(repeating: initialGeneration, count: processorCount)
     pendingAcknowledgedGenerations = .init(repeating: initialGeneration, count: processorCount)
     pendingRepublishAfterAcknowledgement = .init(repeating: false, count: processorCount)
@@ -444,6 +447,22 @@ final class DoryPCRunSession: @unchecked Sendable {
     return pendingRequiredGenerations
   }
 
+  /// Imports a generation from the machine's per-vCPU wake source into this run. Re-observing the
+  /// same source generation is idempotent, so coordinator handoffs cannot invent work; a changed
+  /// source publishes exactly one session edge before the worker drains architectural state.
+  @discardableResult
+  func observePendingWork(processor: Int, sourceGeneration: UInt64) throws -> UInt64 {
+    condition.lock()
+    defer { condition.unlock() }
+    try validate(processor)
+    if pendingSourceGenerations[processor] != sourceGeneration {
+      pendingSourceGenerations[processor] = sourceGeneration
+      publishPendingLocked(processors: CollectionOfOne(processor))
+      changedLocked()
+    }
+    return pendingRequiredGenerations[processor]
+  }
+
   func pendingWorkGeneration(forProcessor processor: Int) throws -> UInt64? {
     condition.lock()
     defer { condition.unlock() }
@@ -662,6 +681,7 @@ final class DoryPCRunSession: @unchecked Sendable {
       outstandingReservations: reservations,
       retiredInstructions: retiredInstructions,
       totalRetiredInstructions: totalRetiredInstructions,
+      pendingSourceGenerations: pendingSourceGenerations,
       pendingRequiredGenerations: pendingRequiredGenerations,
       pendingAcknowledgedGenerations: pendingAcknowledgedGenerations,
       pendingRepublishAfterAcknowledgement: pendingRepublishAfterAcknowledgement,

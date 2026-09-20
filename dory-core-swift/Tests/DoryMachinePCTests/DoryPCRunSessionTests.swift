@@ -21,6 +21,7 @@ import Testing
     #expect(snapshot.workerDirectives == [nil, nil])
     #expect(snapshot.workerCounters == [.zero, .zero])
     #expect(snapshot.mergedWorkerCounters == .zero)
+    #expect(snapshot.pendingSourceGenerations == [nil, nil])
   }
 
   @Test func budgetReservationsReturnUnusedWorkAndStopExactlyAtBudget() throws {
@@ -143,6 +144,29 @@ import Testing
     #expect(try session.acknowledgePendingWork(processor: 0, generation: second))
     #expect(try session.pendingWorkGeneration(forProcessor: 0) == nil)
     #expect(try session.pendingWorkGeneration(forProcessor: 1) == nil)
+  }
+
+  @Test func machinePendingSourcesPublishExactlyOneSessionEdgePerVCPU() throws {
+    let session = DoryPCRunSession(processorCount: 2, instructionBudget: 1)
+
+    let processor0 = try session.observePendingWork(processor: 0, sourceGeneration: 7)
+    #expect(processor0 == 1)
+    #expect(session.snapshot.pendingSourceGenerations == [7, nil])
+    #expect(try session.pendingWorkGeneration(forProcessor: 0) == processor0)
+    #expect(try session.acknowledgePendingWork(processor: 0, generation: processor0))
+
+    let acknowledged = session.snapshot
+    #expect(try session.observePendingWork(processor: 0, sourceGeneration: 7) == processor0)
+    #expect(session.snapshot == acknowledged)
+
+    let processor1 = try session.observePendingWork(processor: 1, sourceGeneration: 7)
+    #expect(processor1 == 1)
+    #expect(try session.pendingWorkGeneration(forProcessor: 0) == nil)
+    #expect(try session.pendingWorkGeneration(forProcessor: 1) == processor1)
+
+    let processor0Next = try session.observePendingWork(processor: 0, sourceGeneration: 8)
+    #expect(processor0Next == processor0 + 1)
+    #expect(session.snapshot.pendingSourceGenerations == [8, 7])
   }
 
   @Test func publicationAtMaximumDefersWrapUntilOldGenerationIsAcknowledged() throws {
