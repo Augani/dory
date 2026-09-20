@@ -200,6 +200,39 @@ public struct DoryRendererBlobCreatePayload: Equatable, Sendable {
     }
 }
 
+/// Exact guest-aperture placement selected by the stock virtio-gpu DRM allocator.
+///
+/// The renderer worker must receive this before it can bind a guest-VRAM allocation to the
+/// generation arena. Four-KiB alignment is the guest ABI; the VMM separately rounds the affected
+/// host mapping out to complete host-page granules.
+public struct DoryRendererBlobMapPayload: Equatable, Sendable {
+    public static let byteCount = 8
+    public static let guestPageByteCount: UInt64 = 4_096
+
+    public let hostVisibleOffset: UInt64
+
+    public init(hostVisibleOffset: UInt64) throws {
+        guard hostVisibleOffset.isMultiple(of: Self.guestPageByteCount) else {
+            throw DoryRendererWorkerContractError.invalidOperationPayload(operation: .mapBlob)
+        }
+        self.hostVisibleOffset = hostVisibleOffset
+    }
+
+    public var encoded: Data {
+        var bytes = [UInt8]()
+        bytes.appendLE(hostVisibleOffset)
+        return Data(bytes)
+    }
+
+    public static func decode(_ data: Data) throws -> Self {
+        let bytes = [UInt8](data)
+        guard bytes.count == byteCount else {
+            throw DoryRendererWorkerContractError.invalidOperationPayload(operation: .mapBlob)
+        }
+        return try Self(hostVisibleOffset: bytes.leUInt64(at: 0))
+    }
+}
+
 public struct DoryRendererTransfer3DPayload: Equatable, Sendable {
     public static let byteCount = 44
     public let level: UInt32

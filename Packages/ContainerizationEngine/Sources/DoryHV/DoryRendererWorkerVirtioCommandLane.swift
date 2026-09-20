@@ -744,9 +744,16 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
     func mapBlob(
         resourceID: UInt32,
         resourceGeneration: UInt64,
+        hostVisibleOffset: UInt64,
         deviceGeneration: UInt64,
         completion: @escaping BlobMappingCompletion
     ) throws {
+        let payload: DoryRendererBlobMapPayload
+        do {
+            payload = try DoryRendererBlobMapPayload(hostVisibleOffset: hostVisibleOffset)
+        } catch {
+            throw reject(.invalidSubmitRegions)
+        }
         guard resourceID != 0, resourceGeneration != 0 else {
             throw reject(.invalidSubmitRegions)
         }
@@ -769,6 +776,7 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
                     operation: .mapBlob,
                     resourceID: resourceID,
                     resourceGeneration: resourceGeneration,
+                    payload: payload.encoded,
                     deadlineUptimeNanoseconds: self.deadline()
                 )
                 guard case .blobMapping(let mapping) = result else {

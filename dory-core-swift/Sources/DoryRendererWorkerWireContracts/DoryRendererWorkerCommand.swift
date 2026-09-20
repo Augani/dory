@@ -262,10 +262,15 @@ public struct DoryRendererWorkerCommand: Equatable, Sendable {
             expectedPayloadBytes = 0
             requiresPayload = false
             permitsRegions = true
-        case .detachBacking, .unrefResource, .mapBlob, .unmapBlob:
+        case .detachBacking, .unrefResource, .unmapBlob:
             identityIsValid = !hasContext && hasResource && hasResourceGeneration
             expectedPayloadBytes = 0
             requiresPayload = false
+            permitsRegions = false
+        case .mapBlob:
+            identityIsValid = !hasContext && hasResource && hasResourceGeneration
+            expectedPayloadBytes = DoryRendererBlobMapPayload.byteCount
+            requiresPayload = true
             permitsRegions = false
         case .transferToHost3D, .transferFromHost3D:
             identityIsValid = hasResource && hasResourceGeneration

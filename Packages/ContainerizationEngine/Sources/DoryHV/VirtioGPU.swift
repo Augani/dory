@@ -5826,6 +5826,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             try rendererWorkerCandidate.mapBlob(
                 resourceID: admission.resourceID,
                 resourceGeneration: admission.resourceGeneration,
+                hostVisibleOffset: admission.hostVisibleOffset,
                 deviceGeneration: generation
             ) { [weak self, weak transport] result in
                 guard let self, let transport else { return }

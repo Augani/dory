@@ -294,6 +294,43 @@ import Testing
         }
     }
 
+    @Test func blobMapCarriesExactFourKiBGuestApertureOffset() throws {
+        let payload = try DoryRendererBlobMapPayload(hostVisibleOffset: 12_288)
+        #expect(payload.encoded.count == DoryRendererBlobMapPayload.byteCount)
+        #expect(try DoryRendererBlobMapPayload.decode(payload.encoded) == payload)
+
+        let command = try DoryRendererWorkerCommand(
+            generation: DoryRendererWorkerGeneration(rawValue: 7),
+            requestID: 13,
+            operation: .mapBlob,
+            resourceID: 42,
+            resourceGeneration: 3,
+            deadlineUptimeNanoseconds: 123_456,
+            payload: payload.encoded
+        )
+        #expect(try DoryRendererWorkerCommandCodec.decode(
+            DoryRendererWorkerCommandCodec.encode(command)
+        ) == command)
+
+        #expect(throws: DoryRendererWorkerContractError.invalidOperationPayload(
+            operation: .mapBlob
+        )) {
+            _ = try DoryRendererBlobMapPayload(hostVisibleOffset: 4_097)
+        }
+        #expect(throws: DoryRendererWorkerContractError.invalidOperationPayload(
+            operation: .mapBlob
+        )) {
+            _ = try DoryRendererWorkerCommand(
+                generation: DoryRendererWorkerGeneration(rawValue: 7),
+                requestID: 14,
+                operation: .mapBlob,
+                resourceID: 42,
+                resourceGeneration: 3,
+                deadlineUptimeNanoseconds: 123_456
+            )
+        }
+    }
+
     @Test func generationArenaBlobLeaseIsCanonicalAndCarriesNoDescriptor() throws {
         let arenaByteCount: UInt64 = 256 * 1_024 * 1_024
         let lease = try DoryRendererBlobMappingLease(

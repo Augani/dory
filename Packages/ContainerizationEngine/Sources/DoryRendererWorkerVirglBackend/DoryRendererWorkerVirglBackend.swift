@@ -908,6 +908,12 @@ public final class DoryRendererWorkerVirglBackend:
             guard let resource = matchingResource(command, active: active),
                   let blobSize = resource.blobSize,
                   !resource.mapped else { return .rejected }
+            let mapPayload = try DoryRendererBlobMapPayload.decode(command.payload)
+            if let arena = active.hostVisibleArena {
+                let (end, overflow) = mapPayload.hostVisibleOffset
+                    .addingReportingOverflow(blobSize)
+                guard !overflow, end <= arena.byteCount else { return .rejected }
+            }
             let mapInfo = try active.session.mapInfo(resourceID: command.resourceID) & 0x0f
             let exported = try active.session.exportBlob(resourceID: command.resourceID)
             let validated = try Self.validateExportedSHM(

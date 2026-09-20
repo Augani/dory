@@ -1604,7 +1604,10 @@ import Testing
                 requestID: 5,
                 operation: .mapBlob,
                 resourceID: 42,
-                resourceGeneration: 1
+                resourceGeneration: 1,
+                payload: try DoryRendererBlobMapPayload(
+                    hostVisibleOffset: 0
+                ).encoded
             ),
             descriptors: []
         )))

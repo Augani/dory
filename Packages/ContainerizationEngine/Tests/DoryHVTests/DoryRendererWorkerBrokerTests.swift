@@ -1506,6 +1506,7 @@ import Testing
         try lane.mapBlob(
             resourceID: 29,
             resourceGeneration: 41,
+            hostVisibleOffset: 12_288,
             deviceGeneration: 11
         ) { recorder.recordBlobMapping($0) }
 
@@ -1517,7 +1518,10 @@ import Testing
         #expect(command.operation == .mapBlob)
         #expect(command.resourceID == 29)
         #expect(command.resourceGeneration == 41)
-        #expect(command.payload.isEmpty)
+        #expect(
+            try DoryRendererBlobMapPayload.decode(command.payload).hostVisibleOffset
+                == 12_288
+        )
         #expect(command.sharedRegions.isEmpty)
 
         let (descriptor, fileSize) = try makeUnlinkedRegion(
