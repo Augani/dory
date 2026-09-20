@@ -7,33 +7,77 @@ import Foundation
 /// machine execution lock. Its synchronous closures may only publish or clear native atomic poll
 /// bytes, coupling those bytes to the wake generation without a lost-clear window.
 final class DoryPCPendingWorkWake: @unchecked Sendable {
-  private let condition = NSCondition()
-  private var generation: UInt64 = 0
-  private var waiting = false
-  private var dispatchThread: Thread?
+  struct Snapshot: Sendable, Equatable {
+    fileprivate let generations: [UInt64]
+  }
 
+  private let condition = NSCondition()
+  private var generations: [UInt64]
+  private var waiting: [Bool]
+  private var coordinatorWaiting = false
+  private var dispatchThreads: [Thread?]
+
+  init(processorCount: Int = 1) {
+    precondition(processorCount > 0)
+    generations = .init(repeating: 0, count: processorCount)
+    waiting = .init(repeating: false, count: processorCount)
+    dispatchThreads = .init(repeating: nil, count: processorCount)
+  }
+
+  /// Marks every vCPU as synchronously dispatched by `thread`. The serialized fallback scheduler
+  /// uses this while draining all controllers on the coordinator.
   func setDispatchThread(_ thread: Thread?) {
     condition.lock()
-    dispatchThread = thread
+    dispatchThreads = .init(repeating: thread, count: dispatchThreads.count)
     condition.unlock()
   }
 
-  func snapshot() -> UInt64 {
+  /// Marks one vCPU as synchronously dispatched by `thread`. A publication for another vCPU is
+  /// still asynchronous and must advance that target's generation.
+  func setDispatchThread(_ thread: Thread?, forProcessor processor: Int) {
     condition.lock()
-    defer { condition.unlock() }
-    return generation
+    precondition(dispatchThreads.indices.contains(processor))
+    dispatchThreads[processor] = thread
+    condition.unlock()
   }
 
-  func signal(publishing publication: () -> Void) {
+  func snapshot() -> Snapshot {
+    condition.withLock { Snapshot(generations: generations) }
+  }
+
+  func snapshot(forProcessor processor: Int) -> UInt64 {
     condition.lock()
+    defer { condition.unlock() }
+    precondition(generations.indices.contains(processor))
+    return generations[processor]
+  }
+
+  func signal(forProcessor processor: Int, publishing publication: () -> Void) {
+    condition.lock()
+    precondition(generations.indices.contains(processor))
     publication()
     // Synchronous device work is already owned by this dispatch pass. In particular PIC
     // acknowledgement republishes masked requests: treating that as an asynchronous edge
     // would spin forever on an undeliverable IRQ (and advance deterministic time).
-    if dispatchThread !== Thread.current {
-      generation = generation == .max ? 1 : generation + 1
+    if dispatchThreads[processor] !== Thread.current {
+      generations[processor] = nextGeneration(after: generations[processor])
       condition.broadcast()
     }
+    condition.unlock()
+  }
+
+  /// Publishes one shared edge to every vCPU that is not currently draining on this thread. A
+  /// worker may consume its own synchronous controller callback without hiding the same request
+  /// from remote workers.
+  func signalAll(publishing publication: () -> Void) {
+    condition.lock()
+    publication()
+    var changed = false
+    for processor in generations.indices where dispatchThreads[processor] !== Thread.current {
+      generations[processor] = nextGeneration(after: generations[processor])
+      changed = true
+    }
+    if changed { condition.broadcast() }
     condition.unlock()
   }
 
@@ -41,24 +85,62 @@ final class DoryPCPendingWorkWake: @unchecked Sendable {
   /// Publication and acknowledgement use the same lock, so either the clear happens first and a
   /// later publisher restores the byte, or the publication happens first and the clear declines.
   @discardableResult
-  func acknowledge(after observed: UInt64, clearing clear: () -> Void) -> Bool {
+  func acknowledge(
+    forProcessor processor: Int,
+    after observed: UInt64,
+    clearing clear: () -> Void
+  ) -> Bool {
     condition.lock()
     defer { condition.unlock() }
-    guard generation == observed else { return false }
+    precondition(generations.indices.contains(processor))
+    guard generations[processor] == observed else { return false }
     clear()
     return true
   }
 
-  func wait(after observed: UInt64, until deadline: Date) {
+  /// Acknowledges the unchanged parts of a coordinator snapshot independently. Returning `false`
+  /// means at least one target raced the drain; unchanged targets are still safely cleared.
+  @discardableResult
+  func acknowledge(after observed: Snapshot, clearing clear: (Int) -> Void) -> Bool {
+    condition.lock()
+    defer { condition.unlock() }
+    precondition(observed.generations.count == generations.count)
+    var complete = true
+    for processor in generations.indices {
+      guard generations[processor] == observed.generations[processor] else {
+        complete = false
+        continue
+      }
+      clear(processor)
+    }
+    return complete
+  }
+
+  func wait(forProcessor processor: Int, after observed: UInt64, until deadline: Date) {
     condition.lock()
     defer {
-      waiting = false
+      waiting[processor] = false
       condition.unlock()
     }
+    precondition(generations.indices.contains(processor))
     // Compare with the generation captured BEFORE dispatch drained the controllers. An edge
     // between that drain and this wait must force another pass, even if its signal came early.
-    while generation == observed {
-      waiting = true
+    while generations[processor] == observed {
+      waiting[processor] = true
+      condition.broadcast()
+      if !condition.wait(until: deadline) { break }
+    }
+  }
+
+  func wait(after observed: Snapshot, until deadline: Date) {
+    condition.lock()
+    defer {
+      coordinatorWaiting = false
+      condition.unlock()
+    }
+    precondition(observed.generations.count == generations.count)
+    while generations == observed.generations {
+      coordinatorWaiting = true
       condition.broadcast()
       if !condition.wait(until: deadline) { break }
     }
@@ -68,10 +150,16 @@ final class DoryPCPendingWorkWake: @unchecked Sendable {
   func waitUntilWaiting(until deadline: Date) -> Bool {
     condition.lock()
     defer { condition.unlock() }
-    while !waiting {
-      if !condition.wait(until: deadline) { return waiting }
+    while !coordinatorWaiting && !waiting.contains(true) {
+      if !condition.wait(until: deadline) {
+        return coordinatorWaiting || waiting.contains(true)
+      }
     }
     return true
+  }
+
+  private func nextGeneration(after generation: UInt64) -> UInt64 {
+    generation == .max ? 1 : generation + 1
   }
 }
 
@@ -683,7 +771,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   /// Persistent host threads owned for the complete machine lifetime. Public `run` calls borrow
   /// them through the execution gate and must rendezvous every submitted slice before returning.
   private let vcpuRuntime: DoryPCVCPURuntime
-  private let pendingWorkWake = DoryPCPendingWorkWake()
+  private let pendingWorkWake: DoryPCPendingWorkWake
   private let translationInvalidationCoordinator: DoryPCTranslationInvalidationCoordinator
   // `run` reserves the execution gate while transferring ownership to dedicated workers.
   // No mutex remains held during guest execution. Observability must not
@@ -822,6 +910,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       processorCount: processorCount,
       instrumentationEnabled: instrumentationEnabled
     )
+    pendingWorkWake = .init(processorCount: processorCount)
     translationInvalidationCoordinator = .init(processorCount: processorCount)
     reconciledPagingInvalidationSequences = .init(repeating: 0, count: processorCount)
     publishedHostExecutionDiagnostics = .init(
@@ -935,7 +1024,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     ioBus = DoryPCPortIOBus()
     let requestPendingWorkForProcessor: @Sendable (Int) -> Void = {
       [createdBaselineJITs, createdOptimizingJITs, pendingWorkWake] processor in
-      pendingWorkWake.signal {
+      pendingWorkWake.signal(forProcessor: processor) {
         if createdBaselineJITs.indices.contains(processor) {
           createdBaselineJITs[processor].requestPendingWork()
         }
@@ -946,7 +1035,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     let requestPendingWorkForAllProcessors: @Sendable () -> Void = {
       [createdBaselineJITs, createdOptimizingJITs, pendingWorkWake] in
-      pendingWorkWake.signal {
+      pendingWorkWake.signalAll {
         for jit in createdBaselineJITs { jit.requestPendingWork() }
         for jit in createdOptimizingJITs { jit.requestPendingWork() }
       }
@@ -1459,9 +1548,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         // racing this boundary either prevents the clear or republishes the byte after it.
         let acknowledgedPendingWork = pendingWorkWake.acknowledge(
           after: pendingWorkGeneration
-        ) {
-          for jit in baselineJITs { jit.clearPendingWork() }
-          for jit in optimizingJITs { jit.clearPendingWork() }
+        ) { processor in
+          if baselineJITs.indices.contains(processor) {
+            baselineJITs[processor].clearPendingWork()
+          }
+          if optimizingJITs.indices.contains(processor) {
+            optimizingJITs[processor].clearPendingWork()
+          }
         }
         if !acknowledgedPendingWork { continue }
         guard let processor = nextRunnableProcessor() else {
@@ -1530,8 +1623,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         if instrumentationEnabled {
           let sample = hostTimeSample()
           execution = try workers[processor].perform { [self] in
-            pendingWorkWake.setDispatchThread(Thread.current)
-            defer { pendingWorkWake.setDispatchThread(nil) }
+            pendingWorkWake.setDispatchThread(Thread.current, forProcessor: processor)
+            defer { pendingWorkWake.setDispatchThread(nil, forProcessor: processor) }
             observer?(.executing(processor, concurrent: false))
             defer { observer?(.executed(processor, concurrent: false)) }
             return try execute(
@@ -1545,8 +1638,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           recordHostTime(.processorExecution, since: sample)
         } else {
           execution = try workers[processor].perform { [self] in
-            pendingWorkWake.setDispatchThread(Thread.current)
-            defer { pendingWorkWake.setDispatchThread(nil) }
+            pendingWorkWake.setDispatchThread(Thread.current, forProcessor: processor)
+            defer { pendingWorkWake.setDispatchThread(nil, forProcessor: processor) }
             observer?(.executing(processor, concurrent: false))
             defer { observer?(.executed(processor, concurrent: false)) }
             return try execute(
@@ -1741,7 +1834,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             advanceClocks(by: 1)
           }
         }
-        let pendingWorkGeneration = pendingWorkWake.snapshot()
+        let pendingWorkGeneration = pendingWorkWake.snapshot(forProcessor: 0)
         let hasPendingWork =
           acknowledgedPendingWorkGeneration == nil
           || pendingWorkGeneration != acknowledgedPendingWorkGeneration
@@ -1750,10 +1843,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           if instrumentationEnabled {
             let sample = hostTimeSample()
             resumed = waitForNextInterrupt(
+              forProcessor: 0,
               after: acknowledgedPendingWorkGeneration ?? pendingWorkGeneration)
             recordHostTime(.idleWait, since: sample)
           } else {
             resumed = waitForNextInterrupt(
+              forProcessor: 0,
               after: acknowledgedPendingWorkGeneration ?? pendingWorkGeneration)
           }
           if resumed { continue }
@@ -1766,7 +1861,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
               }
             return try finish(stop, termination: reason)
           }
-          if pendingWorkWake.snapshot()
+          if pendingWorkWake.snapshot(forProcessor: 0)
             != (acknowledgedPendingWorkGeneration ?? pendingWorkGeneration)
           {
             continue
@@ -1917,7 +2012,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           maximumInstructions: maximumInstructions
         )
       else { throw WorkerError.missingRunReservation }
-      pendingWorkWake.setDispatchThread(Thread.current)
+      pendingWorkWake.setDispatchThread(Thread.current, forProcessor: processor)
       let result: DoryPCRunSession.WorkerResult
       var failureCounters = DoryPCRunSession.WorkerCounters.zero
       var executionStartedCPU: UInt64?
@@ -1929,7 +2024,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         )
         failureCounters.eventCPUNanoseconds = boundary.eventCPUNanoseconds
         if let source = boundary.tripleFault {
-          pendingWorkWake.setDispatchThread(nil)
+          pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
           result = try session.completeAndPublish(
             reservation,
             outcome: .tripleFault(source),
@@ -1937,7 +2032,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             acknowledgedPendingWorkGeneration: boundary.acknowledgedPendingWorkGeneration
           )
         } else if processorLifecycles[processor] != .running || haltedProcessors[processor] {
-          pendingWorkWake.setDispatchThread(nil)
+          pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
           result = try session.completeAndPublish(
             reservation,
             outcome: .halted,
@@ -1970,7 +2065,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             afterExecuting: processor,
             observer: observer
           )
-          pendingWorkWake.setDispatchThread(nil)
+          pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
           let elapsedCPU =
             executionStartedCPU.map {
               dory_thread_cpu_time_nanoseconds() &- $0
@@ -1988,7 +2083,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           )
         }
       } catch {
-        pendingWorkWake.setDispatchThread(nil)
+        pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
         if let executionStartedCPU {
           failureCounters.executionCPUNanoseconds =
             dory_thread_cpu_time_nanoseconds() &- executionStartedCPU
@@ -1999,7 +2094,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           reservation,
           outcome: .hostFailure,
           counters: failureCounters,
-          acknowledgedPendingWorkGeneration: pendingWorkWake.snapshot()
+          acknowledgedPendingWorkGeneration: pendingWorkWake.snapshot(forProcessor: processor)
         )
         _ = try session.waitForDirective(
           processor: processor,
@@ -2033,7 +2128,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     _ = try session.publishPendingWork(forProcessor: processor)
 
     while true {
-      let observedWakeGeneration = pendingWorkWake.snapshot()
+      let observedWakeGeneration = pendingWorkWake.snapshot(forProcessor: processor)
       observer?(.servicingPendingWork(processor))
       let startedCPU = instrumentationEnabled ? dory_thread_cpu_time_nanoseconds() : 0
       applyProcessorEvents(forProcessor: processor)
@@ -2054,7 +2149,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         saturatingAdd(elapsed, to: &eventCPUNanoseconds)
       }
 
-      let acknowledgedWake = pendingWorkWake.acknowledge(after: observedWakeGeneration) {
+      let acknowledgedWake = pendingWorkWake.acknowledge(
+        forProcessor: processor,
+        after: observedWakeGeneration
+      ) {
         if baselineJITs.indices.contains(processor) {
           baselineJITs[processor].clearPendingWork()
         }
@@ -3074,7 +3172,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     pendingWorkWake.waitUntilWaiting(until: deadline)
   }
 
-  private func waitForNextInterrupt(after generation: UInt64) -> Bool {
+  private func waitForNextInterrupt(after generation: DoryPCPendingWorkWake.Snapshot) -> Bool {
     let ticks = ticksUntilNextAcceptedInterrupt()
     if clockSource.monotonicNanoseconds != nil {
       // Timer waits retain their 1 ms cap. With no deadline, recheck lifecycle/device state at
@@ -3086,6 +3184,25 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     // Deterministic mode neither waits on host time nor invents a timer when none is armed.
     if pendingWorkWake.snapshot() != generation { return true }
+    guard let ticks else { return false }
+    advanceClocks(by: ticks)
+    advanceTSCs(byMachineTicks: ticks)
+    return true
+  }
+
+  private func waitForNextInterrupt(forProcessor processor: Int, after generation: UInt64) -> Bool {
+    let ticks = ticksUntilNextAcceptedInterrupt()
+    if clockSource.monotonicNanoseconds != nil {
+      let interval = ticks.map { Double(min($0, 10_000)) / 10_000_000 } ?? 0.05
+      pendingWorkWake.wait(
+        forProcessor: processor,
+        after: generation,
+        until: Date(timeIntervalSinceNow: interval)
+      )
+      synchronizeHostClock()
+      return true
+    }
+    if pendingWorkWake.snapshot(forProcessor: processor) != generation { return true }
     guard let ticks else { return false }
     advanceClocks(by: ticks)
     advanceTSCs(byMachineTicks: ticks)

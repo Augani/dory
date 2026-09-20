@@ -7,13 +7,14 @@ import Testing
   @Test func publicationBeforeAcknowledgementPreventsTheClear() {
     let wake = DoryPCPendingWorkWake()
     let pending = LockedPendingByte()
-    let observed = wake.snapshot()
+    let observed = wake.snapshot(forProcessor: 0)
 
-    wake.signal { pending.store(true) }
+    wake.signal(forProcessor: 0) { pending.store(true) }
 
-    #expect(!wake.acknowledge(after: observed) { pending.store(false) })
+    #expect(
+      !wake.acknowledge(forProcessor: 0, after: observed) { pending.store(false) })
     #expect(pending.load())
-    #expect(wake.snapshot() != observed)
+    #expect(wake.snapshot(forProcessor: 0) != observed)
   }
 
   @Test func publicationAfterAcknowledgementRestoresTheByte() {
@@ -22,11 +23,11 @@ import Testing
     let clearEntered = DispatchSemaphore(value: 0)
     let allowClearToReturn = DispatchSemaphore(value: 0)
     let publicationReturned = DispatchSemaphore(value: 0)
-    let observed = wake.snapshot()
+    let observed = wake.snapshot(forProcessor: 0)
 
     DispatchQueue.global().async {
       #expect(
-        wake.acknowledge(after: observed) {
+        wake.acknowledge(forProcessor: 0, after: observed) {
           pending.store(false)
           clearEntered.signal()
           allowClearToReturn.wait()
@@ -34,7 +35,7 @@ import Testing
     }
     #expect(clearEntered.wait(timeout: .now() + 2) == .success)
     DispatchQueue.global().async {
-      wake.signal { pending.store(true) }
+      wake.signal(forProcessor: 0) { pending.store(true) }
       publicationReturned.signal()
     }
     #expect(publicationReturned.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
@@ -42,7 +43,7 @@ import Testing
     #expect(publicationReturned.wait(timeout: .now() + 2) == .success)
 
     #expect(pending.load())
-    #expect(wake.snapshot() != observed)
+    #expect(wake.snapshot(forProcessor: 0) != observed)
   }
 
   @Test func acknowledgementRacingAnInFlightPublicationCannotEraseIt() {
@@ -51,10 +52,10 @@ import Testing
     let publicationEntered = DispatchSemaphore(value: 0)
     let allowPublicationToReturn = DispatchSemaphore(value: 0)
     let acknowledgementReturned = DispatchSemaphore(value: 0)
-    let observed = wake.snapshot()
+    let observed = wake.snapshot(forProcessor: 0)
 
     DispatchQueue.global().async {
-      wake.signal {
+      wake.signal(forProcessor: 0) {
         pending.store(true)
         publicationEntered.signal()
         allowPublicationToReturn.wait()
@@ -62,7 +63,8 @@ import Testing
     }
     #expect(publicationEntered.wait(timeout: .now() + 2) == .success)
     DispatchQueue.global().async {
-      #expect(!wake.acknowledge(after: observed) { pending.store(false) })
+      #expect(
+        !wake.acknowledge(forProcessor: 0, after: observed) { pending.store(false) })
       acknowledgementReturned.signal()
     }
     #expect(acknowledgementReturned.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
@@ -70,21 +72,55 @@ import Testing
     #expect(acknowledgementReturned.wait(timeout: .now() + 2) == .success)
 
     #expect(pending.load())
-    #expect(wake.snapshot() != observed)
+    #expect(wake.snapshot(forProcessor: 0) != observed)
   }
 
   @Test func synchronousDispatchPublicationCanBeConsumedWithoutInventingAnEdge() {
     let wake = DoryPCPendingWorkWake()
     let pending = LockedPendingByte()
-    let observed = wake.snapshot()
-    wake.setDispatchThread(Thread.current)
-    defer { wake.setDispatchThread(nil) }
+    let observed = wake.snapshot(forProcessor: 0)
+    wake.setDispatchThread(Thread.current, forProcessor: 0)
+    defer { wake.setDispatchThread(nil, forProcessor: 0) }
 
-    wake.signal { pending.store(true) }
+    wake.signal(forProcessor: 0) { pending.store(true) }
 
-    #expect(wake.snapshot() == observed)
-    #expect(wake.acknowledge(after: observed) { pending.store(false) })
+    #expect(wake.snapshot(forProcessor: 0) == observed)
+    #expect(
+      wake.acknowledge(forProcessor: 0, after: observed) { pending.store(false) })
     #expect(!pending.load())
+  }
+
+  @Test func targetedPublicationAdvancesOnlyTheRequestedProcessor() {
+    let wake = DoryPCPendingWorkWake(processorCount: 2)
+    let processor0 = wake.snapshot(forProcessor: 0)
+    let processor1 = wake.snapshot(forProcessor: 1)
+
+    wake.signal(forProcessor: 1) {}
+
+    #expect(wake.snapshot(forProcessor: 0) == processor0)
+    #expect(wake.snapshot(forProcessor: 1) != processor1)
+  }
+
+  @Test func synchronousBroadcastIsConsumedLocallyButRemainsPendingRemotely() {
+    let wake = DoryPCPendingWorkWake(processorCount: 2)
+    let pending = [LockedPendingByte(), LockedPendingByte()]
+    let processor0 = wake.snapshot(forProcessor: 0)
+    let processor1 = wake.snapshot(forProcessor: 1)
+    wake.setDispatchThread(Thread.current, forProcessor: 0)
+    defer { wake.setDispatchThread(nil, forProcessor: 0) }
+
+    wake.signalAll {
+      for byte in pending { byte.store(true) }
+    }
+
+    #expect(wake.snapshot(forProcessor: 0) == processor0)
+    #expect(wake.snapshot(forProcessor: 1) != processor1)
+    #expect(
+      wake.acknowledge(forProcessor: 0, after: processor0) { pending[0].store(false) })
+    #expect(
+      !wake.acknowledge(forProcessor: 1, after: processor1) { pending[1].store(false) })
+    #expect(!pending[0].load())
+    #expect(pending[1].load())
   }
 }
 
