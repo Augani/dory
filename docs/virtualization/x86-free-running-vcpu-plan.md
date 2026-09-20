@@ -2,6 +2,12 @@
 
 Status: **approved engineering sequence; not yet a release claim**
 
+Implementation checkpoint (2026-09-20): commit `ab0268045` adds the isolated
+`DoryPCRunSession` foundation and eleven debug/optimized/Thread-Sanitizer protocol tests. Commit
+`fc6ab7fd8` closes the current serialized dispatcher's native pending-byte lost-clear race with a
+generation-coupled publication/acknowledgement boundary and four deterministic race tests. The
+session remains intentionally unwired; packages B-G and the remainder of package A below are open.
+
 This plan converts the existing machine-lifetime host workers into a real multiprocessor runtime
 without weakening deterministic replay, memory ordering, translation invalidation, device safety,
 or failure ownership. It is subordinate to `x86-smp-memory-contract.md`: completing a work package
@@ -52,7 +58,8 @@ The following foundations already exist and must be preserved:
 
 ### `DoryPCRunSession`
 
-Add one machine-owned session per public `run` invocation. It contains:
+Complete and instantiate one machine-owned session per public `run` invocation. The finished type
+must contain:
 
 - an immutable run generation, exception policy, clock mode, and initial instruction budget;
 - a condition-protected stop state with a documented priority order: host failure, triple fault,
@@ -109,6 +116,11 @@ immunity, exact budget reservation/return, generation wrap behavior, first-failu
 idempotent stop, and all-worker acknowledgement. Keep the existing scheduler as the only caller
 until these tests pass under Thread Sanitizer.
 
+Progress: the isolated metadata core and its concurrency proofs are complete. Before package A is
+closed, the production worker command protocol still needs run identity, result mailboxes,
+run-local counter merge ownership, and explicit coordinator/worker quiescence handoff. No public
+or guest execution path uses the session yet.
+
 ### B. Single-vCPU long-running cutover
 
 Run one vCPU through the new worker loop while retaining the existing coordinator for clocks and
@@ -119,9 +131,9 @@ isolates protocol/lifecycle regressions from SMP memory failures.
 ### C. Per-vCPU events and invalidations
 
 Move `applyProcessorEvents(forProcessor:)`, interrupt/NMI delivery, and translation acknowledgement
-onto the owning worker. Replace the current coordinator-side `clearPendingWork()` sweep with
-generation-aware drain/ack. Page-table-write publication may originate on any worker; publication
-wakes every required target and cannot complete until all target acknowledgements arrive.
+onto the owning worker. Extend the current global generation-coupled drain/ack into per-vCPU
+session generations. Page-table-write publication may originate on any worker; publication wakes
+every required target and cannot complete until all target acknowledgements arrive.
 
 Tests must cover an invalidation published while a target is:
 
