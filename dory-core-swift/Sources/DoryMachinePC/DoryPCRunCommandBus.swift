@@ -7,11 +7,30 @@ import Foundation
 /// device callbacks, RAM authority, or session handoffs. There is one lossless single-slot lane per
 /// processor: publishing over an unread command fails closed instead of silently replacing work.
 final class DoryPCRunCommandBus: @unchecked Sendable {
+  enum Command: Sendable, Equatable {
+    case execute(maximumInstructions: UInt64)
+    case prepareFrozenInstruction
+    case executeFrozenInstruction
+
+    var maximumInstructions: UInt64 {
+      switch self {
+      case .execute(let maximumInstructions): maximumInstructions
+      case .prepareFrozenInstruction, .executeFrozenInstruction: 1
+      }
+    }
+  }
+
   struct Envelope: Sendable, Equatable {
     let runGeneration: UInt64
     let processor: Int
     let sequence: UInt64
-    let maximumInstructions: UInt64
+    let command: Command
+  }
+
+  enum Poll: Sendable, Equatable {
+    case command(Envelope)
+    case empty
+    case closed
   }
 
   enum CommandError: Error, Sendable, Equatable {
@@ -43,26 +62,33 @@ final class DoryPCRunCommandBus: @unchecked Sendable {
     forProcessor processor: Int,
     maximumInstructions: UInt64
   ) throws -> Envelope {
-    condition.lock()
-    defer { condition.unlock() }
-    try validate(processor)
     guard maximumInstructions > 0 else {
       throw CommandError.invalidMaximumInstructions(maximumInstructions)
     }
-    guard !isClosed else { throw CommandError.closed }
-    guard pending[processor] == nil else { throw CommandError.outstandingCommand(processor) }
-
-    let sequence = sequences[processor] == .max ? 1 : sequences[processor] + 1
-    let command = Envelope(
-      runGeneration: runGeneration,
-      processor: processor,
-      sequence: sequence,
-      maximumInstructions: maximumInstructions
+    return try publish(
+      .execute(maximumInstructions: maximumInstructions),
+      forProcessor: processor
     )
-    sequences[processor] = sequence
-    pending[processor] = command
-    condition.broadcast()
-    return command
+  }
+
+  /// Publishes one previously preflighted, register-only instruction. The plan itself remains in
+  /// the machine's owner-state handoff; this envelope only grants the matching worker permission
+  /// to consume it.
+  @discardableResult
+  func publishFrozenInstruction(forProcessor processor: Int) throws -> Envelope {
+    try publish(
+      .executeFrozenInstruction,
+      forProcessor: processor
+    )
+  }
+
+  /// Requests owner-thread preflight for the narrowly admitted register-only overlap path.
+  @discardableResult
+  func publishFrozenInstructionPreparation(forProcessor processor: Int) throws -> Envelope {
+    try publish(
+      .prepareFrozenInstruction,
+      forProcessor: processor
+    )
   }
 
   /// Waits for and removes the next command for one owner. `nil` is returned after close, including
@@ -83,6 +109,22 @@ final class DoryPCRunCommandBus: @unchecked Sendable {
     return command
   }
 
+  /// Nonblocking observation used by owners whose park loop must also service translation
+  /// maintenance. Command publication is paired with the machine pending-work wake condition.
+  func poll(forProcessor processor: Int) throws -> Poll {
+    condition.lock()
+    defer { condition.unlock() }
+    try validate(processor)
+    guard !isClosed else {
+      pending[processor] = nil
+      return .closed
+    }
+    guard let command = pending[processor] else { return .empty }
+    pending[processor] = nil
+    condition.broadcast()
+    return .command(command)
+  }
+
   /// Permanently cancels the run and wakes every owner. Close is idempotent.
   func close() {
     condition.lock()
@@ -96,5 +138,25 @@ final class DoryPCRunCommandBus: @unchecked Sendable {
     guard pending.indices.contains(processor) else {
       throw CommandError.invalidProcessor(processor)
     }
+  }
+
+  private func publish(_ command: Command, forProcessor processor: Int) throws -> Envelope {
+    condition.lock()
+    defer { condition.unlock() }
+    try validate(processor)
+    guard !isClosed else { throw CommandError.closed }
+    guard pending[processor] == nil else { throw CommandError.outstandingCommand(processor) }
+
+    let sequence = sequences[processor] == .max ? 1 : sequences[processor] + 1
+    let envelope = Envelope(
+      runGeneration: runGeneration,
+      processor: processor,
+      sequence: sequence,
+      command: command
+    )
+    sequences[processor] = sequence
+    pending[processor] = envelope
+    condition.broadcast()
+    return envelope
   }
 }

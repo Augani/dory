@@ -24,7 +24,15 @@ import Testing
     }
 
     let first = try bus.publishExecution(forProcessor: 0, maximumInstructions: 7)
-    #expect(first == .init(runGeneration: 41, processor: 0, sequence: 1, maximumInstructions: 7))
+    #expect(
+      first
+        == .init(
+          runGeneration: 41,
+          processor: 0,
+          sequence: 1,
+          command: .execute(maximumInstructions: 7)
+        )
+    )
     #expect(
       throws: DoryPCRunCommandBus.CommandError.outstandingCommand(0)
     ) {
@@ -41,15 +49,23 @@ import Testing
     let bus = DoryPCRunCommandBus(processorCount: 2, runGeneration: 2)
     _ = try bus.publishExecution(forProcessor: 0, maximumInstructions: 1)
     let parkedResult = CommandBusLockedValue<DoryPCRunCommandBus.Envelope?>(
-      .init(runGeneration: 0, processor: 0, sequence: 0, maximumInstructions: 0)
+      .init(
+        runGeneration: 0,
+        processor: 0,
+        sequence: 0,
+        command: .execute(maximumInstructions: 1)
+      )
     )
     let parked = DispatchGroup()
+    let parkedOwnerStarted = DispatchSemaphore(value: 0)
     parked.enter()
     DispatchQueue.global().async {
       defer { parked.leave() }
+      parkedOwnerStarted.signal()
       parkedResult.set(try? bus.nextCommand(forProcessor: 1))
     }
 
+    try #require(parkedOwnerStarted.wait(timeout: .now() + 2) == .success)
     bus.close()
     #expect(try bus.nextCommand(forProcessor: 0) == nil)
     #expect(parked.wait(timeout: .now() + 1) == .success)
@@ -134,8 +150,25 @@ import Testing
       #expect(lane.map(\.processor).allSatisfy { $0 == processor })
       #expect(lane.map(\.runGeneration).allSatisfy { $0 == 73 })
       #expect(lane.map(\.sequence) == (1...commandsPerProcessor).map(UInt64.init))
-      #expect(lane.map(\.maximumInstructions) == (1...commandsPerProcessor).map(UInt64.init))
+      #expect(
+        lane.map(\.command)
+          == (1...commandsPerProcessor).map {
+            .execute(maximumInstructions: UInt64($0))
+          }
+      )
     }
+  }
+
+  @Test func frozenInstructionUsesTheSameExactLane() throws {
+    let bus = DoryPCRunCommandBus(processorCount: 1, runGeneration: 9)
+    let preparation = try bus.publishFrozenInstructionPreparation(forProcessor: 0)
+    #expect(preparation.command == .prepareFrozenInstruction)
+    #expect(preparation.command.maximumInstructions == 1)
+    #expect(try bus.nextCommand(forProcessor: 0) == preparation)
+    let execution = try bus.publishFrozenInstruction(forProcessor: 0)
+    #expect(execution.command == .executeFrozenInstruction)
+    #expect(execution.command.maximumInstructions == 1)
+    #expect(try bus.nextCommand(forProcessor: 0) == execution)
   }
 }
 

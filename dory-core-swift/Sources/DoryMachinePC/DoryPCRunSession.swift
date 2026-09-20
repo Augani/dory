@@ -20,6 +20,7 @@ final class DoryPCRunSession: @unchecked Sendable {
   }
 
   enum WorkerOutcome: Sendable, Equatable {
+    case preparedFrozenInstruction(Bool)
     case retired
     case yielded
     case halted

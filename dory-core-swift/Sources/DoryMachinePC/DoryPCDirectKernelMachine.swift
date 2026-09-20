@@ -724,6 +724,39 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
+  /// Transfers a preflighted register-only instruction to its owning worker. Plans are installed
+  /// only while every owner is parked at a command/result boundary and are consumed exactly once.
+  private final class RunParallelPlanBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var plans: [Int: ParallelInstruction] = [:]
+
+    func install(_ plan: ParallelInstruction) throws {
+      try lock.withLock {
+        guard plans[plan.processor] == nil else {
+          throw WorkerError.outstandingFrozenInstruction(plan.processor)
+        }
+        plans[plan.processor] = plan
+      }
+    }
+
+    func take(forProcessor processor: Int) throws -> ParallelInstruction {
+      try lock.withLock {
+        guard let plan = plans.removeValue(forKey: processor) else {
+          throw WorkerError.missingFrozenInstruction(processor)
+        }
+        return plan
+      }
+    }
+
+    func remove(forProcessor processor: Int) {
+      lock.withLock { _ = plans.removeValue(forKey: processor) }
+    }
+
+    func removeAll() {
+      lock.withLock { plans.removeAll(keepingCapacity: false) }
+    }
+  }
+
   private struct WorkerBoundaryService {
     let acknowledgedPendingWorkGeneration: UInt64
     let tripleFault: DoryPCTripleFaultSource?
@@ -1543,11 +1576,157 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           worker: workers[0]
         )
       }
-      var completed: UInt64 = 0
+      return try runMultipleProcessorSession(
+        maximumInstructions: maximumInstructions,
+        exceptionPolicy: exceptionPolicy,
+        observer: observer,
+        workers: workers
+      )
+    }
+  }
+
+  /// Runs every vCPU as one host-worker job for the duration of this public run. General guest
+  /// execution remains serialized; only the existing preflighted register-only instruction path
+  /// may overlap. This changes ownership and handoff mechanics without prematurely admitting
+  /// shared-memory SMP instructions that have not passed the tier/device matrix.
+  private func runMultipleProcessorSession(
+    maximumInstructions: UInt64,
+    exceptionPolicy: DoryPCExceptionPolicy,
+    observer: (@Sendable (WorkerEvent) -> Void)?,
+    workers: [DoryPCHostWorker]
+  ) throws -> DoryPCMachineStop {
+    precondition(processorCount > 1)
+    precondition(workers.count == processorCount)
+    pendingWorkWake.setDispatchThread(nil)
+    runGeneration = runGeneration == .max ? 1 : runGeneration + 1
+    let generation = runGeneration
+    let session = DoryPCRunSession(
+      processorCount: processorCount,
+      instructionBudget: maximumInstructions,
+      runGeneration: generation,
+      exceptionPolicy: exceptionPolicy,
+      clockMode: clockSource.monotonicNanoseconds == nil ? .deterministic : .hostMonotonic
+    )
+    let commandBus = DoryPCRunCommandBus(
+      processorCount: processorCount,
+      runGeneration: generation
+    )
+    let failureBox = RunFailureBox()
+    let parallelPlanBox = RunParallelPlanBox()
+    var completions: [DoryPCHostWorker.Completion<Void>] = []
+    var outstandingResults = [DoryPCRunSession.WorkerResult?](
+      repeating: nil,
+      count: processorCount
+    )
+    var completed: UInt64 = 0
+
+    func stopWorkers() throws {
+      commandBus.close()
+      parallelPlanBox.removeAll()
+      for processor in 0..<processorCount {
+        pendingWorkWake.notify(forProcessor: processor)
+      }
+
+      var snapshot = session.snapshot
+      while true {
+        for processor in 0..<processorCount {
+          let result = outstandingResults[processor] ?? snapshot.workerResults[processor]
+          if let result {
+            _ = try session.respond(to: result, with: .stop)
+            pendingWorkWake.notify(forProcessor: processor)
+            outstandingResults[processor] = nil
+          }
+        }
+        if completions.allSatisfy(\.isFinished) { break }
+        snapshot = session.waitForChange(
+          after: snapshot.changeGeneration,
+          until: Date(timeIntervalSinceNow: 0.05)
+        )
+      }
+
+      var firstFailure: (any Error)?
+      for completion in completions {
+        do {
+          _ = try completion.wait()
+        } catch {
+          if firstFailure == nil { firstFailure = error }
+        }
+      }
+      pendingWorkWake.setDispatchThread(nil)
+      if let firstFailure { throw firstFailure }
+    }
+
+    func finish(
+      _ stop: DoryPCMachineStop,
+      termination: DoryPCRunSession.TerminationReason? = nil
+    ) throws -> DoryPCMachineStop {
+      if let termination { try session.requestTermination(termination) }
+      try stopWorkers()
+      return stop
+    }
+
+    func dispatch(
+      _ command: DoryPCRunCommandBus.Command,
+      to processor: Int
+    ) throws {
+      switch command {
+      case .execute(let maximumInstructions):
+        try commandBus.publishExecution(
+          forProcessor: processor,
+          maximumInstructions: maximumInstructions
+        )
+      case .prepareFrozenInstruction:
+        try commandBus.publishFrozenInstructionPreparation(forProcessor: processor)
+      case .executeFrozenInstruction:
+        try commandBus.publishFrozenInstruction(forProcessor: processor)
+      }
+
+      if let result = outstandingResults[processor] {
+        _ = try session.respond(to: result, with: .resume)
+        outstandingResults[processor] = nil
+      }
+      pendingWorkWake.notify(forProcessor: processor)
+    }
+
+    func hostFailure(from result: DoryPCRunSession.WorkerResult) throws {
+      guard case .hostFailure = result.outcome else { return }
+      guard let failure = failureBox.failure(forProcessor: result.processor) else {
+        throw WorkerError.missingHostFailure
+      }
+      throw failure
+    }
+
+    completions = (0..<processorCount).map { processor in
+      workers[processor].submit(kind: .runLoop) { [self] in
+        try runProcessorWorkerLoop(
+          session: session,
+          processor: processor,
+          commandBus: commandBus,
+          failureBox: failureBox,
+          parallelPlanBox: parallelPlanBox,
+          observer: observer
+        )
+      }
+    }
+
+    do {
       while completed < maximumInstructions {
         reconcilePendingPageTableWrites()
         let pendingWorkGeneration = pendingWorkWake.snapshot()
-        if let stop = powerStop(instructionCount: completed) { return stop }
+        if let stop = powerStop(instructionCount: completed) {
+          let reason: DoryPCRunSession.TerminationReason =
+            switch stop {
+            case .poweredOff: .powerOff
+            case .reset: .reset
+            default: .cancelled
+            }
+          return try finish(stop, termination: reason)
+        }
+
+        // All architectural owners are parked at a command or result boundary here. Retain the
+        // legacy coordinator drain temporarily while general execution remains serialized; the
+        // worker repeats its own full boundary before serial guest entry.
+        pendingWorkWake.setDispatchThread(Thread.current)
         if instrumentationEnabled {
           let sample = hostTimeSample()
           applyProcessorEvents()
@@ -1560,17 +1739,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           if clockSource.monotonicNanoseconds != nil {
             synchronizeHostClock()
           } else {
-            // Deterministic conformance time advances with retired work and remains identical across
-            // interpreter and JIT tiers. Product UEFI execution never uses this policy.
             advanceClocks(by: 1)
           }
           recordHostTime(.clockAdvancement, since: sample)
+        } else if clockSource.monotonicNanoseconds != nil {
+          synchronizeHostClock()
         } else {
-          if clockSource.monotonicNanoseconds != nil {
-            synchronizeHostClock()
-          } else {
-            advanceClocks(by: 1)
-          }
+          advanceClocks(by: 1)
         }
         let interruptStop: DoryPCMachineStop?
         if instrumentationEnabled {
@@ -1580,9 +1755,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         } else {
           interruptStop = try deliverPendingInterrupts(instructionCount: completed)
         }
-        if let interruptStop { return interruptStop }
-        // Couple the native poll-byte clear to the generation captured before the drain. An edge
-        // racing this boundary either prevents the clear or republishes the byte after it.
+        if let interruptStop {
+          pendingWorkWake.setDispatchThread(nil)
+          return try finish(
+            interruptStop,
+            termination: .tripleFault(processor: tripleFaultProcessor(interruptStop))
+          )
+        }
         let acknowledgedPendingWork = pendingWorkWake.acknowledge(
           after: pendingWorkGeneration
         ) { processor in
@@ -1593,7 +1772,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             optimizingJITs[processor].clearPendingWork()
           }
         }
+        pendingWorkWake.setDispatchThread(nil)
         if !acknowledgedPendingWork { continue }
+
         guard let processor = nextRunnableProcessor() else {
           let resumed: Bool
           if instrumentationEnabled {
@@ -1604,126 +1785,173 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             resumed = waitForNextInterrupt(after: pendingWorkGeneration)
           }
           if resumed { continue }
-          if let stop = powerStop(instructionCount: completed) { return stop }
+          if let stop = powerStop(instructionCount: completed) {
+            let reason: DoryPCRunSession.TerminationReason =
+              switch stop {
+              case .poweredOff: .powerOff
+              case .reset: .reset
+              default: .cancelled
+              }
+            return try finish(stop, termination: reason)
+          }
           if pendingWorkWake.snapshot() != pendingWorkGeneration { continue }
-          return .halted(instructionCount: completed)
+          return try finish(.halted(instructionCount: completed))
         }
-        // A batch reserves at most one instruction per vCPU from the global budget. All
-        // fetch/admission work finishes before any instruction overlaps; all completions are
-        // collected before clocks, device delivery, lifecycle mutations, or serial execution resume.
+
         if clockSource.monotonicNanoseconds != nil {
-          let sample = hostTimeSample()
-          let plans = try prepareParallelInstructions(
-            startingAt: processor, maximumCount: maximumInstructions - completed, workers: workers)
-          if plans.count > 1 {
-            let submissions = plans.map { plan in
-              (
-                plan,
-                workers[plan.processor].submit { [self] in
-                  observer?(.executing(plan.processor, concurrent: true))
-                  defer { observer?(.executed(plan.processor, concurrent: true)) }
-                  return try executeParallelInstruction(plan, observer: observer)
-                }
-              )
+          let executionSample = hostTimeSample()
+          let maximumPlanCount = Int(
+            min(maximumInstructions - completed, UInt64(processorCount))
+          )
+          var preparedProcessors: [Int] = []
+          for displacement in 0..<processorCount {
+            guard preparedProcessors.count < maximumPlanCount else { break }
+            let candidate = (processor + displacement) % processorCount
+            let slot = processorSlots[candidate]
+            guard slot.state != nil, !slot.isHalted, slot.lifecycle == .running else { continue }
+            try dispatch(.prepareFrozenInstruction, to: candidate)
+            let preparation = try waitForWorkerResult(
+              session: session,
+              processor: candidate,
+              completion: completions[candidate]
+            )
+            outstandingResults[candidate] = preparation
+            recordSessionCounters(preparation.counters)
+            try hostFailure(from: preparation)
+            guard case .preparedFrozenInstruction(let prepared) = preparation.outcome else {
+              preconditionFailure("frozen preparation published an execution result")
             }
-            // Join every submitted vCPU even when one fails. No worker may retain architectural
-            // state or guest-memory authority after this run releases the execution gate.
-            var executions: [ProcessorExecution] = []
-            var firstFailure: (any Error)?
-            for submission in submissions {
-              do {
-                executions.append(try submission.1.wait())
-              } catch {
-                if firstFailure == nil { firstFailure = error }
+            guard prepared else { break }
+            preparedProcessors.append(candidate)
+          }
+          if preparedProcessors.count > 1 {
+            for candidate in preparedProcessors {
+              try dispatch(.executeFrozenInstruction, to: candidate)
+            }
+            var results: [DoryPCRunSession.WorkerResult] = []
+            for candidate in preparedProcessors {
+              let result = try waitForWorkerResult(
+                session: session,
+                processor: candidate,
+                completion: completions[candidate]
+              )
+              outstandingResults[candidate] = result
+              try hostFailure(from: result)
+              results.append(result)
+            }
+            recordHostTime(.processorExecution, since: executionSample)
+            for result in results {
+              recordSessionCounters(result.counters)
+              completed += result.counters.instructionCount
+              switch result.outcome {
+              case .retired, .yielded:
+                processorSlots[result.processor].isHalted = false
+              case .halted:
+                processorSlots[result.processor].isHalted = true
+              case .tripleFault(let source):
+                return try finish(
+                  .tripleFault(source: source, instructionCount: completed),
+                  termination: .tripleFault(processor: result.processor)
+                )
+              case .exception(let exception):
+                return try finish(.exception(exception, instructionCount: completed - 1))
+              case .preparedFrozenInstruction:
+                preconditionFailure("frozen execution published a preparation result")
+              case .hostFailure:
+                preconditionFailure("host failure handled before frozen result dispatch")
               }
             }
-            if let firstFailure { throw firstFailure }
-            recordHostTime(.processorExecution, since: sample)
-            for execution in executions {
-              completed += execution.instructionCount
-              recordExecution(execution)
-            }
-            roundRobinCursor = (plans.last!.processor + 1) % processorCount
+            roundRobinCursor = (preparedProcessors.last! + 1) % processorCount
             let clockSample = hostTimeSample()
             synchronizeHostClock()
             recordHostTime(.clockAdvancement, since: clockSample)
-            if let stop = powerStop(instructionCount: completed) { return stop }
+            if let stop = powerStop(instructionCount: completed) {
+              let reason: DoryPCRunSession.TerminationReason =
+                switch stop {
+                case .poweredOff: .powerOff
+                case .reset: .reset
+                default: .cancelled
+                }
+              return try finish(stop, termination: reason)
+            }
             continue
           }
-          recordHostTime(.processorExecution, since: sample)
+          for candidate in preparedProcessors {
+            parallelPlanBox.remove(forProcessor: candidate)
+          }
+          recordHostTime(.processorExecution, since: executionSample)
         }
-        guard let processorState = processorSlots[processor].state else { continue }
+
         let remaining = maximumInstructions - completed
-        let jitInstructionBudget =
-          baselineJITs.isEmpty ? nil : baselineInstructionBudget(maximumInstructions: remaining)
-        let execution: ProcessorExecution
-        if instrumentationEnabled {
-          let sample = hostTimeSample()
-          execution = try workers[processor].perform { [self] in
-            pendingWorkWake.setDispatchThread(Thread.current, forProcessor: processor)
-            defer { pendingWorkWake.setDispatchThread(nil, forProcessor: processor) }
-            observer?(.executing(processor, concurrent: false))
-            defer { observer?(.executed(processor, concurrent: false)) }
-            return try execute(
-              processor: processor,
-              state: &processorState.value,
-              maximumInstructions: remaining,
-              jitInstructionBudget: jitInstructionBudget
-            )
-          }
-          pendingWorkWake.setDispatchThread(Thread.current)
-          recordHostTime(.processorExecution, since: sample)
-        } else {
-          execution = try workers[processor].perform { [self] in
-            pendingWorkWake.setDispatchThread(Thread.current, forProcessor: processor)
-            defer { pendingWorkWake.setDispatchThread(nil, forProcessor: processor) }
-            observer?(.executing(processor, concurrent: false))
-            defer { observer?(.executed(processor, concurrent: false)) }
-            return try execute(
-              processor: processor,
-              state: &processorState.value,
-              maximumInstructions: remaining,
-              jitInstructionBudget: jitInstructionBudget
-            )
-          }
-          pendingWorkWake.setDispatchThread(Thread.current)
-        }
-        reconcileTranslationInvalidations(afterExecuting: processor)
-        completed += execution.instructionCount
-        recordExecution(execution)
+        let reservationLimit =
+          baselineJITs.isEmpty
+          ? remaining
+          : UInt64(baselineInstructionBudget(maximumInstructions: remaining))
+        let executionSample = hostTimeSample()
+        try dispatch(
+          .execute(maximumInstructions: reservationLimit),
+          to: processor
+        )
+        let result = try waitForWorkerResult(
+          session: session,
+          processor: processor,
+          completion: completions[processor]
+        )
+        recordHostTime(.processorExecution, since: executionSample)
+        outstandingResults[processor] = result
+        recordSessionCounters(result.counters)
+        try hostFailure(from: result)
+        completed += result.counters.instructionCount
+
         if instrumentationEnabled {
           let sample = hostTimeSample()
           if clockSource.monotonicNanoseconds != nil {
             synchronizeHostClock()
           } else {
-            if execution.instructionCount > 1 {
-              advanceClocks(by: execution.instructionCount - 1)
+            if result.counters.instructionCount > 1 {
+              advanceClocks(by: result.counters.instructionCount - 1)
             }
-            // Deterministic TSC progression is an explicit test/replay policy, not product time.
-            advanceTSCs(byMachineTicks: execution.instructionCount)
+            advanceTSCs(byMachineTicks: result.counters.instructionCount)
           }
           recordHostTime(.clockAdvancement, since: sample)
+        } else if clockSource.monotonicNanoseconds != nil {
+          synchronizeHostClock()
         } else {
-          if clockSource.monotonicNanoseconds != nil {
-            synchronizeHostClock()
-          } else {
-            if execution.instructionCount > 1 {
-              advanceClocks(by: execution.instructionCount - 1)
-            }
-            advanceTSCs(byMachineTicks: execution.instructionCount)
+          if result.counters.instructionCount > 1 {
+            advanceClocks(by: result.counters.instructionCount - 1)
           }
+          advanceTSCs(byMachineTicks: result.counters.instructionCount)
         }
-        if let stop = powerStop(instructionCount: completed) { return stop }
-        switch execution.result {
+        if let stop = powerStop(instructionCount: completed) {
+          let reason: DoryPCRunSession.TerminationReason =
+            switch stop {
+            case .poweredOff: .powerOff
+            case .reset: .reset
+            default: .cancelled
+            }
+          return try finish(stop, termination: reason)
+        }
+
+        switch result.outcome {
         case .retired, .yielded:
           processorSlots[processor].isHalted = false
-          continue
         case .halted:
           processorSlots[processor].isHalted = true
-          continue
+        case .tripleFault(let source):
+          return try finish(
+            .tripleFault(source: source, instructionCount: completed),
+            termination: .tripleFault(processor: processor)
+          )
+        case .preparedFrozenInstruction:
+          preconditionFailure("serial execution published a preparation result")
+        case .hostFailure:
+          preconditionFailure("host failure handled before architectural result dispatch")
         case .exception(let exception):
           guard exceptionPolicy == .deliver else {
-            return .exception(exception, instructionCount: completed - 1)
+            return try finish(.exception(exception, instructionCount: completed - 1))
+          }
+          guard let processorState = processorSlots[processor].state else {
+            throw DoryPCMachineError.notLoaded
           }
           let faultMode = executionMode(processorState.value)
           translatedMemories[processor].updateContext(
@@ -1766,14 +1994,19 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
               )
             }
           } catch DoryX86InterruptDeliveryError.processorShutdown {
-            return .tripleFault(
-              source: .exception(evidence),
-              instructionCount: completed - 1
+            return try finish(
+              .tripleFault(source: .exception(evidence), instructionCount: completed - 1),
+              termination: .tripleFault(processor: processor)
             )
           }
         }
       }
-      return .instructionBudget(maximumInstructions)
+      return try finish(.instructionBudget(maximumInstructions), termination: .instructionBudget)
+    } catch {
+      let originalFailure = error
+      try? session.requestTermination(.cancelled)
+      try? stopWorkers()
+      throw originalFailure
     }
   }
 
@@ -1801,6 +2034,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     )
     let commandBus = DoryPCRunCommandBus(processorCount: 1, runGeneration: generation)
     let failureBox = RunFailureBox()
+    let parallelPlanBox = RunParallelPlanBox()
     var workerCompletion: DoryPCHostWorker.Completion<Void>?
     var outstandingResult: DoryPCRunSession.WorkerResult?
     var acknowledgedPendingWorkGeneration: UInt64?
@@ -1809,6 +2043,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
     func stopWorker() throws {
       commandBus.close()
+      parallelPlanBox.removeAll()
       defer { pendingWorkWake.setDispatchThread(nil) }
       if let workerCompletion {
         let result: DoryPCRunSession.WorkerResult?
@@ -1858,11 +2093,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       } else {
         precondition(workerCompletion == nil)
         workerCompletion = worker.submit(kind: .runLoop) { [self] in
-          try runSingleProcessorWorkerLoop(
+          try runProcessorWorkerLoop(
             session: session,
             processor: 0,
             commandBus: commandBus,
             failureBox: failureBox,
+            parallelPlanBox: parallelPlanBox,
             observer: observer
           )
         }
@@ -1996,6 +2232,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             .tripleFault(source: source, instructionCount: completed),
             termination: .tripleFault(processor: 0)
           )
+        case .preparedFrozenInstruction:
+          preconditionFailure("single-vCPU execution published a preparation result")
         case .hostFailure:
           preconditionFailure("host failure handled before architectural result dispatch")
         case .exception(let exception):
@@ -2062,11 +2300,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
-  private func runSingleProcessorWorkerLoop(
+  private func runProcessorWorkerLoop(
     session: DoryPCRunSession,
     processor: Int,
     commandBus: DoryPCRunCommandBus,
     failureBox: RunFailureBox,
+    parallelPlanBox: RunParallelPlanBox,
     observer: (@Sendable (WorkerEvent) -> Void)?
   ) throws {
     precondition((0..<session.processorCount).contains(processor))
@@ -2075,11 +2314,17 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     observer?(.runLoopStarted(processor, generation: session.runGeneration))
     defer { observer?(.runLoopStopped(processor, generation: session.runGeneration)) }
     while true {
-      guard let command = try commandBus.nextCommand(forProcessor: processor) else { return }
+      guard
+        let command = try waitForWorkerCommand(
+          commandBus: commandBus,
+          processor: processor,
+          observer: observer
+        )
+      else { return }
       guard
         let reservation = try session.reserve(
           processor: processor,
-          maximumInstructions: command.maximumInstructions
+          maximumInstructions: command.command.maximumInstructions
         )
       else { throw WorkerError.missingRunReservation }
       pendingWorkWake.setDispatchThread(Thread.current, forProcessor: processor)
@@ -2087,52 +2332,117 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       var failureCounters = DoryPCRunSession.WorkerCounters.zero
       var executionStartedCPU: UInt64?
       do {
-        let boundary = try serviceProcessorBoundary(
-          session: session,
-          processor: processor,
-          observer: observer
-        )
-        failureCounters.eventCPUNanoseconds = boundary.eventCPUNanoseconds
-        if let source = boundary.tripleFault {
-          pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
-          result = try session.completeAndPublish(
-            reservation,
-            outcome: .tripleFault(source),
-            counters: .init(eventCPUNanoseconds: boundary.eventCPUNanoseconds),
-            acknowledgedPendingWorkGeneration: boundary.acknowledgedPendingWorkGeneration
+        switch command.command {
+        case .execute:
+          let boundary = try serviceProcessorBoundary(
+            session: session,
+            processor: processor,
+            observer: observer
           )
-        } else if processorSlots[processor].lifecycle != .running
-          || processorSlots[processor].isHalted
-        {
-          pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
-          result = try session.completeAndPublish(
-            reservation,
-            outcome: .halted,
-            counters: .init(eventCPUNanoseconds: boundary.eventCPUNanoseconds),
-            acknowledgedPendingWorkGeneration: boundary.acknowledgedPendingWorkGeneration
-          )
-        } else {
-          guard let processorState = processorSlots[processor].state else {
-            throw DoryPCMachineError.notLoaded
+          failureCounters.eventCPUNanoseconds = boundary.eventCPUNanoseconds
+          if let source = boundary.tripleFault {
+            pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
+            result = try session.completeAndPublish(
+              reservation,
+              outcome: .tripleFault(source),
+              counters: .init(eventCPUNanoseconds: boundary.eventCPUNanoseconds),
+              acknowledgedPendingWorkGeneration: boundary.acknowledgedPendingWorkGeneration
+            )
+          } else if processorSlots[processor].lifecycle != .running
+            || processorSlots[processor].isHalted
+          {
+            pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
+            result = try session.completeAndPublish(
+              reservation,
+              outcome: .halted,
+              counters: .init(eventCPUNanoseconds: boundary.eventCPUNanoseconds),
+              acknowledgedPendingWorkGeneration: boundary.acknowledgedPendingWorkGeneration
+            )
+          } else {
+            guard let processorState = processorSlots[processor].state else {
+              throw DoryPCMachineError.notLoaded
+            }
+            if instrumentationEnabled {
+              executionStartedCPU = dory_thread_cpu_time_nanoseconds()
+            }
+            observer?(.executing(processor, concurrent: false))
+            let execution: ProcessorExecution
+            do {
+              execution = try execute(
+                processor: processor,
+                state: &processorState.value,
+                maximumInstructions: reservation.instructionCount,
+                jitInstructionBudget: baselineJITs.isEmpty
+                  ? nil : Int(reservation.instructionCount)
+              )
+            } catch {
+              observer?(.executed(processor, concurrent: false))
+              throw error
+            }
+            observer?(.executed(processor, concurrent: false))
+            observeWorkerTranslationReconciliation(
+              afterExecuting: processor,
+              observer: observer
+            )
+            pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
+            let elapsedCPU =
+              executionStartedCPU.map {
+                dory_thread_cpu_time_nanoseconds() &- $0
+              } ?? 0
+            var counters = sessionCounters(
+              for: execution,
+              executionCPUNanoseconds: elapsedCPU
+            )
+            counters.eventCPUNanoseconds = boundary.eventCPUNanoseconds
+            result = try session.completeAndPublish(
+              reservation,
+              outcome: sessionOutcome(for: execution.result),
+              counters: counters,
+              acknowledgedPendingWorkGeneration: boundary.acknowledgedPendingWorkGeneration
+            )
           }
+
+        case .prepareFrozenInstruction:
+          let acknowledgedPendingWorkGeneration = try serviceFrozenInstructionMaintenance(
+            session: session,
+            processor: processor,
+            observer: observer
+          )
+          let startedCPU = instrumentationEnabled ? dory_thread_cpu_time_nanoseconds() : 0
+          let plan =
+            processorSlots[processor].lifecycle == .running
+              && !processorSlots[processor].isHalted
+            ? try prepareParallelInstruction(forProcessor: processor) : nil
+          if let plan { try parallelPlanBox.install(plan) }
+          let elapsedCPU =
+            instrumentationEnabled ? dory_thread_cpu_time_nanoseconds() &- startedCPU : 0
+          pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
+          result = try session.completeAndPublish(
+            reservation,
+            outcome: .preparedFrozenInstruction(plan != nil),
+            counters: .init(executionCPUNanoseconds: elapsedCPU),
+            acknowledgedPendingWorkGeneration: acknowledgedPendingWorkGeneration
+          )
+
+        case .executeFrozenInstruction:
+          let plan = try parallelPlanBox.take(forProcessor: processor)
+          let acknowledgedPendingWorkGeneration = try serviceFrozenInstructionMaintenance(
+            session: session,
+            processor: processor,
+            observer: observer
+          )
           if instrumentationEnabled {
             executionStartedCPU = dory_thread_cpu_time_nanoseconds()
           }
-          observer?(.executing(processor, concurrent: false))
+          observer?(.executing(processor, concurrent: true))
           let execution: ProcessorExecution
           do {
-            execution = try execute(
-              processor: processor,
-              state: &processorState.value,
-              maximumInstructions: reservation.instructionCount,
-              jitInstructionBudget: baselineJITs.isEmpty
-                ? nil : Int(reservation.instructionCount)
-            )
+            execution = try executeParallelInstruction(plan, observer: observer)
           } catch {
-            observer?(.executed(processor, concurrent: false))
+            observer?(.executed(processor, concurrent: true))
             throw error
           }
-          observer?(.executed(processor, concurrent: false))
+          observer?(.executed(processor, concurrent: true))
           observeWorkerTranslationReconciliation(
             afterExecuting: processor,
             observer: observer
@@ -2142,16 +2452,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             executionStartedCPU.map {
               dory_thread_cpu_time_nanoseconds() &- $0
             } ?? 0
-          var counters = sessionCounters(
+          let counters = sessionCounters(
             for: execution,
             executionCPUNanoseconds: elapsedCPU
           )
-          counters.eventCPUNanoseconds = boundary.eventCPUNanoseconds
           result = try session.completeAndPublish(
             reservation,
             outcome: sessionOutcome(for: execution.result),
             counters: counters,
-            acknowledgedPendingWorkGeneration: boundary.acknowledgedPendingWorkGeneration
+            acknowledgedPendingWorkGeneration: acknowledgedPendingWorkGeneration
           )
         }
       } catch {
@@ -2186,6 +2495,39 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         continue
       case .stop:
         return
+      }
+    }
+  }
+
+  /// Parks an owner on the machine generation condition so a remote translation publication can
+  /// complete even before this vCPU receives its first execution command. Commands are polled both
+  /// before and after maintenance, closing the check/park race without holding either condition
+  /// across paging/JIT work.
+  private func waitForWorkerCommand(
+    commandBus: DoryPCRunCommandBus,
+    processor: Int,
+    observer: (@Sendable (WorkerEvent) -> Void)?
+  ) throws -> DoryPCRunCommandBus.Envelope? {
+    while true {
+      switch try commandBus.poll(forProcessor: processor) {
+      case .command(let command): return command
+      case .closed: return nil
+      case .empty: break
+      }
+
+      let observedWakeGeneration = pendingWorkWake.snapshot(forProcessor: processor)
+      pendingWorkWake.setDispatchThread(Thread.current, forProcessor: processor)
+      _ = servicePendingTranslationInvalidation(forProcessor: processor, observer: observer)
+      pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
+
+      switch try commandBus.poll(forProcessor: processor) {
+      case .command(let command): return command
+      case .closed: return nil
+      case .empty:
+        pendingWorkWake.waitForMaintenance(
+          forProcessor: processor,
+          after: observedWakeGeneration
+        )
       }
     }
   }
@@ -2294,6 +2636,46 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
+  /// Reconciles translation/code authority immediately before a preflighted frozen instruction
+  /// without consuming architectural lifecycle or interrupt state. A device edge racing an
+  /// admitted one-instruction batch is handled at the next full processor boundary, matching the
+  /// existing rendezvous semantics; stale translations and native code may not cross this point.
+  private func serviceFrozenInstructionMaintenance(
+    session: DoryPCRunSession,
+    processor: Int,
+    observer: (@Sendable (WorkerEvent) -> Void)?
+  ) throws -> UInt64 {
+    while true {
+      let observedWakeGeneration = pendingWorkWake.snapshot(forProcessor: processor)
+      _ = try session.observePendingWork(
+        processor: processor,
+        sourceGeneration: observedWakeGeneration
+      )
+      observer?(.servicingPendingWork(processor))
+      _ = servicePendingTranslationInvalidation(forProcessor: processor, observer: observer)
+      _ = reconcilePendingPageTableWritesFromWorker(processor: processor, observer: observer)
+      _ = servicePendingTranslationInvalidation(forProcessor: processor, observer: observer)
+
+      let acknowledgedWake = pendingWorkWake.acknowledge(
+        forProcessor: processor,
+        after: observedWakeGeneration
+      ) {
+        if baselineJITs.indices.contains(processor) {
+          baselineJITs[processor].clearPendingWork()
+        }
+        if optimizingJITs.indices.contains(processor) {
+          optimizingJITs[processor].clearPendingWork()
+        }
+      }
+      guard acknowledgedWake else { continue }
+      if let required = try session.pendingWorkGeneration(forProcessor: processor) {
+        _ = try session.acknowledgePendingWork(processor: processor, generation: required)
+      }
+      if try session.pendingWorkGeneration(forProcessor: processor) != nil { continue }
+      return observedWakeGeneration
+    }
+  }
+
   private func observeWorkerTranslationReconciliation(
     afterExecuting processor: Int,
     observer: (@Sendable (WorkerEvent) -> Void)?
@@ -2330,6 +2712,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     case .yielded: .yielded
     case .halted: .halted
     case .exception(let exception): .exception(exception)
+    }
+  }
+
+  private func tripleFaultProcessor(_ stop: DoryPCMachineStop) -> Int {
+    guard case .tripleFault(let source, _) = stop else {
+      preconditionFailure("processor requested for a non-triple-fault stop")
+    }
+    switch source {
+    case .exception(let evidence): return evidence.processor
+    case .interrupt(_, _, let processor): return processor
     }
   }
 
@@ -2400,6 +2792,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private enum WorkerError: Error {
     case inconsistentFrozenInstruction, inconsistentNativeInstruction
     case missingRunReservation, runLoopExitedWithoutResult, missingHostFailure
+    case missingFrozenInstruction(Int)
+    case outstandingFrozenInstruction(Int)
   }
 
   struct ParallelInstruction: Sendable {
@@ -2410,42 +2804,34 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     let jit: DoryARM64BaselineExecutor?
   }
 
-  private func prepareParallelInstructions(
-    startingAt first: Int, maximumCount: UInt64, workers: [DoryPCHostWorker]
-  ) throws -> [ParallelInstruction] {
-    guard processorCount > 1, maximumCount > 1 else { return [] }
-    var plans: [ParallelInstruction] = []
-    for displacement in 0..<processorCount {
-      let processor = (first + displacement) % processorCount
-      guard plans.count < Int(min(maximumCount, UInt64(processorCount))) else { break }
-      let slot = processorSlots[processor]
-      guard let state = slot.state, !slot.isHalted,
-        slot.lifecycle == .running
-      else { continue }
-      let plan = try workers[processor].perform { [self] () -> ParallelInstruction? in
-        guard let frozen = frozenParallelInstruction(state: state.value, processor: processor)
-        else { return nil }
-        let mode = executionMode(state.value)
-        var jit: DoryARM64BaselineExecutor?
-        if executionTier != .interpreter {
-          // No paging, non-flat CS, hidden execution guards, or shared memory callbacks.
-          // Selection mutates machine hotness, so it must finish before jobs overlap.
-          guard mode == .protected32, state.value.cs.base == 0, state.value.cs.limit == .max,
-            !state.value.rflags.contains(.virtual8086), !state.value.rflags.contains(.resume),
-            !state.value.rflags.contains(.alignmentCheck),
-            let selected = selectedJIT(forProcessor: processor, state: state.value, mode: mode)
-          else { return nil }
-          jit = selected
-        }
-        return .init(
-          processor: processor, state: state,
-          mode: mode, memory: frozen, jit: jit)
-      }
-      // Preserve runnable order across a sensitive instruction instead of skipping ahead.
-      guard let plan else { break }
-      plans.append(plan)
+  private func prepareParallelInstruction(forProcessor processor: Int) throws
+    -> ParallelInstruction?
+  {
+    guard processorSlots.indices.contains(processor) else { return nil }
+    let slot = processorSlots[processor]
+    guard let state = slot.state, !slot.isHalted, slot.lifecycle == .running,
+      let frozen = frozenParallelInstruction(state: state.value, processor: processor)
+    else { return nil }
+    let mode = executionMode(state.value)
+    var jit: DoryARM64BaselineExecutor?
+    if executionTier != .interpreter {
+      // No paging, non-flat CS, hidden execution guards, or shared memory callbacks. Admission
+      // runs on the owning worker because the interpreter preflight has a deliberately large
+      // debug frame and because hotness/JIT selection is private owner state.
+      guard mode == .protected32, state.value.cs.base == 0, state.value.cs.limit == .max,
+        !state.value.rflags.contains(.virtual8086), !state.value.rflags.contains(.resume),
+        !state.value.rflags.contains(.alignmentCheck),
+        let selected = selectedJIT(forProcessor: processor, state: state.value, mode: mode)
+      else { return nil }
+      jit = selected
     }
-    return plans
+    return .init(
+      processor: processor,
+      state: state,
+      mode: mode,
+      memory: frozen,
+      jit: jit
+    )
   }
 
   // Called only while quiescent or by the owning worker during serial admission.

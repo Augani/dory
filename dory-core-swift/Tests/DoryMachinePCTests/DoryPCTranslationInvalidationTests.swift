@@ -57,15 +57,19 @@ import Testing
     }
   }
 
-  @Test func concurrentPublishersDrainEachOtherBeforeWaiting() {
+  @Test func concurrentPublishersDrainEachOtherBeforeWaiting() throws {
     let coordinator = DoryPCTranslationInvalidationCoordinator(processorCount: 2)
     let start = DispatchSemaphore(value: 0)
+    let ready = DispatchGroup()
     let finishedPublishers = LockedCount()
     let group = DispatchGroup()
+    var threads: [Thread] = []
 
     for processor in 0..<2 {
+      ready.enter()
       group.enter()
-      DispatchQueue.global().async {
+      let thread = Thread {
+        ready.leave()
         start.wait()
         var ownPublicationFinished = false
         while true {
@@ -97,11 +101,15 @@ import Testing
         }
         group.leave()
       }
+      thread.name = "dev.dory.tests.translation-publisher.\(processor)"
+      threads.append(thread)
     }
 
+    for thread in threads { thread.start() }
+    try #require(ready.wait(timeout: .now() + 2) == .success)
     start.signal()
     start.signal()
-    #expect(group.wait(timeout: .now() + 2) == .success)
+    #expect(group.wait(timeout: .now() + 5) == .success)
     #expect(coordinator.diagnostics.requiredGenerations == [2, 2])
     #expect(coordinator.diagnostics.acknowledgedGenerations == [2, 2])
   }

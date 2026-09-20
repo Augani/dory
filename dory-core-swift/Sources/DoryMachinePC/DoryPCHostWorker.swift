@@ -173,8 +173,8 @@ final class DoryPCHostWorker: @unchecked Sendable {
 }
 
 /// Machine-owned persistent worker set. Construction and teardown occur once per VM rather than
-/// once per public `run` call. A single-vCPU run lends its worker one long-running loop; SMP still
-/// uses bounded submissions until the same result/directive protocol is extended across vCPUs.
+/// once per public `run` call. Every run lends each participating vCPU worker one long-running,
+/// sequenced command/result loop and joins those loans before releasing the machine execution gate.
 final class DoryPCVCPURuntime: @unchecked Sendable {
   let workers: [DoryPCHostWorker]
 

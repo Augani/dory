@@ -154,13 +154,23 @@ import Testing
     let probe = HostWorkerProbe()
     machine.observeWorkers { probe.observe($0) }
     #expect(try machine.run(maximumInstructions: 3) == .instructionBudget(3))
-    #expect(probe.snapshot().order == [0, 1, 0])
-    #expect(probe.snapshot().maximumActive == 1)
-    #expect(probe.snapshot().distinctThreads == 2)
-    #expect(probe.snapshot().stopped == Set([0, 1]))
+    let firstRun = probe.snapshot()
+    #expect(firstRun.order == [0, 1, 0])
+    #expect(firstRun.maximumActive == 1)
+    #expect(firstRun.distinctThreads == 2)
+    #expect(firstRun.stopped == Set([0, 1]))
+    #expect(firstRun.runLoopStarts.map(\.processor).sorted() == [0, 1])
+    #expect(firstRun.runLoopStops.map(\.processor).sorted() == [0, 1])
+    #expect(Set(firstRun.runLoopStarts.map(\.generation)) == Set([1]))
+    #expect(Set(firstRun.runLoopStops.map(\.generation)) == Set([1]))
+    #expect(firstRun.runLoopThreads.count == 2)
     #expect(machine.state(forProcessor: 0)?.tsc == 300)
     #expect(machine.state(forProcessor: 1)?.tsc == 300)
     #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+    let secondRun = probe.snapshot()
+    #expect(secondRun.runLoopStarts.map(\.generation).sorted() == [1, 1, 2, 2])
+    #expect(secondRun.runLoopStops.map(\.generation).sorted() == [1, 1, 2, 2])
+    #expect(secondRun.runLoopThreads == firstRun.runLoopThreads)
     #expect(machine.executionStatistics.interpreterInstructions == 4)
   }
 
@@ -179,6 +189,37 @@ import Testing
     #expect(secondRun.distinctThreads == 2)
     #expect(secondRun.executions == 4)
     #expect(secondRun.stopped == Set([0, 1]))
+  }
+
+  @Test func parkedOwnerAcknowledgesInvalidationBeforeItsFirstExecutionCommand() throws {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 2,
+      executionTier: .baselineJIT,
+      instrumentationEnabled: true
+    )
+    // BSP writes a tracked page-table page. The AP receives no execution command within this
+    // one-instruction run, but its persistent owner must still drain the remote invalidation so
+    // the publishing BSP can complete.
+    try machine.load(
+      kernel: makeELF(code: [0xC7, 0x04, 0x25, 0, 1, 0, 0, 1, 0, 0, 0]),
+      commandLine: "x"
+    )
+    machine.physicalMemory.trackPageTablePage(containing: 0x100)
+    let probe = HostWorkerProbe()
+    machine.observeWorkers { probe.observe($0) }
+
+    #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+
+    let snapshot = probe.snapshot()
+    #expect(snapshot.order == [0])
+    #expect(snapshot.runLoopStarts.map(\.processor).sorted() == [0, 1])
+    #expect(snapshot.runLoopStops.map(\.processor).sorted() == [0, 1])
+    #expect(snapshot.translationInvalidationAcknowledgements.map(\.processor).sorted() == [0, 1])
+    #expect(snapshot.translationInvalidationThreads == Set(snapshot.runLoopThreads.values))
+    let diagnostics = machine.translationInvalidationDiagnostics
+    #expect(diagnostics.requiredGenerations == [1, 1])
+    #expect(diagnostics.acknowledgedGenerations == [1, 1])
   }
 
   @Test(arguments: [DoryPCPowerAction.powerOff, .reset])
@@ -2031,6 +2072,7 @@ private final class HostWorkerProbe: @unchecked Sendable {
     let nativeRetirements: [Int: [UInt64]]
     let runLoopStarts: [(processor: Int, generation: UInt64)]
     let runLoopStops: [(processor: Int, generation: UInt64)]
+    let runLoopThreads: [Int: ObjectIdentifier]
     let pendingWorkThreads: Set<ObjectIdentifier>
     let translationInvalidationAcknowledgements: [(processor: Int, generation: UInt64)]
     let translationInvalidationThreads: Set<ObjectIdentifier>
@@ -2052,6 +2094,7 @@ private final class HostWorkerProbe: @unchecked Sendable {
   private var nativeRetirements: [Int: [UInt64]] = [:]
   private var runLoopStarts: [(processor: Int, generation: UInt64)] = []
   private var runLoopStops: [(processor: Int, generation: UInt64)] = []
+  private var runLoopThreads: [Int: ObjectIdentifier] = [:]
   private var pendingWorkThreads: Set<ObjectIdentifier> = []
   private var translationInvalidationAcknowledgements:
     [(
@@ -2069,6 +2112,7 @@ private final class HostWorkerProbe: @unchecked Sendable {
     switch event {
     case .runLoopStarted(let processor, let generation):
       runLoopStarts.append((processor, generation))
+      runLoopThreads[processor] = ObjectIdentifier(Thread.current)
     case .runLoopStopped(let processor, let generation):
       runLoopStops.append((processor, generation))
     case .servicingPendingWork:
@@ -2122,6 +2166,7 @@ private final class HostWorkerProbe: @unchecked Sendable {
       nativeRetirements: nativeRetirements,
       runLoopStarts: runLoopStarts,
       runLoopStops: runLoopStops,
+      runLoopThreads: runLoopThreads,
       pendingWorkThreads: pendingWorkThreads,
       translationInvalidationAcknowledgements: translationInvalidationAcknowledgements,
       translationInvalidationThreads: translationInvalidationThreads,
