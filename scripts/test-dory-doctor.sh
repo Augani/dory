@@ -1350,7 +1350,29 @@ scripts/dory help | grep -q "dory mcp serve"
 scripts/dory help | grep -q "dory sandbox run"
 scripts/dory help | grep -q "dory wait engine"
 scripts/dory help | grep -q "dory events"
-! scripts/dory help | grep -q "dory vm"
+scripts/dory help | grep -q "dory vm inspect NAME"
+
+cat > "$TMP_HOME/fake-vm-dorydctl" <<'SH'
+#!/bin/sh
+test "$1 $2 $3" = "machine status dev"
+cat <<'JSON'
+{"id":"dev","state":"running","runtimeGraphicsSelection":{"requestedGraphics":"hardware-accelerated-3d","admittedGraphics":"hardware-accelerated-3d","accelerationLevel":"software","verificationState":"downgraded","downgradeReason":"guestKernelLacksPrepareFB","downgradeMessage":"The guest displayed a frame before its producer fence completed.","guestDriver":"software","firstShaderCompletedAtUnixMilliseconds":1789862400000,"firstPresentationCompletedAtUnixMilliseconds":1789862401000}}
+JSON
+SH
+chmod +x "$TMP_HOME/fake-vm-dorydctl"
+vm_inspect="$(DORYDCTL_BIN="$TMP_HOME/fake-vm-dorydctl" scripts/dory vm inspect dev)"
+printf '%s\n' "$vm_inspect" | grep -Fq "Requested: hardware-accelerated-3d"
+printf '%s\n' "$vm_inspect" | grep -Fq "Effective: software"
+printf '%s\n' "$vm_inspect" | grep -Fq "Verification: downgraded (guestKernelLacksPrepareFB)"
+printf '%s\n' "$vm_inspect" | grep -Fq "Reason: The guest displayed a frame before its producer fence completed."
+vm_inspect_json="$(DORYDCTL_BIN="$TMP_HOME/fake-vm-dorydctl" scripts/dory vm inspect dev --json)"
+printf '%s\n' "$vm_inspect_json" | python3 -c '
+import json, sys
+selection = json.load(sys.stdin)["runtimeGraphicsSelection"]
+assert selection["requestedGraphics"] == "hardware-accelerated-3d"
+assert selection["verificationState"] == "downgraded"
+assert selection["guestDriver"] == "software"
+'
 
 set +e
 vm_output="$(scripts/dory vm --rosetta 2>&1)"

@@ -474,16 +474,7 @@ struct Machine: Identifiable, Hashable, Sendable {
             }
             if displayMode == .desktop {
                 if status == .running, let runtimeGraphicsSelection {
-                    evidence.append(MachineRuntimeEvidence(
-                        id: "graphics",
-                        label: Self.graphicsLabel(runtimeGraphicsSelection.accelerationLevel),
-                        systemImage: "display",
-                        tone: runtimeGraphicsSelection.isQualifiedAcceleration
-                            ? .positive : .standard,
-                        detail: runtimeGraphicsSelection.isQualifiedAcceleration
-                            ? "Live renderer generation \(runtimeGraphicsSelection.rendererGeneration ?? 0)"
-                            : "Live operation-bound software selection"
-                    ))
+                    evidence.append(Self.graphicsEvidence(runtimeGraphicsSelection))
                 } else if status == .running,
                           runtimeIdentity.backend == "apple-virtualization-framework",
                           runtimeIdentity.graphics == "software" {
@@ -681,6 +672,49 @@ struct Machine: Identifiable, Hashable, Sendable {
         case "software": "Software graphics"
         case "none": "No graphics"
         default: "Graphics unknown"
+        }
+    }
+
+    private static func graphicsEvidence(
+        _ selection: DorydMachineRuntimeGraphicsSelection
+    ) -> MachineRuntimeEvidence {
+        let driver = selection.guestDriver.capitalized
+        switch selection.verificationState {
+        case "provisional":
+            return MachineRuntimeEvidence(
+                id: "graphics",
+                label: "3D provisional",
+                systemImage: "hourglass",
+                tone: .warning,
+                detail: "\(driver) · validating guest fence ordering · renderer generation \(selection.rendererGeneration ?? 0)"
+            )
+        case "verified":
+            return MachineRuntimeEvidence(
+                id: "graphics",
+                label: "3D verified",
+                systemImage: "checkmark.seal.fill",
+                tone: .positive,
+                detail: "\(driver) · guest fence ordering verified · renderer generation \(selection.rendererGeneration ?? 0)"
+            )
+        case "downgraded":
+            return MachineRuntimeEvidence(
+                id: "graphics",
+                label: "Software fallback",
+                systemImage: "exclamationmark.triangle.fill",
+                tone: .warning,
+                detail: selection.downgradeMessage
+                    ?? "The requested accelerated graphics path was downgraded"
+            )
+        default:
+            return MachineRuntimeEvidence(
+                id: "graphics",
+                label: Self.graphicsLabel(selection.accelerationLevel),
+                systemImage: "display",
+                tone: selection.isQualifiedAcceleration ? .positive : .standard,
+                detail: selection.isQualifiedAcceleration
+                    ? "Live renderer generation \(selection.rendererGeneration ?? 0)"
+                    : "Live operation-bound software selection"
+            )
         }
     }
 }

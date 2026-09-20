@@ -2148,9 +2148,10 @@ struct DorydClientTests {
         listener.delegate = delegate
         listener.resume()
         defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
 
         let status = try #require(
-            (try await DorydClient(endpoint: listener.endpoint).machineList()).first
+            (try await client.machineList()).first
         )
         #expect(status.runtimeGraphicsSelection?.isQualifiedAcceleration == true)
         #expect(status.runtimeIdentity.authorizesRemovableUSBHotplug)
@@ -2164,10 +2165,57 @@ struct DorydClientTests {
             "telemetry",
         ])
         #expect(machine.runtimeEvidence.map(\.label) == [
-            "Supported", "Raw HV", "Qualified 3D", "Tools partially ready",
+            "Supported", "Raw HV", "3D verified", "Tools partially ready",
         ])
         #expect(machine.runtimeEvidence.first { $0.id == "authority" }?.detail
             == "runtime-qualification-1")
+        let verifiedGraphics = try #require(
+            machine.runtimeEvidence.first { $0.id == "graphics" }
+        )
+        #expect(verifiedGraphics.tone == .positive)
+        #expect(verifiedGraphics.detail.contains("guest fence ordering verified"))
+
+        let provisional = NSMutableDictionary(
+            dictionary: try #require(service.machineRuntimeGraphicsSelection("dev"))
+        )
+        provisional["verificationState"] = "provisional"
+        provisional.removeObject(forKey: "guestProducerFenceProofSHA256")
+        service.setMachineRuntimeGraphicsSelection("dev", provisional)
+        let provisionalStatus = try #require((try await client.machineList()).first)
+        let provisionalGraphics = try #require(
+            AppStore.machine(fromDoryd: provisionalStatus).runtimeEvidence.first {
+                $0.id == "graphics"
+            }
+        )
+        #expect(provisionalGraphics.label == "3D provisional")
+        #expect(provisionalGraphics.tone == .warning)
+        #expect(provisionalGraphics.detail.contains("validating guest fence ordering"))
+
+        let downgraded = NSMutableDictionary(dictionary: provisional)
+        downgraded["accelerationLevel"] = "software"
+        downgraded["backend"] = "software"
+        downgraded["verificationState"] = "downgraded"
+        downgraded["downgradeReason"] = "guestKernelLacksPrepareFB"
+        downgraded["downgradeMessage"] = "Guest fence ordering is unsafe; using software graphics."
+        downgraded["guestDriver"] = "software"
+        downgraded.removeObject(forKey: "rendererGeneration")
+        downgraded.removeObject(forKey: "rendererWorkerReceiptSHA256")
+        service.setMachineRuntimeGraphicsSelection("dev", downgraded)
+        let downgradedStatus = try #require((try await client.machineList()).first)
+        let downgradedGraphics = try #require(
+            AppStore.machine(fromDoryd: downgradedStatus).runtimeEvidence.first {
+                $0.id == "graphics"
+            }
+        )
+        #expect(downgradedGraphics.label == "Software fallback")
+        #expect(downgradedGraphics.tone == .warning)
+        #expect(downgradedGraphics.detail
+            == "Guest fence ordering is unsafe; using software graphics.")
+
+        service.setMachineRuntimeGraphicsSelection(
+            "dev",
+            try #require(service.defaultRuntimeGraphicsSelection("dev"))
+        )
 
         let missingFence = NSMutableDictionary(
             dictionary: try #require(service.machineRuntimeGraphicsSelection("dev"))

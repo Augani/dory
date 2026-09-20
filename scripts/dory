@@ -92,6 +92,8 @@ dory — Dory CLI
                                Reserved for a future agent namespace-debug RPC (currently unavailable)
   dory machine <args...>       Manage doryd Linux VM machines (ls, create, start, stop, delete, run)
                                Delete/restore require --confirm with the exact machine or snapshot ID
+  dory vm inspect NAME [--json]
+                               Show requested, effective, and verified live graphics state
   dory machine exec <name> [--json] -- <command...>
                                Run a command in a machine; --json emits schema v1 result metadata
   dory machine snapshot <name> Take a Dory machine snapshot
@@ -1730,6 +1732,74 @@ machine_cmd() {
   fi
   echo "dory machine requires dorydctl and Dory's daemon-managed VM machine runtime. Start Dory's engine; set DORY_LEGACY_DOCKER_MACHINES=1 only to inspect old container-backed machines." >&2
   exit 1
+}
+
+vm_cmd() {
+  local sub="${1:-}" ctl name status json=0
+  case "$sub" in
+    inspect)
+      shift
+      name="${1:?usage: dory vm inspect NAME [--json]}"
+      shift
+      if [ "${1:-}" = "--json" ]; then
+        json=1
+        shift
+      fi
+      [ "$#" -eq 0 ] || {
+        echo "usage: dory vm inspect NAME [--json]" >&2
+        return 2
+      }
+      ctl="$(dorydctl_bin 2>/dev/null)" || {
+        echo "dory vm inspect requires dorydctl and Dory's daemon-managed VM runtime." >&2
+        return 1
+      }
+      if [ "$json" -eq 1 ]; then
+        exec "$ctl" machine status "$name"
+      fi
+      status="$("$ctl" machine status "$name")" || return $?
+      python3 - "$name" 3<<<"$status" <<'PY'
+import datetime
+import json
+import os
+import sys
+
+name = sys.argv[1]
+status = json.load(os.fdopen(3))
+selection = status.get("runtimeGraphicsSelection")
+print(f"Machine: {status.get('name') or status.get('id') or name}")
+print(f"State: {status.get('state', 'unknown')}")
+if not isinstance(selection, dict):
+    print("Graphics: unavailable (the running helper has not published live graphics evidence)")
+    raise SystemExit(0)
+
+verification = selection.get("verificationState", "unknown")
+reason = selection.get("downgradeReason")
+if reason:
+    verification += f" ({reason})"
+
+def observed(value):
+    if not isinstance(value, int):
+        return "not observed"
+    stamp = datetime.datetime.fromtimestamp(value / 1000, datetime.timezone.utc)
+    return stamp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+print("Graphics:")
+print(f"  Requested: {selection.get('requestedGraphics', 'unknown')}")
+print(f"  Admitted: {selection.get('admittedGraphics', 'unknown')}")
+print(f"  Effective: {selection.get('accelerationLevel', 'unknown')}")
+print(f"  Verification: {verification}")
+print(f"  Guest driver: {selection.get('guestDriver', 'unknown')}")
+if selection.get("downgradeMessage"):
+    print(f"  Reason: {selection['downgradeMessage']}")
+print(f"  First shader: {observed(selection.get('firstShaderCompletedAtUnixMilliseconds'))}")
+print(f"  First presentation: {observed(selection.get('firstPresentationCompletedAtUnixMilliseconds'))}")
+PY
+      ;;
+    *)
+      echo "dory vm currently supports only: dory vm inspect NAME [--json]. Dory does not run Intel Linux ISOs on Apple Silicon; Rosetta and FEX are not whole-system emulation." >&2
+      return 64
+      ;;
+  esac
 }
 
 sandbox_usage() {
@@ -5895,8 +5965,7 @@ case "${1:-help}" in
                     if [ -z "$home" ]; then if [ "$user" = "root" ]; then home="/root"; else home="/home/$user"; fi; fi
                     exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" exec -it -u "$user" -w "$home" "$cid" "$shell" -l
                   fi ;;
-  vm)             echo "dory vm is unavailable. Dory does not run Intel Linux ISOs on Apple Silicon; Rosetta and FEX translate Intel applications or containers inside ARM64 Linux and are not whole-system emulation." >&2
-                  exit 64 ;;
+  vm)             shift; vm_cmd "$@" ;;
   k8s)            shift
                   if ! [ -x "$KUBECTL_BIN" ] && ! command -v "$KUBECTL_BIN" >/dev/null 2>&1; then
                     echo "Kubernetes is not installed. Run: dory component install kubernetes" >&2
