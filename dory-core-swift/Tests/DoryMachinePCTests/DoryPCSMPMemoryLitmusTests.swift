@@ -210,6 +210,66 @@ import Testing
     #expect(overlap.maximumActive == 2)
   }
 
+  @Test func guestPageTableRewriteInvalidatesAnActiveRemoteTLB() throws {
+    let setup = protectedPagingSetup()
+    let machine = try makeMachine(
+      bsp: setup + [
+        // Wait until the AP has filled and hit its old 0x400000 translation.
+        0x83, 0x3D, 0x00, 0x50, 0x00, 0x00, 0x01,  // cmp dword [0x5000],1
+        0x75, 0xF7,  // jne back
+        // Remap 0x400000 from physical 0x3000 to 0x4000. The tracked page-table write
+        // publishes a conservative global flush before this owner can continue.
+        0xC7, 0x05, 0x00, 0x20, 0x08, 0x00, 0x03, 0x40, 0x00, 0x00,
+        // The architectural invalidation then publishes the exact linear page to both owners.
+        0x0F, 0x01, 0x3D, 0x00, 0x00, 0x40, 0x00,  // invlpg [0x400000]
+        0xC7, 0x05, 0x04, 0x50, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        // Do not halt until the AP has observed and published the replacement page.
+        0x81, 0x3D, 0x14, 0x50, 0x00, 0x00, 0x22, 0x22, 0x00, 0x00,
+        0x75, 0xF4,  // jne back
+        0x66, 0xBA, 0x04, 0x06,  // mov dx,PM1_CONTROL
+        0x66, 0xB8, 0x00, 0x34,  // mov ax,S5|SLP_EN
+        0x66, 0xEF,  // out dx,ax
+      ],
+      ap: setup + [
+        0xA1, 0x00, 0x00, 0x40, 0x00,  // mov eax,[0x400000] (fill)
+        0xA1, 0x00, 0x00, 0x40, 0x00,  // mov eax,[0x400000] (hit)
+        0xA3, 0x10, 0x50, 0x00, 0x00,  // mov [0x5010],eax
+        0xC7, 0x05, 0x00, 0x50, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x83, 0x3D, 0x04, 0x50, 0x00, 0x00, 0x01,  // cmp dword [0x5004],1
+        0x75, 0xF7,  // jne back
+        0x8B, 0x1D, 0x00, 0x00, 0x40, 0x00,  // mov ebx,[0x400000]
+        0x89, 0x1D, 0x14, 0x50, 0x00, 0x00,  // mov [0x5014],ebx
+        0xF4,
+      ]
+    )
+    try installLegacyPageTables(in: machine)
+    try machine.memory.writeScalar(at: 0x3000, value: 0x1111, byteCount: 4)
+    try machine.memory.writeScalar(at: 0x4000, value: 0x2222, byteCount: 4)
+    try zero([0x5000, 0x5004, 0x5010, 0x5014], in: machine)
+    let before = machine.pagingUnits.map(\.diagnostics)
+    let overlap = LitmusOverlapProbe()
+    machine.observeWorkers { overlap.observe($0) }
+
+    guard case .poweredOff(let retired) = try machine.run(maximumInstructions: 100_000) else {
+      Issue.record("expected guest poweroff after the remote translation changed")
+      return
+    }
+
+    #expect(retired > 0)
+    #expect(try machine.memory.readScalar(at: 0x5010, byteCount: 4) == 0x1111)
+    #expect(try machine.memory.readScalar(at: 0x5014, byteCount: 4) == 0x2222)
+    #expect(overlap.maximumActive == 2)
+    for processor in 0..<2 {
+      let after = machine.pagingUnits[processor].diagnostics
+      #expect(after.globalInvalidations > before[processor].globalInvalidations)
+      #expect(after.linearInvalidations > before[processor].linearInvalidations)
+    }
+    #expect(machine.pagingUnits[1].diagnostics.recentTLBHits > 0)
+    let invalidation = machine.translationInvalidationDiagnostics
+    #expect(invalidation.generation >= 2)
+    #expect(invalidation.requiredGenerations == invalidation.acknowledgedGenerations)
+  }
+
   private enum Register { case rax, rbx }
 
   private func register(
@@ -270,6 +330,34 @@ import Testing
     let body = instructions.flatMap { $0 }
     precondition(body.count + 2 <= 128)
     return body + [0xEB, UInt8(bitPattern: Int8(-(body.count + 2)))]
+  }
+
+  private func protectedPagingSetup() -> [UInt8] {
+    [
+      0xB8, 0x00, 0x00, 0x08, 0x00,  // mov eax,0x80000
+      0x0F, 0x22, 0xD8,  // mov cr3,eax
+      0x0F, 0x20, 0xC0,  // mov eax,cr0
+      0x0D, 0x00, 0x00, 0x00, 0x80,  // or eax,CR0.PG
+      0x0F, 0x22, 0xC0,  // mov cr0,eax
+    ]
+  }
+
+  private func installLegacyPageTables(in machine: DoryPCDirectKernelMachine) throws {
+    var directory = [UInt8](repeating: 0, count: 4_096)
+    directory.replaceSubrange(0..<4, with: littleEndian(0x0008_1003))
+    directory.replaceSubrange(4..<8, with: littleEndian(0x0008_2003))
+    try machine.memory.write(at: 0x80000, bytes: directory)
+
+    var identity = [UInt8](repeating: 0, count: 4_096)
+    for page in 0..<512 {
+      let entry = UInt32(page * 4_096) | 3
+      identity.replaceSubrange((page * 4)..<(page * 4 + 4), with: littleEndian(entry))
+    }
+    try machine.memory.write(at: 0x81000, bytes: identity)
+
+    var alias = [UInt8](repeating: 0, count: 4_096)
+    alias.replaceSubrange(0..<4, with: littleEndian(0x0000_3003))
+    try machine.memory.write(at: 0x82000, bytes: alias)
   }
 
   /// Starts the AP in the same flat protected32 mode as the PVH BSP, then installs the two litmus
