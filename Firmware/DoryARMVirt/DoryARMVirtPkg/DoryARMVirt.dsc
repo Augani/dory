@@ -120,6 +120,8 @@
   }
   DoryARMVirtPkg/DoryPlatformDxe/DoryPlatformDxe.inf
 
+  MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
+
   ShellPkg/Application/Shell/Shell.inf {
     <LibraryClasses>
       ShellCommandLib|ShellPkg/Library/UefiShellCommandLib/UefiShellCommandLib.inf

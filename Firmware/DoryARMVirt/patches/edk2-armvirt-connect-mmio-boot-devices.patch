@@ -1,0 +1,20 @@
+diff --git a/ArmPkg/Library/PlatformBootManagerLib/PlatformBm.c b/ArmPkg/Library/PlatformBootManagerLib/PlatformBm.c
+index a84cc80ad8..a9318e7858 100644
+--- a/ArmPkg/Library/PlatformBootManagerLib/PlatformBm.c
++++ b/ArmPkg/Library/PlatformBootManagerLib/PlatformBm.c
+@@ -725,6 +725,15 @@ PlatformBootManagerBeforeConsole (
+   //
+   EfiBootManagerDispatchDeferredImages ();
+ 
++  //
++  // Dory's storage, display, and input controllers are VirtIO MMIO devices,
++  // not PCI devices. Connect every controller before collecting GOP handles
++  // and boot options so the first boot can present a graphical console and
++  // discover removable installer media without falling through to the shell.
++  //
++  EfiBootManagerConnectAll ();
++  EfiBootManagerRefreshAllBootOption ();
++
+   //
+   // Locate the PCI root bridges and make the PCI bus driver connect each,
+   // non-recursively. This will produce a number of child handles with PciIo on

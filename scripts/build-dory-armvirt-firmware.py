@@ -75,6 +75,40 @@ def configure_platform(name: str) -> None:
 
 
 def verify_platform_contract() -> None:
+    if PLATFORM["platform"] == "dory-armvirt-v1":
+        configuration = PLATFORM_ROOT / "DoryARMVirt.dsc"
+        flash_definition = PLATFORM_ROOT / "DoryARMVirt.fdf"
+        boot_patch = PATCH_ROOT / "edk2-armvirt-connect-mmio-boot-devices.patch"
+        try:
+            configuration_contents = configuration.read_text(encoding="utf-8")
+            flash_contents = flash_definition.read_text(encoding="utf-8")
+            boot_patch_contents = boot_patch.read_text(encoding="utf-8")
+        except OSError as error:
+            raise BuildFailure(
+                f"cannot read DoryARMVirt platform definition: {error}"
+            ) from error
+        graphics_console = (
+            "MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf"
+        )
+        if (
+            graphics_console not in configuration_contents
+            or graphics_console not in flash_contents
+        ):
+            raise BuildFailure(
+                "DoryARMVirt firmware must include the GOP-backed graphics console driver"
+            )
+        required_boot_operations = (
+            "EfiBootManagerConnectAll ();",
+            "EfiBootManagerRefreshAllBootOption ();",
+        )
+        if any(
+            operation not in boot_patch_contents
+            for operation in required_boot_operations
+        ):
+            raise BuildFailure(
+                "DoryARMVirt firmware must connect MMIO controllers and refresh boot options before console startup"
+            )
+        return
     if PLATFORM["platform"] != "dory-pc-v1":
         return
     configuration = PLATFORM_ROOT / "DoryPC.dsc"
