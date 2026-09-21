@@ -77,8 +77,10 @@ python3 guest-probes/verify-opengl-strategy.py \
   --evidence /absolute/evidence/root --markdown
 ```
 
-The verifier requires glmark2, GNOME Shell overview, Firefox WebGL Aquarium,
-Blender viewport, and LibreOffice Impress measurements. A selected default must
-pass every workload without llvmpipe, lavapipe, or another software renderer.
+The verifier requires glmark2, GNOME Shell and KWin overview animations, GTK4,
+Qt 6, Firefox WebGL Aquarium, Blender viewport, LibreOffice Impress, and Zed
+measurements. Each run records explicit API prerequisites, p95 frame interval,
+first-shader stall, worker CPU, and worker RSS. A selected default must pass
+every workload without llvmpipe, lavapipe, or another software renderer.
 The second passing path may be retained only for a named compatibility need;
 failures remain valid measurements but cannot be selected or retained.

@@ -23,6 +23,7 @@ def workload(identifier: str, status: str = "PASS") -> dict[str, object]:
         "frameCount": 180,
         "p95FrameIntervalMs": 16.7,
         "firstShaderCompileStallMs": 24.0,
+        "workerPeakCPUPercent": 48.0,
         "workerPeakRSSBytes": 268435456,
         "score": 1200 if identifier == "glmark2" else None,
         "failure": None if status == "PASS" else "named workload failed",
@@ -49,6 +50,7 @@ def run(path: str) -> dict[str, object]:
         "memoryMB": 8192,
         "rendererDevice": "Apple M2 Pro",
         "glVersion": "4.6",
+        "apiCapabilities": ["GL_ARB_robustness", "VK_EXT_robustness2", "VK_KHR_dynamic_rendering"],
         "softwareRendererDetected": False,
         "workerArtifactSHA256": "b" * 64,
         "workloads": [workload(identifier) for identifier in MODULE.WORKLOADS],
@@ -86,7 +88,7 @@ class OpenGLStrategyEvidenceTests(unittest.TestCase):
     def test_missing_workload_fails(self) -> None:
         self.values["zink-venus"]["workloads"] = self.values["zink-venus"]["workloads"][:-1]
         self.write()
-        with self.assertRaisesRegex(MODULE.EvidenceError, "exactly the five"):
+        with self.assertRaisesRegex(MODULE.EvidenceError, "exactly the required"):
             MODULE.verify(self.root)
 
     def test_uncontrolled_resources_fail(self) -> None:
@@ -117,6 +119,7 @@ class OpenGLStrategyEvidenceTests(unittest.TestCase):
         first["frameCount"] = 0
         first["p95FrameIntervalMs"] = None
         first["firstShaderCompileStallMs"] = None
+        first["workerPeakCPUPercent"] = None
         first["workerPeakRSSBytes"] = None
         first["score"] = None
         first["failure"] = "shader compile failed"
@@ -131,6 +134,7 @@ class OpenGLStrategyEvidenceTests(unittest.TestCase):
             "frameCount": 0,
             "p95FrameIntervalMs": None,
             "firstShaderCompileStallMs": None,
+            "workerPeakCPUPercent": None,
             "workerPeakRSSBytes": None,
             "score": None,
             "failure": "context creation failed before the first frame",
@@ -140,6 +144,12 @@ class OpenGLStrategyEvidenceTests(unittest.TestCase):
         summary = MODULE.verify(self.root)
         self.assertEqual(summary["runs"]["virgl2-angle"]["workloads"][0]["status"], "FAIL")
         self.assertIn("—", MODULE.markdown(summary))
+
+    def test_api_capabilities_must_be_explicit_unique_and_sorted(self) -> None:
+        self.values["zink-venus"]["apiCapabilities"] = ["VK_KHR_dynamic_rendering", "VK_KHR_dynamic_rendering"]
+        self.write()
+        with self.assertRaisesRegex(MODULE.EvidenceError, "unique and sorted"):
+            MODULE.verify(self.root)
 
 
 if __name__ == "__main__":

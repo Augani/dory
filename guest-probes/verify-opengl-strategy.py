@@ -17,9 +17,13 @@ PATHS = ("zink-venus", "virgl2-angle")
 WORKLOADS = (
     "glmark2",
     "gnome-shell-overview",
+    "kwin-overview",
+    "gtk4-demo",
+    "qt6-demo",
     "firefox-webgl-aquarium",
     "blender-viewport",
     "libreoffice-impress",
+    "zed-editor",
 )
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -93,7 +97,8 @@ def validate_workload(value: Any, path: str) -> dict[str, Any]:
         value,
         {
             "id", "status", "frameCount", "p95FrameIntervalMs",
-            "firstShaderCompileStallMs", "workerPeakRSSBytes", "score", "failure",
+            "firstShaderCompileStallMs", "workerPeakCPUPercent", "workerPeakRSSBytes",
+            "score", "failure",
         },
         f"{path} workload",
     )
@@ -114,7 +119,7 @@ def validate_workload(value: Any, path: str) -> dict[str, Any]:
         "score": value["score"],
         "failure": value["failure"],
     }
-    for key in ("p95FrameIntervalMs", "firstShaderCompileStallMs"):
+    for key in ("p95FrameIntervalMs", "firstShaderCompileStallMs", "workerPeakCPUPercent"):
         if value[key] is None and not passed:
             result[key] = None
         else:
@@ -147,7 +152,8 @@ def validate_run(value: dict[str, Any], expected_path: str) -> dict[str, Any]:
             "hostHardwareModelIdentifier", "hostOperatingSystemBuild", "machineID",
             "guestDistribution", "guestVersion", "guestArchitecture", "desktopEnvironment",
             "widthPixels", "heightPixels", "cpuCount", "memoryMB", "rendererDevice",
-            "glVersion", "softwareRendererDetected", "workerArtifactSHA256", "workloads",
+            "glVersion", "apiCapabilities", "softwareRendererDetected", "workerArtifactSHA256",
+            "workloads",
         },
         expected_path,
     )
@@ -166,9 +172,17 @@ def validate_run(value: dict[str, Any], expected_path: str) -> dict[str, Any]:
     inferred_software = any(name in lowered for name in ("llvmpipe", "lavapipe", "software rasterizer"))
     if inferred_software != value["softwareRendererDetected"]:
         fail(f"{expected_path} software-renderer classification disagrees with rendererDevice")
+    capabilities = value["apiCapabilities"]
+    if not isinstance(capabilities, list) or not capabilities:
+        fail(f"{expected_path} apiCapabilities must be a nonempty list")
+    validated_capabilities = [
+        text(item, f"{expected_path} api capability", 128) for item in capabilities
+    ]
+    if validated_capabilities != sorted(set(validated_capabilities)):
+        fail(f"{expected_path} apiCapabilities must be unique and sorted")
     workloads_value = value["workloads"]
     if not isinstance(workloads_value, list) or len(workloads_value) != len(WORKLOADS):
-        fail(f"{expected_path} must contain exactly the five required workloads")
+        fail(f"{expected_path} must contain exactly the required workloads")
     workloads = [validate_workload(item, expected_path) for item in workloads_value]
     identifiers = [item["id"] for item in workloads]
     if identifiers != list(WORKLOADS):
@@ -185,6 +199,7 @@ def validate_run(value: dict[str, Any], expected_path: str) -> dict[str, Any]:
     for key in ("widthPixels", "heightPixels", "cpuCount", "memoryMB"):
         result[key] = positive_int(value[key], f"{expected_path} {key}")
     result["rendererDevice"] = renderer
+    result["apiCapabilities"] = validated_capabilities
     result["workloads"] = workloads
     return result
 
@@ -256,6 +271,7 @@ def markdown(summary: dict[str, Any]) -> str:
             ("status", "status", ""),
             ("p95 frame", "p95FrameIntervalMs", " ms"),
             ("first shader stall", "firstShaderCompileStallMs", " ms"),
+            ("worker peak CPU", "workerPeakCPUPercent", "%"),
             ("worker peak RSS", "workerPeakRSSBytes", " bytes"),
         ):
             left_value = "—" if left[key] is None else f"{left[key]}{suffix}"
