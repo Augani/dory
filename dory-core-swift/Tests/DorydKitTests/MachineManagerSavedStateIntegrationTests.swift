@@ -260,7 +260,10 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
         _ = try startAndAcceptHandoff(manager, fixture: fixture, create: false)
 
         XCTAssertThrowsError(try manager.suspend(id: fixture.machineID)) { error in
-            XCTAssertTrue("\(error)".contains("Apple Virtualization backend"))
+            XCTAssertEqual(
+                error as? MachineManagerError,
+                .persistence(DoryAcceleratedSavedStatePolicy.rejectionMessage)
+            )
         }
         XCTAssertEqual(controller.saveCount, 0)
         XCTAssertEqual(manager.status(id: fixture.machineID)?.state, .running)

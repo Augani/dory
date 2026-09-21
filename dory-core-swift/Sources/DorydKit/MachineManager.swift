@@ -6514,6 +6514,20 @@ public final class MachineManager: @unchecked Sendable {
             lock.unlock()
             throw MachineManagerError.unknownMachine(id)
         }
+        let suspendPlan = entry.activeResolvedPlan ?? entry.runtimeIdentity.resolvedPlan
+        let unresolvedDesktopPreference = suspendPlan == nil
+            && entry.activeBackend == .doryHypervisor
+            ? try? DoryDesktopGraphicsPreference(environment: entry.configuration.environment)
+            : nil
+        do {
+            try DoryAcceleratedSavedStatePolicy.validate(
+                graphics: suspendPlan?.graphics,
+                unresolvedDesktopPreference: unresolvedDesktopPreference
+            )
+        } catch {
+            lock.unlock()
+            throw error
+        }
         guard entry.state == .running || entry.state == .paused,
               let process = entry.process,
               entry.activeBackend == .appleVirtualizationFramework,
@@ -6525,7 +6539,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         let machine = entry.configuration
         let runtimeIdentity = entry.runtimeIdentity
-        let admissionPlan = entry.activeResolvedPlan ?? runtimeIdentity.resolvedPlan
+        let admissionPlan = suspendPlan
         let sourceState: DoryWorkspaceLifecycleState = entry.state == .paused ? .paused : .running
         let authoritativeData = Self.readPrivateMetadata(path: machineConfigPath(id: id))
         lock.unlock()
