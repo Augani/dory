@@ -70,6 +70,22 @@ struct DoryResolvedMachinePlanTests {
         #expect(validation.issues.contains { $0.code == .firmwareMismatch })
     }
 
+    @Test("accelerated UEFI candidate preview carries pre-spawn runtime authority")
+    func acceleratedUEFICandidatePreviewAuthority() {
+        let plan = candidateAcceleratedInstallerPlan()
+
+        #expect(plan.validate().isEmpty)
+        #expect(plan.qualificationEvidence.runtime == nil)
+        #expect(plan.usesCandidateCampaignPreviewEnvelope)
+
+        var unsupportedShape = plan
+        unsupportedShape.supportTier = .supported
+        #expect(!unsupportedShape.usesCandidateCampaignPreviewEnvelope)
+        #expect(unsupportedShape.validate().contains {
+            $0.code == .missingRuntimeQualification
+        })
+    }
+
     @Test("runtime identity shares immutable plan storage while copies remain independent")
     func runtimeIdentityValueSemantics() throws {
         let plan = supportedPlan()
@@ -1527,6 +1543,62 @@ private func mutableARMVirtPlan() -> DoryResolvedMachinePlan {
         firmware: try! resolvedFirmwareTestArtifacts().manifest,
         persistence: resolvedPersistenceTestBinding()
     )
+}
+
+private func candidateAcceleratedInstallerPlan() -> DoryResolvedMachinePlan {
+    var plan = mutableARMVirtPlan()
+    let installerReference = DoryVMResolverReference(
+        namespace: "artifact",
+        identifier: "ubuntu-installer"
+    )
+    let installer = DoryBootMedia(
+        kind: .installerISO,
+        source: .userProvided,
+        artifactSHA256: digest("8")
+    )
+    plan.bootMedia = DoryResolvedMachineBootMedia(
+        resolverReference: installerReference,
+        media: installer,
+        inspectionEvidence: DoryBootMediaInspectionAuditEvidence(
+            inspectionIdentity: "candidate-linux-arm64-ubuntu",
+            artifactSHA256: digest("8"),
+            inspectionReportSHA256: digest("7"),
+            inspectorID: "dory.candidate-campaign.media-binding",
+            inspectorVersion:
+                DoryVirtualMachineCandidateCampaignAuthorization.schemaVersion,
+            detectedArchitecture: .arm64,
+            detectedKind: .installerISO
+        )
+    )
+    plan.launchArtifacts = resolvedBootLaunchArtifacts(
+        reference: installerReference,
+        media: installer,
+        identifier: "installer"
+    ) + [resolvedMutableStorageLaunchArtifact(
+        reference: DoryVMResolverReference(
+            namespace: "machine",
+            identifier: "system-disk"
+        ),
+        source: .userProvided,
+        identifier: "system-disk"
+    )]
+    plan.graphics = .hardwareAccelerated3D
+    plan.supportTier = .preview
+    plan.selectionEvidence = primarySelectionEvidence(
+        guest: plan.guest,
+        media: installer,
+        backend: .doryHypervisor,
+        graphics: .hardwareAccelerated3D,
+        devices: plan.devices
+    )
+    plan.qualificationEvidence = DoryResolvedMachineQualificationEvidence()
+    plan.hostQualification = nil
+    plan.architecture?.detectedMediaArchitecture = .arm64
+    plan.armVirtTopology = resolvedARMVirtTestTopology(
+        devices: plan.devices,
+        installerID: "installer"
+    )
+    return plan
 }
 
 private func installedNativeMacPlan() -> DoryResolvedMachinePlan {

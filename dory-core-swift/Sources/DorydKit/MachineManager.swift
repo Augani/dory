@@ -5618,9 +5618,13 @@ public final class MachineManager: @unchecked Sendable {
                     }
                     let rendererBootstrapRequest: RawHVRendererBootstrapRequest?
                     if launchBinding.graphics == .hardwareAccelerated3D {
+                        // Supported stock launches carry catalog runtime evidence. Candidate
+                        // campaigns deliberately omit that persisted evidence and instead prove
+                        // the exact runtime/cell again through the single-use pre-spawn authority.
                         guard resolvedPlan.guest
                                 == DoryGuestPlatform(family: .linux, architecture: .arm64),
-                              resolvedPlan.qualificationEvidence.runtime != nil,
+                              resolvedPlan.qualificationEvidence.runtime != nil
+                                || resolvedPlan.usesCandidateCampaignPreviewEnvelope,
                               let rendererReleaseIdentity else {
                             throw MachineManagerError.persistence(
                                 "accelerated raw-HV launch is missing stock-guest runtime or worker authority"
@@ -5722,9 +5726,13 @@ public final class MachineManager: @unchecked Sendable {
                             "resolved UEFI host-accelerated display is not admitted"
                         )
                     case .hardwareAccelerated3D:
+                        // Accelerated installer campaigns are preview envelopes: the signed
+                        // candidate cell is revalidated immediately before spawn, so they do not
+                        // persist public-catalog runtime evidence in the resolved plan.
                         guard resolvedPlan.guest
                                 == DoryGuestPlatform(family: .linux, architecture: .arm64),
-                              resolvedPlan.qualificationEvidence.runtime != nil,
+                              resolvedPlan.qualificationEvidence.runtime != nil
+                                || resolvedPlan.usesCandidateCampaignPreviewEnvelope,
                               let rendererReleaseIdentity else {
                             throw MachineManagerError.persistence(
                                 "accelerated UEFI launch is missing stock-guest runtime or worker authority"

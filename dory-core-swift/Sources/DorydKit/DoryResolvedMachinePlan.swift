@@ -1603,7 +1603,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     /// Candidate campaigns deliberately do not mint public host-qualification evidence. This
     /// accepts only their structurally exact preview envelope; the production inventory still
     /// re-resolves the short-lived signed authority before publication and before every spawn.
-    private var usesCandidateCampaignPreviewEnvelope: Bool {
+    var usesCandidateCampaignPreviewEnvelope: Bool {
         guard supportTier == .preview,
               backend != .qemuHypervisorFramework,
               bootMedia.media.source == .userProvided,
