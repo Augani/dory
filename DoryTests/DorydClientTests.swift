@@ -154,6 +154,57 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func machineDisplayTopologyRoundTripsAndPreservesScanoutOrder() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+        service.setMachineDisplays("dev", displayMode: "desktop", displays: [
+            [
+                "id": "display-primary", "widthPixels": UInt32(2_560),
+                "heightPixels": UInt32(1_440), "backingScaleFactor": UInt8(2),
+                "guestUIScaleFactor": UInt8(2),
+            ] as NSDictionary,
+            [
+                "id": "display-secondary", "widthPixels": UInt32(1_920),
+                "heightPixels": UInt32(1_080), "backingScaleFactor": UInt8(1),
+                "guestUIScaleFactor": UInt8(1),
+            ] as NSDictionary,
+        ])
+
+        let status = try #require(try await client.machineList().first)
+        #expect(status.displays.map(\.id) == ["display-primary", "display-secondary"])
+        #expect(status.displays.map(\.widthPixels) == [2_560, 1_920])
+        let machine = AppStore.machine(fromDoryd: status)
+        #expect(machine.displays == status.displays)
+        #expect(machine.displays.indices.map(UInt32.init) == [0, 1])
+    }
+
+    @MainActor
+    @Test func machineDisplayTopologyFailsClosedForDuplicateOrMalformedDisplays() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+        let display = [
+            "id": "display-0", "widthPixels": UInt32(1_920),
+            "heightPixels": UInt32(1_080), "backingScaleFactor": UInt8(2),
+            "guestUIScaleFactor": UInt8(2),
+        ] as NSDictionary
+
+        service.setMachineDisplays("dev", displayMode: "desktop", displays: [display, display])
+        await #expect(throws: (any Error).self) { _ = try await client.machineList() }
+        service.setMachineDisplays("dev", displayMode: "desktop", displays: [])
+        await #expect(throws: (any Error).self) { _ = try await client.machineList() }
+    }
+
+    @MainActor
     @Test func machineUSBControlRequiresExactResolvedResponse() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -5815,6 +5866,20 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         lock.unlock()
     }
 
+    func setMachineDisplays(
+        _ machineID: String,
+        displayMode: String,
+        displays: Any
+    ) {
+        lock.lock()
+        let current = machines[machineID] ?? Self.machineRow(id: machineID, state: "running")
+        let row = NSMutableDictionary(dictionary: current)
+        row["displayMode"] = displayMode
+        row["displays"] = displays
+        machines[machineID] = row
+        lock.unlock()
+    }
+
     func setDashboardSnapshot(_ snapshot: [String: Data]) {
         lock.lock()
         _engineDashboardSnapshot = snapshot
@@ -7514,6 +7579,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
                     "displayMode": "headless",
                     "bootMode": "linux-kernel",
                     "installerMediaAttached": false,
+                    "guestToolsMediaAttached": false,
                     "shareCount": 0,
                     "integrationHealth": "missing-tools",
                     "runtimeMode": "legacy-compatibility",

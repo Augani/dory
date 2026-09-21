@@ -355,6 +355,7 @@ struct Machine: Identifiable, Hashable, Sendable {
     var flightRecorderHeadSequence: UInt64 = 0
     var flightRecorderAvailable: Bool = false
     var displayMode: MachineDisplayMode = .headless
+    var displays: [DoryVirtualMachineDisplayCapabilityRequest] = []
     var bootMode: MachineBootMode = .linuxKernel
     var installerMediaAttached: Bool = false
     var guestToolsMediaAttached: Bool = false

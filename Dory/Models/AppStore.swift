@@ -5486,6 +5486,7 @@ final class AppStore {
             flightRecorderHeadSequence: status.flightRecorderHeadSequence,
             flightRecorderAvailable: status.flightRecorderAvailable,
             displayMode: status.displayMode,
+            displays: status.displays,
             bootMode: status.bootMode,
             installerMediaAttached: status.installerMediaAttached,
             guestToolsMediaAttached: status.guestToolsMediaAttached,
@@ -5596,11 +5597,17 @@ final class AppStore {
             && machine.processID != nil
     }
 
-    func linuxDisplayWindow(for machine: Machine) -> LinuxMachineDisplayWindow? {
-        guard canOpenMachineDesktop(machine), machine.guestFamily == "linux" else {
-            return nil
+    func linuxDisplayWindows(for machine: Machine) -> [LinuxMachineDisplayWindow] {
+        guard machine.displayMode == .desktop, machine.guestFamily == "linux" else {
+            return []
         }
-        return LinuxMachineDisplayWindow(machineID: machine.name)
+        return machine.displays.indices.map {
+            LinuxMachineDisplayWindow(machineID: machine.name, scanoutID: UInt32($0))
+        }
+    }
+
+    func linuxDisplayWindow(for machine: Machine) -> LinuxMachineDisplayWindow? {
+        linuxDisplayWindows(for: machine).first
     }
 
     func openMachineDesktop(_ machine: Machine) {
@@ -6324,10 +6331,12 @@ final class AppStore {
                     _ = try await dorydClient.machineResume(name)
                 case .created, .stopped, .failed:
                     if machine.displayMode == .desktop, machine.guestFamily == "linux" {
-                        NotificationCenter.default.post(
-                            name: .doryOpenLinuxMachineDisplay,
-                            object: LinuxMachineDisplayWindow(machineID: name)
-                        )
+                        for display in linuxDisplayWindows(for: machine) {
+                            NotificationCenter.default.post(
+                                name: .doryOpenLinuxMachineDisplay,
+                                object: display
+                            )
+                        }
                     }
                     _ = try await dorydClient.machineStart(name)
                 case .absent, .defined, .stopping, .recovering, .deleting:

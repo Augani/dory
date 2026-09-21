@@ -153,8 +153,9 @@ struct DoryCommands: Commands {
                             }
                             if machine.displayMode == .desktop {
                                 Button("Open Desktop") {
-                                    if let display = store.linuxDisplayWindow(for: machine) {
-                                        openWindow(value: display)
+                                    let displays = store.linuxDisplayWindows(for: machine)
+                                    if !displays.isEmpty {
+                                        for display in displays { openWindow(value: display) }
                                     } else {
                                         store.openMachineDesktop(machine)
                                     }

@@ -3135,6 +3135,15 @@ private extension DoryMachineStatus {
         dictionary["currentBalloonTargetMB"] = currentBalloonTargetMB
         dictionary["cpuCount"] = cpuCount
         dictionary["displayMode"] = displayMode.rawValue
+        dictionary["displays"] = displays.map { display in
+            [
+                "id": display.id,
+                "widthPixels": display.widthPixels,
+                "heightPixels": display.heightPixels,
+                "backingScaleFactor": display.backingScaleFactor,
+                "guestUIScaleFactor": display.guestUIScaleFactor,
+            ] as NSDictionary
+        }
         dictionary["bootMode"] = bootMode.rawValue
         dictionary["installerMediaAttached"] = installerMediaAttached
         dictionary["guestToolsMediaAttached"] = guestToolsMediaAttached

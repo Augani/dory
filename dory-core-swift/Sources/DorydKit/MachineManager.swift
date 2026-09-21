@@ -516,6 +516,21 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var savedState: DoryMachineSavedStateStatus?
     public var readiness: DoryMachineReadiness
 
+    /// Ordered guest display topology for presentation clients. A resolved plan is authoritative;
+    /// compatibility desktops retain the historical single 1920x1080 Retina scanout.
+    public var displays: [DoryVirtualMachineDisplayCapabilityRequest] {
+        if let resolved = runtimeIdentity.resolvedPlan?.devices.displays {
+            return resolved
+        }
+        guard displayMode == .desktop else { return [] }
+        return [DoryVirtualMachineDisplayCapabilityRequest(
+            widthPixels: 1_920,
+            heightPixels: 1_080,
+            backingScaleFactor: 2,
+            guestUIScaleFactor: 2
+        )]
+    }
+
     /// A compact construction path for launch/status hot paths. The fully parameterized
     /// convenience initializer below is useful to callers, but its many default-argument
     /// temporaries produce a large compiler-generated stack frame on cooperative workers.

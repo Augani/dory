@@ -235,8 +235,9 @@ private struct MachineCard: View {
                 }
                 if machine.displayMode == .desktop {
                     actionButton("display", "Desktop", prominent: false, enabled: store.canOpenMachineDesktop(machine)) {
-                        if let display = store.linuxDisplayWindow(for: machine) {
-                            openWindow(value: display)
+                        let displays = store.linuxDisplayWindows(for: machine)
+                        if !displays.isEmpty {
+                            for display in displays { openWindow(value: display) }
                         } else {
                             store.openMachineDesktop(machine)
                         }

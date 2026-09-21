@@ -1237,6 +1237,7 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var currentBalloonTargetMB: UInt64? = nil
     var cpuCount: Int?
     var displayMode: MachineDisplayMode = .headless
+    var displays: [DoryVirtualMachineDisplayCapabilityRequest] = []
     var bootMode: MachineBootMode = .linuxKernel
     var installerMediaAttached: Bool = false
     var guestToolsMediaAttached: Bool = false
@@ -3179,6 +3180,10 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
         let displayMode = (dictionary["displayMode"] as? String)
             .flatMap(MachineDisplayMode.init(rawValue:)) ?? .headless
+        guard let displays = machineDisplays(
+            from: dictionary["displays"],
+            displayMode: displayMode
+        ) else { return nil }
         let agentBuild = nonEmptyString(dictionary["agentBuild"])
         let clipboardPolicy = typedSettings.value?.clipboardPolicy
             ?? (displayMode == .desktop
@@ -3228,6 +3233,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
             currentBalloonTargetMB: uint64(dictionary["currentBalloonTargetMB"]),
             cpuCount: int(dictionary["cpuCount"]),
             displayMode: displayMode,
+            displays: displays,
             bootMode: (dictionary["bootMode"] as? String).flatMap(MachineBootMode.init(rawValue:)) ?? .linuxKernel,
             installerMediaAttached: (dictionary["installerMediaAttached"] as? Bool)
                 ?? (dictionary["installerMediaAttached"] as? NSNumber)?.boolValue
@@ -3245,6 +3251,51 @@ nonisolated final class DorydClient: @unchecked Sendable {
             cloneReceipt: cloneReceipt.value,
             savedState: savedState.value
         )
+    }
+
+    nonisolated private static func machineDisplays(
+        from encoded: Any?,
+        displayMode: MachineDisplayMode
+    ) -> [DoryVirtualMachineDisplayCapabilityRequest]? {
+        guard let encoded else {
+            return displayMode == .desktop
+                ? [DoryVirtualMachineDisplayCapabilityRequest(
+                    widthPixels: 1_920,
+                    heightPixels: 1_080,
+                    backingScaleFactor: 2,
+                    guestUIScaleFactor: 2
+                )]
+                : []
+        }
+        guard let rows = encoded as? NSArray,
+              rows.count <= DoryVMDisplayConfiguration.maximumCount else { return nil }
+        let displays = rows.compactMap { raw -> DoryVirtualMachineDisplayCapabilityRequest? in
+            guard let row = raw as? NSDictionary,
+                  row.count == 5,
+                  let id = row["id"] as? String,
+                  let rawWidthPixels = strictUInt64(row["widthPixels"]),
+                  let widthPixels = UInt32(exactly: rawWidthPixels),
+                  let rawHeightPixels = strictUInt64(row["heightPixels"]),
+                  let heightPixels = UInt32(exactly: rawHeightPixels),
+                  let rawBackingScaleFactor = strictUInt64(row["backingScaleFactor"]),
+                  let backingScaleFactor = UInt8(exactly: rawBackingScaleFactor),
+                  let rawGuestUIScaleFactor = strictUInt64(row["guestUIScaleFactor"]),
+                  let guestUIScaleFactor = UInt8(exactly: rawGuestUIScaleFactor) else {
+                return nil
+            }
+            let display = DoryVirtualMachineDisplayCapabilityRequest(
+                id: id,
+                widthPixels: widthPixels,
+                heightPixels: heightPixels,
+                backingScaleFactor: backingScaleFactor,
+                guestUIScaleFactor: guestUIScaleFactor
+            )
+            return display.isValid ? display : nil
+        }
+        guard displays.count == rows.count,
+              Set(displays.map(\.id)).count == displays.count,
+              (displayMode == .desktop) == !displays.isEmpty else { return nil }
+        return displays
     }
 
     nonisolated private static func machineDisplayPresentation(

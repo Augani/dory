@@ -80,8 +80,9 @@ struct MachineCreationSheet: View {
                     }.buttonStyle(.plain)
                     if machine.bootMode == .efi, machine.displayMode == .desktop {
                         Button {
-                            if let display = store.linuxDisplayWindow(for: machine) {
-                                openWindow(value: display)
+                            let displays = store.linuxDisplayWindows(for: machine)
+                            if !displays.isEmpty {
+                                for display in displays { openWindow(value: display) }
                             } else {
                                 store.openMachineDesktop(machine)
                             }
