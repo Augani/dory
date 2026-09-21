@@ -2645,13 +2645,10 @@ enum DesktopMode {
                 do {
                     let prepared = try await provider.prepareReplacement(after: previousLaunch)
                     replacementLaunch = prepared
-                    let receipt = gpu.quiesce(reason: .deviceReset)
-                    let resetOutcome = receipt.wait(timeout: 5)
-                    guard resetOutcome != nil else {
-                        throw VMError.bootFailure(
-                            "virtio-gpu reset did not reach its bounded recovery boundary"
-                        )
-                    }
+                    // The guest's status-0 write already completed the device-reset quiescence
+                    // before it requested this replacement. Repeating that boundary here races
+                    // Linux's fresh probe and can erase resources submitted by the new queue
+                    // generation while the isolated worker is launching.
                     try gpu.installRendererWorkerReplacementAfterDeviceReset(
                         prepared.commandLane
                     )
