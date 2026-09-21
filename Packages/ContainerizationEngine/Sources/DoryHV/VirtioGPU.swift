@@ -2873,7 +2873,12 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         // races the driver's probe and can strand Linux with DEVICE_NEEDS_RESET after it has
         // already rebuilt its queues.
         if let transport = lifecycleLock.withLock({ attachedTransport }) {
-            handleKick(queue: 0, transport: transport)
+            // Installation runs off-vCPU while QueueReady and QueueNotify execute on a vCPU.
+            // Serialize this synthetic replay with both transitions so it observes one coherent
+            // queue layout and cannot lose the only notification published during replacement.
+            transport.withQueueLock {
+                handleKick(queue: 0, transport: transport)
+            }
         }
     }
 
