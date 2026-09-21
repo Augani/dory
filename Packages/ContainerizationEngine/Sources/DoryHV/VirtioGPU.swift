@@ -8757,6 +8757,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 }
                 let rect = try scanoutRect(from: request, at: 24)
                 let source: ScanoutBinding.Source
+                var usesGuestBackedDumbFramebuffer = false
                 var preparedPresentation: VirtioGPUTexturePresentation?
                 defer {
                     // Until ownership is transferred to `publishBoundScanout`, every error path
@@ -8769,7 +8770,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     source = .resource2D
                     resourceWidth = resource.width
                     resourceHeight = resource.height
-                    if rendererWorkerCandidate != nil {
+                    usesGuestBackedDumbFramebuffer = resourceEntries[resourceID] != nil
+                        && (rendererWorkerResourceContextIDs[resourceID] ?? []).isEmpty
+                    if rendererWorkerCandidate != nil, !usesGuestBackedDumbFramebuffer {
                         guard rendererWorkerResourceGenerations[resourceID] != nil,
                               Self.rendererWorkerScanoutFormat(resource.format) != nil,
                               onMetalScanout != nil else {
@@ -8837,7 +8840,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 if let previous, case .blob = previous.source, rendererExecutor != nil {
                     try releaseBlobMappingIfUnused(resourceID: previous.resourceID)
                 }
-                if rendererWorkerCandidate != nil,
+                if !usesGuestBackedDumbFramebuffer,
+                   rendererWorkerCandidate != nil,
                    rendererWorkerResourceGenerations[resourceID] != nil {
                     // Worker-backed 2D and VirGL2 resources become visible only after
                     // RESOURCE_FLUSH acquires a producer-complete native Metal texture lease.

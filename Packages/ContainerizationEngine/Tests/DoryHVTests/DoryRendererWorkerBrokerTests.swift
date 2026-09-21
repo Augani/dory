@@ -2793,7 +2793,12 @@ import Testing
             rect: fullRect
         ))
         #expect(try queue.usedIndex() == 4)
-        #expect(softwareFrames.values.isEmpty)
+        let initialFrame = try #require(softwareFrames.values.first)
+        #expect(initialFrame.resourceID == resourceID)
+        #expect(initialFrame.width == 64)
+        #expect(initialFrame.height == 64)
+        #expect(initialFrame.dirtyRect == fullRect)
+        #expect(initialFrame.bytes == Data(backing))
         #expect(metalFrames.values.isEmpty)
 
         try queue.submit(rendererGPUResourceFlushRequest(
@@ -2802,7 +2807,8 @@ import Testing
         ))
         #expect(await rendererEventually { (try? queue.usedIndex()) == 5 })
         #expect(fixture.channel.sendCount == 3)
-        let frame = try #require(softwareFrames.values.first)
+        #expect(softwareFrames.values.count == 2)
+        let frame = try #require(softwareFrames.values.last)
         #expect(frame.resourceID == resourceID)
         #expect(frame.width == 64)
         #expect(frame.height == 64)
