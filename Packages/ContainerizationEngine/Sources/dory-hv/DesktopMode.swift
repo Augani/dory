@@ -2836,10 +2836,10 @@ enum DesktopMode {
                                     // require either the Metal path or the verified CPU fallback
                                     // to complete a real presentation before readiness.
                                     guard graphicsReadinessState.waitForFirstPresentation(
-                                        timeout: 90
+                                        timeout: 180
                                     ) else {
                                         throw VMError.bootFailure(
-                                            "generic Linux guest did not complete a graphics presentation within 90s"
+                                            "generic Linux guest did not complete a graphics presentation within 180s"
                                         )
                                     }
                                 }
