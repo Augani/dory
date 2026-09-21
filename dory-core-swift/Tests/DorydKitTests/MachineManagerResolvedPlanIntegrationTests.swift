@@ -494,7 +494,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             #expect(envelope.executionResources.memoryMB == 2_048)
             #expect(envelope.executionResources.virtualCPUCount == 2)
             #expect(envelope.executionResources.systemDiskQueueCount == 2)
-            #expect(envelope.executionResources.schedulingPolicyRevision == 1)
+            #expect(envelope.executionResources.schedulingPolicyRevision == 2)
             #expect(!arguments.contains("--rootfs"))
             #expect(!arguments.contains("--memory-mb"))
             #expect(!arguments.contains("--cpus"))

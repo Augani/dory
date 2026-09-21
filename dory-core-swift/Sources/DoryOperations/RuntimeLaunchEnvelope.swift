@@ -180,6 +180,11 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         public let rendererBootstrap: InheritedFileDescriptorSlot?
     }
 
+    public enum ARMVirtBootProtocol: Sendable, Equatable {
+        case linuxDirect
+        case uefi
+    }
+
     /// Exact compute and storage-parallelism authority for one resolved DoryARMVirt-v1 launch.
     ///
     /// These values live in the canonical envelope rather than in ambient defaults or an
@@ -191,7 +196,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         public static let minimumVirtualCPUCount: UInt16 = 1
         public static let maximumVirtualCPUCount: UInt16 = 8
         public static let maximumSystemDiskQueueCount: UInt16 = 16
-        public static let currentSchedulingPolicyRevision: UInt16 = 1
+        public static let currentSchedulingPolicyRevision: UInt16 = 2
 
         public let memoryMB: UInt64
         public let virtualCPUCount: UInt16
@@ -210,20 +215,22 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             self.schedulingPolicyRevision = schedulingPolicyRevision
         }
 
-        /// Current production policy exposes one system-disk queue per admitted vCPU. The exact
-        /// result is serialized into the envelope so changing this policy requires a new plan and
-        /// produces a different launch identity rather than changing an existing run in place.
+        /// Direct-Linux launches expose one system-disk queue per admitted vCPU. EDK2's ARMVirt
+        /// VirtioBlk boot driver requires the boot disk to remain single-queue, so UEFI launches
+        /// pin one queue for firmware and the subsequently booted guest. The exact result is
+        /// serialized into the envelope so changing this policy produces a different launch
+        /// identity rather than changing an existing run in place.
         public static func production(
             memoryMB: UInt64,
-            virtualCPUCount: UInt16
+            virtualCPUCount: UInt16,
+            bootProtocol: ARMVirtBootProtocol
         ) -> Self {
             Self(
                 memoryMB: memoryMB,
                 virtualCPUCount: virtualCPUCount,
-                systemDiskQueueCount: min(
-                    maximumSystemDiskQueueCount,
-                    virtualCPUCount
-                )
+                systemDiskQueueCount: bootProtocol == .uefi
+                    ? 1
+                    : min(maximumSystemDiskQueueCount, virtualCPUCount)
             )
         }
 

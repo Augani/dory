@@ -200,7 +200,11 @@ final class RuntimeDiskAuthorityIntegrationTests: XCTestCase {
             graphics: .software,
             devices: makeDevices(),
             portForwards: [],
-            executionResources: .production(memoryMB: 4_096, virtualCPUCount: 4),
+            executionResources: .production(
+                memoryMB: 4_096,
+                virtualCPUCount: 4,
+                bootProtocol: .linuxDirect
+            ),
             systemDiskCapacityBytes: capacityBytes,
             systemDiskLogicalID: topology.occupiedSlots.first {
                 $0.role == .systemDisk

@@ -347,7 +347,8 @@ public enum DoryLinuxVMCalibrationLauncher {
 
         let executionResources = RuntimeLaunchEnvelope.ARMVirtExecutionResources.production(
             memoryMB: configuration.memoryMB,
-            virtualCPUCount: configuration.virtualCPUCount
+            virtualCPUCount: configuration.virtualCPUCount,
+            bootProtocol: .linuxDirect
         )
         let definition = makeDefinition(
             configuration: configuration,

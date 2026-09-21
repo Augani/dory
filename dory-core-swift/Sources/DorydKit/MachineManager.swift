@@ -5572,9 +5572,21 @@ public final class MachineManager: @unchecked Sendable {
                         "resolved DoryARMVirt-v1 compute resources cannot be represented by the runtime envelope"
                     )
                 }
+                let armVirtBootProtocol: RuntimeLaunchEnvelope.ARMVirtBootProtocol
+                switch resolvedPlan.bootMedia.media.kind {
+                case .linuxKernel, .installedLinuxBootBundle:
+                    armVirtBootProtocol = .linuxDirect
+                case .installerISO, .virtualDisk:
+                    armVirtBootProtocol = .uefi
+                case .macOSRestoreImage:
+                    throw MachineManagerError.persistence(
+                        "resolved DoryARMVirt-v1 launch rejects macOS restore media"
+                    )
+                }
                 let executionResources = RuntimeLaunchEnvelope.ARMVirtExecutionResources.production(
                     memoryMB: admittedMemoryBytes / bytesPerMiB,
-                    virtualCPUCount: UInt16(admittedVirtualCPUCount)
+                    virtualCPUCount: UInt16(admittedVirtualCPUCount),
+                    bootProtocol: armVirtBootProtocol
                 )
                 let systemDiskSlots = armVirtTopology.occupiedSlots.filter {
                     $0.role == .systemDisk
@@ -13684,7 +13696,8 @@ public final class MachineManager: @unchecked Sendable {
         )
         let executionResources = RuntimeLaunchEnvelope.ARMVirtExecutionResources.production(
             memoryMB: machine.memoryMB,
-            virtualCPUCount: UInt16(machine.cpuCount)
+            virtualCPUCount: UInt16(machine.cpuCount),
+            bootProtocol: .linuxDirect
         )
         var components = rendererAdmission.qualifiedComponents.map {
             DoryResolvedBackendComponentEvidence(

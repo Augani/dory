@@ -31,7 +31,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         XCTAssertEqual(decoded.executionResources.memoryMB, 8_192)
         XCTAssertEqual(decoded.executionResources.virtualCPUCount, 4)
         XCTAssertEqual(decoded.executionResources.systemDiskQueueCount, 4)
-        XCTAssertEqual(decoded.executionResources.schedulingPolicyRevision, 1)
+        XCTAssertEqual(decoded.executionResources.schedulingPolicyRevision, 2)
         XCTAssertEqual(decoded.inheritedFileDescriptors.map(\.name), [
             RuntimeLaunchEnvelope.systemDiskSlotName,
             RuntimeLaunchEnvelope.linuxKernelSlotName,
@@ -54,6 +54,24 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         XCTAssertNil(resources.rendererBootstrap)
         XCTAssertEqual(decoded.linuxDirectBoot.profile, .managedKernel)
         XCTAssertEqual(decoded.linuxDirectBoot.rootDevice, "/dev/vda")
+    }
+
+    func testProductionExecutionResourcesKeepUEFISystemDiskSingleQueue() {
+        let direct = RuntimeLaunchEnvelope.ARMVirtExecutionResources.production(
+            memoryMB: 8_192,
+            virtualCPUCount: 4,
+            bootProtocol: .linuxDirect
+        )
+        let uefi = RuntimeLaunchEnvelope.ARMVirtExecutionResources.production(
+            memoryMB: 8_192,
+            virtualCPUCount: 4,
+            bootProtocol: .uefi
+        )
+
+        XCTAssertEqual(direct.systemDiskQueueCount, 4)
+        XCTAssertEqual(uefi.systemDiskQueueCount, 1)
+        XCTAssertEqual(direct.schedulingPolicyRevision, 2)
+        XCTAssertEqual(uefi.schedulingPolicyRevision, 2)
     }
 
     func testCanonicalUEFIRoundTripPinsFirmwareAndVariableDirectoryAuthorities() throws {
@@ -430,7 +448,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
                 memoryMB: 8_192,
                 virtualCPUCount: 4,
                 systemDiskQueueCount: 4,
-                schedulingPolicyRevision: 2
+                schedulingPolicyRevision: 3
             ),
         ] {
             assertValidationError(
@@ -634,7 +652,8 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         rendererBootstrapDigest: String? = nil,
         executionResources: RuntimeLaunchEnvelope.ARMVirtExecutionResources = .production(
             memoryMB: 8_192,
-            virtualCPUCount: 4
+            virtualCPUCount: 4,
+            bootProtocol: .linuxDirect
         )
     ) -> RuntimeLaunchEnvelope {
         let devices = makeDevices()
