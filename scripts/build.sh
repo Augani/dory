@@ -145,10 +145,16 @@ fi
 # The receipts were produced with Swift 6.3.3 (Xcode 26.6 RC). Fail loudly on an unsupported
 # compiler so a clean checkout never silently produces a broken test build.
 if [ -z "${DORY_SKIP_SWIFT_VERSION_CHECK:-}" ]; then
-  swift_version="$("$DEVELOPER_DIR/usr/bin/swift" --version 2>/dev/null | awk '/Swift version/ {print $3}' | head -1)"
+  # Stable Xcode releases have not consistently exposed Swift at Developer/usr/bin/swift.
+  # Resolve it through the selected developer directory so this check examines the same
+  # toolchain xcodebuild will use. Newer swift-driver banners may prefix the Apple version,
+  # so extract the semantic version instead of relying on a fixed field position.
+  swift_version="$(DEVELOPER_DIR="$DEVELOPER_DIR" xcrun swift --version 2>/dev/null \
+    | sed -nE 's/.*Apple Swift version ([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p' \
+    | head -1)"
   case "$swift_version" in
-    6.3.*) ;;  # Xcode 26.6 RC — receipts pass here
-    6.4.*) ;;  # Xcode 26 GM — test target fixed for this compiler in this commit
+    6.3|6.3.*) ;;  # Xcode 26.6 RC — receipts pass here
+    6.4|6.4.*) ;;  # Xcode 26 GM — test target fixed for this compiler in this commit
     *)
       echo "error: unsupported Swift version '${swift_version:-unknown}'. " >&2
       echo "error: Dory requires Swift 6.3.x or 6.4.x (Xcode 26.6 RC or Xcode 26 GM)." >&2
