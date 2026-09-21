@@ -358,6 +358,14 @@ final class DoryVMMKitTests: XCTestCase {
             ),
             CGSize(width: 1_024, height: 768)
         )
+        XCTAssertEqual(
+            DoryVMMDesktopApplication.targetPixelSize(
+                viewSize: CGSize(width: 1_280, height: 800),
+                backingScaleFactor: 2,
+                hostBackingScaleFactor: 1
+            ),
+            CGSize(width: 1_280, height: 800)
+        )
     }
 
     func testGuestUIScalePersistenceKeepsTheValueOutOfShellSource() throws {

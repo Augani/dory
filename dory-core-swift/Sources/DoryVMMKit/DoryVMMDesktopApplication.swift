@@ -282,9 +282,14 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
 
     nonisolated static func targetPixelSize(
         viewSize: CGSize,
-        backingScaleFactor: CGFloat
+        backingScaleFactor: CGFloat,
+        hostBackingScaleFactor: CGFloat? = nil
     ) -> CGSize {
-        let scale = max(1, backingScaleFactor)
+        let requestedScale = max(1, backingScaleFactor)
+        let scale = min(
+            requestedScale,
+            max(1, hostBackingScaleFactor ?? requestedScale)
+        )
         return CGSize(
             width: max(1, (viewSize.width * scale).rounded()),
             height: max(1, (viewSize.height * scale).rounded())
@@ -307,7 +312,8 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         pendingDisplayResize = nil
         let size = Self.targetPixelSize(
             viewSize: machineView.bounds.size,
-            backingScaleFactor: backingScaleFactor
+            backingScaleFactor: backingScaleFactor,
+            hostBackingScaleFactor: window.backingScaleFactor
         )
         guard size != requestedPixelSize else { return }
         do {

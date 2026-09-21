@@ -110,6 +110,7 @@ struct NewMachineSettingsTests {
         #expect(s.virtualMachineSettings?.clipboardPolicy == .legacyDesktop(.bidirectional))
         #expect(s.virtualMachineSettings?.runtimePreference == .accelerated)
         #expect(s.virtualMachineSettings?.graphicsPreference == .virglVenus)
+        #expect(s.virtualMachineSettings?.displayDensity == .retinaResolution)
         #expect(s.virtualMachineSettings?.networkMode == .sharedNAT)
         #expect(s.virtualMachineSettings?.portForwards == [
             DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
@@ -225,6 +226,25 @@ struct NewMachineSettingsTests {
         )
         #expect(compatible.virtualMachineSettings?.runtimePreference == .compatible)
         #expect(compatible.virtualMachineSettings?.graphicsPreference == .software)
+    }
+
+    @Test func desktopDisplayDensityIsExplicitAndHeadlessDoesNotClaimIt() {
+        let scaled = NewMachineSheet.buildSettings(
+            cpus: 4,
+            memoryGB: 4,
+            mounts: [],
+            displayDensity: .scaled
+        )
+        #expect(scaled.virtualMachineSettings?.displayDensity == .scaled)
+
+        let headless = NewMachineSheet.buildSettings(
+            cpus: 2,
+            memoryGB: 2,
+            mounts: [],
+            displayMode: .headless,
+            displayDensity: .scaled
+        )
+        #expect(headless.virtualMachineSettings?.displayDensity == nil)
     }
 
     @Test func newMachinesDoNotRequestUnsupportedIntelApplicationTranslation() {

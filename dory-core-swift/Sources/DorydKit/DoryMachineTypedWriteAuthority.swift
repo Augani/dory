@@ -40,6 +40,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
     public var clipboardPolicy: DoryVMClipboardPolicy?
     public var runtimePreference: DoryDesktopVMMPreference?
     public var graphicsPreference: DoryDesktopGraphicsPreference?
+    public var displayDensity: DoryVMDisplayDensity?
     public var networkMode: DoryVMNetworkMode
     public var portForwards: [DoryVMPortForward]
     public var audioConfiguration: DoryVMAudioConfiguration?
@@ -51,6 +52,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         case clipboardPolicy
         case runtimePreference
         case graphicsPreference
+        case displayDensity
         case networkMode
         case portForwards
         case audioConfiguration
@@ -75,6 +77,10 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         graphicsPreference = try container.decodeIfPresent(
             DoryDesktopGraphicsPreference.self,
             forKey: .graphicsPreference
+        )
+        displayDensity = try container.decodeIfPresent(
+            DoryVMDisplayDensity.self,
+            forKey: .displayDensity
         )
         networkMode = try container.decodeIfPresent(
             DoryVMNetworkMode.self,
@@ -104,6 +110,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         try container.encodeIfPresent(clipboardPolicy, forKey: .clipboardPolicy)
         try container.encodeIfPresent(runtimePreference, forKey: .runtimePreference)
         try container.encodeIfPresent(graphicsPreference, forKey: .graphicsPreference)
+        try container.encodeIfPresent(displayDensity, forKey: .displayDensity)
         try container.encode(networkMode, forKey: .networkMode)
         try container.encode(portForwards, forKey: .portForwards)
         try container.encodeIfPresent(audioConfiguration, forKey: .audioConfiguration)
@@ -125,6 +132,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             clipboardPolicy = nil
             runtimePreference = nil
             graphicsPreference = nil
+            displayDensity = nil
             audioConfiguration = nil
             cameraConfiguration = nil
             return
@@ -132,6 +140,12 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         audioConfiguration = definition.audio
         cameraConfiguration = definition.camera
         clipboardPolicy = definition.clipboardPolicy
+        let enabledDisplays = definition.displays.filter(\.enabled)
+        let resolvedDisplayDensities = enabledDisplays.compactMap(DoryVMDisplayDensity.init)
+        let displayDensities = Set(resolvedDisplayDensities)
+        displayDensity = resolvedDisplayDensities.count == enabledDisplays.count && displayDensities.count == 1
+            ? displayDensities.first
+            : nil
         switch definition.platform?.executionEngine {
         case nil:
             runtimePreference = .automatic
@@ -225,6 +239,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             graphicsPreference = (try? DoryDesktopGraphicsPreference(
                 environment: legacyEnvironment
             )) ?? .automatic
+            displayDensity = .retinaResolution
             // The compatibility desktop runtime has always attached its combined input/output
             // audio device. This is an observation of that fixed legacy behavior, not a new
             // persisted environment setting.
@@ -241,6 +256,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             clipboardPolicy = nil
             runtimePreference = nil
             graphicsPreference = nil
+            displayDensity = nil
             audioConfiguration = nil
             cameraConfiguration = nil
         }
@@ -261,6 +277,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             clipboardPolicy: update(clipboardPolicy),
             runtimePreference: update(runtimePreference),
             graphicsPreference: update(graphicsPreference),
+            displayDensity: update(displayDensity),
             networkMode: .set(networkMode),
             portForwards: .set(portForwards),
             audioInputEnabled: update(audioConfiguration?.inputEnabled),
@@ -297,6 +314,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             clipboardPolicy: update(clipboardPolicy),
             runtimePreference: update(runtimePreference),
             graphicsPreference: update(graphicsPreference),
+            displayDensity: update(displayDensity),
             networkMode: .set(networkMode),
             portForwards: .set(portForwards),
             audioInputEnabled: update(audioConfiguration?.inputEnabled),
@@ -320,6 +338,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         hasher.combine(clipboardPolicy?.files.rawValue)
         hasher.combine(runtimePreference?.rawValue)
         hasher.combine(graphicsPreference?.rawValue)
+        hasher.combine(displayDensity?.rawValue)
         hasher.combine(networkMode.rawValue)
         hasher.combine(portForwards)
         hasher.combine(audioConfiguration?.inputEnabled)
@@ -356,6 +375,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
     public var clipboardPolicy: DoryMachineTypedSettingUpdate<DoryVMClipboardPolicy>
     public var runtimePreference: DoryMachineTypedSettingUpdate<DoryDesktopVMMPreference>
     public var graphicsPreference: DoryMachineTypedSettingUpdate<DoryDesktopGraphicsPreference>
+    public var displayDensity: DoryMachineTypedSettingUpdate<DoryVMDisplayDensity>
     public var networkMode: DoryMachineTypedSettingUpdate<DoryVMNetworkMode>
     public var portForwards: DoryMachineTypedSettingUpdate<[DoryVMPortForward]>
     public var audioInputEnabled: DoryMachineTypedSettingUpdate<Bool>
@@ -373,6 +393,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
         clipboardPolicy: DoryMachineTypedSettingUpdate<DoryVMClipboardPolicy> = .unchanged,
         runtimePreference: DoryMachineTypedSettingUpdate<DoryDesktopVMMPreference> = .unchanged,
         graphicsPreference: DoryMachineTypedSettingUpdate<DoryDesktopGraphicsPreference> = .unchanged,
+        displayDensity: DoryMachineTypedSettingUpdate<DoryVMDisplayDensity> = .unchanged,
         networkMode: DoryMachineTypedSettingUpdate<DoryVMNetworkMode> = .unchanged,
         portForwards: DoryMachineTypedSettingUpdate<[DoryVMPortForward]> = .unchanged,
         audioInputEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged,
@@ -389,6 +410,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
         self.clipboardPolicy = clipboardPolicy
         self.runtimePreference = runtimePreference
         self.graphicsPreference = graphicsPreference
+        self.displayDensity = displayDensity
         self.networkMode = networkMode
         self.portForwards = portForwards
         self.audioInputEnabled = audioInputEnabled
@@ -407,6 +429,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
             && !clipboardPolicy.isChanged
             && !runtimePreference.isChanged
             && !graphicsPreference.isChanged
+            && !displayDensity.isChanged
             && !networkMode.isChanged
             && !portForwards.isChanged
             && !audioInputEnabled.isChanged
@@ -473,6 +496,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
             }
             patch.graphicsPreference = .set(preference)
         }
+        if let raw = try takeOption("--display-density", from: &arguments) {
+            guard let density = DoryVMDisplayDensity(rawValue: raw) else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField("--display-density")
+            }
+            patch.displayDensity = .set(density)
+        }
         if let raw = try takeOption("--network", from: &arguments) {
             let mode = raw == "host-only"
                 ? DoryVMNetworkMode.isolated
@@ -507,6 +536,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
         let clearsClipboard = takeFlag("--clear-clipboard", from: &arguments)
         let clearsRuntime = takeFlag("--clear-runtime", from: &arguments)
         let clearsGraphics = takeFlag("--clear-graphics", from: &arguments)
+        let clearsDisplayDensity = takeFlag("--clear-display-density", from: &arguments)
         let clearsNetwork = takeFlag("--clear-network", from: &arguments)
         let clearsPortForwards = takeFlag("--clear-forwards", from: &arguments)
         let clearsAudio = takeFlag("--clear-audio", from: &arguments)
@@ -517,6 +547,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
         )
         guard allowsClears || (!clearsAccount && !clearsDesktop && !clearsClipboard
             && !clearsRuntime && !clearsGraphics && !clearsNetwork
+            && !clearsDisplayDensity
             && !clearsPortForwards && !clearsAudio
             && !clearsCamera
             && !clearsIntelApplicationTranslation) else {
@@ -562,6 +593,14 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
                 throw DoryMachineTypedWriteAuthorityError.invalidField("--clear-graphics")
             }
             patch.graphicsPreference = .clear
+        }
+        if clearsDisplayDensity {
+            guard !patch.displayDensity.isChanged else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField(
+                    "--clear-display-density"
+                )
+            }
+            patch.displayDensity = .clear
         }
         if clearsNetwork {
             guard !patch.networkMode.isChanged else {
@@ -627,6 +666,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
             field: "desktopGraphicsPreference",
             allowsClears: allowsClears,
             type: DoryDesktopGraphicsPreference.self
+        )
+        displayDensity = try Self.decodeEnum(
+            dictionary["displayDensity"],
+            field: "displayDensity",
+            allowsClears: allowsClears,
+            type: DoryVMDisplayDensity.self
         )
         networkMode = try Self.decodeEnum(
             dictionary["networkMode"],
@@ -700,6 +745,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
             key: "desktopGraphicsPreference",
             into: &result
         )
+        Self.encodeEnum(displayDensity, key: "displayDensity", into: &result)
         Self.encodeEnum(networkMode, key: "networkMode", into: &result)
         switch portForwards {
         case .unchanged:
@@ -786,6 +832,14 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
         if graphicsPreference.isChanged {
             environment.removeValue(
                 forKey: DoryDesktopGraphicsPreference.legacyClassicOnlyEnvironmentKey
+            )
+        }
+        switch displayDensity {
+        case .unchanged, .clear, .set(.retinaResolution):
+            break
+        case .set(.scaled):
+            throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+                "displayDensity"
             )
         }
         switch networkMode {
@@ -925,6 +979,16 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
         }
         if graphicsPreference.isChanged {
             definition.resources = DoryVMProductionResourceBudget.make(for: definition)
+        }
+        switch displayDensity {
+        case .unchanged:
+            break
+        case .clear:
+            definition.displays = definition.displays.map {
+                DoryVMDisplayDensity.retinaResolution.applying(to: $0)
+            }
+        case let .set(density):
+            definition.displays = definition.displays.map { density.applying(to: $0) }
         }
         switch networkMode {
         case .unchanged:
@@ -1270,6 +1334,11 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
         if (runtimePreference.isSet || graphicsPreference.isSet), displayMode != .desktop {
             throw DoryMachineTypedWriteAuthorityError.unsupportedForDisplay(
                 "desktopRuntimePreference"
+            )
+        }
+        if displayDensity.isSet, displayMode != .desktop {
+            throw DoryMachineTypedWriteAuthorityError.unsupportedForDisplay(
+                "displayDensity"
             )
         }
         if (audioInputEnabled.isChanged || audioOutputEnabled.isChanged),

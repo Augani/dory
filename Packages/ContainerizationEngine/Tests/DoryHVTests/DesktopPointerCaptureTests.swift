@@ -4,6 +4,21 @@ import Testing
 
 @Suite("Desktop relative pointer capture")
 struct DesktopPointerCaptureTests {
+    @Test("Retina resolution follows the host screen while scaled mode stays at one")
+    func displayBackingScalePolicy() {
+        #expect(DesktopDisplayView.effectiveGuestBackingScaleFactor(
+            requestedScale: 2,
+            hostScale: 2
+        ) == 2)
+        #expect(DesktopDisplayView.effectiveGuestBackingScaleFactor(
+            requestedScale: 2,
+            hostScale: 1
+        ) == 1)
+        #expect(DesktopDisplayView.effectiveGuestBackingScaleFactor(
+            requestedScale: 1,
+            hostScale: 2
+        ) == 1)
+    }
     @Test("click-in captures once and Control-Command releases without leaking chord events")
     func captureAndReleaseChord() {
         var state = DesktopPointerCaptureState()

@@ -306,6 +306,59 @@ public struct DoryVMDisplayConfiguration: Codable, Sendable, Equatable {
     }
 }
 
+/// User-facing framebuffer density policy for desktop displays.
+///
+/// The stored display geometry remains authoritative. This policy changes the number of guest
+/// framebuffer pixels per host point while preserving the display's logical point size. A Retina
+/// display may still run at 1x when its window moves to a 1x host screen; `backingScaleFactor` is
+/// the maximum scale requested by the user, not a promise that every attached host screen is 2x.
+public enum DoryVMDisplayDensity: String, Codable, Sendable, CaseIterable {
+    case retinaResolution = "retina-resolution"
+    case scaled
+
+    public var backingScaleFactor: UInt8 {
+        switch self {
+        case .retinaResolution: 2
+        case .scaled: 1
+        }
+    }
+
+    public var guestUIScaleFactor: UInt8 { backingScaleFactor }
+
+    public init?(display: DoryVMDisplayConfiguration) {
+        guard display.enabled else { return nil }
+        switch (display.backingScaleFactor, display.guestUIScaleFactor) {
+        case (2, 2): self = .retinaResolution
+        case (1, 1): self = .scaled
+        default: return nil
+        }
+    }
+
+    /// Applies this policy without changing the window's logical size. Rounding to the nearest
+    /// point makes odd legacy pixel dimensions deterministic; repeated application is idempotent.
+    public func applying(to source: DoryVMDisplayConfiguration) -> DoryVMDisplayConfiguration {
+        guard source.enabled else { return source }
+        let oldScale = UInt32(max(1, source.backingScaleFactor))
+        let newScale = UInt32(backingScaleFactor)
+        func resized(_ pixels: UInt32) -> UInt32 {
+            let logicalPoints = max(
+                UInt64(1),
+                (UInt64(pixels) + UInt64(oldScale / 2)) / UInt64(oldScale)
+            )
+            return UInt32(min(
+                UInt64(DoryVMDisplayConfiguration.maximumDimensionPixels),
+                logicalPoints * UInt64(newScale)
+            ))
+        }
+        var display = source
+        display.widthPixels = resized(source.widthPixels)
+        display.heightPixels = resized(source.heightPixels)
+        display.backingScaleFactor = backingScaleFactor
+        display.guestUIScaleFactor = guestUIScaleFactor
+        return display
+    }
+}
+
 public struct DoryVMAudioConfiguration: Codable, Sendable, Equatable {
     public var inputEnabled: Bool
     public var outputEnabled: Bool

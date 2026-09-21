@@ -1253,6 +1253,8 @@ class DesktopDisplayView: NSView {
     private let keyboardInput: any DesktopInputSink
     private let pointerInput: any DesktopInputSink
     private let relativePointerInput: any DesktopInputSink
+    /// Maximum framebuffer pixels per host point requested by the user. The effective value is
+    /// capped by the current host screen so a Retina window re-modes to 1x when moved to a 1x panel.
     private let guestBackingScaleFactor: CGFloat
     let scanoutID: UInt32
     private let pointerTopology: DesktopPointerTopology?
@@ -1301,6 +1303,20 @@ class DesktopDisplayView: NSView {
         drawableSurfaceDidChange()
         publishGuestDisplayGeometry(after: 0)
         needsDisplay = true
+    }
+
+    nonisolated static func effectiveGuestBackingScaleFactor(
+        requestedScale: CGFloat,
+        hostScale: CGFloat
+    ) -> CGFloat {
+        min(max(1, requestedScale), max(1, hostScale))
+    }
+
+    private var effectiveGuestBackingScaleFactor: CGFloat {
+        Self.effectiveGuestBackingScaleFactor(
+            requestedScale: guestBackingScaleFactor,
+            hostScale: window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        )
     }
 
     /// A dedicated guest display is often not the key macOS window yet (notably immediately after
@@ -1353,8 +1369,8 @@ class DesktopDisplayView: NSView {
         }
         let effectivePixelSize = pixelSize
             ?? (scanoutSize.width > 0 ? scanoutSize : CGSize(
-                width: bounds.width * guestBackingScaleFactor,
-                height: bounds.height * guestBackingScaleFactor
+                width: bounds.width * effectiveGuestBackingScaleFactor,
+                height: bounds.height * effectiveGuestBackingScaleFactor
             ))
         let cursorScale = bounds.width > 0
             ? max(1, effectivePixelSize.width / bounds.width)
@@ -1371,8 +1387,8 @@ class DesktopDisplayView: NSView {
         super.setFrameSize(newSize)
         drawableSurfaceDidChange()
         let guestPixelSize = CGSize(
-            width: max(1, bounds.width * guestBackingScaleFactor),
-            height: max(1, bounds.height * guestBackingScaleFactor)
+            width: max(1, bounds.width * effectiveGuestBackingScaleFactor),
+            height: max(1, bounds.height * effectiveGuestBackingScaleFactor)
         )
         if guestCursorUpdate != nil { rebuildGuestCursor(pixelSize: guestPixelSize) }
         let width = UInt32(clamping: max(1, Int(guestPixelSize.width.rounded())))
@@ -1393,8 +1409,8 @@ class DesktopDisplayView: NSView {
 
     private func publishGuestDisplayGeometry(after delay: TimeInterval) {
         let guestPixelSize = CGSize(
-            width: max(1, bounds.width * guestBackingScaleFactor),
-            height: max(1, bounds.height * guestBackingScaleFactor)
+            width: max(1, bounds.width * effectiveGuestBackingScaleFactor),
+            height: max(1, bounds.height * effectiveGuestBackingScaleFactor)
         )
         publishGuestDisplayGeometry(
             width: UInt32(clamping: max(1, Int(guestPixelSize.width.rounded()))),

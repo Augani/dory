@@ -27,6 +27,7 @@ struct NewMachineSheet: View {
     @State private var audioOutputEnabled = true
     @State private var cameraEnabled = false
     @State private var gpuAccelerationEnabled = true
+    @State private var displayDensity = DoryVMDisplayDensity.retinaResolution
     @State private var hostDisplays: [HostDisplayChoice] = []
     @State private var dedicatedHostDisplayUUID: String?
 
@@ -774,6 +775,14 @@ struct NewMachineSheet: View {
         if displayMode == .desktop {
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel("MAC DISPLAY")
+                if !guestPlatform.isMacOS {
+                    Picker("Resolution", selection: $displayDensity) {
+                        Text("Retina resolution").tag(DoryVMDisplayDensity.retinaResolution)
+                        Text("Scaled").tag(DoryVMDisplayDensity.scaled)
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("new-machine-display-density")
+                }
                 Picker("Guest presentation", selection: $dedicatedHostDisplayUUID) {
                     Text("Windowed").tag(String?.none)
                     ForEach(hostDisplays) { display in
@@ -782,7 +791,9 @@ struct NewMachineSheet: View {
                 }
                 .accessibilityIdentifier("new-machine-host-display")
                 Text(dedicatedHostDisplayUUID == nil
-                     ? "Open the guest desktop as a normal Mac window."
+                     ? displayDensity == .retinaResolution && !guestPlatform.isMacOS
+                        ? "Render at the host display's native backing scale for crisp text; moving to a 1x display re-modes automatically."
+                        : "Open the guest desktop as a normal Mac window."
                      : "Give the guest a native full-screen Space on this monitor. Command-Control-F returns to a window.")
                     .font(.system(size: 11))
                     .foregroundStyle(p.text3)
@@ -1228,7 +1239,8 @@ struct NewMachineSheet: View {
         audioInputEnabled: Bool = false,
         audioOutputEnabled: Bool = true,
         cameraEnabled: Bool = false,
-        gpuAccelerationEnabled: Bool = true
+        gpuAccelerationEnabled: Bool = true,
+        displayDensity: DoryVMDisplayDensity = .retinaResolution
     ) -> MachineSettings {
         let typedSettings: DorydMachineTypedSettings
         if displayMode == .desktop {
@@ -1252,6 +1264,7 @@ struct NewMachineSheet: View {
                 clipboardPolicy: .legacyDesktop(.bidirectional),
                 runtimePreference: gpuAccelerationEnabled ? .accelerated : .compatible,
                 graphicsPreference: gpuAccelerationEnabled ? .virglVenus : .software,
+                displayDensity: displayDensity,
                 networkMode: networkMode,
                 portForwards: portForwards,
                 audioConfiguration: DoryVMAudioConfiguration(
@@ -1314,7 +1327,8 @@ struct NewMachineSheet: View {
             audioInputEnabled: audioInputEnabled,
             audioOutputEnabled: audioOutputEnabled,
             cameraEnabled: cameraEnabled && !customISOInstall,
-            gpuAccelerationEnabled: gpuAccelerationEnabled
+            gpuAccelerationEnabled: gpuAccelerationEnabled,
+            displayDensity: displayDensity
         )
         if customISOInstall {
             settings.guestArchitecture = selectedGuestArchitecture
@@ -1342,6 +1356,7 @@ struct NewMachineSheet: View {
                 settings.virtualMachineSettings = DorydMachineTypedSettings(
                     runtimePreference: selectedGuestArchitecture == .amd64 ? .accelerated : nil,
                     graphicsPreference: selectedGuestArchitecture == .amd64 ? .software : nil,
+                    displayDensity: displayDensity,
                     networkMode: networkMode,
                     portForwards: resolvedPortForwards ?? [],
                     audioConfiguration: DoryVMAudioConfiguration(

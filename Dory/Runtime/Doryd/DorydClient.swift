@@ -130,6 +130,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
     var clipboardPolicy: DoryVMClipboardPolicy? = nil
     var runtimePreference: DoryDesktopVMMPreference? = nil
     var graphicsPreference: DoryDesktopGraphicsPreference? = nil
+    var displayDensity: DoryVMDisplayDensity? = nil
     var networkMode: DoryVMNetworkMode? = nil
     var portForwards: [DoryVMPortForward] = []
     var audioConfiguration: DoryVMAudioConfiguration? = nil
@@ -141,6 +142,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         clipboardPolicy: DoryVMClipboardPolicy? = nil,
         runtimePreference: DoryDesktopVMMPreference? = nil,
         graphicsPreference: DoryDesktopGraphicsPreference? = nil,
+        displayDensity: DoryVMDisplayDensity? = nil,
         networkMode: DoryVMNetworkMode? = nil,
         portForwards: [DoryVMPortForward] = [],
         audioConfiguration: DoryVMAudioConfiguration? = nil,
@@ -151,6 +153,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         self.clipboardPolicy = clipboardPolicy
         self.runtimePreference = runtimePreference
         self.graphicsPreference = graphicsPreference
+        self.displayDensity = displayDensity
         self.networkMode = networkMode
         self.portForwards = portForwards
         self.audioConfiguration = audioConfiguration
@@ -211,6 +214,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
             graphicsPreference = (try? DoryDesktopGraphicsPreference(
                 environment: legacyEnvironment
             )) ?? .automatic
+            displayDensity = .retinaResolution
             audioConfiguration = DoryVMAudioConfiguration(
                 inputEnabled: true,
                 outputEnabled: true
@@ -224,6 +228,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
             clipboardPolicy = nil
             runtimePreference = nil
             graphicsPreference = nil
+            displayDensity = nil
             audioConfiguration = nil
             cameraConfiguration = nil
         }
@@ -234,6 +239,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
             && clipboardPolicy == nil
             && runtimePreference == nil
             && graphicsPreference == nil
+            && displayDensity == nil
             && networkMode == nil
             && portForwards.isEmpty
             && audioConfiguration == nil
@@ -278,6 +284,9 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         if let graphicsPreference {
             result["desktopGraphicsPreference"] = graphicsPreference.rawValue
         }
+        if let displayDensity {
+            result["displayDensity"] = displayDensity.rawValue
+        }
         if let networkMode {
             result["networkMode"] = networkMode.rawValue
         }
@@ -311,6 +320,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         hasher.combine(clipboardPolicy?.files.rawValue)
         hasher.combine(runtimePreference?.rawValue)
         hasher.combine(graphicsPreference?.rawValue)
+        hasher.combine(displayDensity?.rawValue)
         hasher.combine(networkMode?.rawValue)
         hasher.combine(portForwards)
         hasher.combine(audioConfiguration?.inputEnabled)
@@ -402,6 +412,12 @@ nonisolated struct DorydMachineTypedSettingsPatch: Sendable, Equatable {
             baseline.graphicsPreference,
             desired.graphicsPreference,
             key: "desktopGraphicsPreference",
+            into: &result
+        )
+        Self.encodeEnum(
+            baseline.displayDensity,
+            desired.displayDensity,
+            key: "displayDensity",
             into: &result
         )
         Self.encodeEnum(
@@ -3935,6 +3951,12 @@ nonisolated final class DorydClient: @unchecked Sendable {
                   let parsed = DoryDesktopGraphicsPreference(rawValue: raw) else { return nil }
             graphics = parsed
         } else { graphics = nil }
+        let displayDensity: DoryVMDisplayDensity?
+        if let encoded = value["displayDensity"] {
+            guard let raw = encoded as? String,
+                  let parsed = DoryVMDisplayDensity(rawValue: raw) else { return nil }
+            displayDensity = parsed
+        } else { displayDensity = nil }
         let networkMode: DoryVMNetworkMode?
         if let encoded = value["networkMode"] {
             guard let raw = encoded as? String,
@@ -4013,6 +4035,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
             clipboardPolicy: clipboard,
             runtimePreference: runtime,
             graphicsPreference: graphics,
+            displayDensity: displayDensity,
             networkMode: networkMode,
             portForwards: portForwards,
             audioConfiguration: audioConfiguration,

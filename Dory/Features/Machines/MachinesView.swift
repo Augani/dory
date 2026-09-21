@@ -1407,6 +1407,8 @@ private struct MachineEditSheet: View {
     @State private var originalClipboardPolicy: DoryVMClipboardPolicy?
     @State private var runtimePreference = DoryDesktopVMMPreference.automatic
     @State private var graphicsPreference = DoryDesktopGraphicsPreference.automatic
+    @State private var displayDensity = DoryVMDisplayDensity.retinaResolution
+    @State private var originalDisplayDensity: DoryVMDisplayDensity?
     @State private var hostDisplays: [HostDisplayChoice] = []
     @State private var dedicatedHostDisplayUUID: String?
     @State private var networkMode = DoryVMNetworkMode.sharedNAT
@@ -1489,6 +1491,8 @@ private struct MachineEditSheet: View {
         initialFileTransferPolicy = fileTransferPolicy
         runtimePreference = typedSettings.runtimePreference ?? .automatic
         graphicsPreference = typedSettings.graphicsPreference ?? .automatic
+        originalDisplayDensity = typedSettings.displayDensity
+        displayDensity = typedSettings.displayDensity ?? .retinaResolution
         hostDisplays = HostDisplayChoice.connectedDisplays()
         let presentation = settings.displayPresentation ?? .windowed
         dedicatedHostDisplayUUID = presentation.assignment(
@@ -1735,6 +1739,14 @@ private struct MachineEditSheet: View {
         if displayMode == .desktop {
             VStack(alignment: .leading, spacing: 9) {
                 sectionLabel("MAC DISPLAY")
+                if machine.guestFamily != "macos" {
+                    Picker("Resolution", selection: $displayDensity) {
+                        Text("Retina resolution").tag(DoryVMDisplayDensity.retinaResolution)
+                        Text("Scaled").tag(DoryVMDisplayDensity.scaled)
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("edit-machine-display-density")
+                }
                 Picker("Guest presentation", selection: $dedicatedHostDisplayUUID) {
                     Text("Windowed").tag(String?.none)
                     ForEach(hostDisplays) { display in
@@ -1748,7 +1760,9 @@ private struct MachineEditSheet: View {
                 }
                 .accessibilityIdentifier("edit-machine-host-display")
                 Text(dedicatedHostDisplayUUID == nil
-                     ? "The guest desktop opens as a normal Mac window."
+                     ? displayDensity == .retinaResolution && machine.guestFamily != "macos"
+                        ? "The guest uses native Retina pixels and re-modes at 1x when moved to a non-Retina display."
+                        : "The guest desktop opens as a normal Mac window."
                      : "The guest owns a native full-screen Space on this monitor. Command-Control-F exits full screen; disconnecting it falls back to a normal window.")
                     .font(.system(size: 11))
                     .foregroundStyle(p.text3)
@@ -1917,6 +1931,10 @@ private struct MachineEditSheet: View {
         typedSettings.networkMode = networkMode
         typedSettings.portForwards = resolvedPortForwards ?? []
         if displayMode == .desktop {
+            if machine.guestFamily != "macos",
+               originalDisplayDensity != nil || displayDensity != .retinaResolution {
+                typedSettings.displayDensity = displayDensity
+            }
             typedSettings.audioConfiguration = MachineAudioSettingsPolicy.editedConfiguration(
                 existing: originalAudioConfiguration,
                 inputEnabled: audioInputEnabled,

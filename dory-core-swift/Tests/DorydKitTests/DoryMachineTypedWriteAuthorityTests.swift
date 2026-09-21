@@ -27,6 +27,7 @@ struct DoryMachineTypedWriteAuthorityTests {
             clipboardPolicy: .set(.legacyDesktop(.hostToGuest)),
             runtimePreference: .set(.accelerated),
             graphicsPreference: .set(.virglVenus),
+            displayDensity: .set(.scaled),
             networkMode: .set(.disconnected),
             portForwards: .set([
                 DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
@@ -50,6 +51,70 @@ struct DoryMachineTypedWriteAuthorityTests {
             xpcDictionary: wire,
             allowsClears: false
         ) == source)
+    }
+
+    @Test("display density is desktop scoped and updates framebuffer and UI scale together")
+    func displayDensityUpdatesDefinition() throws {
+        var definition = try DoryMachineConfigurationMigrationBridge.migrate(
+            DoryMachineConfiguration(
+                id: "display-density",
+                kernelPath: "/fixture/kernel",
+                rootfsPath: "/fixture/rootfs",
+                displayMode: .desktop
+            ),
+            facts: DoryMachineConfigurationMigrationFacts(
+                guestArchitecture: .arm64,
+                systemDiskCapacityBytes: 32 * 1_024 * 1_024 * 1_024,
+                lifecycle: DoryVMLifecycleMetadata(
+                    revision: 1,
+                    createdAtUnixMilliseconds: 1_700_000_000_000,
+                    updatedAtUnixMilliseconds: 1_700_000_000_000
+                )
+            )
+        ).definition
+        definition.displays = [DoryVMDisplayConfiguration()]
+
+        let scaled = try DoryMachineTypedSettingsPatch(
+            displayDensity: .set(.scaled)
+        ).applying(to: definition, displayMode: .desktop)
+        #expect(scaled.display.widthPixels == 960)
+        #expect(scaled.display.heightPixels == 540)
+        #expect(scaled.display.backingScaleFactor == 1)
+        #expect(scaled.display.guestUIScaleFactor == 1)
+        #expect(try DoryMachineTypedSettingsSnapshot(definition: scaled).displayDensity == .scaled)
+
+        var mixedDensity = scaled
+        mixedDensity.displays.append(DoryVMDisplayConfiguration(
+            id: "display-1",
+            widthPixels: 1_280,
+            heightPixels: 720,
+            backingScaleFactor: 1,
+            guestUIScaleFactor: 2
+        ))
+        #expect(try DoryMachineTypedSettingsSnapshot(definition: mixedDensity).displayDensity == nil)
+
+        let retina = try DoryMachineTypedSettingsPatch(
+            displayDensity: .clear
+        ).applying(to: scaled, displayMode: .desktop)
+        #expect(retina.display.widthPixels == 1_920)
+        #expect(retina.display.heightPixels == 1_080)
+        #expect(retina.display.backingScaleFactor == 2)
+        #expect(retina.display.guestUIScaleFactor == 2)
+
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedForDisplay(
+            "displayDensity"
+        )) {
+            try DoryMachineTypedSettingsPatch(
+                displayDensity: .set(.scaled)
+            ).applying(to: definition, displayMode: .headless)
+        }
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+            "displayDensity"
+        )) {
+            try DoryMachineTypedSettingsPatch(
+                displayDensity: .set(.scaled)
+            ).applying(to: [:], displayMode: .desktop)
+        }
     }
 
     @Test("raw environment write authority is rejected even when empty")

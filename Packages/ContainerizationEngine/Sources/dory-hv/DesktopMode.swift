@@ -1187,24 +1187,36 @@ enum DesktopMode {
 
         @MainActor
         func scanoutSize(on screen: NSScreen?) -> VirtioGPUScanoutSize {
+            let effectiveScale = DesktopDisplayView.effectiveGuestBackingScaleFactor(
+                requestedScale: CGFloat(backingScaleFactor),
+                hostScale: screen?.backingScaleFactor ?? CGFloat(backingScaleFactor)
+            )
+            let effectiveWidth = UInt32(clamping: max(
+                1,
+                Int((windowSize.width * effectiveScale).rounded())
+            ))
+            let effectiveHeight = UInt32(clamping: max(
+                1,
+                Int((windowSize.height * effectiveScale).rounded())
+            ))
             guard let screen,
                   let screenNumber = screen.deviceDescription[
                     NSDeviceDescriptionKey("NSScreenNumber")
                   ] as? NSNumber,
                   screen.frame.width > 0,
                   screen.frame.height > 0 else {
-                return VirtioGPUScanoutSize(width: widthPixels, height: heightPixels)
+                return VirtioGPUScanoutSize(width: effectiveWidth, height: effectiveHeight)
             }
             let panelMillimeters = CGDisplayScreenSize(
                 CGDirectDisplayID(screenNumber.uint32Value)
             )
             guard panelMillimeters.width > 0, panelMillimeters.height > 0 else {
-                return VirtioGPUScanoutSize(width: widthPixels, height: heightPixels)
+                return VirtioGPUScanoutSize(width: effectiveWidth, height: effectiveHeight)
             }
             let size = windowSize
             return VirtioGPUScanoutSize(
-                width: widthPixels,
-                height: heightPixels,
+                width: effectiveWidth,
+                height: effectiveHeight,
                 physicalWidthMillimeters: UInt16(clamping: max(
                     1,
                     Int((panelMillimeters.width * size.width / screen.frame.width).rounded())
@@ -2440,6 +2452,12 @@ enum DesktopMode {
         }
 
         func windowDidChangeScreen(_ notification: Notification) {
+            guard let window = notification.object as? NSWindow,
+                  let index = windows.firstIndex(of: window) else { return }
+            displays[index].hostDisplayDidChange()
+        }
+
+        func windowDidChangeBackingProperties(_ notification: Notification) {
             guard let window = notification.object as? NSWindow,
                   let index = windows.firstIndex(of: window) else { return }
             displays[index].hostDisplayDidChange()

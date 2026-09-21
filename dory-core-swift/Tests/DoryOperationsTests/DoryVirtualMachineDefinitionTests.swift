@@ -4,6 +4,27 @@ import Testing
 
 @Suite("Virtual machine definition")
 struct DoryVirtualMachineDefinitionTests {
+    @Test("display density preserves logical size and round trips")
+    func displayDensityPreservesLogicalSize() {
+        let retina = DoryVMDisplayConfiguration(
+            widthPixels: 1_920,
+            heightPixels: 1_080,
+            backingScaleFactor: 2,
+            guestUIScaleFactor: 2
+        )
+        let scaled = DoryVMDisplayDensity.scaled.applying(to: retina)
+        #expect(scaled.widthPixels == 960)
+        #expect(scaled.heightPixels == 540)
+        #expect(scaled.backingScaleFactor == 1)
+        #expect(scaled.guestUIScaleFactor == 1)
+        #expect(DoryVMDisplayDensity(display: scaled) == .scaled)
+
+        let restored = DoryVMDisplayDensity.retinaResolution.applying(to: scaled)
+        #expect(restored.widthPixels == retina.widthPixels)
+        #expect(restored.heightPixels == retina.heightPixels)
+        #expect(DoryVMDisplayDensity(display: restored) == .retinaResolution)
+        #expect(DoryVMDisplayDensity.retinaResolution.applying(to: restored) == restored)
+    }
     private let gibibyte: UInt64 = 1_073_741_824
     private let nowMilliseconds: Int64 = 1_787_200_000_000
 

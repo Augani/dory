@@ -642,10 +642,20 @@ struct DorydClientTests {
         #expect(defaults.clipboardPolicy == .legacyDesktop(.bidirectional))
         #expect(defaults.runtimePreference == .automatic)
         #expect(defaults.graphicsPreference == .automatic)
+        #expect(defaults.displayDensity == .retinaResolution)
         #expect(defaults.networkMode == .sharedNAT)
         #expect(defaults.portForwards.isEmpty)
         #expect(defaults.cameraConfiguration == DoryVMCameraConfiguration(enabled: false))
         #expect(defaults.intelApplicationTranslationEnabled == nil)
+
+        var scaled = defaults
+        scaled.displayDensity = .scaled
+        let densityWire = DorydMachineTypedSettingsPatch(
+            baseline: defaults,
+            desired: scaled
+        ).xpcDictionary
+        #expect(densityWire.count == 1)
+        #expect(densityWire["displayDensity"] as? String == "scaled")
 
         var disconnected = defaults
         disconnected.networkMode = .disconnected
