@@ -432,6 +432,56 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(try migrated.legacyConfiguration() == legacy)
     }
 
+    @Test("ARM EFI media honors only an explicit strict acceleration request")
+    func armEFIPortableGraphicsPolicy() throws {
+        let base = DoryMachineConfiguration(
+            id: "arm-efi-graphics",
+            kernelPath: "/managed/arm-efi-graphics/kernel",
+            rootfsPath: "/managed/arm-efi-graphics/rootfs.ext4",
+            bootMode: .efi,
+            installerISOPath: "/managed/arm-efi-graphics/installer.iso",
+            diskSizeBytes: 80 * gibibyte,
+            displayMode: .desktop
+        )
+
+        var automatic = base
+        automatic.environment[DoryDesktopGraphicsPreference.environmentKey]
+            = DoryDesktopGraphicsPreference.automatic.rawValue
+        let automaticInstaller = try migrate(automatic, capacity: 80 * gibibyte)
+        #expect(automaticInstaller.definition.graphics.acceptableLevels == [.software])
+        #expect(try automaticInstaller.legacyConfiguration() == automatic)
+
+        var software = base
+        software.environment[DoryDesktopGraphicsPreference.environmentKey]
+            = DoryDesktopGraphicsPreference.software.rawValue
+        let softwareInstaller = try migrate(software, capacity: 80 * gibibyte)
+        #expect(softwareInstaller.definition.graphics.acceptableLevels == [.software])
+        #expect(try softwareInstaller.legacyConfiguration() == software)
+
+        var accelerated = base
+        accelerated.environment[DoryDesktopVMMPreference.environmentKey]
+            = DoryDesktopVMMPreference.accelerated.rawValue
+        accelerated.environment[DoryDesktopGraphicsPreference.environmentKey]
+            = DoryDesktopGraphicsPreference.virglVenus.rawValue
+        let acceleratedInstaller = try migrate(accelerated, capacity: 80 * gibibyte)
+        #expect(acceleratedInstaller.bootContract == .efiInstaller)
+        #expect(acceleratedInstaller.definition.platform == .arm64LinuxV1)
+        #expect(acceleratedInstaller.definition.graphics.acceptableLevels == [.hardwareAccelerated3D])
+        #expect(try acceleratedInstaller.legacyConfiguration() == accelerated)
+
+        var installed = accelerated
+        installed.installerISOPath = nil
+        installed.opticalMediaKind = nil
+        let acceleratedFirmware = try migrate(
+            installed,
+            capacity: 80 * gibibyte,
+            installedEFI: .firmwareDisk
+        )
+        #expect(acceleratedFirmware.bootContract == .efiFirmwareDisk)
+        #expect(acceleratedFirmware.definition.graphics.acceptableLevels == [.hardwareAccelerated3D])
+        #expect(try acceleratedFirmware.legacyConfiguration() == installed)
+    }
+
     @Test("installed EFI firmware and direct-boot bundle mappings remain distinct")
     func installedEFIMappings() throws {
         let legacy = DoryMachineConfiguration(
@@ -460,6 +510,7 @@ struct DoryMachineConfigurationMigrationTests {
         var x86Installer = legacy
         x86Installer.guestArchitecture = .x86_64
         x86Installer.installerISOPath = "/managed/installed-linux/installer.iso"
+        x86Installer.opticalMediaKind = .installer
         x86Installer.environment[DoryDesktopGraphicsPreference.environmentKey]
             = DoryDesktopGraphicsPreference.virglVenus.rawValue
         let translatedInstaller = try DoryMachineConfigurationMigrationBridge.migrate(
@@ -495,6 +546,7 @@ struct DoryMachineConfigurationMigrationTests {
 
         var x86Installed = x86Installer
         x86Installed.installerISOPath = nil
+        x86Installed.opticalMediaKind = nil
         var installed = try DoryMachineConfigurationMigrationBridge.migrate(
             x86Installed,
             facts: DoryMachineConfigurationMigrationFacts(

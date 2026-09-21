@@ -731,6 +731,9 @@ public enum DoryMachineConfigurationMigrationBridge {
             || bootContract == .efiInstalledDirectBoot
             || ((bootContract == .efiInstaller || bootContract == .efiFirmwareDisk)
                 && facts.guestArchitecture == .x86_64)
+        let explicitlyAcceleratedPortableARMEFI = facts.guestArchitecture == .arm64
+            && (bootContract == .efiInstaller || bootContract == .efiFirmwareDisk)
+            && graphicsPreference == .virglVenus
         let guest = DoryGuestPlatform(family: .linux, architecture: facts.guestArchitecture)
         let translationConsent: DoryTranslationConsent =
             facts.guestArchitecture == .x86_64 ? .explicit : .notRequired
@@ -744,12 +747,12 @@ public enum DoryMachineConfigurationMigrationBridge {
         let graphics: DoryVMGraphicsPolicy
         if !isDesktop {
             graphics = DoryVMGraphicsPolicy(acceptableLevels: [.none])
-        } else if acceleratedBoot {
+        } else if acceleratedBoot || explicitlyAcceleratedPortableARMEFI {
             graphics = typedGraphicsPolicy(graphicsPreference)
         } else {
-            // Portable ARM EFI media remains on the proven software baseline. The x86
-            // DoryPC EFI paths above is admitted only by the explicit Apple-silicon
-            // qualification gate and can carry the requested renderer authority.
+            // Portable ARM EFI media remains on the proven software baseline unless the
+            // caller explicitly requests the strict VirGL2 + Venus contract. The x86
+            // DoryPC EFI path above is admitted by its Apple-silicon qualification gate.
             graphics = DoryVMGraphicsPolicy(acceptableLevels: [.software])
         }
         let displays = isDesktop ? [DoryVMDisplayConfiguration()] : []
