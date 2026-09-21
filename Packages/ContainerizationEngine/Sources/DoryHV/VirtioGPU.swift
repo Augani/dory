@@ -3361,6 +3361,16 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
         guard queue == 0 || queue == 1 else { return }
         if queue == 0, rendererWorkerAuthorityConfigured {
+            let pending = (try? transport.queues[0].pendingCount()).map(String.init)
+                ?? "invalid"
+            let admissionState = lifecycleLock.withLock {
+                (acceptingGuestCommands, deferredRendererWorkerControlKick)
+            }
+            FileHandle.standardError.write(Data((
+                "dory-gpu: renderer control kick ready=\(transport.queues[0].ready) "
+                    + "pending=\(pending) accepting=\(admissionState.0) "
+                    + "deferred=\(admissionState.1)\n"
+            ).utf8))
             let shouldDefer = lifecycleLock.withLock { () -> Bool in
                 guard acceptingGuestCommands, transport.queues[0].ready else {
                     deferredRendererWorkerControlKick = true
