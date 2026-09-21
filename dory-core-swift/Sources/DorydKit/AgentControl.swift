@@ -25,6 +25,11 @@ public protocol AgentControlClient: Sendable {
     func clockSync(hostEpochNs: Int64) throws -> Bool
     func portsWatch() throws -> DoryPortsSnapshot
     func telemetry() throws -> DoryTelemetry
+    func clipboard(
+        action: DoryClipboardAction,
+        mimeType: String,
+        data: Data
+    ) throws -> DoryClipboardResponse
     func push(localRoot: String, remoteRoot: String) throws -> DoryPushStats
     func push(
         localRoot: String,
@@ -88,6 +93,17 @@ public protocol AgentControlClient: Sendable {
 }
 
 public extension AgentControlClient {
+    func clipboard(
+        action: DoryClipboardAction,
+        mimeType: String,
+        data: Data
+    ) throws -> DoryClipboardResponse {
+        _ = action
+        _ = mimeType
+        _ = data
+        throw AgentControlError.capabilityUnavailable("clipboard")
+    }
+
     func exec(
         argv: [String], cwd: String, env: [DoryExecEnvironment], timeoutMs: UInt64,
         outputLimitBytes: UInt64, control: DoryExecControl
@@ -267,6 +283,48 @@ public final class AgentControl: @unchecked Sendable {
 
     public func telemetry() throws -> DoryTelemetry {
         try client(requiring: "telemetry").telemetry()
+    }
+
+    public func clipboardAvailable() throws -> Bool {
+        _ = try client(requiring: "clipboard")
+        return true
+    }
+
+    public func clipboardGet(mimeType: String) throws -> Data {
+        let response = try client(requiring: "clipboard").clipboard(
+            action: .get,
+            mimeType: mimeType,
+            data: Data()
+        )
+        guard response.mimeType == mimeType, response.mimeTypes.isEmpty else {
+            throw AgentControlError.invalidClipboardResponse
+        }
+        return response.data
+    }
+
+    public func clipboardSet(mimeType: String, data: Data) throws {
+        let response = try client(requiring: "clipboard").clipboard(
+            action: .set,
+            mimeType: mimeType,
+            data: data
+        )
+        guard response.mimeType == mimeType,
+              response.data.isEmpty,
+              response.mimeTypes.isEmpty else {
+            throw AgentControlError.invalidClipboardResponse
+        }
+    }
+
+    public func clipboardTypes() throws -> [String] {
+        let response = try client(requiring: "clipboard").clipboard(
+            action: .listTypes,
+            mimeType: "",
+            data: Data()
+        )
+        guard response.mimeType.isEmpty, response.data.isEmpty else {
+            throw AgentControlError.invalidClipboardResponse
+        }
+        return response.mimeTypes
     }
 
     public func push(localRoot: String, remoteRoot: String) throws -> DoryPushStats {
@@ -522,6 +580,7 @@ public enum AgentControlError: Error, Sendable, Equatable {
     case incompatibleProtocol(expected: UInt32, actual: UInt32)
     case invalidCapabilities
     case capabilityUnavailable(String)
+    case invalidClipboardResponse
 }
 
 public enum LocalAgentControlError: Error, Sendable, Equatable, CustomStringConvertible {

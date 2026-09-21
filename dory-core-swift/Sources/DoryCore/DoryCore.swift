@@ -209,6 +209,38 @@ public struct DoryAgentInfo: Sendable, Equatable {
     }
 }
 
+public enum DoryClipboardAction: Sendable, Equatable {
+    case get
+    case set
+    case listTypes
+
+    fileprivate var ffiValue: ClipboardActionFfi {
+        switch self {
+        case .get: .get
+        case .set: .set
+        case .listTypes: .listTypes
+        }
+    }
+}
+
+public struct DoryClipboardResponse: Sendable, Equatable {
+    public var mimeType: String
+    public var data: Data
+    public var mimeTypes: [String]
+
+    public init(mimeType: String, data: Data = Data(), mimeTypes: [String] = []) {
+        self.mimeType = mimeType
+        self.data = data
+        self.mimeTypes = mimeTypes
+    }
+
+    fileprivate init(_ raw: ClipboardResponseFfi) {
+        mimeType = raw.mimeType
+        data = raw.data
+        mimeTypes = raw.mimeTypes
+    }
+}
+
 /// Kernel-observed proof for one capability-gated virtio-fs mount. `mountID` comes from
 /// `/proc/self/mountinfo`; it is never synthesized by the host or inferred from a successful RPC.
 public struct DoryVirtioFSMountReceipt: Sendable, Equatable {
@@ -742,6 +774,17 @@ public final class DoryAgentControlHandle: @unchecked Sendable {
             psiSomeAvg10: raw.psiSomeAvg10,
             psiFullAvg10: raw.psiFullAvg10
         )
+    }
+
+    public func clipboard(
+        action: DoryClipboardAction,
+        mimeType: String = "",
+        data: Data = Data()
+    ) throws -> DoryClipboardResponse {
+        let raw = try withControl {
+            try $0.clipboard(action: action.ffiValue, mimeType: mimeType, data: data)
+        }
+        return DoryClipboardResponse(raw)
     }
 
     public func push(localRoot: String, remoteRoot: String) throws -> DoryPushStats {

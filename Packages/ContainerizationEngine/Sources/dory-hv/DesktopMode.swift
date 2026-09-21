@@ -2288,14 +2288,11 @@ enum DesktopMode {
                 let clipboardInput = self.keyboardInput
                 self.clipboard = DoryDesktopClipboardCoordinator(
                     policy: clipboardPolicy,
-                    execute: { argv, stdin, timeoutMs, outputLimitBytes in
-                        try clipboardControl.execWithInput(
-                            argv: argv,
-                            stdin: stdin,
-                            timeoutMs: timeoutMs,
-                            outputLimitBytes: outputLimitBytes
-                        )
-                    },
+                    transport: DoryDesktopClipboardTransport(
+                        availability: { try clipboardControl.clipboardAvailable() },
+                        get: { try clipboardControl.clipboardGet(mimeType: $0) },
+                        set: { try clipboardControl.clipboardSet(mimeType: $0, data: $1) }
+                    ),
                     sendShortcut: { keyCode in
                         clipboardInput.send(frame: [
                             VirtioInputEvent(type: 1, code: 125, value: 0),

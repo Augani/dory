@@ -52,6 +52,20 @@ pub struct VirtiofsMountReceiptFfi {
 }
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ClipboardActionFfi {
+    Get,
+    Set,
+    ListTypes,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ClipboardResponseFfi {
+    pub mime_type: String,
+    pub data: Vec<u8>,
+    pub mime_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum LifecycleReceiptActionFfi {
     PreparePause,
     Resumed,
@@ -181,6 +195,37 @@ impl AgentControl {
             mem_available_kb: t.mem_available_kb,
             psi_some_avg10: t.psi_some_avg10,
             psi_full_avg10: t.psi_full_avg10,
+        })
+    }
+
+    /// Exchange one bounded clipboard value through the dedicated guest-agent method. The helper
+    /// path and backend selection remain guest-owned; Swift cannot turn this into arbitrary exec.
+    pub fn clipboard(
+        &self,
+        action: ClipboardActionFfi,
+        mime_type: String,
+        data: Vec<u8>,
+    ) -> Result<ClipboardResponseFfi, RemoteFfiError> {
+        use dory_pb::agent::clipboard_request::Action;
+
+        let wire_action = match action {
+            ClipboardActionFfi::Get => Action::Get,
+            ClipboardActionFfi::Set => Action::Set,
+            ClipboardActionFfi::ListTypes => Action::ListTypes,
+        };
+        let guard = self.runtime.lock().unwrap();
+        let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+        let response =
+            runtime.block_on(self.client.clipboard(dory_pb::agent::ClipboardRequest {
+                action: wire_action as i32,
+                mime_type: mime_type.clone(),
+                data,
+            }))?;
+        validate_clipboard_response(action, &mime_type, &response)?;
+        Ok(ClipboardResponseFfi {
+            mime_type: response.mime_type,
+            data: response.data,
+            mime_types: response.mime_types,
         })
     }
 
@@ -534,6 +579,36 @@ fn port_event(e: dory_pb::agent::PortEvent) -> PortEventFfi {
     }
 }
 
+fn validate_clipboard_response(
+    action: ClipboardActionFfi,
+    requested_mime_type: &str,
+    response: &dory_pb::agent::ClipboardResponse,
+) -> Result<(), RemoteFfiError> {
+    match action {
+        ClipboardActionFfi::Get => {
+            if response.mime_type != requested_mime_type || !response.mime_types.is_empty() {
+                return Err(failed("guest returned a mismatched clipboard read receipt"));
+            }
+        }
+        ClipboardActionFfi::Set => {
+            if response.mime_type != requested_mime_type
+                || !response.data.is_empty()
+                || !response.mime_types.is_empty()
+            {
+                return Err(failed(
+                    "guest returned a mismatched clipboard write receipt",
+                ));
+            }
+        }
+        ClipboardActionFfi::ListTypes => {
+            if !response.mime_type.is_empty() || !response.data.is_empty() {
+                return Err(failed("guest returned a mismatched clipboard type receipt"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn failed(error: impl std::fmt::Display) -> RemoteFfiError {
     RemoteFfiError::Failed {
         message: error.to_string(),
@@ -756,6 +831,35 @@ mod tests {
         let info = control.info().expect("info");
         assert_eq!(info.proto_version, dory_proto::handshake::PROTO_VERSION);
         assert!(info.agent_build.starts_with("dory-agent/"));
+    }
+
+    #[test]
+    fn clipboard_receipts_cannot_confuse_actions() {
+        let read = dory_pb::agent::ClipboardResponse {
+            mime_type: "image/png".into(),
+            data: vec![1, 2, 3],
+            mime_types: Vec::new(),
+        };
+        validate_clipboard_response(ClipboardActionFfi::Get, "image/png", &read).unwrap();
+        assert!(validate_clipboard_response(ClipboardActionFfi::Get, "text/plain", &read).is_err());
+
+        let write = dory_pb::agent::ClipboardResponse {
+            mime_type: "text/plain;charset=utf-8".into(),
+            data: Vec::new(),
+            mime_types: Vec::new(),
+        };
+        validate_clipboard_response(ClipboardActionFfi::Set, "text/plain;charset=utf-8", &write)
+            .unwrap();
+        assert!(
+            validate_clipboard_response(ClipboardActionFfi::Set, "text/plain", &write,).is_err()
+        );
+
+        let types = dory_pb::agent::ClipboardResponse {
+            mime_type: String::new(),
+            data: Vec::new(),
+            mime_types: vec!["image/png".into()],
+        };
+        validate_clipboard_response(ClipboardActionFfi::ListTypes, "", &types).unwrap();
     }
 
     fn unique_suffix() -> u64 {

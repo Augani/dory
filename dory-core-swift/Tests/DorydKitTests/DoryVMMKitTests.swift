@@ -184,16 +184,16 @@ final class DoryVMMKitTests: XCTestCase {
         let recorder = ClipboardWriteRecorder()
         let coordinator = DoryDesktopClipboardCoordinator(
             policy: .hostToGuest,
-            execute: { argv, stdin, _, _ in
-                if argv == ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"] {
-                    return Self.execResult(exitCode: 0)
+            transport: DoryDesktopClipboardTransport(
+                availability: { true },
+                get: { _ in Data() },
+                set: { mimeType, data in
+                    XCTAssertEqual(mimeType, "text/plain;charset=utf-8")
+                    if recorder.record(data) == 1 {
+                        throw ClipboardTestError.backendUnavailable
+                    }
                 }
-                XCTAssertEqual(argv, [
-                    "/usr/lib/dory/clipboard", "set", "text/plain;charset=utf-8",
-                ])
-                let attempt = recorder.record(stdin)
-                return Self.execResult(exitCode: attempt == 1 ? 1 : 0)
-            },
+            ),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -222,27 +222,19 @@ final class DoryVMMKitTests: XCTestCase {
         let recorder = ClipboardWriteRecorder()
         let coordinator = DoryDesktopClipboardCoordinator(
             policy: .guestToHost,
-            execute: { argv, _, _, _ in
-                if argv == ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"] {
+            transport: DoryDesktopClipboardTransport(
+                availability: {
                     recorder.recordCapabilityProbe()
-                    return Self.execResult(exitCode: 0)
-                }
-                if argv == ["/usr/lib/dory/clipboard", "get", "image/png"] {
-                    return Self.execResult(exitCode: 1)
-                }
-                XCTAssertEqual(argv, [
-                    "/usr/lib/dory/clipboard", "get", "text/plain;charset=utf-8",
-                ])
-                recorder.recordClipboardRead()
-                return DoryExecResult(
-                    exitCode: 0,
-                    stdout: Data("guest clipboard after copy".utf8),
-                    stderr: Data(),
-                    timedOut: false,
-                    stdoutTruncated: false,
-                    stderrTruncated: false
-                )
-            },
+                    return true
+                },
+                get: { mimeType in
+                    if mimeType == "image/png" { throw ClipboardTestError.typeUnavailable }
+                    XCTAssertEqual(mimeType, "text/plain;charset=utf-8")
+                    recorder.recordClipboardRead()
+                    return Data("guest clipboard after copy".utf8)
+                },
+                set: { _, _ in }
+            ),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -285,23 +277,18 @@ final class DoryVMMKitTests: XCTestCase {
                 image: .off,
                 files: .off
             ),
-            execute: { argv, _, _, _ in
-                if argv == ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"] {
+            transport: DoryDesktopClipboardTransport(
+                availability: {
                     recorder.recordCapabilityProbe()
-                    return Self.execResult(exitCode: 0)
-                }
-                XCTAssertEqual(argv, [
-                    "/usr/lib/dory/clipboard", "get", "text/plain;charset=utf-8",
-                ])
-                return DoryExecResult(
-                    exitCode: 0,
-                    stdout: Data("text-only guest clipboard".utf8),
-                    stderr: Data(),
-                    timedOut: false,
-                    stdoutTruncated: false,
-                    stderrTruncated: false
-                )
-            },
+                    return true
+                },
+                get: { mimeType in
+                    XCTAssertEqual(mimeType, "text/plain;charset=utf-8")
+                    recorder.recordClipboardRead()
+                    return Data("text-only guest clipboard".utf8)
+                },
+                set: { _, _ in }
+            ),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -341,17 +328,17 @@ final class DoryVMMKitTests: XCTestCase {
         let recorder = ClipboardWriteRecorder()
         let coordinator = DoryDesktopClipboardCoordinator(
             policy: .hostToGuest,
-            execute: { argv, stdin, _, _ in
-                if argv == ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"] {
+            transport: DoryDesktopClipboardTransport(
+                availability: {
                     recorder.recordCapabilityProbe()
-                    return Self.execResult(exitCode: 0)
+                    return true
+                },
+                get: { _ in Data() },
+                set: { mimeType, data in
+                    XCTAssertEqual(mimeType, "text/plain;charset=utf-8")
+                    _ = recorder.record(data)
                 }
-                XCTAssertEqual(argv, [
-                    "/usr/lib/dory/clipboard", "set", "text/plain;charset=utf-8",
-                ])
-                _ = recorder.record(stdin)
-                return Self.execResult(exitCode: 0)
-            },
+            ),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -388,27 +375,19 @@ final class DoryVMMKitTests: XCTestCase {
         let recorder = ClipboardWriteRecorder()
         let coordinator = DoryDesktopClipboardCoordinator(
             policy: .guestToHost,
-            execute: { argv, _, _, _ in
-                if argv == ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"] {
+            transport: DoryDesktopClipboardTransport(
+                availability: {
                     recorder.recordCapabilityProbe()
-                    return Self.execResult(exitCode: 0)
-                }
-                if argv == ["/usr/lib/dory/clipboard", "get", "image/png"] {
-                    return Self.execResult(exitCode: 1)
-                }
-                XCTAssertEqual(argv, [
-                    "/usr/lib/dory/clipboard", "get", "text/plain;charset=utf-8",
-                ])
-                recorder.recordClipboardRead()
-                return DoryExecResult(
-                    exitCode: 0,
-                    stdout: Data("copied inside the guest".utf8),
-                    stderr: Data(),
-                    timedOut: false,
-                    stdoutTruncated: false,
-                    stderrTruncated: false
-                )
-            },
+                    return true
+                },
+                get: { mimeType in
+                    if mimeType == "image/png" { throw ClipboardTestError.typeUnavailable }
+                    XCTAssertEqual(mimeType, "text/plain;charset=utf-8")
+                    recorder.recordClipboardRead()
+                    return Data("copied inside the guest".utf8)
+                },
+                set: { _, _ in }
+            ),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -439,10 +418,17 @@ final class DoryVMMKitTests: XCTestCase {
         let recorder = ClipboardWriteRecorder()
         let coordinator = DoryDesktopClipboardCoordinator(
             policy: .disabled,
-            execute: { _, _, _, _ in
-                recorder.recordCapabilityProbe()
-                return Self.execResult(exitCode: 0)
-            },
+            transport: DoryDesktopClipboardTransport(
+                availability: {
+                    recorder.recordCapabilityProbe()
+                    return true
+                },
+                get: { _ in
+                    recorder.recordClipboardRead()
+                    return Data()
+                },
+                set: { _, data in _ = recorder.record(data) }
+            ),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -459,17 +445,6 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(recorder.capabilityProbeCount, 0)
         XCTAssertEqual(recorder.attemptCount, 0)
         XCTAssertEqual(pasteboard.string(forType: .string), "must remain host-only")
-    }
-
-    private static func execResult(exitCode: Int32) -> DoryExecResult {
-        DoryExecResult(
-            exitCode: exitCode,
-            stdout: Data(),
-            stderr: Data(),
-            timedOut: false,
-            stdoutTruncated: false,
-            stderrTruncated: false
-        )
     }
 
     func testDesktopWindowUsesTheResolvedBackingScale() {
@@ -2175,6 +2150,11 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(watchdog.delays, [])
         XCTAssertEqual(forcedExit.codes, [0])
     }
+}
+
+private enum ClipboardTestError: Error {
+    case backendUnavailable
+    case typeUnavailable
 }
 
 private final class ClipboardWriteRecorder: @unchecked Sendable {

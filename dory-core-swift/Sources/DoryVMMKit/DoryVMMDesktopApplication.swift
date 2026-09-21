@@ -95,14 +95,11 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         clipboard = resolvedDevices?.clipboard == false || !requestedPolicy.isEnabled
             ? nil : DoryDesktopClipboardCoordinator(
                 policy: coordinatorPolicy,
-                execute: { argv, stdin, timeoutMs, outputLimitBytes in
-                    try runtime.executeDesktopIntegration(
-                        argv: argv,
-                        stdin: stdin,
-                        timeoutMs: timeoutMs,
-                        outputLimitBytes: outputLimitBytes
-                    )
-                },
+                transport: DoryDesktopClipboardTransport(
+                    availability: { try runtime.desktopClipboardAvailable() },
+                    get: { try runtime.desktopClipboardGet(mimeType: $0) },
+                    set: { try runtime.desktopClipboardSet(mimeType: $0, data: $1) }
+                ),
                 sendShortcut: { keyCode in machineView.sendControlShortcut(linuxKeyCode: keyCode) },
                 log: { message in
                     FileHandle.standardError.write(Data("dory-vmm clipboard: \(message)\n".utf8))

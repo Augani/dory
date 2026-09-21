@@ -711,20 +711,16 @@ enum DoryPCMode {
                 sshAgentBridge = nil
             }
             clipboard = clipboardPolicy.map { policy in
-                DoryDesktopClipboardCoordinator(
+                let control = DorydKit.AgentControl(configuration: .init(
+                    directSocketPath: configuration.agentSocketPath
+                ))
+                return DoryDesktopClipboardCoordinator(
                     policy: policy,
-                    execute: { argv, stdin, timeoutMs, outputLimitBytes in
-                        let control = DorydKit.AgentControl(configuration: .init(
-                            directSocketPath: configuration.agentSocketPath
-                        ))
-                        defer { control.disconnect() }
-                        return try control.execWithInput(
-                            argv: argv,
-                            stdin: stdin,
-                            timeoutMs: timeoutMs,
-                            outputLimitBytes: outputLimitBytes
-                        )
-                    },
+                    transport: DoryDesktopClipboardTransport(
+                        availability: { try control.clipboardAvailable() },
+                        get: { try control.clipboardGet(mimeType: $0) },
+                        set: { try control.clipboardSet(mimeType: $0, data: $1) }
+                    ),
                     sendShortcut: { keyCode in
                         keyboardInput.send(frame: [
                             .init(type: 1, code: 125, value: 0),
@@ -1020,20 +1016,10 @@ enum DoryPCMode {
                             }
                         }
                         if devices.clipboard {
-                            guard info.supports("exec", minimumVersion: 1),
-                                  info.supports("exec-stdin", minimumVersion: 1) else {
+                            guard info.supports("clipboard", minimumVersion: 1),
+                                  try control.clipboardAvailable() else {
                                 throw VMError.bootFailure(
                                     "DoryPC guest lacks clipboard RPC capabilities"
-                                )
-                            }
-                            let probe = try control.exec(
-                                argv: ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"],
-                                timeoutMs: 5_000,
-                                outputLimitBytes: 4_096
-                            )
-                            guard probe.exitCode == 0, !probe.timedOut else {
-                                throw VMError.bootFailure(
-                                    "DoryPC guest clipboard helper is unavailable"
                                 )
                             }
                         }

@@ -17,20 +17,36 @@ private struct DoryDesktopClipboardPayload: Sendable, Equatable {
     }
 }
 
+/// A deliberately narrow clipboard transport. Unlike the former exec closure, callers can only
+/// negotiate the clipboard capability or exchange one whitelisted MIME payload.
+public struct DoryDesktopClipboardTransport: Sendable {
+    public typealias Availability = @Sendable () throws -> Bool
+    public typealias Getter = @Sendable (_ mimeType: String) throws -> Data
+    public typealias Setter = @Sendable (_ mimeType: String, _ data: Data) throws -> Void
+
+    let availability: Availability
+    let get: Getter
+    let set: Setter
+
+    public init(
+        availability: @escaping Availability,
+        get: @escaping Getter,
+        set: @escaping Setter
+    ) {
+        self.availability = availability
+        self.get = get
+        self.set = set
+    }
+}
+
 /// Host-side clipboard integration shared by the raw Hypervisor.framework and
-/// Virtualization.framework desktop paths. Guest commands travel over Dory's authenticated agent
+/// Virtualization.framework desktop paths. Requests travel over Dory's authenticated agent
 /// channel; AppKit access stays on the main thread and blocking work stays on one private queue.
 public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
-    public typealias Executor = @Sendable (
-        _ argv: [String],
-        _ stdin: Data,
-        _ timeoutMs: UInt64,
-        _ outputLimitBytes: UInt64
-    ) throws -> DoryExecResult
     public typealias ShortcutSender = @MainActor @Sendable (_ linuxKeyCode: UInt16) -> Void
 
     private let policy: DoryVMClipboardPolicy
-    private let execute: Executor
+    private let transport: DoryDesktopClipboardTransport
     private let sendShortcut: ShortcutSender
     private let pasteboard: NSPasteboard
     private let startupRetryDelay: TimeInterval
@@ -46,13 +62,13 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
 
     public convenience init(
         policy: DoryDesktopClipboardPolicy,
-        execute: @escaping Executor,
+        transport: DoryDesktopClipboardTransport,
         sendShortcut: @escaping ShortcutSender,
         log: @escaping @Sendable (String) -> Void
     ) {
         self.init(
             policy: policy.virtualMachinePolicy,
-            execute: execute,
+            transport: transport,
             sendShortcut: sendShortcut,
             pasteboard: .general,
             startupRetryDelay: 1,
@@ -64,13 +80,13 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
 
     public convenience init(
         policy: DoryVMClipboardPolicy,
-        execute: @escaping Executor,
+        transport: DoryDesktopClipboardTransport,
         sendShortcut: @escaping ShortcutSender,
         log: @escaping @Sendable (String) -> Void
     ) {
         self.init(
             policy: policy,
-            execute: execute,
+            transport: transport,
             sendShortcut: sendShortcut,
             pasteboard: .general,
             startupRetryDelay: 1,
@@ -82,7 +98,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
 
     convenience init(
         policy: DoryDesktopClipboardPolicy,
-        execute: @escaping Executor,
+        transport: DoryDesktopClipboardTransport,
         sendShortcut: @escaping ShortcutSender,
         pasteboard: NSPasteboard,
         startupRetryDelay: TimeInterval,
@@ -92,7 +108,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
     ) {
         self.init(
             policy: policy.virtualMachinePolicy,
-            execute: execute,
+            transport: transport,
             sendShortcut: sendShortcut,
             pasteboard: pasteboard,
             startupRetryDelay: startupRetryDelay,
@@ -104,7 +120,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
 
     init(
         policy: DoryVMClipboardPolicy,
-        execute: @escaping Executor,
+        transport: DoryDesktopClipboardTransport,
         sendShortcut: @escaping ShortcutSender,
         pasteboard: NSPasteboard,
         startupRetryDelay: TimeInterval,
@@ -113,7 +129,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         log: @escaping @Sendable (String) -> Void
     ) {
         self.policy = policy
-        self.execute = execute
+        self.transport = transport
         self.sendShortcut = sendShortcut
         self.pasteboard = pasteboard
         self.startupRetryDelay = startupRetryDelay
@@ -153,13 +169,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
             guard let self else { return }
             let available: Bool
             do {
-                let result = try self.execute(
-                    ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"],
-                    Data(),
-                    5_000,
-                    4_096
-                )
-                available = result.exitCode == 0 && !result.timedOut
+                available = try self.transport.availability()
             } catch {
                 available = false
                 self.log("clipboard capability probe failed: \(error)")
@@ -305,16 +315,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
 
     private func writeGuestClipboard(_ payload: DoryDesktopClipboardPayload) -> Bool {
         do {
-            let result = try execute(
-                ["/usr/lib/dory/clipboard", "set", payload.mimeType],
-                payload.data,
-                5_000,
-                64 * 1024
-            )
-            guard result.exitCode == 0, !result.timedOut else {
-                log("clipboard write failed (exit=\(result.exitCode), timedOut=\(result.timedOut))")
-                return false
-            }
+            try transport.set(payload.mimeType, payload.data)
             return true
         } catch {
             log("clipboard write failed: \(error)")
@@ -339,20 +340,14 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         for mimeType in ["image/png", "text/plain;charset=utf-8", "text/plain"] {
             guard direction(for: mimeType).allowsGuestToHost else { continue }
             do {
-                let result = try execute(
-                    ["/usr/lib/dory/clipboard", "get", mimeType],
-                    Data(),
-                    5_000,
-                    UInt64(DoryDesktopClipboardPayload.maximumBytes)
-                )
-                guard result.exitCode == 0, !result.timedOut, !result.stdoutTruncated else { continue }
-                if mimeType == "image/png", result.stdout.isEmpty { continue }
-                if let payload = DoryDesktopClipboardPayload(mimeType: mimeType, data: result.stdout) {
+                let data = try transport.get(mimeType)
+                if mimeType == "image/png", data.isEmpty { continue }
+                if let payload = DoryDesktopClipboardPayload(mimeType: mimeType, data: data) {
                     return payload
                 }
             } catch {
-                log("clipboard read failed: \(error)")
-                return nil
+                log("clipboard read failed for \(mimeType): \(error)")
+                continue
             }
         }
         return nil

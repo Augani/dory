@@ -2103,24 +2103,53 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
         machine.isStopped
     }
 
-    func executeDesktopIntegration(
-        argv: [String],
-        stdin: Data,
-        timeoutMs: UInt64,
-        outputLimitBytes: UInt64
-    ) throws -> DoryExecResult {
+    private func withDesktopIntegrationControl<T>(
+        _ operation: (DoryAgentControlHandle) throws -> T
+    ) throws -> T {
         let connection = try machine.connect(toPort: DoryGuestPorts.control)
         defer { connection.close() }
         let fd = dup(connection.fileDescriptor)
         guard fd >= 0 else { throw DoryVZMachineError.syscall("dup", errno) }
         let control = try DoryCore.connectAgentControlOverFD(fd)
         defer { control.close() }
-        return try control.execWithInput(
-            argv: argv,
-            stdin: stdin,
-            timeoutMs: timeoutMs,
-            outputLimitBytes: outputLimitBytes
-        )
+        return try operation(control)
+    }
+
+    private func withDesktopClipboardControl<T>(
+        _ operation: (DoryAgentControlHandle) throws -> T
+    ) throws -> T {
+        try withDesktopIntegrationControl { control in
+            let info = try control.info()
+            guard info.protocolVersion == DoryCore.protocolVersion() else {
+                throw AgentControlError.incompatibleProtocol(
+                    expected: DoryCore.protocolVersion(),
+                    actual: info.protocolVersion
+                )
+            }
+            guard info.capabilitiesAreCanonical else {
+                throw AgentControlError.invalidCapabilities
+            }
+            guard info.supports("clipboard") else {
+                throw AgentControlError.capabilityUnavailable("clipboard")
+            }
+            return try operation(control)
+        }
+    }
+
+    func desktopClipboardAvailable() throws -> Bool {
+        try withDesktopClipboardControl { _ in true }
+    }
+
+    func desktopClipboardGet(mimeType: String) throws -> Data {
+        try withDesktopClipboardControl {
+            try $0.clipboard(action: .get, mimeType: mimeType).data
+        }
+    }
+
+    func desktopClipboardSet(mimeType: String, data: Data) throws {
+        try withDesktopClipboardControl {
+            _ = try $0.clipboard(action: .set, mimeType: mimeType, data: data)
+        }
     }
 
     func requestGuestShutdown() throws {

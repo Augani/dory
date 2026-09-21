@@ -18,7 +18,7 @@ final class AgentControlTests: XCTestCase {
         let info = try control.info()
         XCTAssertEqual(info.agentBuild, "fake-agent")
         XCTAssertEqual(info.capabilities.map(\.id), [
-            "clock-sync", "exec", "exec-stdin", "lifecycle-receipt", "ports-watch",
+            "clipboard", "clock-sync", "exec", "exec-stdin", "lifecycle-receipt", "ports-watch",
             "snapshot-quiesce", "sync-pull", "sync-push", "telemetry", "usb-vhci",
             "virtiofs-mount",
         ])
@@ -28,6 +28,16 @@ final class AgentControlTests: XCTestCase {
         XCTAssertEqual(fake.clockSyncInputs, [1_500_000_000])
         XCTAssertEqual(try control.portsWatch().ports.first?.port, 8080)
         XCTAssertEqual(try control.telemetry().memTotalKB, 1024)
+        XCTAssertTrue(try control.clipboardAvailable())
+        try control.clipboardSet(
+            mimeType: "text/plain;charset=utf-8",
+            data: Data("host value".utf8)
+        )
+        XCTAssertEqual(
+            try control.clipboardGet(mimeType: "text/plain;charset=utf-8"),
+            Data("guest value".utf8)
+        )
+        XCTAssertEqual(try control.clipboardTypes(), ["image/png", "text/plain;charset=utf-8"])
         XCTAssertEqual(
             try control.push(localRoot: "/tmp/local", remoteRoot: "/tmp/remote"),
             DoryPushStats(filesSent: 1, bytesSent: 12, filesDeleted: 0)
@@ -245,6 +255,7 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
     init(
         protocolVersion: UInt32 = DoryCore.protocolVersion(),
         capabilities: [DoryAgentCapability] = [
+            DoryAgentCapability(id: "clipboard", version: 1),
             DoryAgentCapability(id: "clock-sync", version: 1),
             DoryAgentCapability(id: "exec", version: 1),
             DoryAgentCapability(id: "exec-stdin", version: 1),
@@ -369,6 +380,33 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
             psiSomeAvg10: 0,
             psiFullAvg10: 0
         )
+    }
+
+    func clipboard(
+        action: DoryClipboardAction,
+        mimeType: String,
+        data: Data
+    ) throws -> DoryClipboardResponse {
+        switch action {
+        case .get:
+            XCTAssertEqual(mimeType, "text/plain;charset=utf-8")
+            XCTAssertTrue(data.isEmpty)
+            return DoryClipboardResponse(
+                mimeType: mimeType,
+                data: Data("guest value".utf8)
+            )
+        case .set:
+            XCTAssertEqual(mimeType, "text/plain;charset=utf-8")
+            XCTAssertEqual(data, Data("host value".utf8))
+            return DoryClipboardResponse(mimeType: mimeType)
+        case .listTypes:
+            XCTAssertTrue(mimeType.isEmpty)
+            XCTAssertTrue(data.isEmpty)
+            return DoryClipboardResponse(
+                mimeType: "",
+                mimeTypes: ["image/png", "text/plain;charset=utf-8"]
+            )
+        }
     }
 
     func snapshotFreeze(receiptID: String) throws -> String {
