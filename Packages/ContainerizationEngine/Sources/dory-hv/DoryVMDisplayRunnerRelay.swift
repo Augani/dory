@@ -187,6 +187,75 @@ final class DoryVMDisplayRunnerRelaySlot: @unchecked Sendable {
     func stop() {
         lock.withLock { relay }?.stop()
     }
+
+    var presentationIntervalMetrics: DoryVMDisplayPresentationIntervalMetrics? {
+        lock.withLock { relay }?.presentationIntervalMetrics
+    }
+}
+
+struct DoryVMDisplayPresentationIntervalMetrics: Equatable, Sendable {
+    var sampleCount: UInt64
+    var p95Nanoseconds: UInt64
+    var p99Nanoseconds: UInt64
+}
+
+/// Bounded, per-scanout measurement of intervals between frames the Dory app actually presented.
+/// Keeping independent last-presented timestamps avoids treating simultaneous updates on two
+/// displays as an artificially short frame interval.
+final class DoryVMDisplayPresentationIntervals: @unchecked Sendable {
+    typealias Clock = @Sendable () -> UInt64
+
+    private let maximumSampleCount: Int
+    private let clock: Clock
+    private let lock = NSLock()
+    private var lastPresentedByScanout: [UInt32: UInt64] = [:]
+    private var samples: [UInt64] = []
+    private var nextReplacementIndex = 0
+
+    init(
+        maximumSampleCount: Int = 4_096,
+        clock: @escaping Clock = { DispatchTime.now().uptimeNanoseconds }
+    ) {
+        self.maximumSampleCount = max(1, maximumSampleCount)
+        self.clock = clock
+        samples.reserveCapacity(max(1, maximumSampleCount))
+    }
+
+    func recordPresented(scanoutID: UInt32) {
+        recordPresented(scanoutID: scanoutID, monotonicNanoseconds: clock())
+    }
+
+    func recordPresented(scanoutID: UInt32, monotonicNanoseconds: UInt64) {
+        lock.withLock {
+            defer { lastPresentedByScanout[scanoutID] = monotonicNanoseconds }
+            guard let previous = lastPresentedByScanout[scanoutID],
+                  monotonicNanoseconds > previous else { return }
+            let interval = monotonicNanoseconds - previous
+            if samples.count < maximumSampleCount {
+                samples.append(interval)
+                return
+            }
+            samples[nextReplacementIndex] = interval
+            nextReplacementIndex = (nextReplacementIndex + 1) % maximumSampleCount
+        }
+    }
+
+    var metrics: DoryVMDisplayPresentationIntervalMetrics {
+        lock.withLock {
+            let sorted = samples.sorted()
+            return DoryVMDisplayPresentationIntervalMetrics(
+                sampleCount: UInt64(sorted.count),
+                p95Nanoseconds: Self.nearestRank(95, sorted: sorted),
+                p99Nanoseconds: Self.nearestRank(99, sorted: sorted)
+            )
+        }
+    }
+
+    private static func nearestRank(_ percentile: Int, sorted: [UInt64]) -> UInt64 {
+        guard !sorted.isEmpty else { return 0 }
+        let rank = (sorted.count * percentile + 99) / 100
+        return sorted[max(0, min(sorted.count - 1, rank - 1))]
+    }
 }
 
 final class DoryVMDisplayRunnerResizeTarget: @unchecked Sendable {
@@ -325,6 +394,7 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
     private let log: @Sendable (String) -> Void
     private let onPresentationCompleted: @Sendable (UInt64) -> Void
     private let onPresentationFailed: @Sendable (UInt64, String) -> Void
+    private let presentationIntervals: DoryVMDisplayPresentationIntervals
     private let pollQueue = DispatchQueue(
         label: "dev.dory.dory-hv.display-command-relay",
         qos: .userInteractive
@@ -371,6 +441,7 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         commandHandler: DoryVMDisplayRunnerCommandHandler,
         onPresentationCompleted: @escaping @Sendable (UInt64) -> Void = { _ in },
         onPresentationFailed: @escaping @Sendable (UInt64, String) -> Void = { _, _ in },
+        presentationIntervals: DoryVMDisplayPresentationIntervals = .init(),
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.machineID = machineID
@@ -379,7 +450,12 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         self.commandHandler = commandHandler
         self.onPresentationCompleted = onPresentationCompleted
         self.onPresentationFailed = onPresentationFailed
+        self.presentationIntervals = presentationIntervals
         self.log = log
+    }
+
+    var presentationIntervalMetrics: DoryVMDisplayPresentationIntervalMetrics {
+        presentationIntervals.metrics
     }
 
     func start() {
@@ -608,6 +684,9 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
 
     private func completeFrame(leaseID: UUID, presented: Bool, detail: String) {
         let pending = lock.withLock { state.pending.removeValue(forKey: leaseID) }
+        if presented, let pending {
+            presentationIntervals.recordPresented(scanoutID: pending.update.scanoutID)
+        }
         pending?.complete(presented: presented, detail: detail)
         if !presented, !detail.isEmpty {
             log("dory-hv display relay frame \(leaseID.uuidString.lowercased()): \(detail)")

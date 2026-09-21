@@ -84,6 +84,23 @@ struct DoryVMDisplayRunnerRelayTests {
         var cursors: [Data] { lock.withLock { publishedCursors } }
     }
 
+    @Test func presentationIntervalsArePerScanoutBoundedAndNearestRanked() {
+        let intervals = DoryVMDisplayPresentationIntervals(maximumSampleCount: 4)
+        intervals.recordPresented(scanoutID: 0, monotonicNanoseconds: 100)
+        intervals.recordPresented(scanoutID: 0, monotonicNanoseconds: 110)
+        intervals.recordPresented(scanoutID: 1, monotonicNanoseconds: 1_000)
+        intervals.recordPresented(scanoutID: 0, monotonicNanoseconds: 130)
+        intervals.recordPresented(scanoutID: 1, monotonicNanoseconds: 1_030)
+        intervals.recordPresented(scanoutID: 0, monotonicNanoseconds: 170)
+        intervals.recordPresented(scanoutID: 0, monotonicNanoseconds: 220)
+
+        #expect(intervals.metrics == DoryVMDisplayPresentationIntervalMetrics(
+            sampleCount: 4,
+            p95Nanoseconds: 50,
+            p99Nanoseconds: 50
+        ))
+    }
+
     @Test func commandHandlerRoutesOnlyToSelectedVirtioEndpoint() throws {
         let inputs = Recorder<(DoryVMDisplayInputEndpoint, [VirtioInputEvent])>()
         let resizes = Recorder<(UInt32, UInt32, UInt32, UInt16, UInt16)>()

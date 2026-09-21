@@ -115,6 +115,13 @@ final class DoryDeviceTelemetryTests: XCTestCase {
         )
         XCTAssertEqual(
             DoryDeviceTelemetryMetric.measured(
+                .displayP95PresentIntervalNanoseconds,
+                value: 16_666_667
+            ).unit,
+            .nanoseconds
+        )
+        XCTAssertEqual(
+            DoryDeviceTelemetryMetric.measured(
                 .shareRequestPayloadBytes,
                 value: 4_096
             ).unit,

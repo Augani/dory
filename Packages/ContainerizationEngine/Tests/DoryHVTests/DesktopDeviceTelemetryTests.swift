@@ -512,6 +512,43 @@ import Testing
         }?.value == 4)
     }
 
+    @Test func publishesAppAcknowledgedPresentationIntervalPercentiles() throws {
+        let backend = VirtioGPU(hostMemoryBase: GuestLayout.daxWindowBase, scanoutCount: 1)
+        let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: backend,
+            memory: memory
+        ) {}
+        let registry = RawDeviceTelemetryRegistry(
+            machineID: "raw-app-presentation-intervals",
+            operationID: UUID()
+        )
+        registry.register(
+            slot: 1,
+            backend: backend,
+            transport: transport,
+            displayPresentationIntervalMetrics: {
+                DoryVMDisplayPresentationIntervalMetrics(
+                    sampleCount: 120,
+                    p95Nanoseconds: 18_000_000,
+                    p99Nanoseconds: 25_000_000
+                )
+            }
+        )
+
+        let device = try #require(registry.snapshot().devices.first)
+        #expect(device.metrics.first {
+            $0.kind == .displayPresentIntervalSamples
+        }?.value == 120)
+        #expect(device.metrics.first {
+            $0.kind == .displayP95PresentIntervalNanoseconds
+        }?.value == 18_000_000)
+        #expect(device.metrics.first {
+            $0.kind == .displayP99PresentIntervalNanoseconds
+        }?.value == 25_000_000)
+    }
+
     @Test func coalescesMoreThanQueueLimitWithoutLosingAnyDamageRectangles() throws {
         let coalescer = DesktopScanoutFrameCoalescer()
         let width: UInt32 = 300

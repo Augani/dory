@@ -63,6 +63,11 @@ public enum DoryDeviceTelemetryMetricKind: String, Codable, Sendable, CaseIterab
     case displayDroppedFrameBytes = "display-dropped-frame-bytes"
     case displayPendingFrameBytes = "display-pending-frame-bytes"
     case displayPendingFrameDepth = "display-pending-frame-depth"
+    case displayPresentIntervalSamples = "display-present-interval-samples"
+    case displayP95PresentIntervalNanoseconds =
+        "display-p95-present-interval-nanoseconds"
+    case displayP99PresentIntervalNanoseconds =
+        "display-p99-present-interval-nanoseconds"
     case audioDrops = "audio-drops"
     case storageFlushes = "storage-flushes"
     case maximumStorageFlushLatencyNanoseconds = "maximum-storage-flush-latency-nanoseconds"
@@ -144,7 +149,9 @@ public enum DoryDeviceTelemetryMetricKind: String, Codable, Sendable, CaseIterab
              .shareTotalRequestLatencyNanoseconds,
              .shareMaximumRequestLatencyNanoseconds,
              .inputPublicationLatencyNanoseconds,
-             .inputMaximumPublicationLatencyNanoseconds:
+             .inputMaximumPublicationLatencyNanoseconds,
+             .displayP95PresentIntervalNanoseconds,
+             .displayP99PresentIntervalNanoseconds:
             .nanoseconds
         default:
             .count

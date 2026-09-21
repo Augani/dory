@@ -130,6 +130,8 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         var input: VirtioInput?
         var audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)?
         var displayMetrics: (@Sendable () -> DesktopFrameMailboxMetrics?)?
+        var displayPresentationIntervalMetrics:
+            (@Sendable () -> DoryVMDisplayPresentationIntervalMetrics?)?
         var presentationBudgetMetrics:
             (@Sendable () -> DesktopCPUPresentationBudgetMetrics?)?
         var graphicsMetrics: (@Sendable () -> VirtioGPUStatistics?)?
@@ -177,6 +179,8 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         transport: VirtioMMIOTransport,
         audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)? = nil,
         displayMetrics: (@Sendable () -> DesktopFrameMailboxMetrics?)? = nil,
+        displayPresentationIntervalMetrics:
+            (@Sendable () -> DoryVMDisplayPresentationIntervalMetrics?)? = nil,
         presentationBudgetMetrics:
             (@Sendable () -> DesktopCPUPresentationBudgetMetrics?)? = nil,
         graphicsMetrics: (@Sendable () -> VirtioGPUStatistics?)? = nil
@@ -209,6 +213,13 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                     (.displayFrames, .count),
                     (.displayDrops, .count),
                     (.displayBudgetRejectedFrames, .count),
+                ])
+            }
+            if displayPresentationIntervalMetrics == nil {
+                unavailable.append(contentsOf: [
+                    (.displayPresentIntervalSamples, .count),
+                    (.displayP95PresentIntervalNanoseconds, .nanoseconds),
+                    (.displayP99PresentIntervalNanoseconds, .nanoseconds),
                 ])
             }
             if presentationBudgetMetrics == nil {
@@ -273,6 +284,7 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             input: backend as? VirtioInput,
             audioMetrics: audioMetrics,
             displayMetrics: displayMetrics,
+            displayPresentationIntervalMetrics: displayPresentationIntervalMetrics,
             presentationBudgetMetrics: presentationBudgetMetrics,
             graphicsMetrics: effectiveGraphicsMetrics,
             unavailableMetrics: unavailable,
@@ -554,6 +566,22 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                         health = .degraded
                     }
                     entries[index].previousDisplayDrops = display.droppedFrames
+                }
+                if let intervals = entries[index].displayPresentationIntervalMetrics?() {
+                    metrics.append(contentsOf: [
+                        .measured(
+                            .displayPresentIntervalSamples,
+                            value: intervals.sampleCount
+                        ),
+                        .measured(
+                            .displayP95PresentIntervalNanoseconds,
+                            value: intervals.p95Nanoseconds
+                        ),
+                        .measured(
+                            .displayP99PresentIntervalNanoseconds,
+                            value: intervals.p99Nanoseconds
+                        ),
+                    ])
                 }
                 if let budget = entries[index].presentationBudgetMetrics?() {
                     metrics.append(contentsOf: [
@@ -2301,12 +2329,23 @@ enum DesktopMode {
                     } else {
                         presentationBudgetMetrics = nil
                     }
+                    let displayPresentationIntervalMetrics:
+                        (@Sendable () -> DoryVMDisplayPresentationIntervalMetrics?)?
+                    if backend === gpu, usesDisplayRelay {
+                        displayPresentationIntervalMetrics = { [displayRelaySlot] in
+                            displayRelaySlot.presentationIntervalMetrics
+                        }
+                    } else {
+                        displayPresentationIntervalMetrics = nil
+                    }
                     deviceTelemetry.register(
                         slot: slot,
                         backend: backend,
                         transport: transport,
                         audioMetrics: audioMetrics,
                         displayMetrics: displayMetrics,
+                        displayPresentationIntervalMetrics:
+                            displayPresentationIntervalMetrics,
                         presentationBudgetMetrics: presentationBudgetMetrics
                     )
                     if backend === gpu, usesDisplayRelay {
