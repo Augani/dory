@@ -26,6 +26,7 @@ let dorydKitTestTargets: [Target] = x86OptimizedQualification
         "DorydKit",
         "DoryCore",
         "DoryRendererWorkerWireContracts",
+        "DoryVMDisplayWireContracts",
         "DoryVMMKit",
         "DoryVZMacCore",
         "DoryVMContracts",
@@ -58,6 +59,10 @@ let package = Package(
     .library(
       name: "DoryRendererWorkerWireContracts",
       targets: ["DoryRendererWorkerWireContracts"]
+    ),
+    .library(
+      name: "DoryVMDisplayWireContracts",
+      targets: ["DoryVMDisplayWireContracts"]
     ),
     .library(name: "DoryOperations", targets: ["DoryOperations"]),
     .library(name: "DoryCore", targets: ["DoryCore"]),
@@ -254,6 +259,14 @@ let package = Package(
       name: "DoryRendererWorkerWireContracts",
       dependencies: []
     ),
+    // App-owned Linux presentation relays only typed metadata plus an existing shared-memory
+    // descriptor or Metal secure-coding handle. Keeping this boundary separate from DorydKit
+    // prevents either UI or daemon policy from leaking into the lease format.
+    .target(
+      name: "DoryVMDisplayWireContracts",
+      dependencies: ["DoryRendererWorkerWireContracts"],
+      linkerSettings: [.linkedFramework("Metal")]
+    ),
     .target(
       name: "DoryOperations",
       dependencies: [
@@ -275,6 +288,7 @@ let package = Package(
         "DoryCore",
         "DoryOperations",
         "DoryRendererWorkerWireContracts",
+        "DoryVMDisplayWireContracts",
         "DoryVZMacCore",
         "DoryVMContracts",
       ],
@@ -557,6 +571,10 @@ let package = Package(
     .testTarget(
       name: "DoryRendererWorkerWireContractsTests",
       dependencies: ["DoryRendererWorkerWireContracts"]
+    ),
+    .testTarget(
+      name: "DoryVMDisplayWireContractsTests",
+      dependencies: ["DoryVMDisplayWireContracts", "DoryRendererWorkerWireContracts"]
     ),
     .testTarget(
       name: "DoryOperationsTests",
