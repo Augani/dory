@@ -24,6 +24,7 @@ nonisolated struct LinuxMachineDisplayWindow: Codable, Hashable, Identifiable {
     var scanoutID: UInt32 = 0
 
     var id: String { "\(machineID):\(scanoutID)" }
+    var windowTitle: String { "Dory — \(machineID) — Display \(scanoutID + 1)" }
 }
 
 struct LinuxMachineDisplayScene: View {
@@ -44,6 +45,7 @@ struct LinuxMachineDisplayScene: View {
             topology: topology.isEmpty ? nil : topology
         )
         .background(Color.black)
+        .navigationTitle(display.windowTitle)
         .toolbar {
             if display.scanoutID == 0 {
                 ToolbarItemGroup(placement: .primaryAction) {
