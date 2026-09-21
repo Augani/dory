@@ -542,6 +542,7 @@ final class DoryRendererGenerationHandoffServer: @unchecked Sendable {
     let token: String
 
     private let handler: Handler
+    private let ownedDirectory: String?
     private let lifecycleLock = NSLock()
     private let lock = NSLock()
     private var listener: Int32 = -1
@@ -553,6 +554,36 @@ final class DoryRendererGenerationHandoffServer: @unchecked Sendable {
         self.path = path
         self.token = token
         self.handler = handler
+        ownedDirectory = nil
+    }
+
+    private init(
+        path: String,
+        token: String,
+        ownedDirectory: String,
+        handler: @escaping Handler
+    ) {
+        self.path = path
+        self.token = token
+        self.handler = handler
+        self.ownedDirectory = ownedDirectory
+    }
+
+    static func makeTransient(token: String, handler: @escaping Handler) throws
+        -> DoryRendererGenerationHandoffServer {
+        var template = Array("/tmp/dory-renderer-generation.XXXXXX".utf8CString)
+        guard let created = template.withUnsafeMutableBufferPointer({ buffer in
+            mkdtemp(buffer.baseAddress!)
+        }) else {
+            throw DoryRendererGenerationHandoffError.syscall("mkdtemp", errno)
+        }
+        let directory = String(cString: created)
+        return DoryRendererGenerationHandoffServer(
+            path: directory + "/h.sock",
+            token: token,
+            ownedDirectory: directory,
+            handler: handler
+        )
     }
 
     static func makeToken() throws -> String {
@@ -635,6 +666,9 @@ final class DoryRendererGenerationHandoffServer: @unchecked Sendable {
             {
                 unlink(path)
             }
+        }
+        if let ownedDirectory {
+            _ = rmdir(ownedDirectory)
         }
     }
 

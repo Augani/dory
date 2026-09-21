@@ -697,6 +697,12 @@ struct MachineManagerResolvedPlanIntegrationTests {
             #expect(plan.qualificationEvidence.graphics == nil)
             #expect(plan.qualificationEvidence.runtime != nil)
             #expect(starter.lastArguments?.contains("--runtime-launch-envelope") == true)
+            #expect(
+                starter.lastArguments?.contains("--renderer-generation-handoff-sock") == true
+            )
+            #expect(
+                starter.lastArguments?.contains("--renderer-generation-handoff-token") == true
+            )
 
             let encoded = try #require(starter.lastRendererBootstrap)
             let bootstrap = try DoryRendererWorkerBootstrapCodec.decode(encoded)
@@ -707,6 +713,150 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 bootstrap.artifacts.guestMesa.lowercaseSHA256
                     == DoryRendererSourceTuple.stockGuestArtifactUnboundSHA256
             )
+        }
+    }
+
+    @Test("resolved ARM hardware-3D readiness renews its renderer generation")
+    func resolvedARMHardware3DReadinessRenewsRendererGeneration() throws {
+        let renewalFile = "/private/tmp/dory-arm-rg-renewal-\(UUID().uuidString).json"
+        let renewalOutcomeFile = renewalFile + ".outcome"
+        defer {
+            try? FileManager.default.removeItem(atPath: renewalFile)
+            try? FileManager.default.removeItem(atPath: renewalOutcomeFile)
+        }
+        try withHarness(
+            "stock-arm-renderer-renewal",
+            admittedDesktopFixture: true,
+            guestArchitecture: .arm64,
+            requiresReadyHandoff: true,
+            useShortStatePath: true,
+            authenticatedRuntime: true,
+            authenticatedRuntimeEnvironment: [
+                "DORY_RECONNECT_TEST_RENDERER_RENEWAL_FILE": renewalFile,
+            ],
+            initialEnvironment: [
+                DoryDesktopVMMPreference.environmentKey:
+                    DoryDesktopVMMPreference.accelerated.rawValue,
+                DoryDesktopGraphicsPreference.environmentKey:
+                    DoryDesktopGraphicsPreference.virglVenus.rawValue,
+            ]
+        ) { manager, starter, state in
+            let plans = MutablePlanStore()
+            let registry = try rawRegistry(
+                operations: manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
+            )
+            let rendererReleaseIdentity = try rendererReleaseIdentityFixture()
+            manager.installLaunchGatedChildCodeValidatorForTesting(
+                AcceptingLaunchGatedChildCodeValidator()
+            )
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(
+                    request: request,
+                    rendererReleaseIdentity: rendererReleaseIdentity,
+                    graphics: .hardwareAccelerated3D
+                )
+                plans.set(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: registry,
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+
+            let starting = try manager.start(id: "dev")
+            let operationID = try #require(starting.activeOperationID)
+            let plan = try plans.read(id: "dev")
+            let planDigest = try planSHA256(plan)
+            try sendVmmHandoff(
+                path: try #require(starting.handoffSocketPath),
+                ready: VmmReadyMessage(
+                    machineID: "dev",
+                    operationID: operationID,
+                    agentBuild: "dory-agent/arm-renderer-generation-renewal",
+                    agentProtocolVersion: DoryCore.protocolVersion(),
+                    agentCapabilities: [
+                        DoryAgentCapability(id: "renderer-generation-renewal", version: 1),
+                    ],
+                    agentSocketPath: "/run/dory-agent.sock",
+                    controlSocketPath: try authenticatedControlSocket(state: state),
+                    graphicsSelection: try graphicsSelection(
+                        plan: plan,
+                        operationID: operationID
+                    ),
+                    guestBooted: true,
+                    toolsConnected: true,
+                    desktopVisible: true,
+                    workloadReady: true,
+                    detail: "initial ARM hardware-3D ready"
+                ),
+                fileDescriptors: []
+            )
+            let runningDeadline = Date().addingTimeInterval(5)
+            while manager.status(id: "dev")?.state == .starting, Date() < runningDeadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            let initialStatus = manager.status(id: "dev")
+            #expect(
+                initialStatus?.state == .running,
+                "initial readiness failure: \(initialStatus?.lastError ?? "none")"
+            )
+            #expect(initialStatus?.runtimeGraphicsSelection?.rendererGeneration == 1)
+
+            let arguments = try #require(starter.lastArguments)
+            func value(after flag: String) throws -> String {
+                let index = try #require(arguments.firstIndex(of: flag))
+                let valueIndex = arguments.index(after: index)
+                return try #require(
+                    arguments.indices.contains(valueIndex) ? arguments[valueIndex] : nil,
+                    "missing value after \(flag) in launched helper arguments"
+                )
+            }
+            let instruction = RendererGenerationRenewalFixtureInstruction(
+                generationHandoffPath: try value(
+                    after: "--renderer-generation-handoff-sock"
+                ),
+                generationHandoffToken: try value(
+                    after: "--renderer-generation-handoff-token"
+                ),
+                readinessHandoffPath: try #require(starting.handoffSocketPath),
+                machineID: "dev",
+                operationID: operationID,
+                resolvedPlanSHA256: planDigest,
+                planRevision: plan.planRevision,
+                previousRendererGeneration: 1,
+                requestedRendererGeneration: 2,
+                guestProducerFenceProofSHA256: digest("9"),
+                outcomePath: renewalOutcomeFile
+            )
+            try JSONEncoder().encode(instruction).write(
+                to: URL(fileURLWithPath: renewalFile),
+                options: .atomic
+            )
+
+            let renewalDeadline = Date().addingTimeInterval(5)
+            while manager.status(id: "dev")?.runtimeGraphicsSelection?.rendererGeneration != 2,
+                  Date() < renewalDeadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            let outcome = (try? String(
+                contentsOfFile: renewalOutcomeFile,
+                encoding: .utf8
+            )) ?? "missing renewal outcome"
+            let renewed = try #require(
+                manager.status(id: "dev"),
+                "renewal outcome: \(outcome)"
+            )
+            #expect(renewed.state == .running)
+            #expect(
+                renewed.runtimeGraphicsSelection?.rendererGeneration == 2,
+                "renewal outcome: \(outcome)"
+            )
+            #expect(
+                renewed.runtimeGraphicsSelection?.guestProducerFenceProofSHA256 == digest("9")
+            )
+            #expect(starter.count == 1)
         }
     }
 

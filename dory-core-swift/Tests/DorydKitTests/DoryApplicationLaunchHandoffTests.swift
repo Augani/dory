@@ -513,6 +513,37 @@ final class DoryApplicationLaunchHandoffTests: XCTestCase {
         XCTAssertEqual(observed.snapshot()?.generation, 10)
     }
 
+    func testTransientRendererGenerationHandoffOwnsShortLivedSocketDirectory() throws {
+        let token = String(
+            repeating: "f",
+            count: DoryRendererGenerationHandoffRequest.tokenByteCount
+        )
+        let server = try DoryRendererGenerationHandoffServer.makeTransient(
+            token: token
+        ) { _, _ in
+            DoryRendererGenerationHandoff(
+                response: DoryRendererGenerationHandoffResponse(
+                    ok: false,
+                    message: "unused fixture"
+                ),
+                bootstrapDescriptor: nil
+            )
+        }
+        let directory = (server.path as NSString).deletingLastPathComponent
+        XCTAssertTrue(server.path.hasPrefix("/tmp/dory-renderer-generation."))
+        XCTAssertLessThan(
+            server.path.utf8.count,
+            MemoryLayout.size(ofValue: sockaddr_un().sun_path)
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory))
+        try server.start()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: server.path))
+        server.stop()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: server.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory))
+        server.stop()
+    }
+
     func testRendererGenerationHandoffRejectsStaleGenerationWithoutDescriptor() throws {
         let directory = try makeTemporaryDirectory(prefix: "dory-renderer-generation-stale")
         defer { try? FileManager.default.removeItem(atPath: directory) }

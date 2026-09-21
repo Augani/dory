@@ -1293,27 +1293,42 @@ struct RawHVRuntimeLaunchAuthority: @unchecked Sendable {
     let pcEnvelopeAuthority: DoryPCRuntimeLaunchEnvelopeAuthority?
     let inheritedFileDescriptors: [HvProcessInheritedFileDescriptor]
     let rendererGenerationHandoffServer: DoryRendererGenerationHandoffServer?
+    let initialRendererGeneration: UInt64?
 
     init(
         envelope: RuntimeLaunchEnvelope,
         inheritedFileDescriptors: [HvProcessInheritedFileDescriptor],
-        rendererGenerationHandoffServer: DoryRendererGenerationHandoffServer? = nil
+        rendererGenerationHandoffServer: DoryRendererGenerationHandoffServer? = nil,
+        initialRendererGeneration: UInt64? = nil
     ) throws {
+        guard (rendererGenerationHandoffServer == nil) == (initialRendererGeneration == nil) else {
+            throw MachineManagerError.persistence(
+                "renderer generation authority requires an exact initial generation"
+            )
+        }
         envelopeAuthority = try RuntimeLaunchEnvelopeAuthority(envelope)
         pcEnvelopeAuthority = nil
         self.inheritedFileDescriptors = inheritedFileDescriptors
         self.rendererGenerationHandoffServer = rendererGenerationHandoffServer
+        self.initialRendererGeneration = initialRendererGeneration
     }
 
     init(
         pcEnvelope: DoryPCRuntimeLaunchEnvelope,
         inheritedFileDescriptors: [HvProcessInheritedFileDescriptor],
-        rendererGenerationHandoffServer: DoryRendererGenerationHandoffServer? = nil
+        rendererGenerationHandoffServer: DoryRendererGenerationHandoffServer? = nil,
+        initialRendererGeneration: UInt64? = nil
     ) throws {
+        guard (rendererGenerationHandoffServer == nil) == (initialRendererGeneration == nil) else {
+            throw MachineManagerError.persistence(
+                "renderer generation authority requires an exact initial generation"
+            )
+        }
         envelopeAuthority = nil
         pcEnvelopeAuthority = try DoryPCRuntimeLaunchEnvelopeAuthority(pcEnvelope)
         self.inheritedFileDescriptors = inheritedFileDescriptors
         self.rendererGenerationHandoffServer = rendererGenerationHandoffServer
+        self.initialRendererGeneration = initialRendererGeneration
     }
 }
 
@@ -5226,7 +5241,8 @@ public final class MachineManager: @unchecked Sendable {
         handoffServer: VmmHandoffServer?,
         launchID: UUID,
         backend: DoryVirtualizationBackendIdentity,
-        resolvedPlan: DoryResolvedMachinePlan?
+        resolvedPlan: DoryResolvedMachinePlan?,
+        initialRendererGeneration: UInt64?
     ) throws {
         let id = snapshot.configuration.id
         let hasProductionAdmissionLedger = productionAdmissionLedgerSnapshot() != nil
@@ -5248,6 +5264,7 @@ public final class MachineManager: @unchecked Sendable {
         entry.currentBalloonTargetMB = nil
         entry.activeResolvedPlan = resolvedPlan
         entry.activeBackend = backend
+        entry.lastAdmittedRendererGeneration = initialRendererGeneration
         entry.lastDeviceTelemetrySampleSequence = 0
         entry.lastDeviceTelemetryEventSequence = 0
         entry.readinessAcceptedPendingPublication = false
@@ -5434,6 +5451,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         let processLaunch: (configuration: HvProcessConfiguration,
                             backend: DoryVirtualizationBackendIdentity)
+        var initialRendererGeneration: UInt64?
         do {
             // This single-use daemon-owned check deliberately sits after all persisted
             // machine/plan validation and immediately before any path-derived launch arguments
@@ -5650,11 +5668,27 @@ public final class MachineManager: @unchecked Sendable {
                         rendererBootstrapSHA256: admitted.rendererBootstrap?.sha256
                     )
                     _ = try envelope.validatedResolvedARMVirtResources()
+                    let rendererGenerationHandoffServer = try rendererBootstrapRequest.map {
+                        request in
+                        try makeRendererGenerationHandoffServer(
+                            machineID: launchMachine.id,
+                            operationID: operationID,
+                            launchID: launchID,
+                            resolvedPlanSHA256: planSHA256,
+                            planRevision: resolvedPlan.planRevision,
+                            rendererBootstrapRequest: request,
+                            exactKernelSHA256: admitted.boot.kernel.sha256,
+                            childDescriptor: RuntimeLaunchEnvelope.rendererBootstrapDescriptor,
+                            launchKind: "resolved DoryARMVirt-v1"
+                        )
+                    }
                     runtimeLaunchAuthority = try RawHVRuntimeLaunchAuthority(
                         envelope: envelope,
                         inheritedFileDescriptors: [admitted.disk.authority]
                             + admitted.boot.authorities
-                            + (admitted.rendererBootstrap.map { [$0.authority] } ?? [])
+                            + (admitted.rendererBootstrap.map { [$0.authority] } ?? []),
+                        rendererGenerationHandoffServer: rendererGenerationHandoffServer,
+                        initialRendererGeneration: rendererBootstrapRequest?.generation
                     )
                     transferred = true
 
@@ -5804,6 +5838,7 @@ public final class MachineManager: @unchecked Sendable {
                 runtimeReconnectDescriptor: reconnectDescriptor,
                 qualificationBootstrapLaunch: qualificationBootstrapLaunch
             )
+            initialRendererGeneration = runtimeLaunchAuthority?.initialRendererGeneration
             if let reconnectIdentity {
                 try runtimeReconnectStore.publishPending(
                     identity: reconnectIdentity,
@@ -5860,7 +5895,8 @@ public final class MachineManager: @unchecked Sendable {
                 handoffServer: handoffServer,
                 launchID: launchID,
                 backend: processLaunch.backend,
-                resolvedPlan: resolvedPlan
+                resolvedPlan: resolvedPlan,
+                initialRendererGeneration: initialRendererGeneration
             )
         } catch {
             try? runtimeReconnectStore.remove(machineID: id, operationID: operationID)
@@ -13974,8 +14010,125 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
-    private func rendererGenerationHandoffSocketPath(id: String) -> String {
-        "\(machineRuntimeDirectory(id: id))/rg.sock"
+    private func makeRendererGenerationHandoffServer(
+        machineID: String,
+        operationID: UUID,
+        launchID: UUID,
+        resolvedPlanSHA256: String,
+        planRevision: UInt64,
+        rendererBootstrapRequest: RawHVRendererBootstrapRequest,
+        exactKernelSHA256: String,
+        childDescriptor: Int32,
+        launchKind: String
+    ) throws -> DoryRendererGenerationHandoffServer {
+        guard let machineStateBroker else {
+            throw MachineManagerError.persistence(
+                "\(launchKind) renderer reset requires trusted machine-state authority"
+            )
+        }
+        let handoffToken = try DoryRendererGenerationHandoffServer.makeToken()
+        let canonicalPlanSHA256 = resolvedPlanSHA256.lowercased()
+        let operationToken = DoryOperationIdentity.canonical(operationID)
+        let generationSequencer = RendererGenerationSequencer(
+            initialGeneration: rendererBootstrapRequest.generation
+        )
+        let server = try DoryRendererGenerationHandoffServer.makeTransient(
+            token: handoffToken
+        ) { [weak self] request, peer in
+            guard let self,
+                  request.machineID == machineID,
+                  request.operationID == operationToken,
+                  request.resolvedPlanSHA256.lowercased() == canonicalPlanSHA256,
+                  request.planRevision == planRevision,
+                  self.rendererGenerationPeerIsCurrent(
+                    machineID: machineID,
+                    launchID: launchID,
+                    operationID: operationID,
+                    planRevision: planRevision,
+                    planSHA256: canonicalPlanSHA256,
+                    peer: peer
+                  ) else {
+                throw DoryRendererGenerationHandoffError.invalidRequest
+            }
+            return try generationSequencer.withReservedSuccessor(
+                previous: request.previousRendererGeneration,
+                requested: request.requestedRendererGeneration
+            ) {
+                let freshRequest = RawHVRendererBootstrapRequest(
+                    workspaceID: rendererBootstrapRequest.workspaceID,
+                    generation: request.requestedRendererGeneration,
+                    runtimeBuildIdentifier: rendererBootstrapRequest.runtimeBuildIdentifier,
+                    components: rendererBootstrapRequest.components,
+                    rendererWorkerCodeDirectoryHash:
+                        rendererBootstrapRequest.rendererWorkerCodeDirectoryHash,
+                    producerFenceContract: rendererBootstrapRequest.producerFenceContract,
+                    guestMesaSHA256: rendererBootstrapRequest.guestMesaSHA256,
+                    hostVisibleArenaByteCount:
+                        rendererBootstrapRequest.hostVisibleArenaByteCount
+                )
+                let freshLease: DoryMachineDirectoryLease
+                do {
+                    freshLease = try machineStateBroker.acquireMachineDirectoryLease(
+                        machineID: machineID
+                    )
+                } catch {
+                    throw MachineManagerError.persistence(
+                        "\(launchKind) renderer reset machine-directory authority is unavailable: \(error)"
+                    )
+                }
+                let admitted = try freshLease.withBorrowedDescriptor { descriptor in
+                    try Self.stageResolvedRawHVRendererBootstrap(
+                        machineDirectoryDescriptor: descriptor,
+                        machineDirectoryGeneration: freshLease.generation,
+                        exactKernelSHA256: exactKernelSHA256,
+                        request: freshRequest,
+                        childDescriptor: childDescriptor
+                    )
+                }
+                var duplicated: Int32 = -1
+                do {
+                    duplicated = try admitted.authority.withBorrowedDescriptor { descriptor in
+                        let copy = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
+                        guard copy >= 0 else {
+                            throw DoryRendererGenerationHandoffError.syscall(
+                                "fcntl(F_DUPFD_CLOEXEC)", errno
+                            )
+                        }
+                        return copy
+                    }
+                    defer {
+                        if duplicated >= 0 {
+                            Darwin.close(duplicated)
+                        }
+                    }
+                    admitted.close()
+                    try self.recordAdmittedRendererGeneration(
+                        machineID: machineID,
+                        launchID: launchID,
+                        operationID: operationID,
+                        generation: request.requestedRendererGeneration
+                    )
+                    let response = DoryRendererGenerationHandoffResponse(
+                        ok: true,
+                        rendererGeneration: request.requestedRendererGeneration,
+                        bootstrapByteCount: admitted.byteCount,
+                        bootstrapSHA256: admitted.sha256,
+                        descriptorCount: 1
+                    )
+                    let handoff = DoryRendererGenerationHandoff(
+                        response: response,
+                        bootstrapDescriptor: duplicated
+                    )
+                    duplicated = -1
+                    return handoff
+                } catch {
+                    admitted.close()
+                    throw error
+                }
+            }
+        }
+        try server.start()
+        return server
     }
 
     private func resolvedDoryPCRuntimeLaunchAuthority(
@@ -14238,109 +14391,17 @@ public final class MachineManager: @unchecked Sendable {
         )
         let rendererGenerationHandoffServer: DoryRendererGenerationHandoffServer?
         if let rendererBootstrapRequest, let rendererGuestKernelSHA256 {
-            let handoffToken = try DoryRendererGenerationHandoffServer.makeToken()
-            let planRevision = resolvedPlan.planRevision
-            let resolvedPlanSHA256 = planSHA256.lowercased()
-            let operationToken = DoryOperationIdentity.canonical(operationID)
-            let generationSequencer = RendererGenerationSequencer(
-                initialGeneration: rendererBootstrapRequest.generation
+            rendererGenerationHandoffServer = try makeRendererGenerationHandoffServer(
+                machineID: machine.id,
+                operationID: operationID,
+                launchID: launchID,
+                resolvedPlanSHA256: planSHA256,
+                planRevision: resolvedPlan.planRevision,
+                rendererBootstrapRequest: rendererBootstrapRequest,
+                exactKernelSHA256: rendererGuestKernelSHA256,
+                childDescriptor: RuntimeLaunchEnvelope.uefiRendererBootstrapDescriptor,
+                launchKind: "resolved DoryPC-v1"
             )
-            let server = DoryRendererGenerationHandoffServer(
-                path: rendererGenerationHandoffSocketPath(id: machine.id),
-                token: handoffToken
-            ) { [weak self] request, peer in
-                guard let self,
-                      request.machineID == machine.id,
-                      request.operationID == operationToken,
-                      request.resolvedPlanSHA256.lowercased() == resolvedPlanSHA256,
-                      request.planRevision == planRevision,
-                      self.rendererGenerationPeerIsCurrent(
-                        machineID: machine.id,
-                        launchID: launchID,
-                        operationID: operationID,
-                        planRevision: planRevision,
-                        planSHA256: resolvedPlanSHA256,
-                        peer: peer
-                      ) else {
-                    throw DoryRendererGenerationHandoffError.invalidRequest
-                }
-                return try generationSequencer.withReservedSuccessor(
-                    previous: request.previousRendererGeneration,
-                    requested: request.requestedRendererGeneration
-                ) {
-                    let freshRequest = RawHVRendererBootstrapRequest(
-                        workspaceID: rendererBootstrapRequest.workspaceID,
-                        generation: request.requestedRendererGeneration,
-                        runtimeBuildIdentifier: rendererBootstrapRequest.runtimeBuildIdentifier,
-                        components: rendererBootstrapRequest.components,
-                        rendererWorkerCodeDirectoryHash:
-                            rendererBootstrapRequest.rendererWorkerCodeDirectoryHash,
-                        producerFenceContract: rendererBootstrapRequest.producerFenceContract,
-                        guestMesaSHA256: rendererBootstrapRequest.guestMesaSHA256
-                    )
-                    let freshLease: DoryMachineDirectoryLease
-                    do {
-                        freshLease = try machineStateBroker.acquireMachineDirectoryLease(
-                            machineID: machine.id
-                        )
-                    } catch {
-                        throw MachineManagerError.persistence(
-                            "resolved DoryPC-v1 renderer reset machine-directory authority is unavailable: \(error)"
-                        )
-                    }
-                    let admitted = try freshLease.withBorrowedDescriptor { descriptor in
-                        try Self.stageResolvedRawHVRendererBootstrap(
-                            machineDirectoryDescriptor: descriptor,
-                            machineDirectoryGeneration: freshLease.generation,
-                            exactKernelSHA256: rendererGuestKernelSHA256,
-                            request: freshRequest,
-                            childDescriptor: RuntimeLaunchEnvelope.uefiRendererBootstrapDescriptor
-                        )
-                    }
-                    var duplicated: Int32 = -1
-                    do {
-                        duplicated = try admitted.authority.withBorrowedDescriptor { descriptor in
-                            let copy = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
-                            guard copy >= 0 else {
-                                throw DoryRendererGenerationHandoffError.syscall(
-                                    "fcntl(F_DUPFD_CLOEXEC)", errno
-                                )
-                            }
-                            return copy
-                        }
-                        defer {
-                            if duplicated >= 0 {
-                                Darwin.close(duplicated)
-                            }
-                        }
-                        admitted.close()
-                        try self.recordAdmittedRendererGeneration(
-                            machineID: machine.id,
-                            launchID: launchID,
-                            operationID: operationID,
-                            generation: request.requestedRendererGeneration
-                        )
-                        let response = DoryRendererGenerationHandoffResponse(
-                            ok: true,
-                            rendererGeneration: request.requestedRendererGeneration,
-                            bootstrapByteCount: admitted.byteCount,
-                            bootstrapSHA256: admitted.sha256,
-                            descriptorCount: 1
-                        )
-                        let handoff = DoryRendererGenerationHandoff(
-                            response: response,
-                            bootstrapDescriptor: duplicated
-                        )
-                        duplicated = -1
-                        return handoff
-                    } catch {
-                        admitted.close()
-                        throw error
-                    }
-                }
-            }
-            try server.start()
-            rendererGenerationHandoffServer = server
         } else {
             rendererGenerationHandoffServer = nil
         }
@@ -14370,7 +14431,8 @@ public final class MachineManager: @unchecked Sendable {
         return try RawHVRuntimeLaunchAuthority(
             pcEnvelope: envelope,
             inheritedFileDescriptors: inheritedFileDescriptors,
-            rendererGenerationHandoffServer: rendererGenerationHandoffServer
+            rendererGenerationHandoffServer: rendererGenerationHandoffServer,
+            initialRendererGeneration: rendererBootstrapRequest?.generation
         )
     }
 
