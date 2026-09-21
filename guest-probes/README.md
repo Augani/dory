@@ -63,3 +63,22 @@ Replay verification is independent of the scenario process:
 
 The verifier revalidates the probe, every retained digest, the capture-frame identity, and the
 unique matching `metalPresentationCompleted` event in the retained runner trace.
+
+## OpenGL strategy comparison
+
+Phase A5 compares Zink → Venus → MoltenVK with VirGL2 → ANGLE → Metal under
+identical host, guest, resolution, CPU, memory, worker, and desktop conditions.
+Retain `comparison.json`, `zink-venus.json`, and `virgl2-angle.json` in one
+directory, then verify the pair and render the required comparison table:
+
+```sh
+python3 guest-probes/verify-opengl-strategy.py --evidence /absolute/evidence/root
+python3 guest-probes/verify-opengl-strategy.py \
+  --evidence /absolute/evidence/root --markdown
+```
+
+The verifier requires glmark2, GNOME Shell overview, Firefox WebGL Aquarium,
+Blender viewport, and LibreOffice Impress measurements. A selected default must
+pass every workload without llvmpipe, lavapipe, or another software renderer.
+The second passing path may be retained only for a named compatibility need;
+failures remain valid measurements but cannot be selected or retained.
