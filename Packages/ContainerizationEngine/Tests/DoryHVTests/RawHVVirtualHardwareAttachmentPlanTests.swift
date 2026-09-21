@@ -136,12 +136,19 @@ import Testing
             .vsock,
             .keyboard,
             .pointer,
+            .relativePointer,
             .audio,
         ] {
             let request = try RawHVVirtualHardwareAttachmentPlan.canonicalFixedRequest(role)
             #expect(request.logicalID.rawValue == "armvirt-\(role.rawValue)")
             #expect(assignments.contains(where: { $0.request == request }))
         }
+        #expect(assignments.contains {
+            $0.request.role == .pointer && $0.mmioSlot == 6
+        })
+        #expect(assignments.contains {
+            $0.request.role == .relativePointer && $0.mmioSlot == 31
+        })
     }
 
     @Test func headlessResolvedPreflightOmitsGraphicsFunction() throws {

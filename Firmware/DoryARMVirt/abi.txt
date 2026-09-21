@@ -43,6 +43,6 @@ UART uses SPI 1 / INTID 33. VirtIO slots 0...31 use SPIs 16...47 / INTIDs 48...7
 | 12...19 | auxiliary/removable storage |
 | 20...29 | directory sharing |
 | 30 | USB controller |
-| 31 | reserved; never allocatable in ABI v1 |
+| 31 | relative pointer |
 
 VirtIO MMIO is the compatibility transport. PCIe ECAM/MMIO, firmware flash, persistent variables, and power/reset addresses are frozen reservations in v1; exposing a device in one of those regions must preserve this map and the separately versioned firmware and device ABIs.

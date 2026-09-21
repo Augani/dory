@@ -133,16 +133,21 @@ import Testing
         }
     }
 
-    @Test func rejectsOutOfRangeReservedAndRoleMismatchedSlots() throws {
+    @Test func rejectsOutOfRangeAndRoleMismatchedSlots() throws {
         #expect(throws: DoryVMContractError.mmioSlotOutOfRange(-1)) {
             try DoryARMVirtV1DeviceSlot(logicalID: "net.low", role: .network, mmioSlot: -1)
         }
         #expect(throws: DoryVMContractError.mmioSlotOutOfRange(32)) {
             try DoryARMVirtV1DeviceSlot(logicalID: "net.high", role: .network, mmioSlot: 32)
         }
-        #expect(throws: DoryVMContractError.reservedMMIOSlot(31)) {
-            try DoryARMVirtV1DeviceSlot(logicalID: "net.reserved", role: .network, mmioSlot: 31)
+        #expect(throws: DoryVMContractError.roleSlotMismatch(role: .network, slot: 31)) {
+            try DoryARMVirtV1DeviceSlot(logicalID: "net.wrong-role", role: .network, mmioSlot: 31)
         }
+        _ = try DoryARMVirtV1DeviceSlot(
+            logicalID: "pointer.relative",
+            role: .relativePointer,
+            mmioSlot: 31
+        )
         #expect(throws: DoryVMContractError.roleSlotMismatch(role: .graphics, slot: 2)) {
             try DoryARMVirtV1DeviceSlot(logicalID: "graphics.primary", role: .graphics, mmioSlot: 2)
         }
@@ -190,8 +195,8 @@ import Testing
             try DoryARMVirtV1Topology(occupiedSlots: storage)
         }
 
-        let repeated = Array(repeating: graphics, count: 32)
-        #expect(throws: DoryVMContractError.tooManyDevices(actual: 32, maximum: 31)) {
+        let repeated = Array(repeating: graphics, count: 33)
+        #expect(throws: DoryVMContractError.tooManyDevices(actual: 33, maximum: 32)) {
             try DoryARMVirtV1Topology(occupiedSlots: repeated)
         }
     }

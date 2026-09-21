@@ -1339,6 +1339,7 @@ enum DesktopMode {
         private let rendererRuntimeFailureLatch: DesktopRendererRuntimeFailureLatch?
         private let keyboardInput: VirtioInput
         private let pointerInput: VirtioInput
+        private let relativePointerInput: VirtioInput
         private let mailboxes: [DesktopFrameMailbox]
         private let displays: [DesktopDisplayView]
         private let windows: [NSWindow]
@@ -1516,6 +1517,7 @@ enum DesktopMode {
 
             self.keyboardInput = VirtioInput(profile: .keyboard)
             self.pointerInput = VirtioInput(profile: .absolutePointer)
+            self.relativePointerInput = VirtioInput(profile: .relativePointer)
             let rendererWorkerLaunch = resolvedGraphics.rendererWorkerLaunch
             var mailboxes = [DesktopFrameMailbox]()
             var cursorMailboxes = [DesktopCursorMailbox]()
@@ -1537,6 +1539,7 @@ enum DesktopMode {
                     frame: NSRect(origin: .zero, size: plan.windowSize),
                     keyboardInput: keyboardInput,
                     pointerInput: pointerInput,
+                    relativePointerInput: relativePointerInput,
                     guestBackingScaleFactor: CGFloat(plan.backingScaleFactor),
                     scanoutID: plan.scanoutID,
                     pointerTopology: pointerTopology
@@ -2044,6 +2047,11 @@ enum DesktopMode {
                             authorizedDevices: authorizedDevices,
                             backend: pointerInput
                         ))
+                        materialized.append(try Self.singletonMaterialization(
+                            role: .relativePointer,
+                            authorizedDevices: authorizedDevices,
+                            backend: relativePointerInput
+                        ))
                     }
                     if let sound {
                         materialized.append(try Self.singletonMaterialization(
@@ -2105,7 +2113,13 @@ enum DesktopMode {
                         return (assignment.mmioSlot, materializedBackend.backend)
                     }
                 } else {
-                    attachments = backends.enumerated().map { ($0.offset, $0.element) }
+                    var legacyAttachments = backends.enumerated().map {
+                        ($0.offset, $0.element)
+                    }
+                    if configuration.resolvedDevices?.pointer != false {
+                        legacyAttachments.append((31, relativePointerInput))
+                    }
+                    attachments = legacyAttachments
                 }
 
                 for attachment in attachments {
@@ -2851,6 +2865,7 @@ enum DesktopMode {
         }
 
         private func cleanup() {
+            for display in displays { display.releasePressedInput() }
             if machineExecutionState == .running {
                 machine.requestStop(.crash("AppKit run loop ended before guest execution"))
             }

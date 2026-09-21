@@ -1196,6 +1196,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             (.graphics, !devices.displays.isEmpty),
             (.keyboard, devices.keyboard),
             (.pointer, devices.pointer),
+            (.relativePointer, devices.pointer),
             (.audio, devices.audioInput || devices.audioOutput),
             // Disconnected means a link-down NIC, not removal of the guest-visible function.
             (.network, true),

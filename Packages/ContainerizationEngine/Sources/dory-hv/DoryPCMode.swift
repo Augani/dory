@@ -411,6 +411,7 @@ enum DoryPCMode {
         private let machineState: MachineState
         private let keyboardInput: DoryPCDesktopInputSink
         private let pointerInput: DoryPCDesktopInputSink
+        private let relativePointerInput: DoryPCDesktopInputSink
         private let displaySink: DoryPCSoftwareDisplaySink?
         private let gpuAccelerationAuthority: DoryPCVirGLRendererAuthority?
         private let rendererWorkerLaunchStore: DoryPCRendererLaunchStore<DesktopRendererWorkerLaunch>
@@ -674,6 +675,7 @@ enum DoryPCMode {
             let keyboardInput = DoryPCDesktopInputSink(device: machine.keyboardDevice)
             self.keyboardInput = keyboardInput
             pointerInput = DoryPCDesktopInputSink(device: machine.tabletDevice)
+            relativePointerInput = DoryPCDesktopInputSink(device: machine.pointerDevice)
             let agentBridge = GuestVsockSocketBridge(
                 socketPath: configuration.agentSocketPath,
                 guestPort: VsockPorts.agent,
@@ -812,6 +814,7 @@ enum DoryPCMode {
                     frame: NSRect(origin: .zero, size: size),
                     keyboardInput: keyboardInput,
                     pointerInput: pointerInput,
+                    relativePointerInput: relativePointerInput,
                     guestBackingScaleFactor: scale,
                     scanoutID: 0
                 )
@@ -942,6 +945,14 @@ enum DoryPCMode {
         func windowShouldClose(_ sender: NSWindow) -> Bool {
             requestGuestShutdown()
             return false
+        }
+
+        func windowDidResignKey(_ notification: Notification) {
+            mailbox?.view?.releasePressedInput()
+        }
+
+        func applicationDidResignActive(_ notification: Notification) {
+            mailbox?.view?.releasePressedInput()
         }
 
         func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -1324,6 +1335,7 @@ enum DoryPCMode {
             }
             keyboardInput.replaceDevice(replacement.keyboardDevice)
             pointerInput.replaceDevice(replacement.tabletDevice)
+            relativePointerInput.replaceDevice(replacement.pointerDevice)
             guard machineState.replace(replacement) else {
                 finish(nil)
                 return false
@@ -1387,6 +1399,7 @@ enum DoryPCMode {
         }
 
         private func cleanup() {
+            mailbox?.view?.releasePressedInput()
             machineState.requestStop()
             signalSources.forEach { $0.cancel() }
             signalSources.removeAll()

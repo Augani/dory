@@ -48,7 +48,7 @@ import DoryExecutionContracts
       #expect(slot.role == DoryARMVirtV1ABI.role(forSlot: slot.index))
     }
     #expect(DoryARMVirtV1ABI.virtioSlots[30].role == .usbController)
-    #expect(DoryARMVirtV1ABI.virtioSlots[31].role == .reserved)
+    #expect(DoryARMVirtV1ABI.virtioSlots[31].role == .relativePointer)
   }
 
   @Test func resourceAdmissionProtectsBootAndDAXWindows() throws {

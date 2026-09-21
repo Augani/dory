@@ -114,6 +114,7 @@ enum RawHVVirtualHardwareAttachmentPlan {
         }
         if resolvedDevices.pointer {
             requests.append(try canonicalFixedRequest(.pointer))
+            requests.append(try canonicalFixedRequest(.relativePointer))
         }
         if resolvedDevices.audioInput || resolvedDevices.audioOutput {
             requests.append(try canonicalFixedRequest(.audio))
@@ -142,7 +143,8 @@ enum RawHVVirtualHardwareAttachmentPlan {
         _ role: DoryVirtualDeviceRole
     ) throws -> DoryARMVirtV1DeviceRequest {
         switch role {
-        case .graphics, .entropy, .balloon, .vsock, .keyboard, .pointer, .audio:
+        case .graphics, .entropy, .balloon, .vsock, .keyboard, .pointer,
+             .relativePointer, .audio:
             return try DoryARMVirtV1DeviceRequest(
                 logicalID: "armvirt-\(role.rawValue)",
                 role: role

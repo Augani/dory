@@ -203,8 +203,10 @@ public struct VirtioInputPressedState: Sendable {
 /// classified as a keyboard by desktop input stacks, leaving its absolute position disconnected
 /// from pointer hit-testing. Production desktop VMs therefore attach one `.keyboard` endpoint and
 /// one `.absolutePointer` endpoint, matching the device boundary used by QEMU's virtio keyboard and
-/// tablet implementations. `.combinedCompatibility` remains available only for existing callers
-/// that need the historical wire shape.
+/// tablet implementations. Captured desktop input is exposed through a third `.relativePointer`
+/// endpoint so Linux sees a conventional mouse with relative X/Y axes instead of a tablet that
+/// happens to advertise wheel events. `.combinedCompatibility` remains available only for
+/// existing callers that need the historical wire shape.
 ///
 /// Host input is submitted as whole evdev frames ending in SYN_REPORT; a frame waits until the
 /// guest has posted enough receive buffers, so Dory never delivers half of a pointer update.
@@ -212,6 +214,7 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
     public enum Profile: Sendable, Equatable {
         case keyboard
         case absolutePointer
+        case relativePointer
         case combinedCompatibility
     }
 
@@ -384,7 +387,8 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         case ConfigSelect.eventBits:
             payload = eventBitmap(type: subselect)
         case ConfigSelect.absoluteInfo
-            where profile != .keyboard && (subselect == 0 || subselect == 1):
+            where (profile == .absolutePointer || profile == .combinedCompatibility)
+                && (subselect == 0 || subselect == 1):
             payload.appendLE(UInt32(0))
             payload.appendLE(UInt32(32_767))
             payload.appendLE(UInt32(0))
@@ -563,6 +567,8 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
                     supportsCode = (1...255).contains(event.code)
                 case .absolutePointer:
                     supportsCode = (272...276).contains(event.code)
+                case .relativePointer:
+                    supportsCode = (272...276).contains(event.code)
                 case .combinedCompatibility:
                     supportsCode = (1...255).contains(event.code)
                         || (272...276).contains(event.code)
@@ -570,9 +576,15 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
                 return supportsCode && (0...2).contains(event.value)
             case UInt16(EventType.relative):
                 guard profile != .keyboard else { return false }
-                return [UInt16(6), 8, 11, 12].contains(event.code)
+                let supportedCodes: [UInt16]
+                if profile == .relativePointer {
+                    supportedCodes = [0, 1, 6, 8, 11, 12]
+                } else {
+                    supportedCodes = [6, 8, 11, 12]
+                }
+                return supportedCodes.contains(event.code)
             case UInt16(EventType.absolute):
-                return profile != .keyboard
+                return (profile == .absolutePointer || profile == .combinedCompatibility)
                     && (event.code == 0 || event.code == 1)
                     && (0...32_767).contains(event.value)
             default:
@@ -1067,7 +1079,7 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
     }
 
     private func isSupportedStatusEvent(_ event: VirtioInputEvent) -> Bool {
-        profile != .absolutePointer
+        (profile == .keyboard || profile == .combinedCompatibility)
             && event.type == UInt16(EventType.led)
             && (0...2).contains(event.code)
             && (0...1).contains(event.value)
@@ -1114,6 +1126,8 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
                 return bitmap(codes: Array(1...255))
             case .absolutePointer:
                 return bitmap(codes: Array(272...276))
+            case .relativePointer:
+                return bitmap(codes: Array(272...276))
             case .combinedCompatibility:
                 return bitmap(codes: Array(1...255) + Array(272...276))
             }
@@ -1125,13 +1139,17 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
                 // Dory emits both discrete and high-resolution wheel events in each axis. The
                 // capability bitmap must describe the stream Linux actually receives.
                 return bitmap(codes: [6, 8, 11, 12])
+            case .relativePointer:
+                return bitmap(codes: [0, 1, 6, 8, 11, 12])
             case .combinedCompatibility:
                 return bitmap(codes: [6, 8, 11, 12])
             }
         case EventType.absolute:
-            return profile == .keyboard ? [] : bitmap(codes: [0, 1])
+            return profile == .absolutePointer || profile == .combinedCompatibility
+                ? bitmap(codes: [0, 1]) : []
         case EventType.led:
-            return profile == .absolutePointer ? [] : bitmap(codes: [0, 1, 2])
+            return profile == .keyboard || profile == .combinedCompatibility
+                ? bitmap(codes: [0, 1, 2]) : []
         default:
             return []
         }
@@ -1141,6 +1159,7 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         switch profile {
         case .keyboard: "Dory Virtio Keyboard"
         case .absolutePointer: "Dory Virtio Tablet"
+        case .relativePointer: "Dory Virtio Mouse"
         case .combinedCompatibility: "Dory keyboard and pointer"
         }
     }
@@ -1149,6 +1168,7 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         switch profile {
         case .keyboard: "dory-keyboard-0"
         case .absolutePointer: "dory-tablet-0"
+        case .relativePointer: "dory-mouse-0"
         case .combinedCompatibility: "dory-input-0"
         }
     }
@@ -1157,6 +1177,7 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         switch profile {
         case .keyboard: 0x0001
         case .absolutePointer: 0x0003
+        case .relativePointer: 0x0002
         case .combinedCompatibility: 0x0001
         }
     }

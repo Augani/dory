@@ -227,7 +227,42 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         #expect(topology.occupiedSlots.contains { $0.role == .graphics } == false)
         #expect(topology.occupiedSlots.contains { $0.role == .keyboard } == false)
         #expect(topology.occupiedSlots.contains { $0.role == .pointer } == false)
+        #expect(topology.occupiedSlots.contains { $0.role == .relativePointer } == false)
         #expect(topology.occupiedSlots.contains { $0.role == .audio } == false)
+        try DoryARMVirtV1TopologyPlanner.validate(
+            topology,
+            definition: definition,
+            resolvedDevices: devices
+        )
+    }
+
+    @Test("DoryARMVirt pointer authority includes tablet and relative mouse endpoints")
+    func armVirtPointerTopology() throws {
+        let fixture = try Fixture()
+        var definition = fixture.definition
+        definition.input.pointerEnabled = true
+        let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+
+        let topology = try DoryARMVirtV1TopologyPlanner.resolve(
+            definition: definition,
+            resolvedDevices: devices
+        )
+
+        #expect(topology.occupiedSlots.contains {
+            $0.role == .pointer && $0.mmioSlot == 6
+        })
+        #expect(topology.occupiedSlots.contains {
+            $0.role == .relativePointer && $0.mmioSlot == 31
+        })
+        let preCaptureTopology = try DoryARMVirtV1Topology(
+            occupiedSlots: topology.occupiedSlots.filter { $0.role != .relativePointer }
+        )
+        let reconciled = try DoryARMVirtV1TopologyPlanner.resolve(
+            definition: definition,
+            resolvedDevices: devices,
+            previousTopology: preCaptureTopology
+        )
+        #expect(reconciled == topology)
         try DoryARMVirtV1TopologyPlanner.validate(
             topology,
             definition: definition,

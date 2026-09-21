@@ -4536,6 +4536,38 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer, @unchecked Sendabl
         #expect(config.leUInt32(at: 24) == 0)    // unspecified physical resolution
     }
 
+    @Test func relativePointerAdvertisesMouseCapabilitiesWithoutAbsoluteAxes() {
+        let pointer = VirtioInput(profile: .relativePointer)
+
+        pointer.writeConfig(offset: 0, value: 0x01, width: 1) // name
+        var config = pointer.configSpace
+        #expect(String(bytes: config[8..<(8 + Int(config[2]))], encoding: .utf8)
+            == "Dory Virtio Mouse")
+
+        pointer.writeConfig(offset: 0, value: 0x03, width: 1) // device IDs
+        pointer.writeConfig(offset: 1, value: 0, width: 1)
+        config = pointer.configSpace
+        #expect(config.leUInt16(at: 12) == 0x0002)
+
+        pointer.writeConfig(offset: 0, value: 0x11, width: 1)
+        pointer.writeConfig(offset: 1, value: 1, width: 1) // EV_KEY
+        config = pointer.configSpace
+        #expect(config[8 + 34] & 0b1_1111 == 0b1_1111) // BTN_LEFT through BTN_EXTRA
+        #expect(config[8 + 3] & (1 << 6) == 0)          // no KEY_A
+
+        pointer.writeConfig(offset: 1, value: 2, width: 1) // EV_REL
+        config = pointer.configSpace
+        #expect(config[8] & 0b0100_0011 == 0b0100_0011) // X, Y, HWHEEL
+        #expect(config[9] & 0b0001_1001 == 0b0001_1001) // WHEEL + hi-res axes
+
+        pointer.writeConfig(offset: 1, value: 3, width: 1) // EV_ABS
+        #expect(pointer.configSpace[2] == 0)
+
+        pointer.writeConfig(offset: 0, value: 0x12, width: 1) // ABS_INFO
+        pointer.writeConfig(offset: 1, value: 0, width: 1)
+        #expect(pointer.configSpace[2] == 0)
+    }
+
     @Test func preservesHostScrollDirectionAtTheLinuxEvdevBoundary() {
         var scroll = VirtioInputScrollAccumulator()
         let events = scroll.events(
@@ -4676,6 +4708,53 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer, @unchecked Sendabl
         #expect(try memory.read(UInt32.self, at: eventBuffers + 4) == 9_000)
         #expect(try memory.read(UInt16.self, at: eventBuffers + 8) == 3)
         #expect(try memory.read(UInt32.self, at: eventBuffers + 12) == 10_000)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 16) == 1)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 18) == 272)
+        #expect(try memory.read(UInt32.self, at: eventBuffers + 20) == 1)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 24) == 0)
+    }
+
+    @Test func relativePointerMotionAndButtonPublishInOneAtomicFrame() throws {
+        let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
+        let input = VirtioInput(profile: .relativePointer)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: input,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descriptorTable,
+            availRing: availableRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+        input.deviceReady(transport: transport)
+
+        for index in 0..<4 {
+            let descriptor = descriptorTable + UInt64(index) * 16
+            try memory.write(eventBuffers + UInt64(index) * 8, at: descriptor)
+            try memory.write(UInt32(8), at: descriptor + 8)
+            try memory.write(UInt16(2), at: descriptor + 12)
+            try memory.write(UInt16(0), at: descriptor + 14)
+            try memory.write(UInt16(index), at: availableRing + 4 + UInt64(index) * 2)
+        }
+        try memory.write(UInt16(0), at: availableRing)
+        try memory.write(UInt16(4), at: availableRing + 2)
+
+        input.send(frame: [
+            VirtioInputEvent(type: 2, code: 0, value: 17),
+            VirtioInputEvent(type: 2, code: 1, value: -9),
+            VirtioInputEvent(type: 1, code: 272, value: 1),
+        ])
+
+        #expect(waitUntil { (try? memory.read(UInt16.self, at: usedRing + 2)) == 4 })
+        #expect(try memory.read(UInt16.self, at: eventBuffers) == 2)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 2) == 0)
+        #expect(try memory.read(UInt32.self, at: eventBuffers + 4) == UInt32(bitPattern: 17))
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 8) == 2)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 10) == 1)
+        #expect(try memory.read(UInt32.self, at: eventBuffers + 12) == UInt32(bitPattern: -9))
         #expect(try memory.read(UInt16.self, at: eventBuffers + 16) == 1)
         #expect(try memory.read(UInt16.self, at: eventBuffers + 18) == 272)
         #expect(try memory.read(UInt32.self, at: eventBuffers + 20) == 1)

@@ -68,7 +68,7 @@ func resolvedARMVirtTestTopology(
     var roles: [DoryVirtualDeviceRole] = [.systemDisk, .entropy, .balloon, .vsock, .network]
     if !devices.displays.isEmpty { roles.append(.graphics) }
     if devices.keyboard { roles.append(.keyboard) }
-    if devices.pointer { roles.append(.pointer) }
+    if devices.pointer { roles.append(contentsOf: [.pointer, .relativePointer]) }
     if devices.audioInput || devices.audioOutput { roles.append(.audio) }
     var slots = roles.map { role in
         try! DoryARMVirtV1DeviceSlot(

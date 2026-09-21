@@ -1173,6 +1173,78 @@ struct DesktopScrollEventState: Sendable {
     }
 }
 
+enum DesktopPointerCaptureModifierTransition: Equatable, Sendable {
+    case forward
+    case release
+    case consume
+}
+
+/// Pure capture-state authority. AppKit side effects stay in `DesktopDisplayView`, while this
+/// state machine makes the click-in / Control-Command release contract deterministic and testable.
+struct DesktopPointerCaptureState: Equatable, Sendable {
+    private(set) var isCaptured = false
+    private(set) var acceptsAbsoluteInput = true
+    private var consumesReleaseChord = false
+
+    mutating func capture() -> Bool {
+        guard !isCaptured else { return false }
+        isCaptured = true
+        acceptsAbsoluteInput = false
+        consumesReleaseChord = false
+        return true
+    }
+
+    mutating func cancel() -> Bool {
+        let wasCaptured = isCaptured
+        isCaptured = false
+        consumesReleaseChord = false
+        return wasCaptured
+    }
+
+    mutating func modifierTransition(
+        command: Bool,
+        control: Bool
+    ) -> DesktopPointerCaptureModifierTransition {
+        if isCaptured, command, control {
+            isCaptured = false
+            consumesReleaseChord = true
+            return .release
+        }
+        if consumesReleaseChord {
+            if !command && !control { consumesReleaseChord = false }
+            return .consume
+        }
+        return .forward
+    }
+}
+
+enum DesktopRelativePointerFrame {
+    static func events(
+        deltaX: Double,
+        deltaY: Double,
+        button: UInt16? = nil,
+        pressed: Bool = false
+    ) -> [VirtioInputEvent] {
+        var events = [VirtioInputEvent]()
+        let x = clampedDelta(deltaX)
+        // AppKit's window coordinate system grows upward; Linux REL_Y grows downward.
+        let y = clampedDelta(-deltaY)
+        if x != 0 { events.append(.init(type: 2, code: 0, value: x)) }
+        if y != 0 { events.append(.init(type: 2, code: 1, value: y)) }
+        if let button {
+            events.append(.init(type: 1, code: button, value: pressed ? 1 : 0))
+        }
+        return events
+    }
+
+    private static func clampedDelta(_ value: Double) -> Int32 {
+        guard value.isFinite else { return 0 }
+        if value >= Double(Int32.max) { return .max }
+        if value <= Double(Int32.min) { return .min }
+        return Int32(value.rounded())
+    }
+}
+
 /// One AppKit surface owns keyboard, pointer, cursor, resize, and scanout geometry semantics for
 /// the qualified Metal display. Presentation subclasses implement only their resource boundary;
 /// they cannot silently substitute another renderer when their own validation or device fails.
@@ -1180,6 +1252,7 @@ struct DesktopScrollEventState: Sendable {
 class DesktopDisplayView: NSView {
     private let keyboardInput: any DesktopInputSink
     private let pointerInput: any DesktopInputSink
+    private let relativePointerInput: any DesktopInputSink
     private let guestBackingScaleFactor: CGFloat
     let scanoutID: UInt32
     private let pointerTopology: DesktopPointerTopology?
@@ -1190,7 +1263,9 @@ class DesktopDisplayView: NSView {
     private var scrollEventState = DesktopScrollEventState()
     private var pressedKeyboardInput = VirtioInputPressedState()
     private var pressedPointerInput = VirtioInputPressedState()
+    private var pressedRelativePointerInput = VirtioInputPressedState()
     private var keyboardModifierState = DesktopKeyboardModifierState()
+    private var pointerCaptureState = DesktopPointerCaptureState()
     private var resizeGeneration: UInt64 = 0
     var onDrawableSizeChange: ((UInt32, UInt32, UInt16, UInt16) -> Void)?
     var onMacShortcut: ((NSEvent) -> Bool)?
@@ -1199,12 +1274,14 @@ class DesktopDisplayView: NSView {
         frame: NSRect,
         keyboardInput: any DesktopInputSink,
         pointerInput: any DesktopInputSink,
+        relativePointerInput: any DesktopInputSink,
         guestBackingScaleFactor: CGFloat,
         scanoutID: UInt32,
         pointerTopology: DesktopPointerTopology?
     ) {
         self.keyboardInput = keyboardInput
         self.pointerInput = pointerInput
+        self.relativePointerInput = relativePointerInput
         self.guestBackingScaleFactor = guestBackingScaleFactor
         self.scanoutID = scanoutID
         self.pointerTopology = pointerTopology
@@ -1421,6 +1498,19 @@ class DesktopDisplayView: NSView {
     }
 
     override func flagsChanged(with event: NSEvent) {
+        switch pointerCaptureState.modifierTransition(
+            command: event.modifierFlags.contains(.command),
+            control: event.modifierFlags.contains(.control)
+        ) {
+        case .release:
+            releaseTrackedInput()
+            restoreHostPointerAfterCapture()
+            return
+        case .consume:
+            return
+        case .forward:
+            break
+        }
         guard let code = Self.linuxKeyCode(macKeyCode: event.keyCode),
               let modifier = Self.modifier(macKeyCode: event.keyCode),
               let flag = Self.modifierFlag(modifier) else {
@@ -1468,7 +1558,13 @@ class DesktopDisplayView: NSView {
             verticalDelta: event.scrollingDeltaY,
             hasPreciseDeltas: event.hasPreciseScrollingDeltas
         )
-        if !events.isEmpty { sendPointerTracked(events) }
+        if !events.isEmpty {
+            if pointerCaptureState.isCaptured {
+                sendRelativePointerTracked(events)
+            } else if pointerCaptureState.acceptsAbsoluteInput {
+                sendPointerTracked(events)
+            }
+        }
     }
 
     private func sendPointer(
@@ -1477,6 +1573,23 @@ class DesktopDisplayView: NSView {
         pressed: Bool = false
     ) {
         window?.makeFirstResponder(self)
+        if button != nil, !pointerCaptureState.isCaptured {
+            enterPointerCapture()
+        }
+        if pointerCaptureState.isCaptured {
+            let frame = DesktopRelativePointerFrame.events(
+                deltaX: event.deltaX,
+                deltaY: event.deltaY,
+                button: button,
+                pressed: pressed
+            )
+            if !frame.isEmpty { sendRelativePointerTracked(frame) }
+            return
+        }
+        // Once capture has been released, host motion belongs exclusively to macOS until the
+        // next click-in. Publishing tablet coordinates here would teleport the guest pointer from
+        // its relative-mode position back to the frozen host cursor.
+        guard pointerCaptureState.acceptsAbsoluteInput else { return }
         let point = convert(event.locationInWindow, from: nil)
         let contentRect = scanoutContentRect(in: bounds.size)
         let normalizedX = min(1, max(0, (point.x - contentRect.minX) / max(1, contentRect.width)))
@@ -1497,12 +1610,36 @@ class DesktopDisplayView: NSView {
     }
 
     func releasePressedInput() {
+        if pointerCaptureState.cancel() { restoreHostPointerAfterCapture() }
+        releaseTrackedInput()
+    }
+
+    private func releaseTrackedInput() {
         let keyboardReleases = pressedKeyboardInput.releaseFrame()
         let pointerReleases = pressedPointerInput.releaseFrame()
+        let relativePointerReleases = pressedRelativePointerInput.releaseFrame()
         keyboardModifierState.reset()
         scrollEventState.reset()
         if !keyboardReleases.isEmpty { keyboardInput.send(frame: keyboardReleases) }
         if !pointerReleases.isEmpty { pointerInput.send(frame: pointerReleases) }
+        if !relativePointerReleases.isEmpty {
+            relativePointerInput.send(frame: relativePointerReleases)
+        }
+    }
+
+    private func enterPointerCapture() {
+        guard !pointerCaptureState.isCaptured,
+              CGAssociateMouseAndMouseCursorPosition(0) == .success else { return }
+        guard pointerCaptureState.capture() else {
+            _ = CGAssociateMouseAndMouseCursorPosition(1)
+            return
+        }
+        NSCursor.hide()
+    }
+
+    private func restoreHostPointerAfterCapture() {
+        _ = CGAssociateMouseAndMouseCursorPosition(1)
+        NSCursor.unhide()
     }
 
     private func sendKeyboardTracked(_ events: [VirtioInputEvent]) {
@@ -1513,6 +1650,11 @@ class DesktopDisplayView: NSView {
     private func sendPointerTracked(_ events: [VirtioInputEvent]) {
         for event in events { pressedPointerInput.record(event) }
         pointerInput.send(frame: events)
+    }
+
+    private func sendRelativePointerTracked(_ events: [VirtioInputEvent]) {
+        for event in events { pressedRelativePointerInput.record(event) }
+        relativePointerInput.send(frame: events)
     }
 
     func scanoutContentRect(in targetSize: CGSize) -> CGRect {
@@ -2423,6 +2565,7 @@ final class DesktopMetalView: DesktopDisplayView {
         frame: NSRect,
         keyboardInput: any DesktopInputSink,
         pointerInput: any DesktopInputSink,
+        relativePointerInput: any DesktopInputSink,
         guestBackingScaleFactor: CGFloat = 2,
         scanoutID: UInt32 = 0,
         pointerTopology: DesktopPointerTopology? = nil,
@@ -2471,6 +2614,7 @@ final class DesktopMetalView: DesktopDisplayView {
             frame: frame,
             keyboardInput: keyboardInput,
             pointerInput: pointerInput,
+            relativePointerInput: relativePointerInput,
             guestBackingScaleFactor: guestBackingScaleFactor,
             scanoutID: scanoutID,
             pointerTopology: pointerTopology

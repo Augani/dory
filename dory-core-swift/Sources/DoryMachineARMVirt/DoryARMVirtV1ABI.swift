@@ -36,6 +36,7 @@ public enum DoryARMVirtV1DeviceRole: String, Codable, CaseIterable, Sendable, Ha
   case vsock
   case keyboard
   case pointer
+  case relativePointer = "relative-pointer"
   case audio
   case network
   case auxiliaryStorage = "auxiliary-storage"
@@ -211,6 +212,7 @@ public enum DoryARMVirtV1ABI {
     case 12...19: .auxiliaryStorage
     case 20...29: .directoryShare
     case 30: .usbController
+    case 31: .relativePointer
     default: .reserved
     }
   }
@@ -345,7 +347,7 @@ public enum DoryARMVirtV1ABI {
     | 12...19 | auxiliary/removable storage |
     | 20...29 | directory sharing |
     | 30 | USB controller |
-    | 31 | reserved; never allocatable in ABI v1 |
+    | 31 | relative pointer |
 
     VirtIO MMIO is the compatibility transport. PCIe ECAM/MMIO, firmware flash, persistent variables, and power/reset addresses are frozen reservations in v1; exposing a device in one of those regions must preserve this map and the separately versioned firmware and device ABIs.
     """

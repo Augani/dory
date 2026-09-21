@@ -574,6 +574,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
               count(.vsock) == 1,
               count(.keyboard) == (devices.keyboard ? 1 : 0),
               count(.pointer) == (devices.pointer ? 1 : 0),
+              count(.relativePointer) == (devices.pointer ? 1 : 0),
               count(.audio) == (devices.audioInput || devices.audioOutput ? 1 : 0),
               count(.network) == 1,
               devices.directorySharing == (count(.directoryShare) > 0),
@@ -583,7 +584,8 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             throw RuntimeLaunchEnvelopeError.invalidVirtualHardwareTopology
         }
         let fixedRoles: [DoryVirtualDeviceRole] = [
-            .graphics, .entropy, .balloon, .vsock, .keyboard, .pointer, .audio,
+            .graphics, .entropy, .balloon, .vsock, .keyboard, .pointer,
+            .relativePointer, .audio,
         ]
         guard fixedRoles.allSatisfy({ role in
             let matches = armVirtTopology.occupiedSlots.filter {
@@ -779,6 +781,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
               count(.vsock) == 1,
               count(.keyboard) == (devices.keyboard ? 1 : 0),
               count(.pointer) == (devices.pointer ? 1 : 0),
+              count(.relativePointer) == (devices.pointer ? 1 : 0),
               count(.audio) == (devices.audioInput || devices.audioOutput ? 1 : 0),
               count(.network) == 1,
               devices.directorySharing == (count(.directoryShare) > 0),
@@ -788,7 +791,8 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             throw RuntimeLaunchEnvelopeError.invalidVirtualHardwareTopology
         }
         let fixedRoles: [DoryVirtualDeviceRole] = [
-            .graphics, .entropy, .balloon, .vsock, .keyboard, .pointer, .audio,
+            .graphics, .entropy, .balloon, .vsock, .keyboard, .pointer,
+            .relativePointer, .audio,
         ]
         guard fixedRoles.allSatisfy({ role in
             let matches = armVirtTopology.occupiedSlots.filter { $0.role == role }

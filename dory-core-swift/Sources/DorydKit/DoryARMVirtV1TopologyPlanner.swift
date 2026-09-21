@@ -121,7 +121,10 @@ public enum DoryARMVirtV1TopologyPlanner {
             requests.append(try fixedRequest(.graphics))
         }
         if resolvedDevices.keyboard { requests.append(try fixedRequest(.keyboard)) }
-        if resolvedDevices.pointer { requests.append(try fixedRequest(.pointer)) }
+        if resolvedDevices.pointer {
+            requests.append(try fixedRequest(.pointer))
+            requests.append(try fixedRequest(.relativePointer))
+        }
         if resolvedDevices.audioInput || resolvedDevices.audioOutput {
             requests.append(try fixedRequest(.audio))
         }

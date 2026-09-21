@@ -11,6 +11,7 @@ public enum DoryVirtualDeviceRole: String, CaseIterable, Codable, Sendable, Hash
     case vsock
     case keyboard
     case pointer
+    case relativePointer = "relative-pointer"
     case audio
     case network
     case auxiliaryBlock = "auxiliary-block"
@@ -169,12 +170,11 @@ public struct DoryVirtualDeviceID: Codable, Sendable, Hashable, Comparable, Cust
     }
 }
 
-/// The complete DoryARMVirt-v1 slot policy. Slot 31 is intentionally absent from every role
-/// range so it remains a hard reservation rather than an accidentally allocatable future device.
+/// The complete DoryARMVirt-v1 slot policy. Slot 31 is the additive relative-pointer function;
+/// existing device addresses remain unchanged when desktop capture support is enabled.
 public enum DoryARMVirtV1SlotPolicy {
     public static let slotCount = 32
-    public static let maximumOccupiedSlots = 31
-    public static let reservedSlot = 31
+    public static let maximumOccupiedSlots = 32
     public static let maximumNetworkFunctions = 4
     public static let maximumAuxiliaryStorageDevices = 8
     public static let maximumDirectoryShares = 10
@@ -188,6 +188,7 @@ public enum DoryARMVirtV1SlotPolicy {
         case .vsock: 4...4
         case .keyboard: 5...5
         case .pointer: 6...6
+        case .relativePointer: 31...31
         case .audio: 7...7
         case .network: 8...11
         case .auxiliaryBlock, .removableStorage: 12...19
@@ -209,9 +210,6 @@ public enum DoryARMVirtV1SlotPolicy {
     public static func validate(role: DoryVirtualDeviceRole, slot: Int) throws {
         guard (0..<slotCount).contains(slot) else {
             throw DoryVMContractError.mmioSlotOutOfRange(slot)
-        }
-        guard slot != reservedSlot else {
-            throw DoryVMContractError.reservedMMIOSlot(slot)
         }
         guard allowedSlots(for: role).contains(slot) else {
             throw DoryVMContractError.roleSlotMismatch(role: role, slot: slot)
@@ -433,6 +431,7 @@ private extension DoryVirtualDeviceRole {
         case .removableStorage: 11
         case .directoryShare: 12
         case .usbController: 13
+        case .relativePointer: 14
         }
     }
 }
