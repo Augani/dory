@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload || true
+fi
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm control --reload-rules || true
+fi
+if [ "$1" = purge ]; then
+  rm -f /var/lib/dory/username
+  rmdir /var/lib/dory 2>/dev/null || true
+fi
+
+#DEBHELPER#

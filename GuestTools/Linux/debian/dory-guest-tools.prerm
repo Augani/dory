@@ -2,7 +2,22 @@
 set -e
 
 if [ "$1" = remove ] && command -v systemctl >/dev/null 2>&1; then
+  user="$(cat /var/lib/dory/username 2>/dev/null || true)"
+  if [ -n "$user" ] && id "$user" >/dev/null 2>&1; then
+    uid="$(id -u "$user")"
+    runtime="/run/user/$uid"
+    if [ -S "$runtime/bus" ]; then
+      runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+        systemctl --user stop dory-clipboard.service || true
+    fi
+  fi
   systemctl disable --now dory-agent.service || true
+  systemctl --global disable dory-clipboard.service || true
+fi
+
+if [ "$1" = remove ] && command -v udevadm >/dev/null 2>&1; then
+  udevadm control --reload-rules || true
 fi
 
 #DEBHELPER#

@@ -23,8 +23,16 @@ install -Dm755 %{_sourcedir}/dory-core/target/release/dory-agent \
   %{buildroot}/usr/lib/dory/dory-agent
 install -Dm755 %{_sourcedir}/GuestTools/Linux/payload/usr/lib/dory/clipboard \
   %{buildroot}/usr/lib/dory/clipboard
+install -Dm755 %{_sourcedir}/GuestTools/Linux/payload/usr/lib/dory/clipboard-session \
+  %{buildroot}/usr/lib/dory/clipboard-session
+install -Dm755 %{_sourcedir}/GuestTools/Linux/payload/usr/lib/dory/display-resize \
+  %{buildroot}/usr/lib/dory/display-resize
 install -Dm644 %{_sourcedir}/GuestTools/Linux/payload/usr/lib/systemd/system/dory-agent.service \
   %{buildroot}%{_unitdir}/dory-agent.service
+install -Dm644 %{_sourcedir}/GuestTools/Linux/payload/usr/lib/systemd/user/dory-clipboard.service \
+  %{buildroot}%{_userunitdir}/dory-clipboard.service
+install -Dm644 %{_sourcedir}/GuestTools/Linux/payload/usr/lib/udev/rules.d/90-dory-display-resize.rules \
+  %{buildroot}%{_udevrulesdir}/90-dory-display-resize.rules
 install -Dm644 %{_sourcedir}/GuestTools/Linux/payload/usr/lib/tmpfiles.d/dory-guest-tools.conf \
   %{buildroot}%{_tmpfilesdir}/dory-guest-tools.conf
 install -Dm644 %{_sourcedir}/LICENSE \
@@ -42,19 +50,32 @@ if [ ! -s /var/lib/dory/username ]; then
   fi
 fi
 %systemd_post dory-agent.service
+%systemd_user_post dory-clipboard.service
+/usr/bin/udevadm control --reload-rules >/dev/null 2>&1 || :
 
 %preun
 %systemd_preun dory-agent.service
+%systemd_user_preun dory-clipboard.service
 
 %postun
 %systemd_postun_with_restart dory-agent.service
+%systemd_user_postun_with_restart dory-clipboard.service
+/usr/bin/udevadm control --reload-rules >/dev/null 2>&1 || :
+if [ "$1" -eq 0 ]; then
+  rm -f /var/lib/dory/username
+  rmdir /var/lib/dory >/dev/null 2>&1 || :
+fi
 
 %files
 %license %{_licensedir}/dory-guest-tools/GPL-3.0.txt
 %license %{_licensedir}/dory-guest-tools/MIT.txt
 /usr/lib/dory/dory-agent
 /usr/lib/dory/clipboard
+/usr/lib/dory/clipboard-session
+/usr/lib/dory/display-resize
 %{_unitdir}/dory-agent.service
+%{_userunitdir}/dory-clipboard.service
+%{_udevrulesdir}/90-dory-display-resize.rules
 %{_tmpfilesdir}/dory-guest-tools.conf
 
 %changelog

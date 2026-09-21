@@ -1,0 +1,43 @@
+#!/bin/sh
+set -eu
+
+device="${1:-}"
+case "$device" in
+  card[0-9]*) ;;
+  *) echo "invalid DRM device" >&2; exit 64 ;;
+esac
+
+user="$(cat /var/lib/dory/username 2>/dev/null || true)"
+if [ -z "$user" ] || ! id "$user" >/dev/null 2>&1; then
+  exit 0
+fi
+uid="$(id -u "$user")"
+home="$(getent passwd "$user" | cut -d: -f6)"
+runtime="/run/user/$uid"
+marker="$runtime/dory/clipboard-session"
+[ -f "$marker" ] && [ ! -L "$marker" ] || exit 0
+[ "$(stat -c %u "$marker" 2>/dev/null || true)" = "$uid" ] || exit 0
+
+# GNOME and KDE Wayland compositors consume the kernel DRM hotplug directly. Leave mode selection
+# to the compositor that owns the connector; this hook exists for Xorg's explicit refresh below.
+for candidate in "$runtime"/wayland-*; do
+  [ -S "$candidate" ] && exit 0
+done
+
+# Xorg does not consistently apply a changed preferred mode on its own. Ask it to re-probe every
+# connected output; failure is non-fatal because the DRM event remains visible to the desktop.
+command -v xrandr >/dev/null 2>&1 || exit 0
+for socket in /tmp/.X11-unix/X*; do
+  [ -S "$socket" ] || continue
+  display=":${socket##*/X}"
+  xauthority="$home/.Xauthority"
+  if [ -f "$xauthority" ]; then
+    runuser -u "$user" -- env HOME="$home" USER="$user" LOGNAME="$user" \
+      DISPLAY="$display" XAUTHORITY="$xauthority" xrandr --auto >/dev/null 2>&1 || true
+  else
+    runuser -u "$user" -- env HOME="$home" USER="$user" LOGNAME="$user" \
+      DISPLAY="$display" xrandr --auto >/dev/null 2>&1 || true
+  fi
+  exit 0
+done
+exit 0

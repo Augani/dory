@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+uid="$(id -u)"
+runtime="${XDG_RUNTIME_DIR:-/run/user/$uid}"
+case "$runtime" in
+  "/run/user/$uid") ;;
+  *) echo "unexpected user runtime directory: $runtime" >&2; exit 78 ;;
+esac
+[ -d "$runtime" ] || { echo "user runtime directory is unavailable" >&2; exit 69; }
+
+directory="$runtime/dory"
+marker="$directory/clipboard-session"
+umask 077
+mkdir -p "$directory"
+temporary="$directory/.clipboard-session.$$"
+trap 'rm -f "$temporary" "$marker"' EXIT HUP INT TERM
+printf '%s\n' "$$" > "$temporary"
+mv -f "$temporary" "$marker"
+
+# The agent checks this marker before crossing into the desktop session. Keeping the process alive
+# binds clipboard authority to the lifetime of systemd's graphical user service.
+while :; do sleep 3600; done

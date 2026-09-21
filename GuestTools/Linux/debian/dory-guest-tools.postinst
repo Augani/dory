@@ -9,10 +9,24 @@ if [ ! -s /var/lib/dory/username ]; then
     chmod 0644 /var/lib/dory/username
   fi
 fi
+user="$(cat /var/lib/dory/username 2>/dev/null || true)"
 
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload || true
   systemctl enable --now dory-agent.service || true
+  systemctl --global enable dory-clipboard.service || true
+  if [ -n "${user:-}" ]; then
+    uid="$(id -u "$user")"
+    runtime="/run/user/$uid"
+    if [ -S "$runtime/bus" ]; then
+      runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+        systemctl --user start dory-clipboard.service || true
+    fi
+  fi
+fi
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm control --reload-rules || true
 fi
 
 #DEBHELPER#

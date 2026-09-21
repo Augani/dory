@@ -20,6 +20,11 @@ uid="$(id -u "$user")"
 home="$(getent passwd "$user" | cut -d: -f6)"
 runtime="/run/user/$uid"
 [ -d "$runtime" ] || { echo "Dory clipboard user session is not active" >&2; exit 69; }
+session_marker="$runtime/dory/clipboard-session"
+[ -f "$session_marker" ] && [ ! -L "$session_marker" ] \
+  || { echo "Dory clipboard user service is not active" >&2; exit 69; }
+[ "$(stat -c %u "$session_marker" 2>/dev/null || true)" = "$uid" ] \
+  || { echo "Dory clipboard session marker has the wrong owner" >&2; exit 69; }
 
 run_as_user() {
   runuser -u "$user" -- env \

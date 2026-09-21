@@ -11,7 +11,15 @@ override_dh_auto_install:
 		debian/dory-guest-tools/usr/lib/dory/dory-agent
 	install -Dm755 payload/usr/lib/dory/clipboard \
 		debian/dory-guest-tools/usr/lib/dory/clipboard
+	install -Dm755 payload/usr/lib/dory/clipboard-session \
+		debian/dory-guest-tools/usr/lib/dory/clipboard-session
+	install -Dm755 payload/usr/lib/dory/display-resize \
+		debian/dory-guest-tools/usr/lib/dory/display-resize
 	install -Dm644 payload/usr/lib/systemd/system/dory-agent.service \
 		debian/dory-guest-tools/usr/lib/systemd/system/dory-agent.service
+	install -Dm644 payload/usr/lib/systemd/user/dory-clipboard.service \
+		debian/dory-guest-tools/usr/lib/systemd/user/dory-clipboard.service
+	install -Dm644 payload/usr/lib/udev/rules.d/90-dory-display-resize.rules \
+		debian/dory-guest-tools/usr/lib/udev/rules.d/90-dory-display-resize.rules
 	install -Dm644 payload/usr/lib/tmpfiles.d/dory-guest-tools.conf \
 		debian/dory-guest-tools/usr/lib/tmpfiles.d/dory-guest-tools.conf

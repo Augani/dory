@@ -1,0 +1,16 @@
+[Unit]
+Description=Dory desktop clipboard session
+Documentation=https://github.com/Augani/dory
+PartOf=graphical-session.target
+After=graphical-session-pre.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/dory/clipboard-session
+Restart=on-failure
+RestartSec=1s
+RuntimeDirectory=dory
+RuntimeDirectoryMode=0700
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,3 @@
+# Virtio-GPU emits DRM HOTPLUG=1 changes when Dory changes a scanout. Wayland compositors consume
+# the event directly; this bounded hook refreshes Xorg.
+ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card[0-9]*", ENV{HOTPLUG}=="1", RUN+="/usr/lib/dory/display-resize %k"
