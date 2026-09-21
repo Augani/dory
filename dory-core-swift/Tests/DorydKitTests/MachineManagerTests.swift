@@ -6504,6 +6504,36 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(filtered, ["DORY_TEST_MARKER": "kept"])
     }
 
+    func testQualificationAcceleratedDesktopLaunchForcesCorrelatedGraphicsTrace() {
+        let environment = MachineManager.helperLaunchEnvironment(
+            [
+                DoryDesktopVMMPreference.environmentKey:
+                    DoryDesktopVMMPreference.accelerated.rawValue,
+                DoryDesktopGraphicsPreference.environmentKey:
+                    DoryDesktopGraphicsPreference.virglVenus.rawValue,
+                "DORY_GPU_TRACE_GRAPHICS": "0",
+                "DORY_TEST_MARKER": "kept",
+            ],
+            stripsLegacyDesktopLaunchAuthority: true,
+            enablesQualificationGraphicsTrace: true
+        )
+
+        XCTAssertEqual(environment, [
+            "DORY_GPU_TRACE_GRAPHICS": "1",
+            "DORY_TEST_MARKER": "kept",
+        ])
+    }
+
+    func testOrdinaryLaunchDoesNotEnableQualificationGraphicsTrace() {
+        let environment = MachineManager.helperLaunchEnvironment(
+            ["DORY_TEST_MARKER": "kept"],
+            stripsLegacyDesktopLaunchAuthority: false,
+            enablesQualificationGraphicsTrace: false
+        )
+
+        XCTAssertEqual(environment, ["DORY_TEST_MARKER": "kept"])
+    }
+
     func testInstalledEFIBootBundleLaunchesThroughAcceleratedGenericLinuxRuntime() throws {
         let base = "/tmp/dory-machine-installed-efi-accelerated-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let capture = base + "/arguments.txt"

@@ -16399,15 +16399,15 @@ public final class MachineManager: @unchecked Sendable {
         for share in machine.shares {
             arguments.append(contentsOf: ["--share", share.argumentValue])
         }
-        var launchEnvironment = machine.environment
-        if acceleratedDesktop || resolvedLaunchBinding != nil {
-            // A typed helper contract receives graphics exactly once: the immutable resolved
-            // envelope/binding or the bounded legacy migration argument above. Persisted keys are
-            // migration input only and cannot cross the helper boundary as a second authority.
-            launchEnvironment = Self.environmentWithoutLegacyDesktopLaunchAuthority(
-                launchEnvironment
-            )
-        }
+        let stripsLegacyDesktopLaunchAuthority = acceleratedDesktop
+            || resolvedLaunchBinding != nil
+        var launchEnvironment = Self.helperLaunchEnvironment(
+            machine.environment,
+            stripsLegacyDesktopLaunchAuthority: stripsLegacyDesktopLaunchAuthority,
+            enablesQualificationGraphicsTrace: allowsQualificationBootstrapLaunches
+                && acceleratedDesktop
+                && machine.displayMode == .desktop
+        )
         if let resolvedLaunchBinding {
             switch resolvedLaunchBinding.backend.identity {
             case .doryHypervisor:
@@ -16469,6 +16469,24 @@ public final class MachineManager: @unchecked Sendable {
         result.removeValue(
             forKey: DoryDesktopGraphicsPreference.legacyClassicOnlyEnvironmentKey
         )
+        return result
+    }
+
+    /// Candidate campaigns and explicit debug qualification launches must retain the correlated
+    /// renderer trace required by the displayed-pixel gate. This is launch-local diagnostic
+    /// instrumentation, not guest or graphics authority, and is never enabled for an ordinary
+    /// production launch.
+    static func helperLaunchEnvironment(
+        _ environment: [String: String],
+        stripsLegacyDesktopLaunchAuthority: Bool,
+        enablesQualificationGraphicsTrace: Bool
+    ) -> [String: String] {
+        var result = stripsLegacyDesktopLaunchAuthority
+            ? environmentWithoutLegacyDesktopLaunchAuthority(environment)
+            : environment
+        if enablesQualificationGraphicsTrace {
+            result["DORY_GPU_TRACE_GRAPHICS"] = "1"
+        }
         return result
     }
 
