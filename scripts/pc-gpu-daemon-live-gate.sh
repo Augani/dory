@@ -306,7 +306,7 @@ environment = {
 payload = {
     "Label": service,
     "ProgramArguments": [doryd],
-    "MachServices": {service: True},
+    "MachServices": {service: True, service + ".display": True},
     "EnvironmentVariables": environment,
     "RunAtLoad": True,
     "StandardOutPath": workdir + "/logs/doryd.out",
