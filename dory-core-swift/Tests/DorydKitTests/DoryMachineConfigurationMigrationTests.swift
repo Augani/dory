@@ -482,6 +482,71 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(try acceleratedFirmware.legacyConfiguration() == installed)
     }
 
+    @Test("ARM EFI installer back-projects an explicit strict acceleration edit")
+    func armEFIInstallerStrictAccelerationBackProjection() throws {
+        let legacy = DoryMachineConfiguration(
+            id: "arm-efi-installer-edit",
+            kernelPath: "/managed/arm-efi-installer-edit/kernel",
+            rootfsPath: "/managed/arm-efi-installer-edit/rootfs.ext4",
+            bootMode: .efi,
+            installerISOPath: "/managed/arm-efi-installer-edit/installer.iso",
+            diskSizeBytes: 80 * gibibyte,
+            displayMode: .desktop
+        )
+        var migrated = try migrate(legacy, capacity: 80 * gibibyte)
+        migrated.definition = try DoryMachineTypedSettingsPatch(
+            runtimePreference: .set(.accelerated),
+            graphicsPreference: .set(.virglVenus)
+        ).applying(to: migrated.definition, displayMode: .desktop)
+
+        let projected = try migrated.legacyConfiguration()
+        #expect(projected.environment[DoryDesktopGraphicsPreference.environmentKey]
+            == DoryDesktopGraphicsPreference.virglVenus.rawValue)
+        let repeated = try migrate(projected, capacity: 80 * gibibyte)
+        #expect(repeated.definition.graphics == migrated.definition.graphics)
+    }
+
+    @Test("ARM EFI firmware disk back-projects strict graphics edits losslessly")
+    func armEFIFirmwareStrictGraphicsBackProjection() throws {
+        var legacy = DoryMachineConfiguration(
+            id: "arm-efi-firmware-edit",
+            kernelPath: "/managed/arm-efi-firmware-edit/kernel",
+            rootfsPath: "/managed/arm-efi-firmware-edit/rootfs.ext4",
+            bootMode: .efi,
+            diskSizeBytes: 80 * gibibyte,
+            displayMode: .desktop
+        )
+        legacy.environment[DoryDesktopGraphicsPreference.environmentKey]
+            = DoryDesktopGraphicsPreference.virglVenus.rawValue
+        var migrated = try migrate(
+            legacy,
+            capacity: 80 * gibibyte,
+            installedEFI: .firmwareDisk
+        )
+        migrated.definition = try DoryMachineTypedSettingsPatch(
+            graphicsPreference: .set(.software)
+        ).applying(to: migrated.definition, displayMode: .desktop)
+
+        let projected = try migrated.legacyConfiguration()
+        #expect(projected.environment[DoryDesktopGraphicsPreference.environmentKey]
+            == DoryDesktopGraphicsPreference.software.rawValue)
+        let repeated = try migrate(
+            projected,
+            capacity: 80 * gibibyte,
+            installedEFI: .firmwareDisk
+        )
+        #expect(repeated.definition.graphics == migrated.definition.graphics)
+
+        migrated.definition = try DoryMachineTypedSettingsPatch(
+            graphicsPreference: .set(.virgl)
+        ).applying(to: migrated.definition, displayMode: .desktop)
+        #expect(throws: DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
+            "graphics"
+        )) {
+            try migrated.legacyConfiguration()
+        }
+    }
+
     @Test("installed EFI firmware and direct-boot bundle mappings remain distinct")
     func installedEFIMappings() throws {
         let legacy = DoryMachineConfiguration(

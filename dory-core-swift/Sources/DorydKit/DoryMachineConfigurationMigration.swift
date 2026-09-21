@@ -358,10 +358,16 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
 
     private func applyGraphicsPolicy(to environment: inout [String: String]) throws {
         guard definition.graphics != baselineDefinition.graphics else { return }
+        let isPortableARMEFI = definition.guest.architecture == .arm64
+            && (bootContract == .efiInstaller || bootContract == .efiFirmwareDisk)
+        let isLosslessPortableARMEFIPolicy = isPortableARMEFI
+            && (definition.graphics.acceptableLevels == [.hardwareAccelerated3D]
+                || definition.graphics.acceptableLevels == [.software])
         guard bootContract == .managedDirectKernel
                 || bootContract == .efiInstalledDirectBoot
                 || ((bootContract == .efiInstaller || bootContract == .efiFirmwareDisk)
-                    && definition.guest.architecture == .x86_64),
+                    && definition.guest.architecture == .x86_64)
+                || isLosslessPortableARMEFIPolicy,
               authoritativeLegacyConfiguration.displayMode == .desktop else {
             throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("graphics")
         }
