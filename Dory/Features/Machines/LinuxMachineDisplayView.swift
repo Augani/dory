@@ -1252,7 +1252,11 @@ final class LinuxMachineMetalView: NSView {
                 imported.frame.leasePayload
             ).yOriginTop) ?? true
         }
-        if !yOriginTop {
+        // Metal's viewport maps clip-space +Y to the top of the drawable, while the vertex table
+        // below assigns increasing V to clip-space +Y. Flip top-origin guest textures so their
+        // first row is sampled at the top of the window; bottom-origin textures already match the
+        // table's default mapping.
+        if yOriginTop {
             let top = uv.y
             uv.y = uv.w
             uv.w = top
