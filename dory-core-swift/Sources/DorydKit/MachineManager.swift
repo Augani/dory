@@ -66,7 +66,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
         logDirectory: String? = nil,
         requiresReadyHandoff: Bool = true,
         handoffReadyTimeoutSeconds: TimeInterval = 60,
-        desktopHandoffReadyTimeoutSeconds: TimeInterval = 180,
+        desktopHandoffReadyTimeoutSeconds: TimeInterval = 300,
         macOSRestoreHandoffReadyTimeoutSeconds: TimeInterval = 4 * 60 * 60,
         startupRestartPolicy: HvRestartPolicy = HvRestartPolicy(
             maxRestarts: 4,
