@@ -4,6 +4,7 @@ import DorydKit
 import DoryOperations
 import DoryMachinePC
 import DoryVMContracts
+import DoryVMDisplayWireContracts
 import Foundation
 
 signal(SIGPIPE, SIG_IGN)
@@ -411,6 +412,7 @@ case "desktop":
     var shares = [DoryMachineShareConfiguration]()
     var environment = [String: String]()
     var displayPresentation: DoryMachineDisplayPresentation = .windowed
+    var displayRelayServiceName: String?
     var rendererGenerationHandoffSocket: String?
     var rendererGenerationHandoffToken: String?
     var iterator = arguments.dropFirst().makeIterator()
@@ -507,6 +509,12 @@ case "desktop":
                 fail("desktop --display-presentation requires a valid host presentation contract")
             }
             displayPresentation = presentation.canonicalized
+        case "--display-relay-service":
+            guard let value = iterator.next(),
+                  DoryVMDisplayBrokerXPCInterface.isValidServiceName(value) else {
+                fail("desktop --display-relay-service requires a valid Mach service name")
+            }
+            displayRelayServiceName = value
         case "--display-mode":
             guard iterator.next() == "desktop" else { fail("raw-HV desktop requires --display-mode desktop") }
         case "--boot-mode":
@@ -564,6 +572,7 @@ case "desktop":
               !rootDeviceWasSpecified,
               !genericGuest,
               bootMode == nil,
+              displayRelayServiceName == nil,
               environment.isEmpty else {
             fail("DoryPC resolved launch rejects legacy ARM desktop arguments")
         }
@@ -807,6 +816,7 @@ case "desktop":
                 runtimeLaunchEnvelope?.armVirtTopology,
             resolvedSystemDiskLogicalID: resolvedSystemDiskLogicalID,
             displayPresentation: displayPresentation,
+            displayRelayServiceName: displayRelayServiceName,
             reconnectIdentity: reconnectIdentity!
         ))
     } catch {

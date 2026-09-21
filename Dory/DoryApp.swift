@@ -27,6 +27,7 @@ struct DoryApp: App {
             RootView()
                 .environment(store)
                 .modifier(LaunchWindowGate(store: store))
+                .modifier(LinuxMachineDisplayWindowBridge())
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 766)
@@ -42,11 +43,36 @@ struct DoryApp: App {
         }
         .defaultSize(width: 760, height: 480)
 
+        WindowGroup("Desktop", for: LinuxMachineDisplayWindow.self) { $display in
+            if let display {
+                LinuxMachineDisplayView(
+                    machineID: display.machineID,
+                    scanoutID: display.scanoutID
+                )
+                .background(Color.black)
+            }
+        }
+        .defaultSize(width: 960, height: 600)
+        .windowResizability(.contentMinSize)
+
         Settings {
             SettingsView()
                 .environment(store)
                 .environment(\.palette, store.palette)
                 .frame(width: 720, height: 560)
+        }
+    }
+}
+
+private struct LinuxMachineDisplayWindowBridge: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.onReceive(
+            NotificationCenter.default.publisher(for: .doryOpenLinuxMachineDisplay)
+        ) { notification in
+            guard let display = notification.object as? LinuxMachineDisplayWindow else { return }
+            openWindow(value: display)
         }
     }
 }

@@ -147,6 +147,10 @@ let package = Package(
                 .product(name: "DoryHostCamera", package: "dory-core-swift"),
                 .product(name: "DoryHostDeviceBroker", package: "dory-core-swift"),
                 .product(name: "DoryMachinePC", package: "dory-core-swift"),
+                .product(
+                    name: "DoryVMDisplayWireContracts",
+                    package: "dory-core-swift"
+                ),
                 .product(name: "DoryVMContracts", package: "dory-core-swift"),
                 .product(name: "DoryVMMKit", package: "dory-core-swift"),
                 .product(name: "DoryVirtio", package: "dory-core-swift"),
@@ -236,6 +240,10 @@ let package = Package(
                 .product(name: "DoryMachinePC", package: "dory-core-swift"),
                 .product(name: "DoryOperations", package: "dory-core-swift"),
                 .product(name: "DoryVirtio", package: "dory-core-swift"),
+                .product(
+                    name: "DoryVMDisplayWireContracts",
+                    package: "dory-core-swift"
+                ),
                 .product(name: "DoryVMContracts", package: "dory-core-swift"),
             ]
         ),

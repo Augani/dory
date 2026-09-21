@@ -2,6 +2,7 @@ import CryptoKit
 import Darwin
 import DoryCore
 import DoryOperations
+import DoryVMDisplayWireContracts
 import Foundation
 
 public enum DorydEnvironmentError: Error, Equatable, Sendable, CustomStringConvertible {
@@ -364,6 +365,9 @@ public struct DorydEnvironment: Sendable {
                 ?? home,
             baseArguments: baseArguments,
             acceleratedDesktopBaseArguments: acceleratedDesktop?.arguments ?? [],
+            displayRelayServiceName: (try? machServiceName()).map {
+                DoryVMDisplayBrokerXPCInterface.serviceName(controlServiceName: $0)
+            },
             passMachineArguments: bool("DORYD_VMM_PASS_MACHINE_ARGS", default: true),
             logDirectory: string("DORYD_MACHINE_LOG_DIR") ?? "\(stateDirectory)/logs",
             requiresReadyHandoff: bool("DORYD_VMM_READY_HANDOFF", default: true),

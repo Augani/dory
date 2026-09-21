@@ -25,6 +25,8 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
     public var lifecycleJournalHome: String
     public var baseArguments: [String]
     public var acceleratedDesktopBaseArguments: [String]
+    /// Dedicated least-authority display broker endpoint passed only to ARM RawHV desktops.
+    public var displayRelayServiceName: String?
     public var passMachineArguments: Bool
     public var logDirectory: String
     public var requiresReadyHandoff: Bool
@@ -59,6 +61,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
         lifecycleJournalHome: String? = nil,
         baseArguments: [String] = [],
         acceleratedDesktopBaseArguments: [String] = [],
+        displayRelayServiceName: String? = nil,
         passMachineArguments: Bool = true,
         logDirectory: String? = nil,
         requiresReadyHandoff: Bool = true,
@@ -85,6 +88,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
             ?? "\(self.runtimeDirectory)/.lifecycle-journal"
         self.baseArguments = baseArguments
         self.acceleratedDesktopBaseArguments = acceleratedDesktopBaseArguments
+        self.displayRelayServiceName = displayRelayServiceName
         self.passMachineArguments = passMachineArguments
         self.logDirectory = logDirectory ?? "\(stateDirectory)/logs"
         self.requiresReadyHandoff = requiresReadyHandoff
@@ -16302,6 +16306,12 @@ public final class MachineManager: @unchecked Sendable {
             arguments.append(contentsOf: [
                 "--display-presentation", presentationContract,
             ])
+            if runtimeLaunchEnvelopeAuthority != nil,
+               let displayRelayServiceName = configuration.displayRelayServiceName {
+                arguments.append(contentsOf: [
+                    "--display-relay-service", displayRelayServiceName,
+                ])
+            }
         }
         for share in machine.shares {
             arguments.append(contentsOf: ["--share", share.argumentValue])

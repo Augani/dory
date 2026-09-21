@@ -5596,6 +5596,13 @@ final class AppStore {
             && machine.processID != nil
     }
 
+    func linuxDisplayWindow(for machine: Machine) -> LinuxMachineDisplayWindow? {
+        guard canOpenMachineDesktop(machine), machine.guestFamily == "linux" else {
+            return nil
+        }
+        return LinuxMachineDisplayWindow(machineID: machine.name)
+    }
+
     func openMachineDesktop(_ machine: Machine) {
         guard canOpenMachineDesktop(machine), let processID = machine.processID,
               let application = NSRunningApplication(processIdentifier: processID) else {
@@ -6316,6 +6323,12 @@ final class AppStore {
                 case .suspended:
                     _ = try await dorydClient.machineResume(name)
                 case .created, .stopped, .failed:
+                    if machine.displayMode == .desktop, machine.guestFamily == "linux" {
+                        NotificationCenter.default.post(
+                            name: .doryOpenLinuxMachineDisplay,
+                            object: LinuxMachineDisplayWindow(machineID: name)
+                        )
+                    }
                     _ = try await dorydClient.machineStart(name)
                 case .absent, .defined, .stopping, .recovering, .deleting:
                     return
@@ -6950,6 +6963,12 @@ final class AppStore {
                 )
             }
             appendMachineCreationLog("Definition written. Booting VM…")
+            if settings.displayMode == .desktop, settings.bootMode != .macOSRestore {
+                NotificationCenter.default.post(
+                    name: .doryOpenLinuxMachineDisplay,
+                    object: LinuxMachineDisplayWindow(machineID: name)
+                )
+            }
             _ = try await dorydClient.machineStart(name)
             if let recipe, let provisioningRecipe {
                 appendMachineCreationLog("Provisioning \(recipe.display)…")

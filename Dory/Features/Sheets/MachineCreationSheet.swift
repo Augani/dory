@@ -80,7 +80,11 @@ struct MachineCreationSheet: View {
                     }.buttonStyle(.plain)
                     if machine.bootMode == .efi, machine.displayMode == .desktop {
                         Button {
-                            store.openMachineDesktop(machine)
+                            if let display = store.linuxDisplayWindow(for: machine) {
+                                openWindow(value: display)
+                            } else {
+                                store.openMachineDesktop(machine)
+                            }
                             dismissSuccess()
                         } label: {
                             Text("Open Desktop").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)

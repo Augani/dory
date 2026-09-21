@@ -24,6 +24,10 @@
 		D0B10000000000000000000A /* DoryHostCamera in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000007 /* DoryHostCamera */; };
 		D0B10000000000000000000B /* DoryHVRunner.app in Embed Linux VM Runner */ = {isa = PBXBuildFile; fileRef = D0B200000000000000000001 /* DoryHVRunner.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D0B10000000000000000000C /* DoryHostDeviceBroker in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000008 /* DoryHostDeviceBroker */; };
+		D0B10000000000000000000D /* DoryRendererWorkerWireContracts in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000009 /* DoryRendererWorkerWireContracts */; };
+		D0B10000000000000000000E /* DoryVMDisplayWireContracts in Frameworks */ = {isa = PBXBuildFile; productRef = D0B70000000000000000000A /* DoryVMDisplayWireContracts */; };
+		D0B10000000000000000000F /* DoryRendererWorkerWireContracts in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000009 /* DoryRendererWorkerWireContracts */; };
+		D0B100000000000000000010 /* DoryVMDisplayWireContracts in Frameworks */ = {isa = PBXBuildFile; productRef = D0B70000000000000000000A /* DoryVMDisplayWireContracts */; };
 		D0C100000000000000000001 /* DoryFSWorker.xpc in Embed Filesystem Worker */ = {isa = PBXBuildFile; fileRef = D0C200000000000000000001 /* DoryFSWorker.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D0C100000000000000000002 /* DoryFSWorkerContracts in Frameworks */ = {isa = PBXBuildFile; productRef = D0C700000000000000000001 /* DoryFSWorkerContracts */; };
 		D0C100000000000000000003 /* DoryFSWorkerServiceCore in Frameworks */ = {isa = PBXBuildFile; productRef = D0C700000000000000000002 /* DoryFSWorkerServiceCore */; };
@@ -251,6 +255,8 @@
 		3E705CEC2FE37C790094B33C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				D0B10000000000000000000D /* DoryRendererWorkerWireContracts in Frameworks */,
+				D0B10000000000000000000E /* DoryVMDisplayWireContracts in Frameworks */,
 				AA00000000000000000000E3 /* DorydKit in Frameworks */,
 				AA00000000000000000000D3 /* DoryOperations in Frameworks */,
 				AA00000000000000000000B3 /* SwiftTerm in Frameworks */,
@@ -271,6 +277,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D0B10000000000000000000F /* DoryRendererWorkerWireContracts in Frameworks */,
+				D0B100000000000000000010 /* DoryVMDisplayWireContracts in Frameworks */,
 				D0B100000000000000000001 /* DoryHV in Frameworks */,
 				D0B100000000000000000002 /* DoryCore in Frameworks */,
 				D0B100000000000000000003 /* DorydKit in Frameworks */,
@@ -394,6 +402,8 @@
 			);
 			name = Dory;
 			packageProductDependencies = (
+				D0B700000000000000000009 /* DoryRendererWorkerWireContracts */,
+				D0B70000000000000000000A /* DoryVMDisplayWireContracts */,
 				D0B700000000000000000003 /* DorydKit */,
 				AA00000000000000000000D2 /* DoryOperations */,
 				AA00000000000000000000B2 /* SwiftTerm */,
@@ -448,6 +458,8 @@
 			);
 			name = DoryHVRunner;
 			packageProductDependencies = (
+				D0B700000000000000000009 /* DoryRendererWorkerWireContracts */,
+				D0B70000000000000000000A /* DoryVMDisplayWireContracts */,
 				D0B700000000000000000001 /* DoryHV */,
 				D0B700000000000000000002 /* DoryCore */,
 				D0B700000000000000000003 /* DorydKit */,
@@ -1706,6 +1718,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
 			productName = DoryHostDeviceBroker;
+		};
+		D0B700000000000000000009 /* DoryRendererWorkerWireContracts */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
+			productName = DoryRendererWorkerWireContracts;
+		};
+		D0B70000000000000000000A /* DoryVMDisplayWireContracts */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
+			productName = DoryVMDisplayWireContracts;
 		};
 		D0C700000000000000000001 /* DoryFSWorkerContracts */ = {
 			isa = XCSwiftPackageProductDependency;

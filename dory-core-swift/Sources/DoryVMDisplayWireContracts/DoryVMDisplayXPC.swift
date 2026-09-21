@@ -46,6 +46,21 @@ public enum DoryVMDisplayBrokerXPCInterface {
         controlServiceName + ".display"
     }
 
+    public static func isValidServiceName(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        let isAlphaNumeric: (UInt8) -> Bool = {
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
+        }
+        return !bytes.isEmpty
+            && bytes.count <= 255
+            && isAlphaNumeric(bytes[0])
+            && isAlphaNumeric(bytes[bytes.count - 1])
+            && bytes.allSatisfy {
+                isAlphaNumeric($0) || $0 == 45 || $0 == 46 || $0 == 95
+            }
+            && !value.contains("..")
+    }
+
     public static func make() -> NSXPCInterface {
         let interface = NSXPCInterface(with: DoryVMDisplayBrokerXPCProtocol.self)
         let descriptorClasses = NSSet(objects: NSArray.self, FileHandle.self) as! Set<AnyHashable>

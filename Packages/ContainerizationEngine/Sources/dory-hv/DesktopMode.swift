@@ -1,4 +1,5 @@
 import AppKit
+import CoreFoundation
 import Darwin
 import DoryCore
 import DoryFSWorkerContracts
@@ -1082,6 +1083,9 @@ enum DesktopMode {
         var armVirtTopology: DoryARMVirtV1Topology?
         var resolvedSystemDiskLogicalID: DoryVirtualDeviceID? = nil
         var displayPresentation: DoryMachineDisplayPresentation = .windowed
+        /// Dedicated least-authority doryd endpoint used when the Dory app owns presentation.
+        /// A nil value retains the diagnostic helper-owned AppKit window.
+        var displayRelayServiceName: String? = nil
         var reconnectIdentity: DoryRuntimeReconnectLaunchIdentity
 
         /// Shares actually materialized by the resolved directory-sharing policy. Guest setup must
@@ -1331,7 +1335,7 @@ enum DesktopMode {
         }
 
         private let configuration: Configuration
-        private let application = NSApplication.shared
+        private let application: NSApplication?
         private let stateLock: EngineStateDirectoryLock
         private let serialLog: FileHandle
         private let serialOutput: BoundedSerialConsolePublisher
@@ -1356,6 +1360,8 @@ enum DesktopMode {
         private let displays: [DesktopDisplayView]
         private let windows: [NSWindow]
         private let displayAssignments: [DoryGuestDisplayPresentationAssignment?]
+        private let displayRelaySlot: DoryVMDisplayRunnerRelaySlot
+        private let displayRelayResizeTarget: DoryVMDisplayRunnerResizeTarget
         private let vsock: VirtioVsock
         private let audio: DoryMacAudioBackend
         private let gvproxy: Process?
@@ -1409,6 +1415,12 @@ enum DesktopMode {
                 additionalBootDevices: additionalBootDevices
             )
             self.configuration = configuration
+            self.application = configuration.displayRelayServiceName == nil
+                ? NSApplication.shared : nil
+            let displayRelaySlot = DoryVMDisplayRunnerRelaySlot()
+            self.displayRelaySlot = displayRelaySlot
+            let displayRelayResizeTarget = DoryVMDisplayRunnerResizeTarget()
+            self.displayRelayResizeTarget = displayRelayResizeTarget
             let deviceTelemetry = RawDeviceTelemetryRegistry(
                 machineID: configuration.machineID,
                 operationID: configuration.operationID
@@ -1436,6 +1448,12 @@ enum DesktopMode {
             )
             self.graphicsBackend = resolvedGraphics.backend
             self.rendererWorkerLaunch = resolvedGraphics.rendererWorkerLaunch
+            if configuration.displayRelayServiceName != nil,
+               resolvedGraphics.rendererWorkerLaunch == nil {
+                throw VMError.invalidConfiguration(
+                    "app-owned display relay requires an admitted renderer worker"
+                )
+            }
             let rendererRuntimeFailureLatch = resolvedGraphics.rendererWorkerLaunch == nil
                 ? nil : DesktopRendererRuntimeFailureLatch()
             self.rendererRuntimeFailureLatch = rendererRuntimeFailureLatch
@@ -1547,42 +1565,44 @@ enum DesktopMode {
                     graphicsReadinessState.recordFirstPresentationCompletion()
                 }
                 let cursorMailbox = DesktopCursorMailbox()
-                let metalDisplay = try DesktopMetalView(
-                    frame: NSRect(origin: .zero, size: plan.windowSize),
-                    keyboardInput: keyboardInput,
-                    pointerInput: pointerInput,
-                    relativePointerInput: relativePointerInput,
-                    guestBackingScaleFactor: CGFloat(plan.backingScaleFactor),
-                    scanoutID: plan.scanoutID,
-                    pointerTopology: pointerTopology
-                )
-                metalDisplay.onDeviceFailure = {
-                    [
-                        weak machine,
-                        weak rendererWorkerLaunch,
-                        rendererRuntimeFailureLatch,
-                    ] reason in
-                    rendererRuntimeFailureLatch?.record(
-                        kind: .metalDevice,
-                        reason: reason
+                if configuration.displayRelayServiceName == nil {
+                    let metalDisplay = try DesktopMetalView(
+                        frame: NSRect(origin: .zero, size: plan.windowSize),
+                        keyboardInput: keyboardInput,
+                        pointerInput: pointerInput,
+                        relativePointerInput: relativePointerInput,
+                        guestBackingScaleFactor: CGFloat(plan.backingScaleFactor),
+                        scanoutID: plan.scanoutID,
+                        pointerTopology: pointerTopology
                     )
-                    rendererWorkerLaunch?.failSynchronizedPresentation(reason)
-                    rendererWorkerLaunch?.teardown(reason: reason)
-                    machine?.requestStop(.crash("Metal display failed closed: \(reason)"))
+                    metalDisplay.onDeviceFailure = {
+                        [
+                            weak machine,
+                            weak rendererWorkerLaunch,
+                            rendererRuntimeFailureLatch,
+                        ] reason in
+                        rendererRuntimeFailureLatch?.record(
+                            kind: .metalDevice,
+                            reason: reason
+                        )
+                        rendererWorkerLaunch?.failSynchronizedPresentation(reason)
+                        rendererWorkerLaunch?.teardown(reason: reason)
+                        machine?.requestStop(.crash("Metal display failed closed: \(reason)"))
+                    }
+                    metalDisplay.onWorkerPresentationCompleted = {
+                        [weak rendererWorkerLaunch, graphicsReadinessState] workerGeneration in
+                        rendererWorkerLaunch?.recordSynchronizedPresentation(
+                            workerGeneration: workerGeneration
+                        )
+                        graphicsReadinessState.recordFirstPresentationCompletion()
+                    }
+                    let display: DesktopDisplayView = metalDisplay
+                    mailbox.view = display
+                    cursorMailbox.view = display
+                    displays.append(display)
                 }
-                metalDisplay.onWorkerPresentationCompleted = {
-                    [weak rendererWorkerLaunch, graphicsReadinessState] workerGeneration in
-                    rendererWorkerLaunch?.recordSynchronizedPresentation(
-                        workerGeneration: workerGeneration
-                    )
-                    graphicsReadinessState.recordFirstPresentationCompletion()
-                }
-                let display: DesktopDisplayView = metalDisplay
-                mailbox.view = display
-                cursorMailbox.view = display
                 mailboxes.append(mailbox)
                 cursorMailboxes.append(cursorMailbox)
-                displays.append(display)
             }
             self.mailboxes = mailboxes
             self.displays = displays
@@ -1630,13 +1650,14 @@ enum DesktopMode {
                 graphicsTraceContext = nil
                 onGraphicsTrace = nil
             }
+            let usesDisplayRelay = configuration.displayRelayServiceName != nil
             let gpu = VirtioGPU(
                 hostMemoryBase: GuestLayout.daxWindowBase,
                 hostMemorySize: rendererWorkerLaunch == nil
                     ? 256 * 1_024 * 1_024
                     : hostVisibleArenaByteCount,
                 scanoutSizes: displayPlans.map {
-                    $0.scanoutSize(on: NSScreen.main)
+                    $0.scanoutSize(on: usesDisplayRelay ? nil : NSScreen.main)
                 },
                 rendererWorkerCandidate: rendererWorkerLaunch?.commandLane,
                 hostVisibleMemory: hostVisibleMemory,
@@ -1647,12 +1668,17 @@ enum DesktopMode {
                     mailboxes[Int(frame.scanoutID)].submit(frame)
                     firstFrame.signal(scanoutID: frame.scanoutID)
                 },
-                onMetalScanout: { [mailboxes] update in
+                onMetalScanout: { [mailboxes, displayRelaySlot] update in
                     guard mailboxes.indices.contains(Int(update.scanoutID)) else {
+                        update.rejectHostSubmission()
                         update.presentation.discardWithoutPresentation()
                         return
                     }
-                    mailboxes[Int(update.scanoutID)].submit(update)
+                    if usesDisplayRelay {
+                        displayRelaySlot.publish(update)
+                    } else {
+                        mailboxes[Int(update.scanoutID)].submit(update)
+                    }
                 },
                 onScanoutResourceReleased: { [mailboxes] release in
                     for mailbox in mailboxes {
@@ -1694,6 +1720,52 @@ enum DesktopMode {
                 }
             )
             self.gpu = gpu
+            if let serviceName = configuration.displayRelayServiceName {
+                let relay = DoryVMDisplayRunnerRelay.connect(
+                    machineID: configuration.machineID,
+                    operationID: configuration.operationID,
+                    serviceName: serviceName,
+                    commandHandler: DoryVMDisplayRunnerCommandHandler(
+                        input: {
+                            [keyboardInput, pointerInput, relativePointerInput]
+                            endpoint, events in
+                            switch endpoint {
+                            case .keyboard:
+                                keyboardInput.send(frame: events)
+                            case .absolutePointer:
+                                pointerInput.send(frame: events)
+                            case .relativePointer:
+                                relativePointerInput.send(frame: events)
+                            }
+                        },
+                        resize: { [displayRelayResizeTarget] in
+                            displayRelayResizeTarget.apply(
+                                scanoutID: $0,
+                                width: $1,
+                                height: $2,
+                                physicalWidthMillimeters: $3,
+                                physicalHeightMillimeters: $4
+                            )
+                        }
+                    ),
+                    onPresentationCompleted: {
+                        [weak rendererWorkerLaunch, graphicsReadinessState]
+                        workerGeneration in
+                        rendererWorkerLaunch?.recordSynchronizedPresentation(
+                            workerGeneration: workerGeneration
+                        )
+                        graphicsReadinessState.recordFirstPresentationCompletion()
+                    },
+                    onPresentationFailed: { [weak gpu] workerGeneration, reason in
+                        gpu?.reportRendererWorkerPresentationFailure(
+                            workerGeneration: workerGeneration,
+                            reason: "app-owned display rejected frame: \(reason)"
+                        )
+                    },
+                    log: Self.log
+                )
+                displayRelaySlot.install(relay)
+            }
             for case let metalDisplay as DesktopMetalView in displays {
                 metalDisplay.onWorkerPresentationFailed = {
                     [weak gpu] workerGeneration, reason in
@@ -1705,6 +1777,9 @@ enum DesktopMode {
             }
             let initializationRollback = DesktopInitializationRollback()
             defer { initializationRollback.performIfNeeded() }
+            initializationRollback.register { [displayRelaySlot] in
+                displayRelaySlot.stop()
+            }
             initializationRollback.register {
                 let receipt = DesktopGPUShutdownBoundary.begin(
                     quiesce: { gpu.quiesce(reason: VirtioGPUQuiescenceReason.shutdown) },
@@ -2212,6 +2287,13 @@ enum DesktopMode {
                         displayMetrics: displayMetrics,
                         presentationBudgetMetrics: presentationBudgetMetrics
                     )
+                    if backend === gpu, usesDisplayRelay {
+                        displayRelayResizeTarget.install(
+                            gpu: gpu,
+                            transport: transport,
+                            pointerTopology: pointerTopology
+                        )
+                    }
                     if backend === gpu, configuration.resolvedDevices?.dynamicDisplay != false {
                         for (index, display) in displays.enumerated() {
                             let scanoutID = UInt32(index)
@@ -2310,10 +2392,11 @@ enum DesktopMode {
             }
 
             var windows = [NSWindow]()
-            let displayAssignments = displayPlans.map {
+            let displayAssignments = usesDisplayRelay ? [] : displayPlans.map {
                 configuration.displayPresentation.assignment(forGuestDisplayID: $0.id)
             }
-            for (index, plan) in displayPlans.enumerated() {
+            if !usesDisplayRelay {
+              for (index, plan) in displayPlans.enumerated() {
                 let window = NSWindow(
                     contentRect: NSRect(origin: .zero, size: plan.windowSize),
                     styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -2355,6 +2438,7 @@ enum DesktopMode {
                     ))
                 }
                 windows.append(window)
+              }
             }
             self.windows = windows
             self.displayAssignments = displayAssignments
@@ -2381,28 +2465,35 @@ enum DesktopMode {
                 usbControlServer?.stop()
                 throw error
             }
-            DoryDesktopApplicationIdentity.install(on: application)
-            application.setActivationPolicy(.regular)
-            application.delegate = self
-            installApplicationMenu()
             installSignalHandlers()
-            for window in windows { window.makeKeyAndOrderFront(nil) }
-            application.activate()
-            DesktopAppRunLoop.perform { [weak self] in
-                guard let self else { return }
-                for (window, assignment) in zip(self.windows, self.displayAssignments) {
-                    _ = DoryHostDisplayPresentation.enterDedicatedFullscreen(
-                        window: window,
-                        assignment: assignment
-                    )
+            if let application {
+                DoryDesktopApplicationIdentity.install(on: application)
+                application.setActivationPolicy(.regular)
+                application.delegate = self
+                installApplicationMenu()
+                for window in windows { window.makeKeyAndOrderFront(nil) }
+                application.activate()
+                DesktopAppRunLoop.perform { [weak self] in
+                    guard let self else { return }
+                    for (window, assignment) in zip(self.windows, self.displayAssignments) {
+                        _ = DoryHostDisplayPresentation.enterDedicatedFullscreen(
+                            window: window,
+                            assignment: assignment
+                        )
+                    }
                 }
+                try startMachine()
+                application.run()
+            } else {
+                displayRelaySlot.start()
+                try startMachine()
+                CFRunLoopRun()
             }
-            try startMachine()
-            application.run()
             if let stopError { throw stopError }
         }
 
         private func installApplicationMenu() {
+            guard let application else { return }
             let mainMenu = NSMenu()
 
             let applicationItem = NSMenuItem(title: "Dory Desktop", action: nil, keyEquivalent: "")
@@ -2461,7 +2552,7 @@ enum DesktopMode {
         }
 
         @objc private func toggleFullScreen(_ sender: Any?) {
-            (application.keyWindow ?? windows.first)?.toggleFullScreen(sender)
+            (application?.keyWindow ?? windows.first)?.toggleFullScreen(sender)
         }
 
         func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -2828,6 +2919,7 @@ enum DesktopMode {
             let receipt = DesktopGPUShutdownBoundary.begin(
                 quiesce: { gpu.quiesce(reason: .shutdown) },
                 detachPresentations: {
+                    displayRelaySlot.stop()
                     for mailbox in mailboxes { mailbox.deliver() }
                 }
             )
@@ -2861,6 +2953,12 @@ enum DesktopMode {
 
         private func stopApplicationAfterGPUShutdown() {
             guard machineExecutionState.isTerminalBoundary, gpuShutdownResult != nil else {
+                return
+            }
+            displayRelaySlot.stop()
+            guard let application else {
+                CFRunLoopStop(CFRunLoopGetMain())
+                CFRunLoopWakeUp(CFRunLoopGetMain())
                 return
             }
             application.stop(nil)
@@ -2967,7 +3065,7 @@ enum DesktopMode {
                 guard let self else { return }
                 for window in self.windows { window.makeKeyAndOrderFront(nil) }
                 self.windows.first?.makeKey()
-                self.application.activate()
+                self.application?.activate()
             })
             raiseSource.resume()
             signalSources.append(raiseSource)
