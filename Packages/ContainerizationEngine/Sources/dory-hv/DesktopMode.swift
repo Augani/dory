@@ -1746,9 +1746,13 @@ enum DesktopMode {
                 hostVisibleMemory: hostVisibleMemory,
                 graphicsTraceContext: graphicsTraceContext,
                 onGraphicsTrace: onGraphicsTrace,
-                onScanoutFrame: { [mailboxes, firstFrame] frame in
+                onScanoutFrame: { [mailboxes, firstFrame, displayRelaySlot] frame in
                     guard mailboxes.indices.contains(Int(frame.scanoutID)) else { return }
-                    mailboxes[Int(frame.scanoutID)].submit(frame)
+                    if usesDisplayRelay {
+                        displayRelaySlot.publish(frame)
+                    } else {
+                        mailboxes[Int(frame.scanoutID)].submit(frame)
+                    }
                     firstFrame.signal(scanoutID: frame.scanoutID)
                 },
                 onMetalScanout: { [mailboxes, displayRelaySlot] update in

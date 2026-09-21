@@ -16,8 +16,86 @@ public enum DoryVMDisplayWireError: Error, Equatable, Sendable {
 }
 
 public enum DoryVMDisplayFrameTransport: String, Codable, Sendable {
+    case cpuCopy
     case sharedMemory
     case sharedTexture
+}
+
+/// Descriptor-backed snapshot used before a guest renderer owns the scanout (UEFI, GRUB, and
+/// early kernel modesetting). Unlike renderer leases, this transport makes no producer-fence or
+/// zero-copy claim; the runner has already copied a coherent full surface into the descriptor.
+public struct DoryVMDisplayCPUFrameLease: Codable, Equatable, Sendable {
+    public static let schemaVersion: UInt16 = 1
+
+    public var schemaVersion: UInt16
+    public var leaseID: UUID
+    public var releaseToken: UUID
+    public var pixelFormat: UInt32
+    public var yOriginTop: Bool
+    public var width: UInt32
+    public var height: UInt32
+    public var stride: UInt32
+    public var declaredFileSize: UInt64
+
+    public init(
+        leaseID: UUID,
+        releaseToken: UUID,
+        pixelFormat: UInt32,
+        yOriginTop: Bool,
+        width: UInt32,
+        height: UInt32,
+        stride: UInt32,
+        declaredFileSize: UInt64
+    ) throws {
+        self.schemaVersion = Self.schemaVersion
+        self.leaseID = leaseID
+        self.releaseToken = releaseToken
+        self.pixelFormat = pixelFormat
+        self.yOriginTop = yOriginTop
+        self.width = width
+        self.height = height
+        self.stride = stride
+        self.declaredFileSize = declaredFileSize
+        try validate()
+    }
+
+    public func validate() throws {
+        let zero = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+        let (minimumRowBytes, rowOverflow) = UInt64(width).multipliedReportingOverflow(by: 4)
+        let (requiredBytes, surfaceOverflow) = UInt64(stride).multipliedReportingOverflow(
+            by: UInt64(height)
+        )
+        guard schemaVersion == Self.schemaVersion,
+              leaseID != zero, releaseToken != zero, leaseID != releaseToken,
+              width > 0, height > 0, width <= 16_384, height <= 16_384,
+              DoryRendererScanoutPixelFormat(rawValue: pixelFormat) != nil,
+              !rowOverflow, !surfaceOverflow,
+              UInt64(stride) >= minimumRowBytes,
+              stride % 4 == 0,
+              requiredBytes == declaredFileSize,
+              declaredFileSize > 0,
+              declaredFileSize <= DoryRendererWorkerLimits.production.maximumScanoutBytes else {
+            throw DoryVMDisplayWireError.invalidTransportAuthority
+        }
+    }
+}
+
+public enum DoryVMDisplayCPUFrameLeaseCodec {
+    public static func encode(_ lease: DoryVMDisplayCPUFrameLease) throws -> Data {
+        try lease.validate()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(lease)
+    }
+
+    public static func decode(_ data: Data) throws -> DoryVMDisplayCPUFrameLease {
+        let lease = try JSONDecoder().decode(DoryVMDisplayCPUFrameLease.self, from: data)
+        try lease.validate()
+        guard try encode(lease) == data else {
+            throw DoryVMDisplayWireError.nonCanonicalEncoding
+        }
+        return lease
+    }
 }
 
 public struct DoryVMDisplayRect: Codable, Equatable, Sendable {
@@ -89,6 +167,10 @@ public struct DoryVMDisplayFrame: Codable, Equatable, Sendable {
     public var leaseID: DoryRendererScanoutLeaseID {
         get throws {
             switch transport {
+            case .cpuCopy:
+                try DoryRendererScanoutLeaseID(
+                    rawValue: DoryVMDisplayCPUFrameLeaseCodec.decode(leasePayload).leaseID
+                )
             case .sharedMemory:
                 try DoryRendererScanoutLeaseCodec.decode(leasePayload).leaseID
             case .sharedTexture:
@@ -100,6 +182,10 @@ public struct DoryVMDisplayFrame: Codable, Equatable, Sendable {
     public var releaseToken: DoryRendererScanoutReleaseToken {
         get throws {
             switch transport {
+            case .cpuCopy:
+                try DoryRendererScanoutReleaseToken(
+                    rawValue: DoryVMDisplayCPUFrameLeaseCodec.decode(leasePayload).releaseToken
+                )
             case .sharedMemory:
                 try DoryRendererScanoutLeaseCodec.decode(leasePayload).releaseToken
             case .sharedTexture:
@@ -111,6 +197,10 @@ public struct DoryVMDisplayFrame: Codable, Equatable, Sendable {
     public func validate(descriptorCount: Int, hasSharedTextureHandle: Bool) throws {
         try validate()
         switch transport {
+        case .cpuCopy:
+            guard descriptorCount == 1, !hasSharedTextureHandle else {
+                throw DoryVMDisplayWireError.invalidTransportAuthority
+            }
         case .sharedMemory:
             guard descriptorCount == 1, !hasSharedTextureHandle else {
                 throw DoryVMDisplayWireError.invalidTransportAuthority
@@ -143,6 +233,13 @@ public struct DoryVMDisplayFrame: Codable, Equatable, Sendable {
         let height: UInt32
         do {
             switch transport {
+            case .cpuCopy:
+                let lease = try DoryVMDisplayCPUFrameLeaseCodec.decode(leasePayload)
+                workerGeneration = 1
+                resourceID = 1
+                rendererResourceGeneration = 1
+                width = lease.width
+                height = lease.height
             case .sharedMemory:
                 let lease = try DoryRendererScanoutLeaseCodec.decode(leasePayload)
                 workerGeneration = lease.workerGeneration.rawValue

@@ -27,6 +27,42 @@ struct DoryVMDisplayFrameTests {
         #expect(!encoded.contains(Data(repeating: 0xA5, count: 32)))
     }
 
+    @Test("CPU-copy leases round-trip with exactly one descriptor")
+    func cpuCopyRoundTrip() throws {
+        let lease = try DoryVMDisplayCPUFrameLease(
+            leaseID: UUID(uuidString: "11000000-0000-0000-0000-000000000011")!,
+            releaseToken: UUID(uuidString: "12000000-0000-0000-0000-000000000012")!,
+            pixelFormat: DoryRendererScanoutPixelFormat.bgra8Unorm.rawValue,
+            yOriginTop: true,
+            width: 2,
+            height: 2,
+            stride: 8,
+            declaredFileSize: 16
+        )
+        let frame = try DoryVMDisplayFrame(
+            machineID: "ubuntu-desktop",
+            operationID: UUID(uuidString: "13000000-0000-0000-0000-000000000013")!,
+            scanoutID: 0,
+            sequence: 1,
+            displayResourceGeneration: 2,
+            transport: .cpuCopy,
+            leasePayload: try DoryVMDisplayCPUFrameLeaseCodec.encode(lease),
+            sourceRect: .init(x: 0, y: 0, width: 2, height: 2),
+            dirtyRect: .init(x: 0, y: 0, width: 2, height: 2)
+        )
+
+        try frame.validate(descriptorCount: 1, hasSharedTextureHandle: false)
+        #expect(try DoryVMDisplayFrameCodec.decode(DoryVMDisplayFrameCodec.encode(frame)) == frame)
+        #expect(try frame.leaseID.rawValue == lease.leaseID)
+        #expect(try frame.releaseToken.rawValue == lease.releaseToken)
+        #expect(throws: DoryVMDisplayWireError.invalidTransportAuthority) {
+            try frame.validate(descriptorCount: 0, hasSharedTextureHandle: false)
+        }
+        #expect(throws: DoryVMDisplayWireError.invalidTransportAuthority) {
+            try frame.validate(descriptorCount: 1, hasSharedTextureHandle: true)
+        }
+    }
+
     @Test("transport authority is exact and mutually exclusive")
     func exactTransportAuthority() throws {
         let frame = try DoryVMDisplayFrame(

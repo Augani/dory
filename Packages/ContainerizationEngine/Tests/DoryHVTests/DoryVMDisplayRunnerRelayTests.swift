@@ -20,11 +20,19 @@ struct DoryVMDisplayRunnerRelayTests {
     }
 
     private final class FakeTransport: DoryVMDisplayRunnerTransport, @unchecked Sendable {
+        struct PublishedFrame: Sendable {
+            var frame: Data
+            var pixels: Data
+            var descriptorCount: Int
+            var hasSharedTextureHandle: Bool
+        }
+
         private let lock = NSLock()
         private var commands: [Data]
         private(set) var retireCount = 0
         private(set) var invalidateCount = 0
         private var publishedCursors: [Data] = []
+        private var publishedFrames: [PublishedFrame] = []
         private var acknowledgedCommandSequences: [UInt64] = []
         private let commandAcknowledgement = DispatchSemaphore(value: 0)
 
@@ -38,7 +46,16 @@ struct DoryVMDisplayRunnerRelayTests {
             sharedTextureHandle: MTLSharedTextureHandle?,
             reply: @escaping @Sendable (Bool, UInt64, String) -> Void
         ) {
-            reply(false, 0, "unused")
+            let pixels = descriptors.first.flatMap { try? $0.readToEnd() } ?? Data()
+            lock.withLock {
+                publishedFrames.append(PublishedFrame(
+                    frame: frame,
+                    pixels: pixels,
+                    descriptorCount: descriptors.count,
+                    hasSharedTextureHandle: sharedTextureHandle != nil
+                ))
+            }
+            reply(true, 0, "")
         }
 
         func publishCursor(
@@ -101,6 +118,7 @@ struct DoryVMDisplayRunnerRelayTests {
 
 
         var cursors: [Data] { lock.withLock { publishedCursors } }
+        var frames: [PublishedFrame] { lock.withLock { publishedFrames } }
         var commandSequences: [UInt64] { lock.withLock { acknowledgedCommandSequences } }
 
         func waitForCommandAcknowledgement() -> DispatchTimeoutResult {
@@ -265,6 +283,57 @@ struct DoryVMDisplayRunnerRelayTests {
         #expect(cursors[1].scanoutID == 0 && !cursors[1].visible)
         #expect(cursors[2].scanoutID == 1 && !cursors[2].visible)
         #expect(cursors.map(\.sequence) == [1, 2, 3])
+        relay.stop()
+    }
+
+    @Test func relayPublishesAccumulatedCPUFrameWithoutRendererReadiness() throws {
+        let transport = FakeTransport()
+        let rendererCompletions = Recorder<UInt64>()
+        let rendererFailures = Recorder<UInt64>()
+        let relay = DoryVMDisplayRunnerRelay(
+            machineID: "ubuntu",
+            operationID: UUID(),
+            transport: transport,
+            commandHandler: .init(input: { _, _ in true }, resize: { _, _, _, _, _ in }),
+            onPresentationCompleted: { rendererCompletions.append($0) },
+            onPresentationFailed: { generation, _ in rendererFailures.append(generation) }
+        )
+
+        relay.publish(VirtioGPUScanoutFrame(
+            scanoutID: 0,
+            resourceID: 7,
+            resourceGeneration: 2,
+            format: 1,
+            width: 2,
+            height: 2,
+            stride: 4,
+            dirtyRect: .init(x: 0, y: 0, width: 1, height: 1),
+            bytes: Data([1, 2, 3, 4])
+        ))
+        relay.publish(VirtioGPUScanoutFrame(
+            scanoutID: 0,
+            resourceID: 7,
+            resourceGeneration: 2,
+            format: 1,
+            width: 2,
+            height: 2,
+            stride: 4,
+            dirtyRect: .init(x: 1, y: 1, width: 1, height: 1),
+            bytes: Data([5, 6, 7, 8])
+        ))
+
+        let published = transport.frames
+        #expect(published.count == 2)
+        let frame = try DoryVMDisplayFrameCodec.decode(published[1].frame)
+        #expect(frame.transport == .cpuCopy)
+        #expect(published[1].descriptorCount == 1)
+        #expect(!published[1].hasSharedTextureHandle)
+        #expect(published[1].pixels == Data([
+            1, 2, 3, 4, 0, 0, 0, 0,
+            0, 0, 0, 0, 5, 6, 7, 8,
+        ]))
+        #expect(rendererCompletions.snapshot.isEmpty)
+        #expect(rendererFailures.snapshot.isEmpty)
         relay.stop()
     }
 }

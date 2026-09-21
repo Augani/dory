@@ -1096,6 +1096,22 @@ final class LinuxMachineMetalView: NSView {
         handle: MTLSharedTextureHandle?
     ) throws -> LinuxMachineImportedFrame {
         switch frame.transport {
+        case .cpuCopy:
+            guard descriptors.count == 1, handle == nil else {
+                throw DoryVMDisplayWireError.invalidTransportAuthority
+            }
+            let descriptor = descriptors[0]
+            let lease = try DoryVMDisplayCPUFrameLeaseCodec.decode(frame.leasePayload)
+            return try importLinearFrame(
+                frame,
+                descriptor: descriptor,
+                pixelFormat: DoryRendererScanoutPixelFormat(rawValue: lease.pixelFormat)!,
+                width: lease.width,
+                height: lease.height,
+                stride: lease.stride,
+                storageOffset: 0,
+                declaredFileSize: lease.declaredFileSize
+            )
         case .sharedTexture:
             guard descriptors.isEmpty, let handle,
                   let texture = device.makeSharedTexture(handle: handle) else {
@@ -1116,7 +1132,34 @@ final class LinuxMachineMetalView: NSView {
                   lease.storageOffset <= UInt64(Int.max) else {
                 throw DoryVMDisplayWireError.invalidTransportAuthority
             }
-            let length = Int(lease.declaredFileSize)
+            return try importLinearFrame(
+                frame,
+                descriptor: descriptor,
+                pixelFormat: lease.pixelFormat,
+                width: lease.width,
+                height: lease.height,
+                stride: lease.stride,
+                storageOffset: lease.storageOffset,
+                declaredFileSize: lease.declaredFileSize
+            )
+        }
+    }
+
+    private func importLinearFrame(
+        _ frame: DoryVMDisplayFrame,
+        descriptor: FileHandle,
+        pixelFormat: DoryRendererScanoutPixelFormat,
+        width: UInt32,
+        height: UInt32,
+        stride: UInt32,
+        storageOffset: UInt64,
+        declaredFileSize: UInt64
+    ) throws -> LinuxMachineImportedFrame {
+            guard declaredFileSize <= UInt64(Int.max),
+                  storageOffset <= UInt64(Int.max) else {
+                throw DoryVMDisplayWireError.invalidTransportAuthority
+            }
+            let length = Int(declaredFileSize)
             var statBuffer = stat()
             guard length > 0, fstat(descriptor.fileDescriptor, &statBuffer) == 0,
                   statBuffer.st_size == off_t(length) else {
@@ -1144,17 +1187,17 @@ final class LinuxMachineMetalView: NSView {
                 throw DoryVMDisplayWireError.invalidTransportAuthority
             }
             let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: Self.pixelFormat(lease.pixelFormat),
-                width: Int(lease.width),
-                height: Int(lease.height),
+                pixelFormat: Self.pixelFormat(pixelFormat),
+                width: Int(width),
+                height: Int(height),
                 mipmapped: false
             )
             textureDescriptor.storageMode = .shared
             textureDescriptor.usage = [.shaderRead]
             guard let texture = buffer.makeTexture(
                 descriptor: textureDescriptor,
-                offset: Int(lease.storageOffset),
-                bytesPerRow: Int(lease.stride)
+                offset: Int(storageOffset),
+                bytesPerRow: Int(stride)
             ) else {
                 munmap(address, length)
                 throw DoryVMDisplayWireError.invalidTransportAuthority
@@ -1166,7 +1209,6 @@ final class LinuxMachineMetalView: NSView {
                 mappedLength: length,
                 buffer: buffer
             )
-        }
     }
 
     private func render(
@@ -1197,6 +1239,10 @@ final class LinuxMachineMetalView: NSView {
         )
         let yOriginTop: Bool
         switch imported.frame.transport {
+        case .cpuCopy:
+            yOriginTop = (try? DoryVMDisplayCPUFrameLeaseCodec.decode(
+                imported.frame.leasePayload
+            ).yOriginTop) ?? true
         case .sharedMemory:
             yOriginTop = (try? DoryRendererScanoutLeaseCodec.decode(
                 imported.frame.leasePayload

@@ -215,6 +215,10 @@ final class DoryVMDisplayRunnerRelaySlot: @unchecked Sendable {
         relay.publish(update)
     }
 
+    func publish(_ frame: VirtioGPUScanoutFrame) {
+        lock.withLock { relay }?.publish(frame)
+    }
+
     func publishCursor(_ update: VirtioGPUCursorUpdate?, scanoutCount: Int) {
         lock.withLock { relay }?.publishCursor(update, scanoutCount: scanoutCount)
     }
@@ -370,11 +374,11 @@ final class DoryVMDisplayRunnerResizeTarget: @unchecked Sendable {
 /// submission completed and the renderer presentation consumer retired.
 final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
     private final class PendingFrame: @unchecked Sendable {
-        let update: VirtioGPUMetalScanoutUpdate
+        let scanoutID: UInt32
         let descriptor: FileHandle?
         let sharedTextureHandle: MTLSharedTextureHandle?
-        let onPresentationCompleted: @Sendable (UInt64) -> Void
-        let onPresentationFailed: @Sendable (UInt64, String) -> Void
+        let requiresMetalCompletion: Bool
+        let completion: @Sendable (Bool, UInt64, String) -> Void
 
         private let lock = NSLock()
         private var completed = false
@@ -386,11 +390,29 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
             onPresentationCompleted: @escaping @Sendable (UInt64) -> Void,
             onPresentationFailed: @escaping @Sendable (UInt64, String) -> Void
         ) {
-            self.update = update
+            self.scanoutID = update.scanoutID
             self.descriptor = descriptor
             self.sharedTextureHandle = sharedTextureHandle
-            self.onPresentationCompleted = onPresentationCompleted
-            self.onPresentationFailed = onPresentationFailed
+            self.requiresMetalCompletion = true
+            self.completion = { presented, completionID, detail in
+                if presented {
+                    update.recordPresentationCompleted(completionID: completionID)
+                    update.acceptHostSubmission()
+                    onPresentationCompleted(update.presentation.workerGeneration.rawValue)
+                } else {
+                    update.rejectHostSubmission()
+                    onPresentationFailed(update.presentation.workerGeneration.rawValue, detail)
+                }
+                update.presentation.finishPresentation()
+            }
+        }
+
+        init(scanoutID: UInt32, descriptor: FileHandle) {
+            self.scanoutID = scanoutID
+            self.descriptor = descriptor
+            self.sharedTextureHandle = nil
+            self.requiresMetalCompletion = false
+            self.completion = { _, _, _ in }
         }
 
         func complete(
@@ -404,17 +426,7 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
                 return true
             }
             guard shouldComplete else { return }
-            if presented {
-                update.recordPresentationCompleted(
-                    completionID: metalCommandBufferCompletionID
-                )
-                update.acceptHostSubmission()
-                onPresentationCompleted(update.presentation.workerGeneration.rawValue)
-            } else {
-                update.rejectHostSubmission()
-                onPresentationFailed(update.presentation.workerGeneration.rawValue, detail)
-            }
-            update.presentation.finishPresentation()
+            completion(presented, metalCommandBufferCompletionID, detail)
             try? descriptor?.close()
         }
 
@@ -428,9 +440,20 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         var nextCursorSequence: UInt64 = 1
         var lastCommandSequence: UInt64 = 0
         var pending: [UUID: PendingFrame] = [:]
+        var cpuSurfaces: [UInt32: CPUFrameSurface] = [:]
         var started = false
         var stopped = false
         var pollInFlight = false
+    }
+
+    private struct CPUFrameSurface {
+        var resourceID: UInt32
+        var resourceGeneration: UInt64
+        var format: UInt32
+        var width: UInt32
+        var height: UInt32
+        var stride: UInt32
+        var bytes: Data
     }
 
     private let machineID: String
@@ -641,6 +664,132 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         }
     }
 
+    /// Relays the copied 2D scanout used by firmware, boot loaders, and early kernel modesetting.
+    /// This path is deliberately distinct from renderer-backed presentation: its acknowledgement
+    /// never satisfies the synchronized-renderer readiness boundary.
+    func publish(_ frame: VirtioGPUScanoutFrame) {
+        let snapshot: (sequence: UInt64, surface: CPUFrameSurface)
+        do {
+            snapshot = try lock.withLock {
+                guard !state.stopped, state.nextFrameSequence < UInt64.max else {
+                    throw CancellationError()
+                }
+                guard frame.scanoutID < DoryVMDisplayFrame.maximumScanoutCount,
+                      frame.width > 0, frame.height > 0,
+                      frame.dirtyRect.x <= frame.width,
+                      frame.dirtyRect.y <= frame.height,
+                      frame.dirtyRect.width <= frame.width - frame.dirtyRect.x,
+                      frame.dirtyRect.height <= frame.height - frame.dirtyRect.y,
+                      let pixelFormat = Self.cpuPixelFormat(frame.format),
+                      UInt64(frame.stride) >= UInt64(frame.dirtyRect.width) * 4,
+                      UInt64(frame.bytes.count)
+                        >= UInt64(frame.stride) * UInt64(frame.dirtyRect.height) else {
+                    throw DoryVMDisplayWireError.invalidRectangle
+                }
+                let fullStride = UInt64(frame.width) * 4
+                let fullBytes = fullStride * UInt64(frame.height)
+                guard fullStride <= UInt64(UInt32.max),
+                      fullBytes <= UInt64(Int.max),
+                      fullBytes <= DoryRendererWorkerLimits.production.maximumScanoutBytes else {
+                    throw DoryVMDisplayWireError.frameTooLarge
+                }
+                let resourceGeneration = max(1, frame.resourceGeneration)
+                var surface = state.cpuSurfaces[frame.scanoutID]
+                if surface?.resourceID != frame.resourceID
+                    || surface?.resourceGeneration != resourceGeneration
+                    || surface?.format != pixelFormat.rawValue
+                    || surface?.width != frame.width
+                    || surface?.height != frame.height {
+                    surface = CPUFrameSurface(
+                        resourceID: frame.resourceID,
+                        resourceGeneration: resourceGeneration,
+                        format: pixelFormat.rawValue,
+                        width: frame.width,
+                        height: frame.height,
+                        stride: UInt32(fullStride),
+                        bytes: Data(repeating: 0, count: Int(fullBytes))
+                    )
+                }
+                guard var surface else { throw DoryVMDisplayWireError.invalidFrameIdentity }
+                let copiedRowBytes = Int(frame.dirtyRect.width) * 4
+                surface.bytes.withUnsafeMutableBytes { destination in
+                    frame.bytes.withUnsafeBytes { source in
+                        guard let destinationBase = destination.baseAddress,
+                              let sourceBase = source.baseAddress else { return }
+                        for row in 0..<Int(frame.dirtyRect.height) {
+                            let destinationOffset = (Int(frame.dirtyRect.y) + row)
+                                * Int(surface.stride) + Int(frame.dirtyRect.x) * 4
+                            let sourceOffset = row * Int(frame.stride)
+                            destinationBase.advanced(by: destinationOffset).copyMemory(
+                                from: sourceBase.advanced(by: sourceOffset),
+                                byteCount: copiedRowBytes
+                            )
+                        }
+                    }
+                }
+                state.cpuSurfaces[frame.scanoutID] = surface
+                let sequence = state.nextFrameSequence
+                state.nextFrameSequence += 1
+                return (sequence, surface)
+            }
+
+            let descriptor = try Self.makeCPUFrameDescriptor(snapshot.surface.bytes)
+            let leaseID = UUID()
+            let releaseToken = UUID()
+            let lease = try DoryVMDisplayCPUFrameLease(
+                leaseID: leaseID,
+                releaseToken: releaseToken,
+                pixelFormat: snapshot.surface.format,
+                yOriginTop: true,
+                width: snapshot.surface.width,
+                height: snapshot.surface.height,
+                stride: snapshot.surface.stride,
+                declaredFileSize: UInt64(snapshot.surface.bytes.count)
+            )
+            let fullRect = DoryVMDisplayRect(
+                x: 0,
+                y: 0,
+                width: snapshot.surface.width,
+                height: snapshot.surface.height
+            )
+            let relayed = try DoryVMDisplayFrame(
+                machineID: machineID,
+                operationID: UUID(uuidString: operationID)!,
+                scanoutID: frame.scanoutID,
+                sequence: snapshot.sequence,
+                displayResourceGeneration: snapshot.surface.resourceGeneration,
+                transport: .cpuCopy,
+                leasePayload: try DoryVMDisplayCPUFrameLeaseCodec.encode(lease),
+                sourceRect: fullRect,
+                dirtyRect: fullRect
+            )
+            let pending = PendingFrame(scanoutID: frame.scanoutID, descriptor: descriptor)
+            let admitted = lock.withLock { () -> Bool in
+                guard !state.stopped, state.pending[leaseID] == nil else { return false }
+                state.pending[leaseID] = pending
+                return true
+            }
+            guard admitted else {
+                pending.complete(presented: false, detail: "runner-not-accepting-frames")
+                return
+            }
+            transport.publishFrame(
+                try DoryVMDisplayFrameCodec.encode(relayed),
+                descriptors: [descriptor],
+                sharedTextureHandle: nil
+            ) { [weak self] presented, completionID, detail in
+                self?.completeFrame(
+                    leaseID: leaseID,
+                    presented: presented,
+                    metalCommandBufferCompletionID: completionID,
+                    detail: detail
+                )
+            }
+        } catch {
+            log("dory-hv display relay rejected CPU frame: \(error)")
+        }
+    }
+
     func publishCursor(_ update: VirtioGPUCursorUpdate?, scanoutCount: Int) {
         let scanoutIDs: [UInt32]
         if let update {
@@ -735,7 +884,12 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         metalCommandBufferCompletionID: UInt64 = 0,
         detail: String
     ) {
-        let validCompletion = presented == (metalCommandBufferCompletionID > 0)
+        guard let pending = lock.withLock({ state.pending.removeValue(forKey: leaseID) }) else {
+            return
+        }
+        let validCompletion = pending.requiresMetalCompletion
+            ? presented == (metalCommandBufferCompletionID > 0)
+            : metalCommandBufferCompletionID == 0
         let effectivePresented = presented && validCompletion
         let effectiveCompletionID = effectivePresented
             ? metalCommandBufferCompletionID
@@ -743,11 +897,10 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         let effectiveDetail = validCompletion
             ? detail
             : "invalid-metal-command-buffer-completion"
-        let pending = lock.withLock { state.pending.removeValue(forKey: leaseID) }
-        if effectivePresented, let pending {
-            presentationIntervals.recordPresented(scanoutID: pending.update.scanoutID)
+        if effectivePresented, pending.requiresMetalCompletion {
+            presentationIntervals.recordPresented(scanoutID: pending.scanoutID)
         }
-        pending?.complete(
+        pending.complete(
             presented: effectivePresented,
             metalCommandBufferCompletionID: effectiveCompletionID,
             detail: effectiveDetail
@@ -758,6 +911,49 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
                     + effectiveDetail
             )
         }
+    }
+
+    private static func cpuPixelFormat(
+        _ virtioFormat: UInt32
+    ) -> DoryRendererScanoutPixelFormat? {
+        switch virtioFormat {
+        case 1, 2: .bgra8Unorm
+        case 3, 4, 67, 68, 121, 134: .rgba8Unorm
+        default: nil
+        }
+    }
+
+    private static func makeCPUFrameDescriptor(_ bytes: Data) throws -> FileHandle {
+        var template = Array("/tmp/dory-display-cpu.XXXXXX".utf8CString)
+        let descriptor = template.withUnsafeMutableBufferPointer { mkstemp($0.baseAddress!) }
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        _ = template.withUnsafeBufferPointer { unlink($0.baseAddress!) }
+        guard ftruncate(descriptor, off_t(bytes.count)) == 0 else {
+            let code = errno
+            close(descriptor)
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+        var written = 0
+        let writeSucceeded = bytes.withUnsafeBytes { source -> Bool in
+            guard let base = source.baseAddress else { return bytes.isEmpty }
+            while written < bytes.count {
+                let result = pwrite(
+                    descriptor,
+                    base.advanced(by: written),
+                    bytes.count - written,
+                    off_t(written)
+                )
+                if result <= 0 { return false }
+                written += result
+            }
+            return true
+        }
+        guard writeSucceeded else {
+            let code = errno
+            close(descriptor)
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
     }
 
     private func scheduleCommandPoll(after delay: TimeInterval) {
