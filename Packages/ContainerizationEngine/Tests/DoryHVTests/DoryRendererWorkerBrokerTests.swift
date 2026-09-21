@@ -3610,7 +3610,10 @@ import Testing
             expectedUsed: 2
         )
 
-        let detachFence: UInt64 = 0x102
+        // EDK2 starts its monotonically increasing GPU fence counter at zero. A fenced
+        // RESOURCE_DETACH_BACKING with ID zero is therefore the first fenced command emitted by
+        // the firmware GOP driver during its initial mode switch.
+        let detachFence: UInt64 = 0
         try queue.submit(rendererGPUDetachBackingRequest(
             resourceID: 47,
             headerFlags: 1,
@@ -3834,7 +3837,6 @@ import Testing
         )
         let malformedHeaders: [(flags: UInt32, fenceID: UInt64, ringIndex: UInt8)] = [
             (0, 73, 0),              // Fence id without FLAG_FENCE.
-            (1, 0, 0),               // FLAG_FENCE without a fence id.
             (1 << 1, 0, 1),          // INFO_RING is not valid for this global command.
             ((1 << 0) | (1 << 1), 74, 1),
             (1 << 2, 0, 0),          // Unknown header flag.

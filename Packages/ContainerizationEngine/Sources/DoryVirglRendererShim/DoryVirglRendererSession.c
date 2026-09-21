@@ -2147,7 +2147,7 @@ int32_t DoryVirglRendererCreateContextFence(
     uint64_t fence_id
 )
 {
-    if (session == NULL || context_id == 0 || fence_id == 0)
+    if (session == NULL || context_id == 0)
         return -EINVAL;
     int32_t result = dory_register_fence_completion(
         session,
@@ -2175,7 +2175,7 @@ int32_t DoryVirglRendererCreateGlobalFence(
     uint64_t fence_id
 )
 {
-    if (session == NULL || fence_id == 0 || session->functions.create_fence == NULL)
+    if (session == NULL || session->functions.create_fence == NULL)
         return -EINVAL;
     uint32_t renderer_fence_id = 0;
     int32_t result = dory_register_fence_completion(
@@ -2199,7 +2199,7 @@ int32_t DoryVirglRendererGetFenceFileDescriptor(
     uint64_t fence_id
 )
 {
-    if (session == NULL || fence_id == 0)
+    if (session == NULL)
         return -1;
     pthread_mutex_lock(&session->fence_lock);
     DoryVirglRendererFenceCompletion *completion = session->fence_head;

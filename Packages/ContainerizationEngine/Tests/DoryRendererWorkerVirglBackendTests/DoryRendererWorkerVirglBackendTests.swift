@@ -1496,6 +1496,28 @@ import Testing
         try result.descriptors[0].close()
     }
 
+    @Test func globalFenceAcceptsInitialZeroGuestIdentity() throws {
+        let session = FakeRendererForeignSession()
+        let backend = makeBackend(session: session)
+        _ = try backend.activate(bootstrap: makeBootstrap())
+        let fence = try DoryRendererFencePayload(flags: 0, ringIndex: 0, fenceID: 0)
+
+        let result = try requireSuccess(backend.execute(
+            command: command(
+                requestID: 1,
+                operation: .createFence,
+                contextID: 0,
+                payload: fence.encoded
+            ),
+            descriptors: []
+        ))
+
+        #expect(result.payload == fence.encoded)
+        #expect(result.descriptors.count == 1)
+        #expect(session.createdGlobalFenceIDs == [0x1_0000_00f1, 0])
+        try result.descriptors[0].close()
+    }
+
     @Test func globalFenceWithoutLiveSubmitContextIsRejectedBeforeForeignCall() throws {
         let session = FakeRendererForeignSession()
         let backend = makeBackend(session: session)

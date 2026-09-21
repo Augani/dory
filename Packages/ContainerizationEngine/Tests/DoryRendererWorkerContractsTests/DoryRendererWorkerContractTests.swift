@@ -238,6 +238,10 @@ import Testing
         #expect(!global.isContextTimeline)
         #expect(try DoryRendererFencePayload.decode(global.encoded) == global)
 
+        let zero = try DoryRendererFencePayload(flags: 0, ringIndex: 0, fenceID: 0)
+        #expect(!zero.isContextTimeline)
+        #expect(try DoryRendererFencePayload.decode(zero.encoded) == zero)
+
         let context = try DoryRendererFencePayload(
             flags: DoryRendererFencePayload.contextTimeline,
             ringIndex: 7,
@@ -254,7 +258,6 @@ import Testing
                 DoryRendererFencePayload.maximumRingIndex + 1,
                 1
             ),
-            (0, 0, 0),
         ] {
             #expect(throws: DoryRendererWorkerContractError.invalidOperationPayload(
                 operation: .createFence

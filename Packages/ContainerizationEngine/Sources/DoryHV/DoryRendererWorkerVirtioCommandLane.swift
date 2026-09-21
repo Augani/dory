@@ -1254,7 +1254,6 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
         ) -> Void
     ) throws {
         guard contextID != 0,
-              fenceID != 0,
               (contextFence
                 ? ringIndex <= DoryRendererFencePayload.maximumRingIndex
                 : ringIndex == 0),
@@ -1399,7 +1398,6 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
         deviceGeneration: UInt64,
         completion: @escaping Completion
     ) throws {
-        guard fenceID != 0 else { throw reject(.invalidSubmitRegions) }
         try createFence(
             contextID: 0,
             ringIndex: 0,
@@ -1420,7 +1418,6 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
         completion: @escaping Completion
     ) throws {
         guard contextID != 0,
-              fenceID != 0,
               ringIndex <= DoryRendererFencePayload.maximumRingIndex else {
             throw reject(.invalidSubmitRegions)
         }

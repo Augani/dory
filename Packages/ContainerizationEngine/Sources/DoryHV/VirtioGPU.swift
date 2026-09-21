@@ -3793,7 +3793,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         let flags = request.leUInt32(at: 4)
                         let fenceID = request.leUInt64(at: 8)
                         let hasValidFenceHeader = (flags == 0 && fenceID == 0)
-                            || (flags == HeaderFlag.fence && fenceID != 0)
+                            || flags == HeaderFlag.fence
                         guard request.count == 40,
                               hasValidFenceHeader,
                               request.leUInt32(at: 16) == 0,
@@ -3853,7 +3853,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         let flags = request.leUInt32(at: 4)
                         let fenceID = request.leUInt64(at: 8)
                         let hasValidFenceHeader = (flags == 0 && fenceID == 0)
-                            || (flags == HeaderFlag.fence && fenceID != 0)
+                            || flags == HeaderFlag.fence
                         guard request.count == 72,
                               hasValidFenceHeader,
                               request.leUInt32(at: 16) == 0,
@@ -3902,7 +3902,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         let flags = request.leUInt32(at: 4)
                         let fenceID = request.leUInt64(at: 8)
                         let hasValidFenceHeader = (flags == 0 && fenceID == 0)
-                            || (flags == HeaderFlag.fence && fenceID != 0)
+                            || flags == HeaderFlag.fence
                         let resourceGeneration = commandLock.withLock { () -> UInt64? in
                             guard resourceEntries[resourceID] != nil,
                                   contextID == 0 || createdContextIDs.contains(contextID) else {
@@ -4081,7 +4081,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         let flags = request.leUInt32(at: 4)
                         let fenceID = request.leUInt64(at: 8)
                         let hasValidFenceHeader = (flags == 0 && fenceID == 0)
-                            || (flags == HeaderFlag.fence && fenceID != 0)
+                            || flags == HeaderFlag.fence
                         let canonicalHeader = hasValidFenceHeader
                             && request.leUInt32(at: 16) == 0
                             && request[20..<24].allSatisfy({ $0 == 0 })
@@ -4176,7 +4176,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         let flags = request.leUInt32(at: 4)
                         let fenceID = request.leUInt64(at: 8)
                         let hasValidFenceHeader = (flags == 0 && fenceID == 0)
-                            || (flags == HeaderFlag.fence && fenceID != 0)
+                            || flags == HeaderFlag.fence
                         let resourceState = commandLock.withLock { () -> (
                             workerGeneration: UInt64,
                             displayGeneration: UInt64
@@ -4232,7 +4232,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         let flags = request.leUInt32(at: 4)
                         let fenceID = request.leUInt64(at: 8)
                         let hasValidFenceHeader = (flags == 0 && fenceID == 0)
-                            || (flags == HeaderFlag.fence && fenceID != 0)
+                            || flags == HeaderFlag.fence
                         let resourceState = commandLock.withLock { () -> UInt64? in
                             guard resourceEntries[resourceID] != nil,
                                   rendererWorkerPendingBackingResourceIDs
@@ -4375,7 +4375,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     let flags = request.leUInt32(at: 4)
                     let fenceID = request.leUInt64(at: 8)
                     let hasValidFenceHeader = (flags == 0 && fenceID == 0)
-                        || (flags == HeaderFlag.fence && fenceID != 0)
+                        || flags == HeaderFlag.fence
                     guard hasValidFenceHeader,
                           request.leUInt32(at: 16) == 0,
                           request[20..<24].allSatisfy({ $0 == 0 }),
@@ -4523,7 +4523,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         let flags = header.leUInt32(at: 4)
                         let fenceID = header.leUInt64(at: 8)
                         let hasValidFenceHeader = (flags == 0 && fenceID == 0)
-                            || (flags == HeaderFlag.fence && fenceID != 0)
+                            || flags == HeaderFlag.fence
                         guard hasValidFenceHeader,
                               header.leUInt32(at: 16) == 0,
                               header[20..<24].allSatisfy({ $0 == 0 }),
@@ -4599,7 +4599,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     let hasCanonicalRing = !hasContextTimeline
                         || ringIndex <= DoryRendererFencePayload.maximumRingIndex
                     let hasCanonicalFencePair = hasFence
-                        ? fenceID != 0 && (hasContextTimeline || ringIndex == 0)
+                        ? hasContextTimeline || ringIndex == 0
                         : fenceID == 0 && (hasContextTimeline || ringIndex == 0)
                     guard flags & ~(HeaderFlag.fence | HeaderFlag.infoRingIndex) == 0,
                           hasCanonicalRing,
@@ -7732,7 +7732,6 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     fence.key == FenceKey(contextID: 0, ringIndex: 0)
                         && fence.ringIndex == 0
                   ),
-                  fence.fenceID != 0,
                   fenceIDIsUnique,
                   !fenceAdmissionBlockedUntilDeviceReset,
                   pendingFenceCount < maximumPendingFences,

@@ -397,8 +397,7 @@ public struct DoryRendererFencePayload: Equatable, Sendable {
         let isContextTimeline = flags == Self.contextTimeline
             && ringIndex <= Self.maximumRingIndex
         guard flags & ~Self.knownFlags == 0,
-              isGlobalTimeline || isContextTimeline,
-              fenceID != 0 else {
+              isGlobalTimeline || isContextTimeline else {
             throw DoryRendererWorkerContractError.invalidOperationPayload(operation: .createFence)
         }
         self.flags = flags
