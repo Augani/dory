@@ -11,13 +11,14 @@ use std::time::Duration;
 
 use dory_pb::agent::{
     self, agent_request::Method, agent_response::Result as Res, AgentRequest, AgentResponse,
-    ClockSyncRequest, ExecEnv, ExecRequest, ExecResponse, InfoRequest, LifecycleReceiptRequest,
-    LifecycleReceiptResponse, PortsWatchRequest, SnapshotQuiesceRequest, SnapshotQuiesceResponse,
-    SyncDeleteRequest, SyncDeleteResponse, SyncFileStatusRequest, SyncFileStatusResponse,
-    SyncGetChunkRequest, SyncGetChunkResponse, SyncManifestRequest, SyncManifestResponse,
-    SyncPutChunkRequest, SyncPutChunkResponse, SyncReadTreeRequest, SyncReadTreeResponse,
-    TelemetryRequest, TelemetryResponse, UsbVhciAttachRequest, UsbVhciAttachResponse,
-    UsbVhciDetachRequest, UsbVhciDetachResponse, VirtiofsMountRequest, VirtiofsMountResponse,
+    ClipboardRequest, ClipboardResponse, ClockSyncRequest, ExecEnv, ExecRequest, ExecResponse,
+    InfoRequest, LifecycleReceiptRequest, LifecycleReceiptResponse, PortsWatchRequest,
+    SnapshotQuiesceRequest, SnapshotQuiesceResponse, SyncDeleteRequest, SyncDeleteResponse,
+    SyncFileStatusRequest, SyncFileStatusResponse, SyncGetChunkRequest, SyncGetChunkResponse,
+    SyncManifestRequest, SyncManifestResponse, SyncPutChunkRequest, SyncPutChunkResponse,
+    SyncReadTreeRequest, SyncReadTreeResponse, TelemetryRequest, TelemetryResponse,
+    UsbVhciAttachRequest, UsbVhciAttachResponse, UsbVhciDetachRequest, UsbVhciDetachResponse,
+    VirtiofsMountRequest, VirtiofsMountResponse,
 };
 use dory_proto::handshake::{handshake, Hello};
 use dory_proto::mux::Mux;
@@ -125,6 +126,16 @@ impl AgentClient {
     pub async fn telemetry(&self) -> Result<TelemetryResponse, RemoteError> {
         match self.call(Method::Telemetry(TelemetryRequest {})).await? {
             Res::Telemetry(r) => Ok(r),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn clipboard(
+        &self,
+        request: ClipboardRequest,
+    ) -> Result<ClipboardResponse, RemoteError> {
+        match self.call(Method::Clipboard(request)).await? {
+            Res::Clipboard(response) => Ok(response),
             _ => Err(RemoteError::UnexpectedVariant),
         }
     }
@@ -419,6 +430,11 @@ mod tests {
                     mount_id: 77,
                 })
             }
+            Some(Method::Clipboard(request)) => Res::Clipboard(agent::ClipboardResponse {
+                mime_type: request.mime_type,
+                data: request.data,
+                mime_types: Vec::new(),
+            }),
             Some(Method::SyncReadTree(_)) => Res::SyncReadTree(agent::SyncReadTreeResponse {
                 files: vec![agent::SyncFileEntry {
                     path: "report.txt".into(),
@@ -538,6 +554,17 @@ mod tests {
         assert_eq!(mounted.mount_path, "/mnt/dory/workspace");
         assert!(mounted.read_only);
         assert_eq!(mounted.mount_id, 77);
+
+        let clipboard = client
+            .clipboard(ClipboardRequest {
+                action: agent::clipboard_request::Action::Set as i32,
+                mime_type: "text/plain;charset=utf-8".into(),
+                data: b"clipboard round trip".to_vec(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(clipboard.mime_type, "text/plain;charset=utf-8");
+        assert_eq!(clipboard.data, b"clipboard round trip");
 
         let tree = client
             .sync_read_tree(SyncReadTreeRequest {

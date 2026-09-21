@@ -144,6 +144,26 @@ message VirtiofsMountResponse {
   uint64 mount_id = 6;
 }
 
+// Exchange only the desktop clipboard MIME types Dory explicitly supports. The guest agent keeps
+// the helper path and process invocation host-independent and bounded; callers must negotiate
+// `clipboard@1` before using this method.
+message ClipboardRequest {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    GET = 1;
+    SET = 2;
+    LIST_TYPES = 3;
+  }
+  Action action = 1;
+  string mime_type = 2;
+  bytes data = 3;
+}
+message ClipboardResponse {
+  string mime_type = 1;
+  bytes data = 2;
+  repeated string mime_types = 3;
+}
+
 // Run a bounded non-interactive command in the guest. This is the primitive doryd uses for
 // VM-machine provisioning and smoke checks; streaming terminals/debug shells can layer on a
 // separate channel later.
@@ -298,6 +318,7 @@ message AgentRequest {
     UsbVhciAttachRequest usb_vhci_attach = 15;
     UsbVhciDetachRequest usb_vhci_detach = 16;
     VirtiofsMountRequest virtiofs_mount = 17;
+    ClipboardRequest clipboard = 18;
   }
 }
 
@@ -321,5 +342,6 @@ message AgentResponse {
     UsbVhciAttachResponse usb_vhci_attach = 16;
     UsbVhciDetachResponse usb_vhci_detach = 17;
     VirtiofsMountResponse virtiofs_mount = 18;
+    ClipboardResponse clipboard = 19;
   }
 }

@@ -8,6 +8,7 @@ use dory_pb::agent::{
 };
 use prost::Message;
 
+use crate::clipboard::{self, ClipboardError};
 use crate::dispatch::{err, handle_method};
 use crate::exec::{self, ExecError};
 use crate::snapshot_quiesce;
@@ -41,9 +42,19 @@ pub async fn handle(req_bytes: &[u8]) -> Vec<u8> {
         Some(Method::VirtiofsMount(r)) => {
             wrap_virtiofs_mount(virtiofs_mount::mount(r).await, Res::VirtiofsMount)
         }
+        Some(Method::Clipboard(r)) => wrap_clipboard(clipboard::run(r).await),
         other => handle_method(other),
     };
     response.encode_to_vec()
+}
+
+fn wrap_clipboard(result: Result<agent::ClipboardResponse, ClipboardError>) -> AgentResponse {
+    match result {
+        Ok(value) => agent::AgentResponse {
+            result: Some(Res::Clipboard(value)),
+        },
+        Err(error) => err(error.code(), &error.to_string()),
+    }
 }
 
 fn wrap_virtiofs_mount<T>(
@@ -143,6 +154,37 @@ mod tests {
                 tag: "workspace".into(),
                 mount_path: "/mnt/../workspace".into(),
                 read_only: true,
+            })),
+        };
+        let response = AgentResponse::decode(handle(&request.encode_to_vec()).await.as_slice())
+            .expect("well-formed response");
+        match response.result {
+            Some(Res::Error(error)) => assert_eq!(error.code, 422),
+            other => panic!("expected validation error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn clipboard_requests_are_bounded_before_platform_io() {
+        let request = AgentRequest {
+            method: Some(Method::Clipboard(agent::ClipboardRequest {
+                action: agent::clipboard_request::Action::Set as i32,
+                mime_type: "text/html".into(),
+                data: b"<b>not allowed</b>".to_vec(),
+            })),
+        };
+        let response = AgentResponse::decode(handle(&request.encode_to_vec()).await.as_slice())
+            .expect("well-formed response");
+        match response.result {
+            Some(Res::Error(error)) => assert_eq!(error.code, 422),
+            other => panic!("expected validation error, got {other:?}"),
+        }
+
+        let request = AgentRequest {
+            method: Some(Method::Clipboard(agent::ClipboardRequest {
+                action: agent::clipboard_request::Action::Get as i32,
+                mime_type: "image/png".into(),
+                data: b"unexpected".to_vec(),
             })),
         };
         let response = AgentResponse::decode(handle(&request.encode_to_vec()).await.as_slice())

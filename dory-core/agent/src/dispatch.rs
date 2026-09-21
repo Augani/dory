@@ -42,6 +42,12 @@ pub fn agent_capabilities() -> Vec<agent::AgentCapability> {
             crate::virtiofs_mount::CAPABILITY_VERSION,
         ));
     }
+    if crate::clipboard::available() {
+        capabilities.push((
+            crate::clipboard::CAPABILITY_ID,
+            crate::clipboard::CAPABILITY_VERSION,
+        ));
+    }
     capabilities.sort_unstable_by_key(|(id, _)| *id);
     capabilities
         .into_iter()
@@ -265,6 +271,9 @@ mod tests {
                 }
                 if crate::virtiofs_mount::available() {
                     expected_capabilities.push(("virtiofs-mount", 1));
+                }
+                if crate::clipboard::available() {
+                    expected_capabilities.push(("clipboard", 1));
                 }
                 expected_capabilities.sort_unstable();
                 assert_eq!(
