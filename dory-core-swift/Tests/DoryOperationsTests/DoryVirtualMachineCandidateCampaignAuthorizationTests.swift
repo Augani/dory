@@ -10,8 +10,11 @@ struct DoryVirtualMachineCandidateCampaignAuthorizationTests {
         let fixture = try Fixture()
         let authority = try fixture.resolve()
 
+        var runtimeRequest = fixture.cell.capability
+        runtimeRequest.devices.networkInterface = .stable(machineID: "campaign-pc-1")
+
         let resolved = try authority.resolve(
-            request: fixture.cell.capability,
+            request: runtimeRequest,
             backendImplementationIdentifier: fixture.cell.backendImplementationIdentifier,
             backendRuntimeBuildIdentifier: fixture.cell.backendRuntimeBuildIdentifier,
             hostHardwareModelIdentifier: "Mac14,10",
@@ -26,6 +29,23 @@ struct DoryVirtualMachineCandidateCampaignAuthorizationTests {
         #expect(resolved.cell.cellIdentifier == "linux-x86_64-pc")
         #expect(resolved.authorizationIdentity.hasPrefix("candidate-campaign-"))
         #expect(resolved.bootMediaInspectionEvidence?.catalogManifestEvidence == nil)
+
+        var changedMTU = runtimeRequest
+        changedMTU.devices.networkInterface?.maximumTransmissionUnit = 1_280
+        #expect(throws: DoryCandidateCampaignAuthorizationError.self) {
+            _ = try authority.resolve(
+                request: changedMTU,
+                backendImplementationIdentifier: fixture.cell.backendImplementationIdentifier,
+                backendRuntimeBuildIdentifier: fixture.cell.backendRuntimeBuildIdentifier,
+                hostHardwareModelIdentifier: "Mac14,10",
+                hostOperatingSystemBuild: "26A5425a",
+                installedComponents: fixture.cell.components,
+                machineID: "campaign-pc-1",
+                virtualCPUCount: 2,
+                memoryBytes: 4 * 1_024 * 1_024 * 1_024,
+                storageBytes: 32 * 1_024 * 1_024 * 1_024
+            )
+        }
     }
 
     @Test("signature lifetime revocation host resource and artifact bindings fail closed")
@@ -204,6 +224,15 @@ struct DoryVirtualMachineCandidateCampaignAuthorizationTests {
                     ),
                     backend: .doryHypervisor,
                     graphics: .hardwareAccelerated3D,
+                    devices: DoryVirtualMachineDeviceCapabilityRequest(
+                        networkInterface: .stable(machineID: "campaign-template"),
+                        display: DoryVirtualMachineDisplayCapabilityRequest(
+                            widthPixels: 1_920,
+                            heightPixels: 1_080
+                        ),
+                        keyboard: true,
+                        pointer: true
+                    ),
                     virtualHardwareABIVersion: 1
                 ),
                 backendImplementationIdentifier: "dory.rawhv",

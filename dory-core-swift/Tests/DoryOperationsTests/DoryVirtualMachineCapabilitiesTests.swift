@@ -64,6 +64,42 @@ struct VirtualMachineCapabilitiesTests {
         #expect(!first.matchesRuntimeQualificationContract(.minimumBootable))
     }
 
+    @Test("capability qualification ignores only the per-machine MAC address")
+    func capabilityQualificationContract() {
+        let display = DoryVirtualMachineDisplayCapabilityRequest(
+            widthPixels: 1_920, heightPixels: 1_080
+        )
+        let firstDevices = DoryVirtualMachineDeviceCapabilityRequest(
+            networkInterface: .init(macAddress: "02:00:00:00:00:01"),
+            display: display,
+            keyboard: true,
+            pointer: true
+        )
+        let first = DoryVirtualMachineCapabilityRequest(
+            guest: DoryGuestPlatform(family: .linux, architecture: .arm64),
+            bootMedia: DoryBootMedia(
+                kind: .installerISO,
+                source: .userProvided,
+                artifactSHA256: Self.linuxISOArtifactSHA256
+            ),
+            backend: .doryHypervisor,
+            graphics: .hardwareAccelerated3D,
+            devices: firstDevices
+        )
+        var differentMAC = first
+        differentMAC.devices.networkInterface = .init(
+            macAddress: "02:00:00:00:00:02"
+        )
+        var differentMTU = differentMAC
+        differentMTU.devices.networkInterface?.maximumTransmissionUnit = 1_280
+        var differentDisplay = differentMAC
+        differentDisplay.devices.displays[0].guestUIScaleFactor = 1
+
+        #expect(first.matchesRuntimeQualificationContract(differentMAC))
+        #expect(!first.matchesRuntimeQualificationContract(differentMTU))
+        #expect(!first.matchesRuntimeQualificationContract(differentDisplay))
+    }
+
     @Test("historical device contracts decode without fabricating NIC authority")
     func historicalDeviceContractWithoutNetworkInterface() throws {
         let data = try JSONEncoder().encode(DoryVirtualMachineDeviceCapabilityRequest())

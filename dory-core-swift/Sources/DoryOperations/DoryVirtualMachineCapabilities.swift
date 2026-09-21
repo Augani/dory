@@ -914,6 +914,21 @@ public struct DoryVirtualMachineCapabilityRequest: Codable, Sendable, Equatable,
         self.virtualHardwareABIVersion = virtualHardwareABIVersion
     }
 
+    /// Matches the stable runtime-qualification contract while allowing the daemon to derive a
+    /// distinct locally administered MAC address for each authorized machine. Every other guest,
+    /// media, backend, graphics, device, and virtual-hardware field remains exact; the NIC ID and
+    /// MTU are also still bound by the device contract.
+    public func matchesRuntimeQualificationContract(
+        _ other: DoryVirtualMachineCapabilityRequest
+    ) -> Bool {
+        guest == other.guest
+            && bootMedia == other.bootMedia
+            && backend == other.backend
+            && graphics == other.graphics
+            && devices.matchesRuntimeQualificationContract(other.devices)
+            && virtualHardwareABIVersion == other.virtualHardwareABIVersion
+    }
+
     public static func == (
         lhs: DoryVirtualMachineCapabilityRequest,
         rhs: DoryVirtualMachineCapabilityRequest

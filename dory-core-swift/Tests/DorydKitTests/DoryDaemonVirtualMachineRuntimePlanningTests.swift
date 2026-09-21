@@ -18,9 +18,13 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
             buildIdentifier: "raw-runtime-1",
             artifactSHA256: digest("c")
         )
+        var authorizedRequest = fixture.capability.request
+        authorizedRequest.devices.networkInterface = .stable(
+            machineID: "campaign-authority-template"
+        )
         let cell = DoryCandidateCampaignCell(
             cellIdentifier: "linux-arm64-baseline",
-            capability: fixture.capability.request,
+            capability: authorizedRequest,
             backendImplementationIdentifier: "dory.rawhv",
             backendRuntimeBuildIdentifier: "raw-runtime-1",
             components: [qualifiedComponent],
@@ -55,6 +59,11 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
             fixture.capability.request, inventory: snapshot
         )
         #expect(exact.availability.supportTier == .preview)
+        var changedMTU = fixture.capability.request
+        changedMTU.devices.networkInterface?.maximumTransmissionUnit = 1_280
+        let rejectedMTU = DoryCandidateCampaignDaemonVirtualMachineExactCapabilityEvaluator()
+            .evaluate(changedMTU, inventory: snapshot)
+        #expect(!rejectedMTU.availability.isUsable)
         var changed = fixture.capability.request
         changed.bootMedia.artifactSHA256 = String(repeating: "f", count: 64)
         let rejected = DoryCandidateCampaignDaemonVirtualMachineExactCapabilityEvaluator().evaluate(

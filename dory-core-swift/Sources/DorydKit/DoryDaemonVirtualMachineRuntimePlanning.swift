@@ -260,7 +260,9 @@ public struct DoryCandidateCampaignVirtualMachineCapabilityPlanner:
         _ request: DoryVirtualMachineCapabilityRequest,
         inventory: DoryDaemonVirtualMachineTrustedInventorySnapshot
     ) -> DoryVirtualMachineCapabilityDescriptor? {
-        let cells = inventory.candidateCampaignCells.filter { $0.cell.capability == request }
+        let cells = inventory.candidateCampaignCells.filter {
+            $0.cell.capability.matchesRuntimeQualificationContract(request)
+        }
         guard cells.count == 1,
               let cell = cells.first,
               inventory.backendRuntime(for: request.backend) != nil,

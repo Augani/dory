@@ -238,7 +238,7 @@ public struct DoryVerifiedVirtualMachineCandidateCampaignAuthority: Sendable {
             $0.componentIdentifier < $1.componentIdentifier
         }
         let matches = manifest.cells.filter { cell in
-            cell.capability == request
+            cell.capability.matchesRuntimeQualificationContract(request)
                 && cell.backendImplementationIdentifier == backendImplementationIdentifier
                 && cell.backendRuntimeBuildIdentifier == backendRuntimeBuildIdentifier
                 && cell.components == components
