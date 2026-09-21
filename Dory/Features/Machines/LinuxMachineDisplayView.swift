@@ -19,6 +19,143 @@ extension Notification.Name {
     )
 }
 
+nonisolated enum DoryDisplayQualificationLaunchError: Error, Equatable,
+    CustomStringConvertible {
+    case invalidMachineID
+    case invalidMachService
+    case productionMachService
+    case invalidScanoutID
+    case invalidWindowReceiptPath
+
+    var description: String {
+        switch self {
+        case .invalidMachineID:
+            "DORY_DISPLAY_QUALIFICATION_MACHINE_ID must be a valid 1...63 byte machine ID"
+        case .invalidMachService:
+            "DORYD_MACH_SERVICE must name a valid explicit launchd service"
+        case .productionMachService:
+            "display qualification refuses the installed dev.dory.doryd service"
+        case .invalidScanoutID:
+            "DORY_DISPLAY_QUALIFICATION_SCANOUT_ID must name an available scanout"
+        case .invalidWindowReceiptPath:
+            "DORY_DISPLAY_QUALIFICATION_WINDOW_RECEIPT must be a normalized absolute path"
+        }
+    }
+}
+
+/// An explicit, display-only application launch used by physical qualification campaigns.
+///
+/// The contract deliberately requires a non-production daemon endpoint. This lets a signed
+/// candidate render and accept input for exactly one campaign-owned machine while the installed
+/// Dory application and all user-owned VMs continue running untouched.
+nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
+    static let machineIDEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_MACHINE_ID"
+    static let scanoutIDEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_SCANOUT_ID"
+    static let machServiceEnvironmentKey = "DORYD_MACH_SERVICE"
+    static let windowReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_WINDOW_RECEIPT"
+    static let productionMachServiceName = "dev.dory.doryd"
+
+    let machineID: String
+    let scanoutID: UInt32
+    let machServiceName: String
+    let windowReceiptPath: String
+
+    var display: LinuxMachineDisplayWindow {
+        LinuxMachineDisplayWindow(machineID: machineID, scanoutID: scanoutID)
+    }
+
+    static func isRequested(environment: [String: String]) -> Bool {
+        environment[machineIDEnvironmentKey] != nil
+    }
+
+    static func parse(
+        environment: [String: String]
+    ) throws -> DoryDisplayQualificationLaunch? {
+        guard let machineID = environment[machineIDEnvironmentKey] else { return nil }
+        guard validMachineID(machineID) else {
+            throw DoryDisplayQualificationLaunchError.invalidMachineID
+        }
+        guard let machServiceName = environment[machServiceEnvironmentKey],
+              validMachServiceName(machServiceName) else {
+            throw DoryDisplayQualificationLaunchError.invalidMachService
+        }
+        guard machServiceName != productionMachServiceName else {
+            throw DoryDisplayQualificationLaunchError.productionMachService
+        }
+        guard let windowReceiptPath = environment[windowReceiptEnvironmentKey],
+              validWindowReceiptPath(windowReceiptPath) else {
+            throw DoryDisplayQualificationLaunchError.invalidWindowReceiptPath
+        }
+        let scanoutID: UInt32
+        if let rawScanoutID = environment[scanoutIDEnvironmentKey] {
+            guard let parsed = UInt32(rawScanoutID),
+                  parsed < DoryVMDisplayFrame.maximumScanoutCount else {
+                throw DoryDisplayQualificationLaunchError.invalidScanoutID
+            }
+            scanoutID = parsed
+        } else {
+            scanoutID = 0
+        }
+        return DoryDisplayQualificationLaunch(
+            machineID: machineID,
+            scanoutID: scanoutID,
+            machServiceName: machServiceName,
+            windowReceiptPath: windowReceiptPath
+        )
+    }
+
+    private static func validMachineID(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard !bytes.isEmpty, bytes.count <= 63, isAlphaNumeric(bytes[0]) else {
+            return false
+        }
+        return bytes.allSatisfy {
+            isAlphaNumeric($0) || $0 == 45 || $0 == 46 || $0 == 95
+        }
+    }
+
+    private static func validMachServiceName(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard !bytes.isEmpty, bytes.count <= 255,
+              isAlphaNumeric(bytes[0]), isAlphaNumeric(bytes[bytes.count - 1]),
+              !value.contains("..") else {
+            return false
+        }
+        return bytes.allSatisfy {
+            isAlphaNumeric($0) || $0 == 45 || $0 == 46 || $0 == 95
+        }
+    }
+
+    private static func validWindowReceiptPath(_ value: String) -> Bool {
+        guard value.hasPrefix("/"), value != "/", !value.utf8.contains(0) else {
+            return false
+        }
+        let url = URL(fileURLWithPath: value)
+        return url.standardizedFileURL.path == value && !url.lastPathComponent.isEmpty
+    }
+
+    private static func isAlphaNumeric(_ byte: UInt8) -> Bool {
+        (48...57).contains(byte) || (65...90).contains(byte) || (97...122).contains(byte)
+    }
+}
+
+private nonisolated struct DoryDisplayQualificationWindowReceipt: Encodable {
+    let kind = "dev.dory.display-qualification-window"
+    let schemaVersion = 1
+    let capturedAt: String
+    let bundleIdentifier: String
+    let processID: Int32
+    let windowNumber: Int
+    let windowTitle: String
+    let machineID: String
+    let scanoutID: UInt32
+    let machServiceName: String
+    let operationID: String
+    let frameSequence: UInt64
+    let displayResourceGeneration: UInt64
+    let transport: String
+}
+
 nonisolated struct LinuxMachineDisplayWindow: Codable, Hashable, Identifiable {
     var machineID: String
     var scanoutID: UInt32 = 0
@@ -575,6 +712,7 @@ final class LinuxMachineMetalView: NSView {
     private var pressedRelativeButtons = Set<UInt16>()
     private var hostCursorHidden = false
     private var requestedTopology: [DoryVMDisplayTopologyEntry]?
+    private var qualificationWindowReceiptWritten = false
 
     override var acceptsFirstResponder: Bool { true }
     override var wantsUpdateLayer: Bool { true }
@@ -759,11 +897,14 @@ final class LinuxMachineMetalView: NSView {
                 height: Int(frame.sourceRect.height)
             )
             if guestCursorUpdate != nil { rebuildGuestCursor() }
-            guard render(imported) else {
+            guard render(imported, completion: { [weak self] presented in
+                guard let self else { return }
+                self.client.acknowledge(frame, presented: presented)
+                if presented { self.writeQualificationWindowReceipt(for: frame) }
+            }) else {
                 client.acknowledge(frame, presented: false)
                 return
             }
-            client.acknowledge(frame, presented: true)
         } catch {
             for descriptor in descriptors { try? descriptor.close() }
             client.acknowledge(frame, presented: false)
@@ -850,7 +991,10 @@ final class LinuxMachineMetalView: NSView {
         }
     }
 
-    private func render(_ imported: LinuxMachineImportedFrame) -> Bool {
+    private func render(
+        _ imported: LinuxMachineImportedFrame,
+        completion: @escaping @MainActor @Sendable (Bool) -> Void
+    ) -> Bool {
         guard let metalLayer = layer as? CAMetalLayer,
               let drawable = metalLayer.nextDrawable(),
               let commandBuffer = commandQueue.makeCommandBuffer() else { return false }
@@ -896,15 +1040,68 @@ final class LinuxMachineMetalView: NSView {
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         encoder.endEncoding()
         commandBuffer.addCompletedHandler { [imported, failureTarget = self] buffer in
-            guard buffer.status != .completed else { return }
-            let detail = buffer.error?.localizedDescription
+            let presented = buffer.status == .completed
+            let detail = presented ? nil : buffer.error?.localizedDescription
                 ?? "Metal presentation failed with status \(buffer.status.rawValue)"
-            Task { @MainActor in failureTarget.showFailure(detail) }
+            Task { @MainActor in
+                if let detail { failureTarget.showFailure(detail) }
+                completion(presented)
+            }
             _ = imported
         }
         commandBuffer.present(drawable)
         commandBuffer.commit()
         return true
+    }
+
+    private func writeQualificationWindowReceipt(for frame: DoryVMDisplayFrame) {
+        guard !qualificationWindowReceiptWritten,
+              let launch = try? DoryDisplayQualificationLaunch.parse(
+                environment: ProcessInfo.processInfo.environment
+              ),
+              launch.machineID == machineID, launch.scanoutID == scanoutID,
+              let window, window.windowNumber > 0,
+              window.title == launch.display.windowTitle else { return }
+        let destination = URL(fileURLWithPath: launch.windowReceiptPath)
+        let parent = destination.deletingLastPathComponent()
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              (try? parent.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+              !FileManager.default.fileExists(atPath: destination.path) else {
+            showFailure("Dory could not create the display qualification window receipt.")
+            return
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let receipt = DoryDisplayQualificationWindowReceipt(
+            capturedAt: formatter.string(from: Date()),
+            bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
+            processID: getpid(),
+            windowNumber: window.windowNumber,
+            windowTitle: window.title,
+            machineID: machineID,
+            scanoutID: scanoutID,
+            machServiceName: launch.machServiceName,
+            operationID: frame.operationID,
+            frameSequence: frame.sequence,
+            displayResourceGeneration: frame.displayResourceGeneration,
+            transport: frame.transport.rawValue
+        )
+        let temporary = parent.appendingPathComponent(
+            ".\(destination.lastPathComponent).tmp-\(UUID().uuidString)"
+        )
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            let data = try encoder.encode(receipt) + Data("\n".utf8)
+            try data.write(to: temporary, options: .withoutOverwriting)
+            try FileManager.default.moveItem(at: temporary, to: destination)
+            qualificationWindowReceiptWritten = true
+        } catch {
+            showFailure("Dory could not write the display qualification window receipt: \(error)")
+        }
     }
 
     private func showFailure(_ message: String) {

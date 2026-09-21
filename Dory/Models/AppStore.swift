@@ -304,7 +304,9 @@ final class AppStore {
         }
         self.localCATrustManager = localCATrustManager
         let networkHelperMaintenance = DoryAppDelegate.isNetworkHelperMaintenance()
+        let displayQualification = DoryDisplayQualificationLaunch.isRequested(environment: env)
         let realLaunch = !networkHelperMaintenance && !DoryAppDelegate.isTestHost
+            && !displayQualification
             && env["DORY_SECTION"] == nil && env["DORY_APPEARANCE"] == nil
             && env["XCTestConfigurationFilePath"] == nil
             && env["XCTestSessionIdentifier"] == nil && env["DORY_UI_TEST"] != "1"
@@ -396,6 +398,7 @@ final class AppStore {
         let snapshotMode = env["DORY_SECTION"] != nil || env["DORY_SHEET"] != nil || env["DORY_DETAIL_TAB"] != nil
         let testMode = networkHelperMaintenance || env["XCTestConfigurationFilePath"] != nil
             || env["XCTestSessionIdentifier"] != nil || env["DORY_UI_TEST"] == "1"
+            || displayQualification
         isSnapshotMode = snapshotMode
         if snapshotMode || testMode { launchSplashComplete = true }
         if env["DORY_ONBOARDING"] == "1" {
@@ -686,6 +689,7 @@ final class AppStore {
         return DoryAppDelegate.isTestHost
             || env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil
             || env["DORY_UI_TEST"] == "1"
+            || DoryDisplayQualificationLaunch.isRequested(environment: env)
             || env["DORY_SECTION"] != nil || env["DORY_SHEET"] != nil || env["DORY_DETAIL_TAB"] != nil
             || env["DORY_APPEARANCE"] != nil || env["DORY_ONBOARDING"] != nil
     }

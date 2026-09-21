@@ -63,6 +63,71 @@ struct AgentModeTests {
         #expect(DoryAppDelegate.instanceLockPath(home: "/Users/test") == "/Users/test/.dory/dory-app.lock")
     }
 
+    @Test func displayQualificationRequiresAnIsolatedDaemon() throws {
+        let environment = [
+            DoryDisplayQualificationLaunch.machineIDEnvironmentKey: "gpu-campaign-1",
+            DoryDisplayQualificationLaunch.machServiceEnvironmentKey:
+                "dev.dory.readiness.gpu-campaign-1",
+            DoryDisplayQualificationLaunch.windowReceiptEnvironmentKey:
+                "/tmp/gpu-campaign-1-window.json",
+        ]
+        let launch = try #require(
+            try DoryDisplayQualificationLaunch.parse(environment: environment)
+        )
+        #expect(launch.machineID == "gpu-campaign-1")
+        #expect(launch.scanoutID == 0)
+        #expect(launch.display.windowTitle == "Dory — gpu-campaign-1 — Display 1")
+
+        #expect(throws: DoryDisplayQualificationLaunchError.productionMachService) {
+            try DoryDisplayQualificationLaunch.parse(environment: [
+                DoryDisplayQualificationLaunch.machineIDEnvironmentKey: "gpu-campaign-1",
+                DoryDisplayQualificationLaunch.machServiceEnvironmentKey:
+                    DoryDisplayQualificationLaunch.productionMachServiceName,
+                DoryDisplayQualificationLaunch.windowReceiptEnvironmentKey:
+                    "/tmp/gpu-campaign-1-window.json",
+            ])
+        }
+        #expect(throws: DoryDisplayQualificationLaunchError.invalidMachService) {
+            try DoryDisplayQualificationLaunch.parse(environment: [
+                DoryDisplayQualificationLaunch.machineIDEnvironmentKey: "gpu-campaign-1",
+            ])
+        }
+    }
+
+    @Test func displayQualificationValidatesMachineAndScanoutScope() throws {
+        let base = [
+            DoryDisplayQualificationLaunch.machineIDEnvironmentKey: "gpu-campaign-1",
+            DoryDisplayQualificationLaunch.machServiceEnvironmentKey:
+                "dev.dory.readiness.gpu-campaign-1",
+            DoryDisplayQualificationLaunch.windowReceiptEnvironmentKey:
+                "/tmp/gpu-campaign-1-window.json",
+        ]
+        var secondDisplay = base
+        secondDisplay[DoryDisplayQualificationLaunch.scanoutIDEnvironmentKey] = "1"
+        let launch = try #require(
+            try DoryDisplayQualificationLaunch.parse(environment: secondDisplay)
+        )
+        #expect(launch.scanoutID == 1)
+        #expect(launch.display.windowTitle == "Dory — gpu-campaign-1 — Display 2")
+
+        var invalidMachine = base
+        invalidMachine[DoryDisplayQualificationLaunch.machineIDEnvironmentKey] = "../user-vm"
+        #expect(throws: DoryDisplayQualificationLaunchError.invalidMachineID) {
+            try DoryDisplayQualificationLaunch.parse(environment: invalidMachine)
+        }
+        var invalidScanout = base
+        invalidScanout[DoryDisplayQualificationLaunch.scanoutIDEnvironmentKey] = "16"
+        #expect(throws: DoryDisplayQualificationLaunchError.invalidScanoutID) {
+            try DoryDisplayQualificationLaunch.parse(environment: invalidScanout)
+        }
+        var invalidReceipt = base
+        invalidReceipt[DoryDisplayQualificationLaunch.windowReceiptEnvironmentKey] =
+            "../gpu-campaign-1-window.json"
+        #expect(throws: DoryDisplayQualificationLaunchError.invalidWindowReceiptPath) {
+            try DoryDisplayQualificationLaunch.parse(environment: invalidReceipt)
+        }
+    }
+
     @Test func networkHelperRegistrationModeIsExplicit() {
         #expect(DoryAppDelegate.isNetworkHelperRegistration(arguments: ["Dory", "--register-network-helper"]))
         #expect(!DoryAppDelegate.isNetworkHelperRegistration(arguments: ["Dory", "--other"]))

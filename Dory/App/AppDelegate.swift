@@ -28,9 +28,12 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
             || isNetworkHelperUnregistration(arguments: arguments)
     }
 
-    static func exitDuplicateInstanceIfNeeded() {
+    static func exitDuplicateInstanceIfNeeded(
+        displayQualification: DoryDisplayQualificationLaunch? = nil
+    ) {
         guard !isNetworkHelperMaintenance() else { return }
-        guard !isTestHost, let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
+        guard !isTestHost, displayQualification == nil,
+              let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
         guard acquireInstanceLock() else {
             DistributedNotificationCenter.default().postNotificationName(
                 openMainWindowNotification,
@@ -132,6 +135,12 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if DoryDisplayQualificationLaunch.isRequested(
+            environment: ProcessInfo.processInfo.environment
+        ) {
+            NSApp.setActivationPolicy(.regular)
+            return
+        }
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(openMainWindowFromNotification(_:)),
@@ -150,13 +159,18 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false
+        DoryDisplayQualificationLaunch.isRequested(
+            environment: ProcessInfo.processInfo.environment
+        )
     }
 
     @MainActor func applicationShouldHandleReopen(
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
+        guard !DoryDisplayQualificationLaunch.isRequested(
+            environment: ProcessInfo.processInfo.environment
+        ) else { return false }
         Self.openMainWindow()
         return false
     }
@@ -178,7 +192,9 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
             name: Self.openMainWindowNotification,
             object: nil
         )
-        if !Self.isTestHost {
+        if !Self.isTestHost && !DoryDisplayQualificationLaunch.isRequested(
+            environment: ProcessInfo.processInfo.environment
+        ) {
             DoryFinderStorageLocation.removeBeforeExit()
         }
         // doryd owns long-lived engines and machines independently of the window process.
