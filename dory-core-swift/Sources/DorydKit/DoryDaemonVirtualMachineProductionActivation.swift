@@ -456,12 +456,26 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
                 productionPlanningController: planningController,
                 resourceAdmissionLedger: planning.resourceLedger
             )
+        } catch {
+            return unavailableActivation(
+                .installationRejected,
+                "Candidate campaign launch infrastructure could not be installed: \(error)"
+            )
+        }
+        do {
             try material.authority.activateReplayFloor()
+        } catch {
+            return unavailableActivation(
+                .trustFloorActivationRejected,
+                "Candidate campaign replay floor could not be activated: \(error)"
+            )
+        }
+        do {
             try machineManager.completeRecoveredInstallerOperations()
         } catch {
             return unavailableActivation(
                 .installationRejected,
-                "Candidate campaign launch infrastructure or replay floor could not be installed."
+                "Candidate campaign lifecycle recovery could not complete under the activated replay floor: \(error)"
             )
         }
         let identifiers = Dictionary(uniqueKeysWithValues: material.runtimes.map {
