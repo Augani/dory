@@ -2860,9 +2860,10 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 throw error
             }
         }
-        // Force a fresh virtio feature/queue negotiation even when the guest completed its first
-        // reset before the user requested recovery. Other transports and VM state remain live.
-        lifecycleLock.withLock { attachedTransport }?.requestDeviceReset()
+        // The guest's status-0 write already reset the transport and began a fresh feature/queue
+        // negotiation. The replacement joins that new device epoch; asking for another reset here
+        // races the driver's probe and can strand Linux with DEVICE_NEEDS_RESET after it has
+        // already rebuilt its queues.
     }
 
     /// Converts an asynchronous Metal failure for a worker-owned frame into the same isolated

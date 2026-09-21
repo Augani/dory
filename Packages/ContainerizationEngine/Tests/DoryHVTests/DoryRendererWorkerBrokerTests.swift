@@ -2088,11 +2088,11 @@ import Testing
             }
             return false
         })
-        let reset = queue.gpu.quiesce(reason: .deviceReset)
-        guard case .failed = reset.wait(timeout: 1) else {
-            Issue.record("failed worker reset did not close its old device epoch")
-            return
-        }
+        queue.transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(queue.transport.read(offset: 0x070, width: 4) == 0)
+        queue.reconfigureAfterReset()
+        queue.transport.write(offset: 0x070, value: 1, width: 4)
+        queue.transport.write(offset: 0x070, value: 3, width: 4)
 
         let replacementFixture = try rendererBrokerFixture(
             limits: rendererLimits(maximumInFlight: 4),
@@ -2108,7 +2108,7 @@ import Testing
         #expect(replacementLane.snapshot().state == .active(deviceGeneration: 2))
         #expect(queue.gpu.deviceFeatures == 29)
         #expect(rendererGPUUInt32(queue.gpu.configSpace, at: 12) == 2)
-        #expect(queue.transport.read(offset: 0x070, width: 4) & 0x40 != 0)
+        #expect(queue.transport.read(offset: 0x070, width: 4) == 3)
 
         try queue.submit(rendererGPUContextCreateRequest(
             contextID: 23,
@@ -4759,6 +4759,23 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
             backend: gpu,
             memory: memory
         ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descriptorTable,
+            availRing: availableRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+        transport.queues[1].configure(
+            size: 8,
+            descriptorTable: cursorDescriptorTable,
+            availRing: cursorAvailableRing,
+            usedRing: cursorUsedRing
+        )
+        transport.queues[1].setReady(true)
+    }
+
+    func reconfigureAfterReset() {
         transport.queues[0].configure(
             size: 8,
             descriptorTable: descriptorTable,
