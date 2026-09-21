@@ -82,5 +82,7 @@ Qt 6, Firefox WebGL Aquarium, Blender viewport, LibreOffice Impress, and Zed
 measurements. Each run records explicit API prerequisites, p95 frame interval,
 first-shader stall, worker CPU, and worker RSS. A selected default must pass
 every workload without llvmpipe, lavapipe, or another software renderer.
+Passing Zink evidence must include robustness2, dynamic rendering, extended
+dynamic state, and timeline-semaphore support.
 The second passing path may be retained only for a named compatibility need;
 failures remain valid measurements but cannot be selected or retained.

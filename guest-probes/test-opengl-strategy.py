@@ -50,7 +50,13 @@ def run(path: str) -> dict[str, object]:
         "memoryMB": 8192,
         "rendererDevice": "Apple M2 Pro",
         "glVersion": "4.6",
-        "apiCapabilities": ["GL_ARB_robustness", "VK_EXT_robustness2", "VK_KHR_dynamic_rendering"],
+        "apiCapabilities": [
+            "GL_ARB_robustness",
+            "VK_EXT_extended_dynamic_state",
+            "VK_EXT_robustness2",
+            "VK_KHR_dynamic_rendering",
+            "timelineSemaphore",
+        ],
         "softwareRendererDetected": False,
         "workerArtifactSHA256": "b" * 64,
         "workloads": [workload(identifier) for identifier in MODULE.WORKLOADS],
@@ -149,6 +155,12 @@ class OpenGLStrategyEvidenceTests(unittest.TestCase):
         self.values["zink-venus"]["apiCapabilities"] = ["VK_KHR_dynamic_rendering", "VK_KHR_dynamic_rendering"]
         self.write()
         with self.assertRaisesRegex(MODULE.EvidenceError, "unique and sorted"):
+            MODULE.verify(self.root)
+
+    def test_passing_zink_requires_the_reviewed_vulkan_prerequisites(self) -> None:
+        self.values["zink-venus"]["apiCapabilities"].remove("VK_EXT_robustness2")
+        self.write()
+        with self.assertRaisesRegex(MODULE.EvidenceError, "missing required capabilities"):
             MODULE.verify(self.root)
 
 

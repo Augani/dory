@@ -14,6 +14,12 @@ from typing import Any
 SCHEMA = "dory.opengl-strategy-comparison@1"
 RUN_SCHEMA = "dory.opengl-strategy-run@1"
 PATHS = ("zink-venus", "virgl2-angle")
+ZINK_REQUIRED_CAPABILITIES = frozenset((
+    "VK_EXT_extended_dynamic_state",
+    "VK_EXT_robustness2",
+    "VK_KHR_dynamic_rendering",
+    "timelineSemaphore",
+))
 WORKLOADS = (
     "glmark2",
     "gnome-shell-overview",
@@ -235,6 +241,13 @@ def verify(root: Path) -> dict[str, Any]:
             fail(f"renderer runs are not controlled: {field} differs")
 
     selected = runs[manifest["selectedPath"]]
+    zink = runs["zink-venus"]
+    if all(workload["status"] == "PASS" for workload in zink["workloads"]):
+        missing_capabilities = sorted(
+            ZINK_REQUIRED_CAPABILITIES - set(zink["apiCapabilities"])
+        )
+        if missing_capabilities:
+            fail(f"passing Zink run is missing required capabilities: {missing_capabilities}")
     if selected["softwareRendererDetected"] or any(
         workload["status"] != "PASS" for workload in selected["workloads"]
     ):
