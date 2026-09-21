@@ -1,0 +1,29 @@
+diff --git a/OvmfPkg/VirtioGpuDxe/Commands.c b/OvmfPkg/VirtioGpuDxe/Commands.c
+index 20a0b112b9..056b385cbd 100644
+--- a/OvmfPkg/VirtioGpuDxe/Commands.c
++++ b/OvmfPkg/VirtioGpuDxe/Commands.c
+@@ -147,6 +147,24 @@ VirtioGpuInit (
+     goto ReleaseQueue;
+   }
+ 
++  //
++  // Virtio-MMIO keeps the selected queue size in transport-local state until
++  // SetQueueAddress() publishes it. VirtioGpuDxe used to skip these two calls,
++  // causing modern MMIO transports to receive QueueNum=0 immediately before
++  // QueueReady=1 and leaving the first GET_DISPLAY_INFO request unconsumed.
++  // This is the same queue-programming sequence used by the block and input
++  // drivers and is a no-op where the transport does not require alignment.
++  //
++  Status = VgpuDev->VirtIo->SetQueueNum (VgpuDev->VirtIo, QueueSize);
++  if (EFI_ERROR (Status)) {
++    goto UnmapQueue;
++  }
++
++  Status = VgpuDev->VirtIo->SetQueueAlign (VgpuDev->VirtIo, EFI_PAGE_SIZE);
++  if (EFI_ERROR (Status)) {
++    goto UnmapQueue;
++  }
++
+   //
+   // If anything fails from here on, we have to unmap the ring.
+   //
