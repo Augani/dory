@@ -128,6 +128,7 @@ struct DoryVMDisplayRunnerCommandHandler: Sendable {
         UInt16,
         UInt16
     ) -> Void
+    var topology: @Sendable ([DoryVMDisplayTopologyEntry]) -> Void = { _ in }
 
     func apply(_ command: DoryVMDisplayCommand) {
         switch command.kind {
@@ -146,6 +147,9 @@ struct DoryVMDisplayRunnerCommandHandler: Sendable {
                   let physicalWidth = command.physicalWidthMillimeters,
                   let physicalHeight = command.physicalHeightMillimeters else { return }
             resize(scanoutID, width, height, physicalWidth, physicalHeight)
+        case .topology:
+            guard let displays = command.topology else { return }
+            topology(displays)
         }
     }
 }
@@ -228,6 +232,28 @@ final class DoryVMDisplayRunnerResizeTarget: @unchecked Sendable {
             physicalHeightMillimeters: physicalHeightMillimeters,
             transport: transport
         )
+    }
+
+    func apply(topology: [DoryVMDisplayTopologyEntry]) {
+        guard let target = lock.withLock({ target }),
+              let gpu = target.gpu,
+              let transport = target.transport else { return }
+        let sizes = topology.map {
+            VirtioGPUScanoutSize(
+                width: $0.width,
+                height: $0.height,
+                physicalWidthMillimeters: $0.physicalWidthMillimeters,
+                physicalHeightMillimeters: $0.physicalHeightMillimeters
+            )
+        }
+        for (index, size) in sizes.enumerated() {
+            target.pointerTopology.update(
+                scanoutID: UInt32(index),
+                width: size.width,
+                height: size.height
+            )
+        }
+        gpu.updateScanoutTopology(sizes, transport: transport)
     }
 }
 

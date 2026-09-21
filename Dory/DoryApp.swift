@@ -45,11 +45,8 @@ struct DoryApp: App {
 
         WindowGroup("Desktop", for: LinuxMachineDisplayWindow.self) { $display in
             if let display {
-                LinuxMachineDisplayView(
-                    machineID: display.machineID,
-                    scanoutID: display.scanoutID
-                )
-                .background(Color.black)
+                LinuxMachineDisplayScene(display: display)
+                    .environment(store)
             }
         }
         .defaultSize(width: 960, height: 600)

@@ -11,6 +11,9 @@ extension Notification.Name {
     static let doryOpenLinuxMachineDisplay = Notification.Name(
         "dev.dory.open-linux-machine-display"
     )
+    static let doryCloseLinuxMachineDisplay = Notification.Name(
+        "dev.dory.close-linux-machine-display"
+    )
 }
 
 nonisolated struct LinuxMachineDisplayWindow: Codable, Hashable, Identifiable {
@@ -20,15 +23,75 @@ nonisolated struct LinuxMachineDisplayWindow: Codable, Hashable, Identifiable {
     var id: String { "\(machineID):\(scanoutID)" }
 }
 
+struct LinuxMachineDisplayScene: View {
+    let display: LinuxMachineDisplayWindow
+
+    @Environment(AppStore.self) private var store
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
+
+    private var topology: [DoryVMDisplayTopologyEntry] {
+        store.runtimeLinuxDisplayTopology(for: display.machineID)
+    }
+
+    var body: some View {
+        LinuxMachineDisplayView(
+            machineID: display.machineID,
+            scanoutID: display.scanoutID,
+            topology: topology.isEmpty ? nil : topology
+        )
+        .background(Color.black)
+        .toolbar {
+            if display.scanoutID == 0 {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        guard let added = store.addRuntimeLinuxDisplay(
+                            machineID: display.machineID
+                        ) else { return }
+                        openWindow(value: added)
+                    } label: {
+                        Label("Add Display", systemImage: "rectangle.badge.plus")
+                    }
+                    .disabled(topology.count >= Int(DoryVMDisplayFrame.maximumScanoutCount))
+                    .help("Add a display to the running virtual machine")
+
+                    Button {
+                        guard let removed = store.removeRuntimeLinuxDisplay(
+                            machineID: display.machineID
+                        ) else { return }
+                        NotificationCenter.default.post(
+                            name: .doryCloseLinuxMachineDisplay,
+                            object: removed
+                        )
+                    } label: {
+                        Label("Remove Display", systemImage: "rectangle.badge.minus")
+                    }
+                    .disabled(topology.count <= 1)
+                    .help("Remove the last display from the running virtual machine")
+                }
+            }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .doryCloseLinuxMachineDisplay)
+        ) { notification in
+            guard notification.object as? LinuxMachineDisplayWindow == display else { return }
+            dismiss()
+        }
+    }
+}
+
 struct LinuxMachineDisplayView: NSViewRepresentable {
     let machineID: String
     let scanoutID: UInt32
+    var topology: [DoryVMDisplayTopologyEntry]? = nil
 
     func makeNSView(context: Context) -> LinuxMachineMetalView {
         LinuxMachineMetalView(machineID: machineID, scanoutID: scanoutID)
     }
 
-    func updateNSView(_ nsView: LinuxMachineMetalView, context: Context) {}
+    func updateNSView(_ nsView: LinuxMachineMetalView, context: Context) {
+        if let topology { nsView.applyRuntimeTopology(topology) }
+    }
 
     static func dismantleNSView(_ nsView: LinuxMachineMetalView, coordinator: ()) {
         nsView.stop()
@@ -110,6 +173,35 @@ private struct LinuxMachinePointerCaptureState {
     }
 }
 
+/// The broker orders commands per running VM, while each display owns an independent XPC
+/// connection. Allocate one process-wide sequence so resize/input from separate windows cannot
+/// collide when they target the same runner generation.
+private final class LinuxMachineDisplayCommandSequencer: @unchecked Sendable {
+    static let shared = LinuxMachineDisplayCommandSequencer()
+
+    private struct Cursor {
+        var operationID: UUID
+        var nextSequence: UInt64
+    }
+
+    private let lock = NSLock()
+    private var cursors: [String: Cursor] = [:]
+
+    func next(machineID: String, operationID: UUID) -> UInt64? {
+        lock.withLock {
+            var cursor = cursors[machineID]
+            if cursor?.operationID != operationID {
+                cursor = Cursor(operationID: operationID, nextSequence: 1)
+            }
+            guard var cursor, cursor.nextSequence < UInt64.max else { return nil }
+            let sequence = cursor.nextSequence
+            cursor.nextSequence += 1
+            cursors[machineID] = cursor
+            return sequence
+        }
+    }
+}
+
 private final class LinuxMachineDisplayClient: @unchecked Sendable {
     typealias FrameHandler = @MainActor @Sendable (
         DoryVMDisplayFrame,
@@ -125,7 +217,7 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
         var afterFrameSequence: UInt64 = 0
         var afterCursorSequence: UInt64 = 0
         var operationID: UUID?
-        var nextCommandSequence: UInt64 = 1
+        var pendingTopology: [DoryVMDisplayTopologyEntry]?
     }
 
     private let machineID: String
@@ -246,18 +338,37 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
         }
     }
 
+    func sendTopology(_ displays: [DoryVMDisplayTopologyEntry]) {
+        guard !displays.isEmpty else { return }
+        let sent = sendCommand { operationID, sequence in
+            try .topology(
+                machineID: machineID,
+                operationID: operationID,
+                sequence: sequence,
+                displays: displays
+            )
+        }
+        lock.withLock {
+            if sent {
+                if state.pendingTopology == displays { state.pendingTopology = nil }
+            } else if !state.stopped {
+                state.pendingTopology = displays
+            }
+        }
+    }
+
+    @discardableResult
     private func sendCommand(
         _ make: (UUID, UInt64) throws -> DoryVMDisplayCommand
-    ) {
-        let identity = lock.withLock { () -> (UUID, UInt64)? in
-            guard !state.stopped,
-                  let operationID = state.operationID,
-                  state.nextCommandSequence < UInt64.max else { return nil }
-            let sequence = state.nextCommandSequence
-            state.nextCommandSequence += 1
-            return (operationID, sequence)
+    ) -> Bool {
+        let operationID = lock.withLock { !state.stopped ? state.operationID : nil }
+        let identity = operationID.flatMap { operationID in
+            LinuxMachineDisplayCommandSequencer.shared.next(
+                machineID: machineID,
+                operationID: operationID
+            ).map { (operationID, $0) }
         }
-        guard let identity else { return }
+        guard let identity else { return false }
         do {
             let data = try DoryVMDisplayCommandCodec.encode(
                 make(identity.0, identity.1)
@@ -269,8 +380,10 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
                     }
                 }
             }
+            return true
         } catch {
             failed("Could not encode a VM display command: \(error)")
+            return false
         }
     }
 
@@ -330,7 +443,11 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
                   let operationID = UUID(uuidString: frame.operationID) else {
                 throw DoryVMDisplayWireError.invalidFrameIdentity
             }
-            lock.withLock { state.operationID = operationID }
+            let pendingTopology = lock.withLock { () -> [DoryVMDisplayTopologyEntry]? in
+                state.operationID = operationID
+                return state.pendingTopology
+            }
+            if let pendingTopology { sendTopology(pendingTopology) }
             Task { @MainActor [frameHandler] in
                 frameHandler(frame, descriptors, handle)
             }
@@ -432,6 +549,7 @@ final class LinuxMachineMetalView: NSView {
     private var pressedAbsoluteButtons = Set<UInt16>()
     private var pressedRelativeButtons = Set<UInt16>()
     private var hostCursorHidden = false
+    private var requestedTopology: [DoryVMDisplayTopologyEntry]?
 
     override var acceptsFirstResponder: Bool { true }
     override var wantsUpdateLayer: Bool { true }
@@ -495,6 +613,12 @@ final class LinuxMachineMetalView: NSView {
         resizeWorkItem = nil
         releasePressedInput()
         client?.stop()
+    }
+
+    func applyRuntimeTopology(_ topology: [DoryVMDisplayTopologyEntry]) {
+        guard requestedTopology != topology else { return }
+        requestedTopology = topology
+        client.sendTopology(topology)
     }
 
     override func viewDidMoveToWindow() {

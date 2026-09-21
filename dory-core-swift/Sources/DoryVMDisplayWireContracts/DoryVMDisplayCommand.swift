@@ -3,6 +3,7 @@ import Foundation
 public enum DoryVMDisplayCommandKind: String, Codable, Sendable {
     case input
     case resize
+    case topology
 }
 
 public enum DoryVMDisplayInputEndpoint: String, Codable, Sendable {
@@ -22,6 +23,27 @@ public struct DoryVMDisplayInputEvent: Codable, Equatable, Sendable {
         self.type = type
         self.code = code
         self.value = value
+    }
+}
+
+/// One enabled connector in the runtime topology. Array order is the stable scanout ID, keeping
+/// KMS connector identity deterministic across add/remove cycles without accepting sparse input.
+public struct DoryVMDisplayTopologyEntry: Codable, Equatable, Sendable {
+    public var width: UInt32
+    public var height: UInt32
+    public var physicalWidthMillimeters: UInt16
+    public var physicalHeightMillimeters: UInt16
+
+    public init(
+        width: UInt32,
+        height: UInt32,
+        physicalWidthMillimeters: UInt16,
+        physicalHeightMillimeters: UInt16
+    ) {
+        self.width = width
+        self.height = height
+        self.physicalWidthMillimeters = physicalWidthMillimeters
+        self.physicalHeightMillimeters = physicalHeightMillimeters
     }
 }
 
@@ -45,6 +67,7 @@ public struct DoryVMDisplayCommand: Codable, Equatable, Sendable {
     public var height: UInt32?
     public var physicalWidthMillimeters: UInt16?
     public var physicalHeightMillimeters: UInt16?
+    public var topology: [DoryVMDisplayTopologyEntry]?
 
     public static func input(
         machineID: String,
@@ -65,7 +88,8 @@ public struct DoryVMDisplayCommand: Codable, Equatable, Sendable {
             width: nil,
             height: nil,
             physicalWidthMillimeters: nil,
-            physicalHeightMillimeters: nil
+            physicalHeightMillimeters: nil,
+            topology: nil
         )
         try command.validate()
         return command
@@ -93,7 +117,33 @@ public struct DoryVMDisplayCommand: Codable, Equatable, Sendable {
             width: width,
             height: height,
             physicalWidthMillimeters: physicalWidthMillimeters,
-            physicalHeightMillimeters: physicalHeightMillimeters
+            physicalHeightMillimeters: physicalHeightMillimeters,
+            topology: nil
+        )
+        try command.validate()
+        return command
+    }
+
+    public static func topology(
+        machineID: String,
+        operationID: UUID,
+        sequence: UInt64,
+        displays: [DoryVMDisplayTopologyEntry]
+    ) throws -> Self {
+        let command = Self(
+            schemaVersion: schemaVersion,
+            machineID: machineID,
+            operationID: operationID.uuidString.lowercased(),
+            sequence: sequence,
+            kind: .topology,
+            inputEndpoint: nil,
+            inputEvents: [],
+            scanoutID: nil,
+            width: nil,
+            height: nil,
+            physicalWidthMillimeters: nil,
+            physicalHeightMillimeters: nil,
+            topology: displays
         )
         try command.validate()
         return command
@@ -118,6 +168,7 @@ public struct DoryVMDisplayCommand: Codable, Equatable, Sendable {
                   height == nil,
                   physicalWidthMillimeters == nil,
                   physicalHeightMillimeters == nil,
+                  topology == nil,
                   inputEvents.allSatisfy({ Self.valid($0, for: inputEndpoint) }) else {
                 throw DoryVMDisplayWireError.invalidCommand
             }
@@ -133,7 +184,27 @@ public struct DoryVMDisplayCommand: Codable, Equatable, Sendable {
                   let physicalWidthMillimeters,
                   let physicalHeightMillimeters,
                   physicalWidthMillimeters > 0,
-                  physicalHeightMillimeters > 0 else {
+                  physicalHeightMillimeters > 0,
+                  topology == nil else {
+                throw DoryVMDisplayWireError.invalidCommand
+            }
+        case .topology:
+            guard inputEndpoint == nil,
+                  inputEvents.isEmpty,
+                  scanoutID == nil,
+                  width == nil,
+                  height == nil,
+                  physicalWidthMillimeters == nil,
+                  physicalHeightMillimeters == nil,
+                  let topology,
+                  !topology.isEmpty,
+                  topology.count <= Int(DoryVMDisplayFrame.maximumScanoutCount),
+                  topology.allSatisfy({
+                      (1...Self.maximumDimension).contains($0.width)
+                          && (1...Self.maximumDimension).contains($0.height)
+                          && $0.physicalWidthMillimeters > 0
+                          && $0.physicalHeightMillimeters > 0
+                  }) else {
                 throw DoryVMDisplayWireError.invalidCommand
             }
         }

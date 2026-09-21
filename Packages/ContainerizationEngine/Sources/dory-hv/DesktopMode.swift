@@ -1549,23 +1549,35 @@ enum DesktopMode {
             self.pointerInput = VirtioInput(profile: .absolutePointer)
             self.relativePointerInput = VirtioInput(profile: .relativePointer)
             let rendererWorkerLaunch = resolvedGraphics.rendererWorkerLaunch
+            let usesDisplayRelay = configuration.displayRelayServiceName != nil
+            let supportsRuntimeDisplayTopology = usesDisplayRelay
+                && configuration.resolvedDevices?.dynamicDisplay != false
+            let presentationScanoutCount = supportsRuntimeDisplayTopology
+                ? 16 : displayPlans.count
             var mailboxes = [DesktopFrameMailbox]()
             var cursorMailboxes = [DesktopCursorMailbox]()
             var displays = [DesktopDisplayView]()
             let presentationBudget = DesktopCPUPresentationBudget.processDefault
-            let pointerTopology = DesktopPointerTopology(sizes: displayPlans.map {
+            let initialPointerSizes = displayPlans.map {
                 VirtioGPUScanoutSize(width: $0.widthPixels, height: $0.heightPixels)
-            })
-            for plan in displayPlans {
+            }
+            let pointerTopology = DesktopPointerTopology(sizes:
+                initialPointerSizes + Array(
+                    repeating: VirtioGPUScanoutSize(width: 1_280, height: 800),
+                    count: presentationScanoutCount - initialPointerSizes.count
+                )
+            )
+            for index in 0..<presentationScanoutCount {
+                let plan = displayPlans.indices.contains(index) ? displayPlans[index] : nil
                 let mailbox = DesktopFrameMailbox(
-                    scanoutID: plan.scanoutID,
+                    scanoutID: UInt32(index),
                     sharedCPUPresentationBudget: presentationBudget
                 )
                 mailbox.installCPUFramePresentationObserver { _ in
                     graphicsReadinessState.recordFirstPresentationCompletion()
                 }
                 let cursorMailbox = DesktopCursorMailbox()
-                if configuration.displayRelayServiceName == nil {
+                if configuration.displayRelayServiceName == nil, let plan {
                     let metalDisplay = try DesktopMetalView(
                         frame: NSRect(origin: .zero, size: plan.windowSize),
                         keyboardInput: keyboardInput,
@@ -1650,7 +1662,6 @@ enum DesktopMode {
                 graphicsTraceContext = nil
                 onGraphicsTrace = nil
             }
-            let usesDisplayRelay = configuration.displayRelayServiceName != nil
             let gpu = VirtioGPU(
                 hostMemoryBase: GuestLayout.daxWindowBase,
                 hostMemorySize: rendererWorkerLaunch == nil
@@ -1659,6 +1670,7 @@ enum DesktopMode {
                 scanoutSizes: displayPlans.map {
                     $0.scanoutSize(on: usesDisplayRelay ? nil : NSScreen.main)
                 },
+                scanoutCapacity: UInt32(presentationScanoutCount),
                 rendererWorkerCandidate: rendererWorkerLaunch?.commandLane,
                 hostVisibleMemory: hostVisibleMemory,
                 graphicsTraceContext: graphicsTraceContext,
@@ -1753,6 +1765,9 @@ enum DesktopMode {
                                 physicalWidthMillimeters: $3,
                                 physicalHeightMillimeters: $4
                             )
+                        },
+                        topology: { [displayRelayResizeTarget] in
+                            displayRelayResizeTarget.apply(topology: $0)
                         }
                     ),
                     onPresentationCompleted: {

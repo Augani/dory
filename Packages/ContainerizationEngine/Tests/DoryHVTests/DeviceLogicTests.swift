@@ -1686,6 +1686,82 @@ import Testing
         #expect(interruptCount == 1)
     }
 
+    @Test func runtimeTopologyEnablesAndRemovesStableScanoutConnectors() throws {
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let disabled = DeviceLogicLockedBox<[UInt32]>([])
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutSizes: [VirtioGPUScanoutSize(width: 1_920, height: 1_080)],
+            scanoutCapacity: 3,
+            onScanoutDisabled: { scanoutID in
+                disabled.withLock { $0.append(scanoutID) }
+            }
+        )
+        var interruptCount = 0
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) { interruptCount += 1 }
+
+        #expect(leUInt32(gpu.configSpace, at: 8) == 3)
+        var display = try gpuResponse(gpu: gpu, request: gpuRequest(
+            type: 0x0100,
+            fenceID: 0,
+            contextID: 0,
+            ringIndex: 0
+        ))
+        #expect(leUInt32(display, at: 40) == 1)
+        #expect(leUInt32(display, at: 64) == 0)
+
+        #expect(gpu.updateScanoutTopology([
+            VirtioGPUScanoutSize(width: 1_920, height: 1_080),
+            VirtioGPUScanoutSize(
+                width: 2_560,
+                height: 1_440,
+                physicalWidthMillimeters: 344,
+                physicalHeightMillimeters: 194
+            ),
+        ], transport: transport))
+        #expect(interruptCount == 1)
+        display = try gpuResponse(gpu: gpu, request: gpuRequest(
+            type: 0x0100,
+            fenceID: 0,
+            contextID: 0,
+            ringIndex: 0
+        ))
+        #expect(leUInt32(display, at: 56) == 2_560)
+        #expect(leUInt32(display, at: 60) == 1_440)
+        #expect(leUInt32(display, at: 64) == 1)
+        gpu.writeConfig(offset: 4, value: 1, width: 4)
+        transport.write(offset: 0x064, value: 2, width: 4)
+
+        var edidRequest = gpuRequest(type: 0x010A, fenceID: 0, contextID: 0, ringIndex: 0)
+        edidRequest.appendLE(UInt32(1))
+        edidRequest.appendLE(UInt32(0))
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: edidRequest), at: 0) == 0x1104)
+
+        #expect(gpu.updateScanoutTopology([
+            VirtioGPUScanoutSize(width: 1_920, height: 1_080),
+        ], transport: transport))
+        #expect(interruptCount == 2)
+        #expect(disabled.value == [1])
+        display = try gpuResponse(gpu: gpu, request: gpuRequest(
+            type: 0x0100,
+            fenceID: 0,
+            contextID: 0,
+            ringIndex: 0
+        ))
+        #expect(leUInt32(display, at: 64) == 0)
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: edidRequest), at: 0) == 0x1205)
+        #expect(!gpu.updateScanoutTopology([], transport: transport))
+        #expect(!gpu.updateScanoutTopology(Array(
+            repeating: VirtioGPUScanoutSize(width: 800, height: 600),
+            count: 4
+        ), transport: transport))
+        #expect(interruptCount == 2)
+    }
+
     @Test func hostResizeRaisesConfigInterruptAndUpdatesPreferredMode() throws {
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
         let gpu = VirtioGPU(

@@ -181,6 +181,15 @@ struct DorydClientTests {
         let machine = AppStore.machine(fromDoryd: status)
         #expect(machine.displays == status.displays)
         #expect(machine.displays.indices.map(UInt32.init) == [0, 1])
+
+        let store = AppStore(dorydClient: client, useDorydEngine: true)
+        store.machines = [machine]
+        let added = try #require(store.addRuntimeLinuxDisplay(machineID: machine.name))
+        #expect(added.scanoutID == 2)
+        #expect(store.runtimeLinuxDisplayTopology(for: machine.name).count == 3)
+        let removed = try #require(store.removeRuntimeLinuxDisplay(machineID: machine.name))
+        #expect(removed == added)
+        #expect(store.runtimeLinuxDisplayTopology(for: machine.name).count == 2)
     }
 
     @MainActor

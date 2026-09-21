@@ -1891,17 +1891,21 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     public let deviceID: UInt32 = 16
     public let queueCount = 2
     public var deviceFeatures: UInt64 {
+        let hasActiveDisplay = displayLock.withLock { activeScanoutCount > 0 }
         let displayFeatures = lifecycleLock.withLock { acceptingGuestCommands }
-            && scanoutCount > 0 ? Feature.edid : 0
+            && hasActiveDisplay ? Feature.edid : 0
         guard rendererAuthorityIsConfigured,
               rendererCapabilitiesAreAdvertised else { return displayFeatures }
         return displayFeatures | configuredRendererDeviceFeatures
     }
     public let sharedMemoryRegions: [VirtioSharedMemoryRegion]
 
+    /// Stable connector capacity advertised to the guest. Runtime hot-plug changes which prefix
+    /// is enabled, not the connector numbering, so existing KMS objects retain their identity.
     private let scanoutCount: UInt32
     private let displayLock = NSLock()
     private var scanoutSizes: [VirtioGPUScanoutSize]
+    private var activeScanoutCount: UInt32
     private var pendingDisplayEvents: UInt32 = 0
     private let onScanoutFrame: (@Sendable (VirtioGPUScanoutFrame) -> Void)?
     private let onScanoutTexture: (@Sendable (VirtioGPUScanoutTextureUpdate) -> Void)?
@@ -2434,6 +2438,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         scanoutWidth: UInt32 = 1_280,
         scanoutHeight: UInt32 = 800,
         scanoutSizes: [VirtioGPUScanoutSize]? = nil,
+        scanoutCapacity: UInt32? = nil,
         renderer: VirtioGPURenderer? = nil,
         rendererWorkerCandidate: DoryRendererWorkerVirtioCommandLane? = nil,
         hostVisibleMemory: VirtioGPUHostVisibleMemory? = nil,
@@ -2472,7 +2477,18 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 count: Int(min(scanoutCount, 16))
             )
         }
-        let boundedScanoutCount = UInt32(boundedScanoutSizes.count)
+        let boundedActiveScanoutCount = UInt32(boundedScanoutSizes.count)
+        let boundedScanoutCount = min(
+            16,
+            max(boundedActiveScanoutCount, scanoutCapacity ?? boundedActiveScanoutCount)
+        )
+        let reservedScanoutSizes = boundedScanoutSizes + Array(
+            repeating: VirtioGPUScanoutSize(
+                width: scanoutWidth,
+                height: scanoutHeight
+            ),
+            count: Int(boundedScanoutCount - boundedActiveScanoutCount)
+        )
         let boundedControlRequestBytes = min(
             64 * 1_024 * 1_024,
             max(96, maximumControlRequestBytes)
@@ -2538,7 +2554,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             VirtioSharedMemoryRegion(id: 1, guestBase: hostMemoryBase, length: hostVisibleMemory?.length ?? hostMemorySize)
         ]
         self.scanoutCount = boundedScanoutCount
-        self.scanoutSizes = boundedScanoutSizes
+        self.scanoutSizes = reservedScanoutSizes
+        self.activeScanoutCount = boundedActiveScanoutCount
         self.hostVisibleMemory = hostVisibleMemory
         self.onScanoutFrame = onScanoutFrame
         self.onScanoutTexture = onScanoutTexture
@@ -2607,6 +2624,35 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         return config
     }
 
+    /// Enables a contiguous set of stable scanout connectors and publishes one display-change
+    /// interrupt. Removed scanouts are retired immediately on the host while Linux responds to the
+    /// event by disabling their KMS connectors and rebinding any remaining framebuffers.
+    @discardableResult
+    public func updateScanoutTopology(
+        _ sizes: [VirtioGPUScanoutSize],
+        transport: VirtioMMIOTransport
+    ) -> Bool {
+        guard !sizes.isEmpty, sizes.count <= Int(scanoutCount) else { return false }
+        let previousCount = displayLock.withLock { () -> UInt32? in
+            let requestedCount = UInt32(sizes.count)
+            guard activeScanoutCount != requestedCount
+                    || Array(scanoutSizes.prefix(sizes.count)) != sizes else { return nil }
+            let previousCount = activeScanoutCount
+            for (index, size) in sizes.enumerated() { scanoutSizes[index] = size }
+            activeScanoutCount = requestedCount
+            pendingDisplayEvents |= 1
+            return previousCount
+        }
+        guard let previousCount else { return false }
+        if previousCount > UInt32(sizes.count) {
+            for scanoutID in UInt32(sizes.count)..<previousCount {
+                onScanoutDisabled?(scanoutID)
+            }
+        }
+        transport.notifyConfigChange()
+        return true
+    }
+
     /// Publishes a new preferred scanout size and raises VIRTIO_GPU_EVENT_DISPLAY. The Linux DRM
     /// driver responds by re-reading GET_DISPLAY_INFO and issuing a real modeset, so the guest
     /// compositor renders at the Retina window's pixel dimensions instead of scaling one fixed
@@ -2621,7 +2667,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     ) {
         displayLock.lock()
         let index = Int(scanoutID)
-        let previous = scanoutSizes.indices.contains(index) ? scanoutSizes[index] : nil
+        let previous = index < Int(activeScanoutCount) ? scanoutSizes[index] : nil
         let updated = VirtioGPUScanoutSize(
             width: width,
             height: height,
@@ -2630,7 +2676,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             physicalHeightMillimeters: physicalHeightMillimeters
                 ?? previous?.physicalHeightMillimeters
         )
-        let changed = scanoutSizes.indices.contains(index) && scanoutSizes[index] != updated
+        let changed = index < Int(activeScanoutCount) && scanoutSizes[index] != updated
         if changed {
             scanoutSizes[index] = updated
             pendingDisplayEvents |= 1  // VIRTIO_GPU_EVENT_DISPLAY
@@ -8391,10 +8437,11 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         case Command.getDisplayInfo:
             displayLock.lock()
             let sizes = scanoutSizes
+            let activeCount = activeScanoutCount
             displayLock.unlock()
             var response = responseHeader(type: Response.okDisplayInfo, request: request)
             for index in 0..<16 {
-                let size = sizes.indices.contains(index) ? sizes[index] : nil
+                let size = index < Int(activeCount) ? sizes[index] : nil
                 response.appendLE(UInt32(0))
                 response.appendLE(UInt32(0))
                 response.appendLE(size?.width ?? 0)
@@ -8407,7 +8454,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             try requireLength(request, 32)
             let scanoutID = request.leUInt32(at: 24)
             displayLock.lock()
-            let size = scanoutSizes.indices.contains(Int(scanoutID))
+            let size = scanoutID < activeScanoutCount
                 ? scanoutSizes[Int(scanoutID)] : nil
             displayLock.unlock()
             guard let size else {
@@ -8485,6 +8532,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     }
                     onScanoutDisabled?(scanoutID)
                     return responseHeader(type: Response.okNoData, request: request)
+                }
+                guard displayLock.withLock({ scanoutID < activeScanoutCount }) else {
+                    throw VMError.invalidConfiguration("inactive virtio-gpu scanout id")
                 }
                 let rect = try scanoutRect(from: request, at: 24)
                 let source: ScanoutBinding.Source
@@ -8981,6 +9031,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     onScanoutDisabled?(scanoutID)
                     return responseHeader(type: Response.okNoData, request: request)
                 }
+                guard displayLock.withLock({ scanoutID < activeScanoutCount }) else {
+                    throw VMError.invalidConfiguration("inactive virtio-gpu blob scanout id")
+                }
                 let rect = try scanoutRect(from: request, at: 24)
                 let workerBacked = rendererWorkerResourceGenerations[resourceID] != nil
                 guard let blob = blobResources[resourceID],
@@ -9473,7 +9526,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             }
             try requireLength(request, 56)
             let scanoutID = request.leUInt32(at: 24)
-            guard scanoutID < scanoutCount else {
+            guard displayLock.withLock({ scanoutID < activeScanoutCount }) else {
                 throw VMError.invalidConfiguration("invalid virtio-gpu cursor scanout")
             }
             if command == Command.moveCursor {

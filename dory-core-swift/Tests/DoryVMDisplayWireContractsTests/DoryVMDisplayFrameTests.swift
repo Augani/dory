@@ -80,7 +80,7 @@ struct DoryVMDisplayFrameTests {
         }
     }
 
-    @Test("input and resize commands round-trip with endpoint-specific validation")
+    @Test("input, resize, and topology commands round-trip with exact validation")
     func commandRoundTrip() throws {
         let operationID = UUID(uuidString: "90000000-0000-0000-0000-000000000009")!
         let input = try DoryVMDisplayCommand.input(
@@ -109,6 +109,28 @@ struct DoryVMDisplayFrameTests {
         )
         let resizeData = try DoryVMDisplayCommandCodec.encode(resize)
         #expect(try DoryVMDisplayCommandCodec.decode(resizeData) == resize)
+
+        let topology = try DoryVMDisplayCommand.topology(
+            machineID: "ubuntu",
+            operationID: operationID,
+            sequence: 3,
+            displays: [
+                .init(
+                    width: 2_560,
+                    height: 1_440,
+                    physicalWidthMillimeters: 344,
+                    physicalHeightMillimeters: 194
+                ),
+                .init(
+                    width: 1_920,
+                    height: 1_080,
+                    physicalWidthMillimeters: 310,
+                    physicalHeightMillimeters: 175
+                ),
+            ]
+        )
+        let topologyData = try DoryVMDisplayCommandCodec.encode(topology)
+        #expect(try DoryVMDisplayCommandCodec.decode(topologyData) == topology)
     }
 
     @Test("commands reject cross-endpoint events and mixed payloads")
@@ -121,6 +143,14 @@ struct DoryVMDisplayFrameTests {
                 sequence: 1,
                 endpoint: .keyboard,
                 events: [.init(type: 3, code: 0, value: 1)]
+            )
+        }
+        #expect(throws: DoryVMDisplayWireError.invalidCommand) {
+            _ = try DoryVMDisplayCommand.topology(
+                machineID: "ubuntu",
+                operationID: operationID,
+                sequence: 3,
+                displays: []
             )
         }
         #expect(throws: DoryVMDisplayWireError.invalidCommand) {

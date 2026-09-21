@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import Darwin
 import DoryOperations
+import DoryVMDisplayWireContracts
 import Observation
 import ServiceManagement
 import UniformTypeIdentifiers
@@ -147,6 +148,7 @@ final class AppStore {
     var networks: [DoryNetwork] = []
     var pods: [Pod] = []
     var machines: [Machine] = []
+    var runtimeLinuxDisplayTopologies: [String: [DoryVMDisplayTopologyEntry]] = [:]
     var engineRunning = false
     var engineVersion = "1.4.0"
     /// True while the in-app Auto-Idle monitor has stopped the engine to reclaim memory. The docker
@@ -5379,6 +5381,7 @@ final class AppStore {
                 machines = statuses.map {
                     Self.machine(fromDoryd: $0, domainSuffix: domainSuffix)
                 }
+                reconcileRuntimeLinuxDisplayTopologies()
                 if actionError?.hasPrefix("doryd machine list failed:") == true {
                     actionError = nil
                 }
@@ -5608,6 +5611,91 @@ final class AppStore {
 
     func linuxDisplayWindow(for machine: Machine) -> LinuxMachineDisplayWindow? {
         linuxDisplayWindows(for: machine).first
+    }
+
+    func runtimeLinuxDisplayTopology(
+        for machineID: String
+    ) -> [DoryVMDisplayTopologyEntry] {
+        if let topology = runtimeLinuxDisplayTopologies[machineID] { return topology }
+        guard let machine = machines.first(where: { $0.name == machineID }) else { return [] }
+        return Self.displayTopologyEntries(machine.displays)
+    }
+
+    @discardableResult
+    func addRuntimeLinuxDisplay(machineID: String) -> LinuxMachineDisplayWindow? {
+        guard let machine = machines.first(where: {
+            $0.name == machineID && $0.status == .running
+                && $0.guestFamily == "linux" && $0.displayMode == .desktop
+        }) else { return nil }
+        var topology = runtimeLinuxDisplayTopologies[machineID]
+            ?? Self.displayTopologyEntries(machine.displays)
+        guard !topology.isEmpty,
+              topology.count < Int(DoryVMDisplayFrame.maximumScanoutCount) else { return nil }
+        topology.append(topology.last ?? Self.defaultRuntimeDisplayTopologyEntry)
+        runtimeLinuxDisplayTopologies[machineID] = topology
+        return LinuxMachineDisplayWindow(
+            machineID: machineID,
+            scanoutID: UInt32(topology.count - 1)
+        )
+    }
+
+    @discardableResult
+    func removeRuntimeLinuxDisplay(machineID: String) -> LinuxMachineDisplayWindow? {
+        guard let machine = machines.first(where: {
+            $0.name == machineID && $0.status == .running
+                && $0.guestFamily == "linux" && $0.displayMode == .desktop
+        }) else { return nil }
+        var topology = runtimeLinuxDisplayTopologies[machineID]
+            ?? Self.displayTopologyEntries(machine.displays)
+        guard topology.count > 1 else { return nil }
+        let removed = LinuxMachineDisplayWindow(
+            machineID: machineID,
+            scanoutID: UInt32(topology.count - 1)
+        )
+        topology.removeLast()
+        runtimeLinuxDisplayTopologies[machineID] = topology
+        return removed
+    }
+
+    private func reconcileRuntimeLinuxDisplayTopologies() {
+        let live = Set(machines.map(\.name))
+        runtimeLinuxDisplayTopologies = runtimeLinuxDisplayTopologies.filter {
+            live.contains($0.key)
+        }
+        for machine in machines where machine.guestFamily == "linux"
+            && machine.displayMode == .desktop {
+            if machine.status != .running || runtimeLinuxDisplayTopologies[machine.name] == nil {
+                runtimeLinuxDisplayTopologies[machine.name] = Self.displayTopologyEntries(
+                    machine.displays
+                )
+            }
+        }
+    }
+
+    private static let defaultRuntimeDisplayTopologyEntry = DoryVMDisplayTopologyEntry(
+        width: 1_920,
+        height: 1_080,
+        physicalWidthMillimeters: 305,
+        physicalHeightMillimeters: 171
+    )
+
+    private static func displayTopologyEntries(
+        _ displays: [DoryVirtualMachineDisplayCapabilityRequest]
+    ) -> [DoryVMDisplayTopologyEntry] {
+        displays.map {
+            DoryVMDisplayTopologyEntry(
+                width: $0.widthPixels,
+                height: $0.heightPixels,
+                physicalWidthMillimeters: UInt16(clamping: max(
+                    1,
+                    Int((Double($0.widthPixels) * 25.4 / 160).rounded())
+                )),
+                physicalHeightMillimeters: UInt16(clamping: max(
+                    1,
+                    Int((Double($0.heightPixels) * 25.4 / 160).rounded())
+                ))
+            )
+        }
     }
 
     func openMachineDesktop(_ machine: Machine) {
