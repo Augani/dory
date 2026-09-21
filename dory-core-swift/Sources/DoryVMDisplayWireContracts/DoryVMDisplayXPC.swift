@@ -44,6 +44,20 @@ public protocol DoryVMDisplayBrokerXPCProtocol: NSObjectProtocol {
         afterSequence: UInt64,
         withReply reply: @escaping (Bool, Data, String) -> Void
     )
+    func acknowledgeCommand(
+        _ machineID: String,
+        operationID: String,
+        sequence: UInt64,
+        applied: Bool,
+        detail: String,
+        withReply reply: @escaping (Bool, String) -> Void
+    )
+    func commandStatus(
+        _ machineID: String,
+        operationID: String,
+        sequence: UInt64,
+        withReply reply: @escaping (Bool, Bool, String) -> Void
+    )
     func retireRunner(
         _ machineID: String,
         operationID: String,

@@ -22,6 +22,14 @@ protocol DoryVMDisplayRunnerTransport: AnyObject, Sendable {
         afterSequence: UInt64,
         reply: @escaping @Sendable (Bool, Data, String) -> Void
     )
+    func acknowledgeCommand(
+        machineID: String,
+        operationID: String,
+        sequence: UInt64,
+        applied: Bool,
+        detail: String,
+        reply: @escaping @Sendable (Bool, String) -> Void
+    )
     func retireRunner(
         machineID: String,
         operationID: String,
@@ -100,6 +108,30 @@ final class DoryVMDisplayRunnerXPCTransport: DoryVMDisplayRunnerTransport,
         )
     }
 
+    func acknowledgeCommand(
+        machineID: String,
+        operationID: String,
+        sequence: UInt64,
+        applied: Bool,
+        detail: String,
+        reply: @escaping @Sendable (Bool, String) -> Void
+    ) {
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+            reply(false, "display-broker-error: \(error)")
+        }) as? DoryVMDisplayBrokerXPCProtocol else {
+            reply(false, "display-broker-proxy-unavailable")
+            return
+        }
+        proxy.acknowledgeCommand(
+            machineID,
+            operationID: operationID,
+            sequence: sequence,
+            applied: applied,
+            detail: detail,
+            withReply: reply
+        )
+    }
+
     func retireRunner(
         machineID: String,
         operationID: String,
@@ -120,7 +152,7 @@ final class DoryVMDisplayRunnerXPCTransport: DoryVMDisplayRunnerTransport,
 }
 
 struct DoryVMDisplayRunnerCommandHandler: Sendable {
-    var input: @Sendable (DoryVMDisplayInputEndpoint, [VirtioInputEvent]) -> Void
+    var input: @Sendable (DoryVMDisplayInputEndpoint, [VirtioInputEvent]) -> Bool
     var resize: @Sendable (
         UInt32,
         UInt32,
@@ -131,11 +163,12 @@ struct DoryVMDisplayRunnerCommandHandler: Sendable {
     var topology: @Sendable ([DoryVMDisplayTopologyEntry]) -> Void = { _ in }
     var restartGraphics: @Sendable () -> Void = {}
 
-    func apply(_ command: DoryVMDisplayCommand) {
+    @discardableResult
+    func apply(_ command: DoryVMDisplayCommand) -> Bool {
         switch command.kind {
         case .input:
-            guard let endpoint = command.inputEndpoint else { return }
-            input(
+            guard let endpoint = command.inputEndpoint else { return false }
+            return input(
                 endpoint,
                 command.inputEvents.map {
                     VirtioInputEvent(type: $0.type, code: $0.code, value: $0.value)
@@ -146,13 +179,16 @@ struct DoryVMDisplayRunnerCommandHandler: Sendable {
                   let width = command.width,
                   let height = command.height,
                   let physicalWidth = command.physicalWidthMillimeters,
-                  let physicalHeight = command.physicalHeightMillimeters else { return }
+                  let physicalHeight = command.physicalHeightMillimeters else { return false }
             resize(scanoutID, width, height, physicalWidth, physicalHeight)
+            return true
         case .topology:
-            guard let displays = command.topology else { return }
+            guard let displays = command.topology else { return false }
             topology(displays)
+            return true
         case .restartGraphics:
             restartGraphics()
+            return true
         }
     }
 }
@@ -732,7 +768,18 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
                     return true
                 }
                 if shouldApply {
-                    commandHandler.apply(command)
+                    let applied = commandHandler.apply(command)
+                    transport.acknowledgeCommand(
+                        machineID: machineID,
+                        operationID: operationID,
+                        sequence: command.sequence,
+                        applied: applied,
+                        detail: applied ? "" : "runner-rejected-command"
+                    ) { [log] accepted, detail in
+                        if !accepted, !detail.isEmpty {
+                            log("dory-hv display relay command acknowledgement: \(detail)")
+                        }
+                    }
                     nextDelay = 0
                 }
             } catch {

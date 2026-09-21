@@ -518,7 +518,18 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
                 endpoint: .keyboard,
                 events: events
             )
-        }, completion: completion)
+        }, completion: { [weak self] sequence, accepted, detail in
+            guard accepted, let self else {
+                completion(sequence, false, detail)
+                return
+            }
+            self.pollQualificationCommandStatus(
+                operationID: expectedOperationID,
+                sequence: sequence,
+                attemptsRemaining: 600,
+                completion: completion
+            )
+        })
     }
 
     func sendResize(
@@ -599,6 +610,56 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
         } catch {
             failed("Could not encode a VM display command: \(error)")
             return false
+        }
+    }
+
+    private func pollQualificationCommandStatus(
+        operationID: UUID,
+        sequence: UInt64,
+        attemptsRemaining: Int,
+        completion: @escaping @Sendable (UInt64, Bool, String) -> Void
+    ) {
+        let operationText = operationID.uuidString.lowercased()
+        guard attemptsRemaining > 0,
+              lock.withLock({ !state.stopped && state.operationID == operationID }) else {
+            completion(sequence, false, "runner-command-timeout-or-generation-changed")
+            return
+        }
+        guard let statusProxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
+            self?.failed("The VM display broker call failed: \(error)")
+            completion(sequence, false, "display-broker-error")
+        }) as? DoryVMDisplayBrokerXPCProtocol else {
+            failed("The VM display broker proxy is unavailable.")
+            completion(sequence, false, "display-broker-proxy-unavailable")
+            return
+        }
+        statusProxy.commandStatus(
+            machineID,
+            operationID: operationText,
+            sequence: sequence
+        ) { [weak self] known, applied, detail in
+            guard let self else {
+                completion(sequence, false, "display-client-released")
+                return
+            }
+            if known, applied {
+                completion(sequence, true, "")
+            } else if known, detail == "pending" {
+                self.queue.asyncAfter(deadline: .now() + 1.0 / 60.0) {
+                    self.pollQualificationCommandStatus(
+                        operationID: operationID,
+                        sequence: sequence,
+                        attemptsRemaining: attemptsRemaining - 1,
+                        completion: completion
+                    )
+                }
+            } else {
+                completion(
+                    sequence,
+                    false,
+                    detail.isEmpty ? "runner-command-not-applied" : detail
+                )
+            }
         }
     }
 

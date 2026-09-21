@@ -1826,11 +1826,11 @@ enum DesktopMode {
                             endpoint, events in
                             switch endpoint {
                             case .keyboard:
-                                keyboardInput.send(frame: events)
+                                return keyboardInput.submit(frame: events)
                             case .absolutePointer:
-                                pointerInput.send(frame: events)
+                                return pointerInput.submit(frame: events)
                             case .relativePointer:
-                                relativePointerInput.send(frame: events)
+                                return relativePointerInput.submit(frame: events)
                             }
                         },
                         resize: { [displayRelayResizeTarget] in

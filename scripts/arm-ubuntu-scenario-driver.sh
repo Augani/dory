@@ -182,6 +182,7 @@ jq -e --arg machine "$MACHINE" --arg service "$MACH_SERVICE" \
   --arg script "$INPUT_SCRIPT_SHA256" --argjson pid "$APP_PID" \
   --argjson steps "$INPUT_STEP_COUNT" --argjson events "$INPUT_EVENT_COUNT" '
   .kind == "dev.dory.display-qualification-input" and .schemaVersion == 1
+  and .delivery == "runner-applied"
   and .bundleIdentifier == "com.pythonxi.Dory" and .processID == $pid
   and .machineID == $machine and .machServiceName == $service
   and .operationID == $operation and .scriptSHA256 == $script

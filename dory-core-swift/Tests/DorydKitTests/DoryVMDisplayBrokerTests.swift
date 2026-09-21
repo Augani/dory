@@ -156,6 +156,72 @@ final class DoryVMDisplayBrokerTests: XCTestCase {
         ))
     }
 
+    func testCommandStatusRequiresOwningRunnerApplication() throws {
+        let broker = broker()
+        let runner = UUID()
+        let operationID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        broker.publish(
+            frameData: try DoryVMDisplayFrameCodec.encode(makeFrame(sequence: 1)),
+            descriptors: [Pipe().fileHandleForReading],
+            sharedTextureHandle: nil,
+            runnerSessionID: runner,
+            processIdentifier: 42,
+            reply: { _, _ in }
+        )
+        let command = try DoryVMDisplayCommand.input(
+            machineID: "ubuntu",
+            operationID: operationID,
+            sequence: 1,
+            endpoint: .keyboard,
+            events: [
+                .init(type: 1, code: 28, value: 1),
+                .init(type: 1, code: 28, value: 0),
+            ]
+        )
+        try broker.send(commandData: DoryVMDisplayCommandCodec.encode(command))
+        XCTAssertEqual(
+            broker.commandStatus(
+                machineID: "ubuntu",
+                operationID: operationID.uuidString.lowercased(),
+                sequence: 1
+            ).detail,
+            "pending"
+        )
+        XCTAssertNotNil(try broker.nextCommand(
+            machineID: "ubuntu",
+            operationID: operationID.uuidString.lowercased(),
+            afterSequence: 0,
+            runnerSessionID: runner,
+            processIdentifier: 42
+        ))
+        XCTAssertThrowsError(try broker.acknowledgeCommand(
+            machineID: "ubuntu",
+            operationID: operationID.uuidString.lowercased(),
+            sequence: 1,
+            applied: true,
+            detail: "",
+            runnerSessionID: UUID(),
+            processIdentifier: 42
+        ))
+        try broker.acknowledgeCommand(
+            machineID: "ubuntu",
+            operationID: operationID.uuidString.lowercased(),
+            sequence: 1,
+            applied: true,
+            detail: "",
+            runnerSessionID: runner,
+            processIdentifier: 42
+        )
+        let status = broker.commandStatus(
+            machineID: "ubuntu",
+            operationID: operationID.uuidString.lowercased(),
+            sequence: 1
+        )
+        XCTAssertTrue(status.known)
+        XCTAssertTrue(status.applied)
+        XCTAssertEqual(status.detail, "")
+    }
+
     private func broker() -> DoryVMDisplayBroker {
         DoryVMDisplayBroker { machineID, operationID, pid in
             machineID == "ubuntu"

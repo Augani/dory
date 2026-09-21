@@ -493,21 +493,30 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
     }
 
     /// Queues one atomic evdev update. `SYN_REPORT` is appended when the caller omitted it.
+    /// This compatibility entry point intentionally discards the admission result.
+    public func send(frame events: [VirtioInputEvent]) {
+        _ = submit(frame: events)
+    }
+
+    /// Returns true only when the complete frame was admitted to the bounded host-owned queue.
     /// This method never acquires the transport lock or walks a guest descriptor. AppKit callers
     /// perform only bounded validation and host-owned queue admission before returning.
-    public func send(frame events: [VirtioInputEvent]) {
-        guard !events.isEmpty else { return }
+    @discardableResult
+    public func submit(frame events: [VirtioInputEvent]) -> Bool {
+        guard !events.isEmpty else { return false }
         var complete = events
         if complete.last != .synchronize { complete.append(.synchronize) }
 
         let submittedAt = monotonicNanoseconds()
         let request: WorkerRequest?
+        let admitted: Bool
         lock.lock()
-        guard complete.count <= limits.maximumEventsPerFrame,
+        guard !terminal,
+              complete.count <= limits.maximumEventsPerFrame,
               Self.isValidFrame(complete, profile: profile) else {
             statisticsState.rejectedFrames &+= 1
             lock.unlock()
-            return
+            return false
         }
         statisticsState.submittedFrames &+= 1
         Self.applyPressedState(events: complete, to: &desiredPressedCodes)
@@ -522,11 +531,13 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
                 submittedAtNanoseconds: submittedAt
             )
             statisticsState.coalescedMotionFrames &+= 1
+            admitted = true
         } else if pendingFrames.count < limits.maximumPendingFrames {
             pendingFrames.append(PendingFrame(
                 events: complete,
                 submittedAtNanoseconds: submittedAt
             ))
+            admitted = true
         } else {
             // The callback is nonblocking and the backlog is bounded. Once saturated, preserve
             // every already-admitted semantic frame in exact order and reject the newest frame.
@@ -537,11 +548,13 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
             if complete.contains(where: { $0.type == UInt16(EventType.key) }) {
                 needsStateReconciliation = true
             }
+            admitted = false
         }
         updateDepthGaugesLocked()
         request = requestWorkerLocked(queueMask: 1)
         lock.unlock()
         enqueueWorker(request)
+        return admitted
     }
 
     private static func isAbsolutePointerPositionFrame(_ events: [VirtioInputEvent]) -> Bool {

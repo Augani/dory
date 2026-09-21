@@ -25,6 +25,8 @@ struct DoryVMDisplayRunnerRelayTests {
         private(set) var retireCount = 0
         private(set) var invalidateCount = 0
         private var publishedCursors: [Data] = []
+        private var acknowledgedCommandSequences: [UInt64] = []
+        private let commandAcknowledgement = DispatchSemaphore(value: 0)
 
         init(commands: [Data] = []) {
             self.commands = commands
@@ -63,6 +65,23 @@ struct DoryVMDisplayRunnerRelayTests {
             }
         }
 
+        func acknowledgeCommand(
+            machineID: String,
+            operationID: String,
+            sequence: UInt64,
+            applied: Bool,
+            detail: String,
+            reply: @escaping @Sendable (Bool, String) -> Void
+        ) {
+            if applied, detail.isEmpty {
+                lock.withLock { acknowledgedCommandSequences.append(sequence) }
+                commandAcknowledgement.signal()
+                reply(true, "")
+            } else {
+                reply(false, "invalid-acknowledgement")
+            }
+        }
+
         func retireRunner(
             machineID: String,
             operationID: String,
@@ -82,6 +101,11 @@ struct DoryVMDisplayRunnerRelayTests {
 
 
         var cursors: [Data] { lock.withLock { publishedCursors } }
+        var commandSequences: [UInt64] { lock.withLock { acknowledgedCommandSequences } }
+
+        func waitForCommandAcknowledgement() -> DispatchTimeoutResult {
+            commandAcknowledgement.wait(timeout: .now() + 1)
+        }
     }
 
     @Test func presentationIntervalsArePerScanoutBoundedAndNearestRanked() {
@@ -107,7 +131,10 @@ struct DoryVMDisplayRunnerRelayTests {
         let topologies = Recorder<[DoryVMDisplayTopologyEntry]>()
         let graphicsRestarts = Recorder<Int>()
         let handler = DoryVMDisplayRunnerCommandHandler(
-            input: { inputs.append(($0, $1)) },
+            input: {
+                inputs.append(($0, $1))
+                return true
+            },
             resize: { resizes.append(($0, $1, $2, $3, $4)) },
             topology: { topologies.append($0) },
             restartGraphics: { graphicsRestarts.append(1) }
@@ -190,6 +217,7 @@ struct DoryVMDisplayRunnerRelayTests {
                 input: { _, events in
                     inputs.append(events)
                     delivered.signal()
+                    return true
                 },
                 resize: { _, _, _, _, _ in }
             )
@@ -197,10 +225,12 @@ struct DoryVMDisplayRunnerRelayTests {
 
         relay.start()
         #expect(delivered.wait(timeout: .now() + 1) == .success)
+        #expect(transport.waitForCommandAcknowledgement() == .success)
         relay.stop()
         relay.stop()
 
         #expect(inputs.snapshot == [[VirtioInputEvent(type: 1, code: 30, value: 1)]])
+        #expect(transport.commandSequences == [1])
         #expect(transport.lifecycleCounts.retire == 1)
         #expect(transport.lifecycleCounts.invalidate == 1)
     }
@@ -212,7 +242,7 @@ struct DoryVMDisplayRunnerRelayTests {
             machineID: "ubuntu",
             operationID: operationID,
             transport: transport,
-            commandHandler: .init(input: { _, _ in }, resize: { _, _, _, _, _ in })
+            commandHandler: .init(input: { _, _ in true }, resize: { _, _, _, _, _ in })
         )
         relay.publishCursor(.init(
             scanoutID: 1,

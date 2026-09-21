@@ -21,6 +21,17 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
         let processIdentifier: pid_t
     }
 
+    enum CommandApplicationStatus: Equatable {
+        case pending
+        case applied
+        case rejected(String)
+    }
+
+    private struct CommandApplicationRecord {
+        let operationID: String
+        var status: CommandApplicationStatus
+    }
+
     private final class FrameAuthority {
         let descriptors: [FileHandle]
         let sharedTextureHandle: MTLSharedTextureHandle?
@@ -63,6 +74,7 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
     private var state = DoryVMDisplayRelayState<FrameAuthority>()
     private var runnerOwners: [String: RunnerOwner] = [:]
     private var cursors: [String: [UInt32: DoryVMDisplayCursor]] = [:]
+    private var commandApplications: [String: [UInt64: CommandApplicationRecord]] = [:]
 
     public init(runnerValidator: @escaping RunnerValidator) {
         self.runnerValidator = runnerValidator
@@ -213,7 +225,70 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
 
     func send(commandData: Data) throws {
         let command = try DoryVMDisplayCommandCodec.decode(commandData)
-        try lock.withLock { try state.send(command: command) }
+        try lock.withLock {
+            try state.send(command: command)
+            commandApplications[command.machineID, default: [:]][command.sequence] =
+                CommandApplicationRecord(
+                    operationID: command.operationID,
+                    status: .pending
+                )
+            pruneCommandApplications(machineID: command.machineID)
+        }
+    }
+
+    func acknowledgeCommand(
+        machineID: String,
+        operationID: String,
+        sequence: UInt64,
+        applied: Bool,
+        detail: String,
+        runnerSessionID: UUID,
+        processIdentifier: pid_t
+    ) throws {
+        guard detail.utf8.count <= 256,
+              !detail.contains("\0") else {
+            throw DoryVMDisplayRelayError.invalidAcknowledgement
+        }
+        guard runnerValidator(machineID, operationID, processIdentifier) else {
+            throw DoryVMDisplayRelayError.staleRunner
+        }
+        try lock.withLock {
+            guard runnerOwners[machineID] == RunnerOwner(
+                operationID: operationID,
+                sessionID: runnerSessionID,
+                processIdentifier: processIdentifier
+            ),
+            var record = commandApplications[machineID]?[sequence],
+            record.operationID == operationID,
+            record.status == .pending else {
+                throw DoryVMDisplayRelayError.unknownCommand
+            }
+            record.status = applied ? .applied : .rejected(
+                detail.isEmpty ? "runner-rejected-command" : detail
+            )
+            commandApplications[machineID]?[sequence] = record
+        }
+    }
+
+    func commandStatus(
+        machineID: String,
+        operationID: String,
+        sequence: UInt64
+    ) -> (known: Bool, applied: Bool, detail: String) {
+        lock.withLock {
+            guard let record = commandApplications[machineID]?[sequence],
+                  record.operationID == operationID else {
+                return (false, false, "unknown-command")
+            }
+            switch record.status {
+            case .pending:
+                return (true, false, "pending")
+            case .applied:
+                return (true, true, "")
+            case .rejected(let detail):
+                return (true, false, detail)
+            }
+        }
     }
 
     func nextCommand(
@@ -262,6 +337,11 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
             )
             runnerOwners.removeValue(forKey: machineID)
             cursors.removeValue(forKey: machineID)
+            rejectPendingCommands(
+                machineID: machineID,
+                operationID: operationID,
+                detail: "runner-retired"
+            )
             return retired.frames.map(\.authority)
         }
         for authority in retired {
@@ -293,6 +373,11 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
                     continue
                 }
                 cursors.removeValue(forKey: machineID)
+                rejectPendingCommands(
+                    machineID: machineID,
+                    operationID: owner.operationID,
+                    detail: "runner-disconnected"
+                )
                 authorities.append(contentsOf: result.frames.map(\.authority))
             }
             return authorities
@@ -321,8 +406,37 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
         case DoryVMDisplayRelayError.saturated: "relay-saturated"
         case DoryVMDisplayRelayError.unknownMachine: "unknown-machine"
         case DoryVMDisplayRelayError.unknownLease: "unknown-lease"
+        case DoryVMDisplayRelayError.unknownCommand: "unknown-command"
+        case DoryVMDisplayRelayError.invalidAcknowledgement: "invalid-acknowledgement"
         default: "relay-failed"
         }
+    }
+
+    private func rejectPendingCommands(
+        machineID: String,
+        operationID: String,
+        detail: String
+    ) {
+        guard var records = commandApplications[machineID] else { return }
+        for sequence in records.keys {
+            guard var record = records[sequence],
+                  record.operationID == operationID,
+                  record.status == .pending else { continue }
+            record.status = .rejected(detail)
+            records[sequence] = record
+        }
+        commandApplications[machineID] = records
+    }
+
+    private func pruneCommandApplications(machineID: String) {
+        let maximumRecordCount = 512
+        guard var records = commandApplications[machineID],
+              records.count > maximumRecordCount else { return }
+        for sequence in records.keys.sorted() where records.count > maximumRecordCount {
+            guard records[sequence]?.status != .pending else { continue }
+            records.removeValue(forKey: sequence)
+        }
+        commandApplications[machineID] = records
     }
 }
 
@@ -538,6 +652,52 @@ private final class DoryVMDisplayConnectionService:
         } catch {
             reply(false, Data(), DoryVMDisplayBroker.detail(for: error))
         }
+    }
+
+    func acknowledgeCommand(
+        _ machineID: String,
+        operationID: String,
+        sequence: UInt64,
+        applied: Bool,
+        detail: String,
+        withReply reply: @escaping (Bool, String) -> Void
+    ) {
+        guard role == .runner || role == .development else {
+            reply(false, "unauthorized-role")
+            return
+        }
+        do {
+            try broker.acknowledgeCommand(
+                machineID: machineID,
+                operationID: operationID,
+                sequence: sequence,
+                applied: applied,
+                detail: detail,
+                runnerSessionID: sessionID,
+                processIdentifier: processIdentifier
+            )
+            reply(true, "")
+        } catch {
+            reply(false, DoryVMDisplayBroker.detail(for: error))
+        }
+    }
+
+    func commandStatus(
+        _ machineID: String,
+        operationID: String,
+        sequence: UInt64,
+        withReply reply: @escaping (Bool, Bool, String) -> Void
+    ) {
+        guard role == .application || role == .development else {
+            reply(false, false, "unauthorized-role")
+            return
+        }
+        let status = broker.commandStatus(
+            machineID: machineID,
+            operationID: operationID,
+            sequence: sequence
+        )
+        reply(status.known, status.applied, status.detail)
     }
 
     func retireRunner(

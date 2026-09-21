@@ -223,6 +223,7 @@ nonisolated enum DoryDisplayQualificationInputFiles {
 nonisolated struct DoryDisplayQualificationInputReceipt: Encodable, Sendable {
     let kind = "dev.dory.display-qualification-input"
     let schemaVersion = 1
+    let delivery = "runner-applied"
     let completedAt: String
     let bundleIdentifier: String
     let processID: Int32

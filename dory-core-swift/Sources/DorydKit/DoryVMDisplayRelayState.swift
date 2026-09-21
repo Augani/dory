@@ -8,6 +8,8 @@ enum DoryVMDisplayRelayError: Error, Equatable {
     case saturated
     case unknownMachine
     case unknownLease
+    case unknownCommand
+    case invalidAcknowledgement
 }
 
 /// Synchronous state authority for the display XPC broker. File descriptors and Metal handles are
