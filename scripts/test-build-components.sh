@@ -93,7 +93,12 @@ assert '[ "$XCODE_CONFIGURATION" = Release ] && [ "$renderer_enabled" = 1 ]' in 
 assert 'DORY_RENDERER_PC_MANAGED_KERNEL' in renderer_verifier
 assert 'DORY_RENDERER_PC_GUEST_MESA' in renderer_verifier
 assert 'renderer_pc_args=(--pc-managed-kernel "$pc_kernel" --pc-guest-mesa "$pc_mesa")' in renderer_verifier
-assert '"${renderer_pc_args[@]}"' in renderer_verifier
+assert '"${renderer_pc_args[@]+"${renderer_pc_args[@]}"}"' in renderer_verifier
+assert '--managed-kernel "$managed_kernel"' not in renderer_verifier
+preview_resealer = function_body("reseal_preview_renderer_graph")
+assert '--producer-fence-contract stock-linux-6.13-runtime-verified' in preview_resealer
+assert '--managed-kernel-sha256 "$managed_kernel_sha256"' not in preview_resealer
+assert 'set -- --runner-app "$runner_app" --expected-team "$BUNDLE_EXPECTED_TEAM"' in preview_resealer
 vmm = function_body("bundle_doryd_swiftpm_helpers")
 assert 'sign_hardened_payload "$helper" "$entitlements" dory-vmm' in vmm
 assert 'sign_hardened_payload "$vmm_app" "$entitlements" dory-vmm' in vmm

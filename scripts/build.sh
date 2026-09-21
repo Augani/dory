@@ -584,10 +584,9 @@ bundle_debug_hv_helper() {
 }
 
 verify_debug_renderer_packaging() {
-  local app runner_app legacy managed_kernel renderer_enabled
+  local app runner_app legacy renderer_enabled
   local pc_kernel pc_kernel_sha256 pc_mesa pc_mesa_sha256
   local -a renderer_pc_args=()
-  managed_kernel="${DORY_RENDERER_MANAGED_KERNEL:-guest/out/Image-desktop}"
   pc_kernel="${DORY_RENDERER_PC_MANAGED_KERNEL:-}"
   pc_kernel_sha256="${DORY_RENDERER_PC_MANAGED_KERNEL_SHA256:-}"
   pc_mesa="${DORY_RENDERER_PC_GUEST_MESA:-}"
@@ -620,20 +619,16 @@ verify_debug_renderer_packaging() {
     [ -d "$runner_app" ] && [ ! -L "$runner_app" ] \
       || { echo "error: Xcode did not embed a direct DoryHVRunner.app" >&2; return 1; }
     if [ "$XCODE_CONFIGURATION" = Release ] && [ "$renderer_enabled" = 1 ]; then
-      [ -f "$managed_kernel" ] && [ ! -L "$managed_kernel" ] \
-        || { echo "error: renderer verification requires the exact managed desktop kernel: $managed_kernel" >&2; return 1; }
       if [ "$BUNDLE_EXPECTED_TEAM" = - ]; then
         python3 scripts/package-renderer-production-bundle.py verify \
           --runner-app "$runner_app" --outer-app "$app" \
           --expected-team - --allow-adhoc-test \
-          --managed-kernel "$managed_kernel" \
-          "${renderer_pc_args[@]}" || return 1
+          "${renderer_pc_args[@]+"${renderer_pc_args[@]}"}" || return 1
       else
         python3 scripts/package-renderer-production-bundle.py verify \
           --runner-app "$runner_app" --outer-app "$app" \
           --expected-team "$BUNDLE_EXPECTED_TEAM" \
-          --managed-kernel "$managed_kernel" \
-          "${renderer_pc_args[@]}" || return 1
+          "${renderer_pc_args[@]+"${renderer_pc_args[@]}"}" || return 1
       fi
       continue
     fi
@@ -974,7 +969,7 @@ write_development_source_binding() {
 
 reseal_preview_renderer_graph() {
   local app runner_app fs_worker_app renderer_worker_app renderer_inventory renderer_mode
-  local link_root link_inventory managed_kernel managed_kernel_sha256 pc_kernel pc_kernel_sha256
+  local link_root link_inventory pc_kernel pc_kernel_sha256
   local pc_mesa pc_mesa_sha256 scratch issued_at expires_at payload
   app="$1"
   runner_app="$app/Contents/Helpers/DoryHVRunner.app"
@@ -996,16 +991,13 @@ reseal_preview_renderer_graph() {
   }
   link_root="${DORY_RENDERER_LINK_ROOT:-}"
   link_inventory="${DORY_RENDERER_LINK_INVENTORY:-}"
-  managed_kernel="${DORY_RENDERER_MANAGED_KERNEL:-}"
-  managed_kernel_sha256="${DORY_RENDERER_MANAGED_KERNEL_SHA256:-}"
-  [ -n "$link_root" ] && [ -n "$link_inventory" ] \
-    && [ -n "$managed_kernel" ] && [ -n "$managed_kernel_sha256" ] || {
-      echo "error: preview renderer resealing requires exact link and managed-kernel inputs" >&2
+  [ -n "$link_root" ] && [ -n "$link_inventory" ] || {
+      echo "error: preview renderer resealing requires exact link inputs" >&2
       return 1
   }
-  [ -d "$link_root" ] && [ -f "$link_inventory" ] && [ -f "$managed_kernel" ] || {
-    echo "error: preview renderer resealing input is unavailable" >&2
-    return 1
+  [ -d "$link_root" ] && [ -f "$link_inventory" ] || {
+      echo "error: preview renderer resealing input is unavailable" >&2
+      return 1
   }
 
   for payload in \
@@ -1055,7 +1047,8 @@ print((issued + dt.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))
 PY
 )" || { rm -rf "$scratch"; return 1; }
   "$runner_app/Contents/MacOS/dory-hv" renderer-qualify \
-    --inventory "$renderer_inventory" --managed-kernel-sha256 "$managed_kernel_sha256" \
+    --producer-fence-contract stock-linux-6.13-runtime-verified \
+    --inventory "$renderer_inventory" \
     --issued-at "$issued_at" --expires-at "$expires_at" \
     --output "$scratch/renderer-bootstrap-qualification.json" || { rm -rf "$scratch"; return 1; }
 
@@ -1095,8 +1088,7 @@ PY
     "$runner_app" || return 1
   /usr/bin/codesign --verify --strict --deep "$runner_app" || return 1
 
-  set -- --runner-app "$runner_app" --managed-kernel "$managed_kernel" \
-    --expected-team "$BUNDLE_EXPECTED_TEAM"
+  set -- --runner-app "$runner_app" --expected-team "$BUNDLE_EXPECTED_TEAM"
   if [ -n "$pc_kernel" ]; then
     set -- "$@" --pc-managed-kernel "$pc_kernel" --pc-guest-mesa "$pc_mesa"
   fi
