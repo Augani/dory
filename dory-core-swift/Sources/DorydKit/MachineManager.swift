@@ -8433,15 +8433,19 @@ public final class MachineManager: @unchecked Sendable {
                     nativeRecord.definition.lifecycle.updatedAtUnixMilliseconds + 1
                 )
             )
-            guard Self.nativeDefinition(candidate, isCompatibleWith: migration.definition) else {
+            guard DoryMachineConfigurationMigrationBridge.nativeDefinition(
+                candidate,
+                isCompatibleWith: migration.definition
+            ) else {
                 throw MachineManagerError.persistence(
                     "native workspace update is not representable by the compatibility runtime"
                 )
             }
-            migration.definition = Self.compatibilityRuntimeDefinition(
-                candidate,
-                compatibility: migration.definition
-            )
+            migration.definition = DoryMachineConfigurationMigrationBridge
+                .compatibilityRuntimeDefinition(
+                    candidate,
+                    compatibility: migration.definition
+                )
             _ = try migration.legacyConfiguration()
             nativeDefinition = candidate
         }
@@ -11829,7 +11833,7 @@ public final class MachineManager: @unchecked Sendable {
                         record.definition.lifecycle.updatedAtUnixMilliseconds + 1
                     )
                 )
-                guard Self.nativeDefinition(
+                guard DoryMachineConfigurationMigrationBridge.nativeDefinition(
                     candidate,
                     isCompatibleWith: migration.definition
                 ) else {
@@ -19776,7 +19780,7 @@ public final class MachineManager: @unchecked Sendable {
                 nativeDefinition = currentRecord.definition
                 reconcileState = .unchanged
             }
-            guard Self.nativeDefinition(
+            guard DoryMachineConfigurationMigrationBridge.nativeDefinition(
                 nativeDefinition,
                 isCompatibleWith: migration.definition
             ) else {
@@ -19813,7 +19817,7 @@ public final class MachineManager: @unchecked Sendable {
         let compatibilityDefinition = migration.definition
         var runtimeMigration = migration
         runtimeMigration.definition = isNative
-            ? Self.compatibilityRuntimeDefinition(
+            ? DoryMachineConfigurationMigrationBridge.compatibilityRuntimeDefinition(
                 definition,
                 compatibility: compatibilityDefinition
             )
@@ -19845,7 +19849,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         var legacyCompatibility = compatibility
         legacyCompatibility.boot.devices[0].kind = .installedLinuxBootBundle
-        guard Self.nativeDefinition(
+        guard DoryMachineConfigurationMigrationBridge.nativeDefinition(
             definition,
             isCompatibleWith: legacyCompatibility
         ), definition.lifecycle.revision < UInt64.max,
@@ -19865,48 +19869,6 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         return migrated
-    }
-
-    private static func nativeDefinition(
-        _ definition: DoryVirtualMachineDefinition,
-        isCompatibleWith compatibility: DoryVirtualMachineDefinition
-    ) -> Bool {
-        var expected = compatibility
-        expected.lifecycle = definition.lifecycle
-        expected.platform = definition.platform
-        expected.translationConsent = definition.translationConsent
-        expected.graphics = definition.graphics
-        expected.guestIdentityIntent = definition.guestIdentityIntent
-        expected.clipboardPolicy = definition.clipboardPolicy
-        expected.sandboxPolicy = definition.sandboxPolicy
-        expected.networkMode = definition.networkMode
-        expected.portForwards = definition.portForwards
-        expected.camera = definition.camera
-        expected.resources = DoryVMProductionResourceBudget.make(for: expected)
-        return expected == definition && definition.validate().isEmpty
-    }
-
-    /// The compatibility helper has no persisted network-mode field. Native desired state keeps
-    /// that authority in WorkspaceSpec while the exact resolved device contract is supplied at
-    /// launch; only the transient legacy projection retains its historical shared-NAT value.
-    private static func compatibilityRuntimeDefinition(
-        _ definition: DoryVirtualMachineDefinition,
-        compatibility: DoryVirtualMachineDefinition
-    ) -> DoryVirtualMachineDefinition {
-        var projected = definition
-        projected.networkMode = compatibility.networkMode
-        // Forwarding rules are likewise carried by the resolved device contract. They must
-        // survive native updates even though the historical machine projection lacks them.
-        projected.portForwards = compatibility.portForwards
-        // Legacy machine arguments can encode only one text/image clipboard direction and no
-        // file policy. Resolved helpers receive the exact policy through their backend authority
-        // (the RawHV envelope or VZ's split device argument), while this transient projection
-        // remains representable without persisting or widening the native workspace authority.
-        projected.clipboardPolicy = compatibility.clipboardPolicy
-        // The compatibility machine persists camera intent through its typed environment bridge,
-        // but only the RawHV envelope can authorize the actual UVC transport.
-        projected.camera = compatibility.camera
-        return projected
     }
 
     private static func canonicalDefinitionData(

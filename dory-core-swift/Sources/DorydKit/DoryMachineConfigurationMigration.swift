@@ -511,6 +511,64 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
 public enum DoryMachineConfigurationMigrationBridge {
     private static let mebibyte: UInt64 = 1_048_576
 
+    /// Reconstruct the exact transient compatibility machine used to plan a native Linux
+    /// workspace. Durable planning recovery has only the private legacy machine and the
+    /// integrity-validated native definition, so all migration facts must be derived from those
+    /// two authorities rather than mutable host files.
+    static func runtimeConfiguration(
+        _ configuration: DoryMachineConfiguration,
+        forNativeDefinition definition: DoryVirtualMachineDefinition
+    ) throws -> DoryMachineConfiguration {
+        guard configuration.id == definition.identity.id,
+              definition.guest.family == .linux,
+              definition.storage.count == 1,
+              let systemDisk = definition.storage.first,
+              systemDisk.role == .system,
+              systemDisk.capacityBytes > 0 else {
+            throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
+                "nativeRecoveryAuthority"
+            )
+        }
+
+        let installedEFIBoot: DoryMachineConfigurationInstalledEFIBoot?
+        if configuration.bootMode == .efi, configuration.installerISOPath == nil {
+            guard definition.boot.devices.count == 1 else {
+                throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("boot")
+            }
+            switch definition.boot.devices[0].kind {
+            case .virtualDisk:
+                installedEFIBoot = .firmwareDisk
+            case .installedLinuxBootBundle:
+                installedEFIBoot = .installedLinuxBootBundle
+            default:
+                throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("boot")
+            }
+        } else {
+            installedEFIBoot = nil
+        }
+
+        var migration = try migrate(
+            configuration,
+            facts: DoryMachineConfigurationMigrationFacts(
+                guestArchitecture: definition.guest.architecture,
+                systemDiskCapacityBytes: systemDisk.capacityBytes,
+                installedEFIBoot: installedEFIBoot,
+                installerStagingBytes: definition.resources.stagingBytes,
+                lifecycle: definition.lifecycle
+            )
+        )
+        guard nativeDefinition(definition, isCompatibleWith: migration.definition) else {
+            throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
+                "nativeDefinition"
+            )
+        }
+        migration.definition = compatibilityRuntimeDefinition(
+            definition,
+            compatibility: migration.definition
+        )
+        return try migration.legacyConfiguration()
+    }
+
     public static func decodeAndMigrate(
         _ legacyData: Data,
         facts: DoryMachineConfigurationMigrationFacts
@@ -821,6 +879,42 @@ public enum DoryMachineConfigurationMigrationBridge {
             shareBindings: shareBindings,
             authoritativeLegacyConfiguration: configuration
         )
+    }
+
+    /// Native desired state may own fields that have no legacy representation. All other fields
+    /// must still equal the deterministic legacy migration before a runtime projection is valid.
+    static func nativeDefinition(
+        _ definition: DoryVirtualMachineDefinition,
+        isCompatibleWith compatibility: DoryVirtualMachineDefinition
+    ) -> Bool {
+        var expected = compatibility
+        expected.lifecycle = definition.lifecycle
+        expected.platform = definition.platform
+        expected.translationConsent = definition.translationConsent
+        expected.graphics = definition.graphics
+        expected.guestIdentityIntent = definition.guestIdentityIntent
+        expected.clipboardPolicy = definition.clipboardPolicy
+        expected.sandboxPolicy = definition.sandboxPolicy
+        expected.networkMode = definition.networkMode
+        expected.portForwards = definition.portForwards
+        expected.camera = definition.camera
+        expected.resources = DoryVMProductionResourceBudget.make(for: expected)
+        return expected == definition && definition.validate().isEmpty
+    }
+
+    static func compatibilityRuntimeDefinition(
+        _ definition: DoryVirtualMachineDefinition,
+        compatibility: DoryVirtualMachineDefinition
+    ) -> DoryVirtualMachineDefinition {
+        var projected = definition
+        // These policies are delivered to resolved helpers through typed authority. The legacy
+        // machine format cannot represent them completely, so its transient runtime projection
+        // must retain the migration baseline instead of weakening native desired state.
+        projected.networkMode = compatibility.networkMode
+        projected.portForwards = compatibility.portForwards
+        projected.clipboardPolicy = compatibility.clipboardPolicy
+        projected.camera = compatibility.camera
+        return projected
     }
 
     private static func typedGuestIdentityIntent(

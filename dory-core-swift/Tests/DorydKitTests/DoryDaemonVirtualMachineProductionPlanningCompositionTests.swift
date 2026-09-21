@@ -151,6 +151,97 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
         }
     }
 
+    @Test("production recovery reconstructs a native ARM EFI runtime projection")
+    func productionRecoveryReconstructsNativeARMEFIRuntimeProjection() throws {
+        let machineID = "native-arm-efi-recovery"
+        let fixture = try CompositionFixture(ids: [])
+        let diskBytes: UInt64 = 80 * 1_024 * 1_024 * 1_024
+        let rawMachine = DoryMachineConfiguration(
+            id: machineID,
+            guestArchitecture: .arm64,
+            kernelPath: "/managed/\(machineID)/kernel",
+            rootfsPath: "/managed/\(machineID)/rootfs.ext4",
+            bootMode: .efi,
+            installerISOPath: "/managed/\(machineID)/installer.iso",
+            diskSizeBytes: diskBytes,
+            displayMode: .desktop
+        )
+        let lifecycle = DoryVMLifecycleMetadata(
+            revision: 1,
+            createdAtUnixMilliseconds: 1_700_000_000_000,
+            updatedAtUnixMilliseconds: 1_700_000_000_000
+        )
+        var migration = try DoryMachineConfigurationMigrationBridge.migrate(
+            rawMachine,
+            facts: DoryMachineConfigurationMigrationFacts(
+                guestArchitecture: .arm64,
+                systemDiskCapacityBytes: diskBytes,
+                installerStagingBytes: 4 * 1_024 * 1_024 * 1_024,
+                lifecycle: lifecycle
+            )
+        )
+        var nativeDefinition = migration.definition
+        nativeDefinition.graphics = DoryVMGraphicsPolicy(
+            acceptableLevels: [.hardwareAccelerated3D]
+        )
+        nativeDefinition.resources = DoryVMProductionResourceBudget.make(for: nativeDefinition)
+        migration.definition = nativeDefinition
+        let runtimeMachine = try migration.legacyConfiguration()
+        #expect(runtimeMachine != rawMachine)
+
+        let operationID = UUID(uuidString: "12345678-1234-4234-8234-123456789abc")!
+        let planning = DoryDaemonVirtualMachinePlanningRequest(
+            definition: nativeDefinition,
+            canonicalDefinitionData: DoryDaemonVirtualMachinePlanningCoordinator
+                .canonicalDefinitionData(nativeDefinition),
+            machine: runtimeMachine,
+            publication: .create
+        )
+        let request = DoryDaemonVirtualMachinePlanningTransactionRequest(
+            operationID: operationID,
+            planning: planning,
+            workspacePublication: .create
+        )
+        let descriptor = DoryDaemonVirtualMachinePlanningRecoveryDescriptor(
+            operationID: operationID,
+            machineID: machineID,
+            definition: nativeDefinition,
+            definitionSHA256: DoryDaemonVirtualMachinePlanningCoordinator.sha256(
+                planning.canonicalDefinitionData
+            ),
+            workspacePublication: request.workspacePublication,
+            planPublication: planning.publication,
+            machineSHA256: compositionCanonicalSHA256(runtimeMachine),
+            resourceRequirements: request.resourceRequirements,
+            startingLeaseDurationMilliseconds: request.startingLeaseDurationMilliseconds,
+            fallbackAuthorization: nil,
+            experimentalAuthorization: nil,
+            requestSHA256: compositionDigest("1"),
+            machineAuthoritySHA256: compositionDigest("2")
+        )
+        #expect(descriptor.matches(request))
+        try fixture.writeMachineAuthority(rawMachine)
+
+        let recoveredRequest = try DoryDaemonVirtualMachineProductionRecoveryProvider(
+            stateDirectory: fixture.root
+        ).recoveryRequest(for: descriptor)
+        let recovered = try #require(recoveredRequest)
+        #expect(descriptor.matches(recovered))
+        #expect(recovered.planning.machine == request.planning.machine)
+        #expect(recovered.planning.machine.environment[
+            DoryDesktopGraphicsPreference.environmentKey
+        ] == DoryDesktopGraphicsPreference.virglVenus.rawValue)
+
+        var staleMachine = rawMachine
+        staleMachine.cpuCount += 1
+        try fixture.writeMachineAuthority(staleMachine)
+        #expect(throws: DoryDaemonVirtualMachineProductionRecoveryError.requestMismatch) {
+            _ = try DoryDaemonVirtualMachineProductionRecoveryProvider(
+                stateDirectory: fixture.root
+            ).recoveryRequest(for: descriptor)
+        }
+    }
+
     @Test("native Mac saved-state replan renews mutable disk provenance through production authority")
     func nativeMacSavedStateReplanRenewsMutableDiskProvenance() throws {
         let machineID = "native-mac-saved-state"
@@ -1040,7 +1131,11 @@ private final class CompositionFixture: @unchecked Sendable {
     ) throws {
         var machine = try #require(requests[id]).planning.machine
         mutate(&machine)
-        let directory = root + "/" + id
+        try writeMachineAuthority(machine)
+    }
+
+    func writeMachineAuthority(_ machine: DoryMachineConfiguration) throws {
+        let directory = root + "/" + machine.id
         try FileManager.default.createDirectory(
             atPath: directory,
             withIntermediateDirectories: true,
@@ -2238,6 +2333,13 @@ private func compositionDigest(_ value: Character) -> String {
 private func compositionFileSHA256(path: String) throws -> String {
     try SHA256.hash(data: Data(contentsOf: URL(fileURLWithPath: path)))
         .map { String(format: "%02x", $0) }.joined()
+}
+
+private func compositionCanonicalSHA256<T: Encodable>(_ value: T) -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    let data = (try? encoder.encode(value)) ?? Data()
+    return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
 private func compositionQualificationIdentity(_ media: DoryBootMedia) -> String {

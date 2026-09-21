@@ -506,6 +506,35 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(repeated.definition.graphics == migrated.definition.graphics)
     }
 
+    @Test("native ARM EFI recovery reconstructs the transient strict graphics machine")
+    func nativeARMEFIRecoveryRuntimeProjection() throws {
+        let legacy = DoryMachineConfiguration(
+            id: "arm-efi-native-recovery",
+            guestArchitecture: .arm64,
+            kernelPath: "/managed/arm-efi-native-recovery/kernel",
+            rootfsPath: "/managed/arm-efi-native-recovery/rootfs.ext4",
+            bootMode: .efi,
+            installerISOPath: "/managed/arm-efi-native-recovery/installer.iso",
+            diskSizeBytes: 80 * gibibyte,
+            displayMode: .desktop
+        )
+        let migration = try migrate(legacy, capacity: 80 * gibibyte)
+        var native = migration.definition
+        native.graphics = DoryVMGraphicsPolicy(acceptableLevels: [.hardwareAccelerated3D])
+        native.resources = DoryVMProductionResourceBudget.make(for: native)
+
+        let runtime = try DoryMachineConfigurationMigrationBridge.runtimeConfiguration(
+            legacy,
+            forNativeDefinition: native
+        )
+
+        #expect(runtime != legacy)
+        #expect(runtime.environment[DoryDesktopGraphicsPreference.environmentKey]
+            == DoryDesktopGraphicsPreference.virglVenus.rawValue)
+        let repeated = try migrate(runtime, capacity: 80 * gibibyte)
+        #expect(repeated.definition.graphics == native.graphics)
+    }
+
     @Test("ARM EFI firmware disk back-projects strict graphics edits losslessly")
     func armEFIFirmwareStrictGraphicsBackProjection() throws {
         var legacy = DoryMachineConfiguration(

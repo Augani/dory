@@ -467,27 +467,44 @@ final class DoryDaemonVirtualMachineProductionRecoveryProvider:
               descriptor.definition.identity.id == descriptor.machineID else {
             throw DoryDaemonVirtualMachineProductionRecoveryError.invalidDescriptor
         }
-        let machine = try readMachine(id: descriptor.machineID)
-        let request = DoryDaemonVirtualMachinePlanningTransactionRequest(
-            operationID: descriptor.operationID,
-            planning: DoryDaemonVirtualMachinePlanningRequest(
-                definition: descriptor.definition,
-                canonicalDefinitionData: DoryDaemonVirtualMachinePlanningCoordinator
-                    .canonicalDefinitionData(descriptor.definition),
-                machine: machine,
-                publication: descriptor.planPublication,
-                fallbackAuthorization: descriptor.fallbackAuthorization,
-                experimentalAuthorization: descriptor.experimentalAuthorization
-            ),
-            workspacePublication: descriptor.workspacePublication,
-            resourceRequirements: descriptor.resourceRequirements,
-            startingLeaseDurationMilliseconds:
-                descriptor.startingLeaseDurationMilliseconds
-        )
-        guard descriptor.matches(request) else {
+        let privateMachine = try readMachine(id: descriptor.machineID)
+        func request(
+            machine: DoryMachineConfiguration
+        ) -> DoryDaemonVirtualMachinePlanningTransactionRequest {
+            DoryDaemonVirtualMachinePlanningTransactionRequest(
+                operationID: descriptor.operationID,
+                planning: DoryDaemonVirtualMachinePlanningRequest(
+                    definition: descriptor.definition,
+                    canonicalDefinitionData: DoryDaemonVirtualMachinePlanningCoordinator
+                        .canonicalDefinitionData(descriptor.definition),
+                    machine: machine,
+                    publication: descriptor.planPublication,
+                    fallbackAuthorization: descriptor.fallbackAuthorization,
+                    experimentalAuthorization: descriptor.experimentalAuthorization
+                ),
+                workspacePublication: descriptor.workspacePublication,
+                resourceRequirements: descriptor.resourceRequirements,
+                startingLeaseDurationMilliseconds:
+                    descriptor.startingLeaseDurationMilliseconds
+            )
+        }
+        let directRequest = request(machine: privateMachine)
+        if descriptor.matches(directRequest) { return directRequest }
+
+        let runtimeMachine: DoryMachineConfiguration
+        do {
+            runtimeMachine = try DoryMachineConfigurationMigrationBridge.runtimeConfiguration(
+                privateMachine,
+                forNativeDefinition: descriptor.definition
+            )
+        } catch {
             throw DoryDaemonVirtualMachineProductionRecoveryError.requestMismatch
         }
-        return request
+        let projectedRequest = request(machine: runtimeMachine)
+        guard descriptor.matches(projectedRequest) else {
+            throw DoryDaemonVirtualMachineProductionRecoveryError.requestMismatch
+        }
+        return projectedRequest
     }
 
     private func readMachine(id: String) throws -> DoryMachineConfiguration {
