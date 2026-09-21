@@ -1,0 +1,13 @@
+[Unit]
+Description=Dory guest integration agent
+After=systemd-user-sessions.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/dory/dory-agent
+Restart=on-failure
+RestartSec=1s
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=multi-user.target

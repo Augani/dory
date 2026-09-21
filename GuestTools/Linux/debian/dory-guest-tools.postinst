@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+install -d -m 0755 /var/lib/dory
+if [ ! -s /var/lib/dory/username ]; then
+  user="$(getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 && $7 !~ /(nologin|false)$/ { print $1; exit }')"
+  if [ -n "$user" ]; then
+    printf '%s\n' "$user" > /var/lib/dory/username
+    chmod 0644 /var/lib/dory/username
+  fi
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload || true
+  systemctl enable --now dory-agent.service || true
+fi
+
+#DEBHELPER#

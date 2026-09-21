@@ -1,0 +1,14 @@
+Source: dory-guest-tools
+Section: admin
+Priority: optional
+Maintainer: Dory <support@usedory.com>
+Build-Depends: debhelper-compat (= 13), cargo, rustc, protobuf-compiler
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+
+Package: dory-guest-tools
+Architecture: any
+Depends: ${misc:Depends}, util-linux, wl-clipboard, xclip
+Description: Dory integration services for stock Linux virtual machines
+ Provides the host-only vsock agent and bounded GNOME/KDE clipboard bridge used for lifecycle,
+ shared-folder, time synchronization, and clipboard integration in Dory virtual machines.

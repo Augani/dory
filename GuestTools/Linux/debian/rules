@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cd ../../dory-core && cargo build --locked --release -p dory-agent
+
+override_dh_auto_install:
+	install -Dm755 ../../dory-core/target/release/dory-agent \
+		debian/dory-guest-tools/usr/lib/dory/dory-agent
+	install -Dm755 payload/usr/lib/dory/clipboard \
+		debian/dory-guest-tools/usr/lib/dory/clipboard
+	install -Dm644 payload/usr/lib/systemd/system/dory-agent.service \
+		debian/dory-guest-tools/usr/lib/systemd/system/dory-agent.service
+	install -Dm644 payload/usr/lib/tmpfiles.d/dory-guest-tools.conf \
+		debian/dory-guest-tools/usr/lib/tmpfiles.d/dory-guest-tools.conf
