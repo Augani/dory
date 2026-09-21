@@ -35,6 +35,7 @@ public struct DoryMachineEventStatus: Codable, Sendable, Equatable, Hashable {
     public var displayMode: String
     public var bootMode: String
     public var installerMediaAttached: Bool
+    public var guestToolsMediaAttached: Bool
     public var shareCount: Int
     public var integrationHealth: String
     public var runtimeMode: String
@@ -60,6 +61,7 @@ public struct DoryMachineEventStatus: Codable, Sendable, Equatable, Hashable {
         case displayMode
         case bootMode
         case installerMediaAttached
+        case guestToolsMediaAttached
         case shareCount
         case integrationHealth
         case runtimeMode
@@ -92,6 +94,7 @@ public struct DoryMachineEventStatus: Codable, Sendable, Equatable, Hashable {
         displayMode = status.displayMode.rawValue
         bootMode = status.bootMode.rawValue
         installerMediaAttached = status.installerMediaAttached
+        guestToolsMediaAttached = status.guestToolsMediaAttached
         shareCount = status.shares.count
         integrationHealth = status.integrationHealth.state.rawValue
         runtimeMode = status.runtimeIdentity.mode.rawValue
@@ -128,6 +131,10 @@ public struct DoryMachineEventStatus: Codable, Sendable, Equatable, Hashable {
             Bool.self,
             forKey: .installerMediaAttached
         )
+        guestToolsMediaAttached = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .guestToolsMediaAttached
+        ) ?? false
         shareCount = try container.decode(Int.self, forKey: .shareCount)
         integrationHealth = try container.decode(String.self, forKey: .integrationHealth)
         runtimeMode = try container.decode(String.self, forKey: .runtimeMode)

@@ -354,6 +354,8 @@ public struct DorydEnvironment: Sendable {
                 environmentKey: "DORYD_PC_FIRMWARE_BUNDLE",
                 resourceName: "dory-pc-firmware"
             ),
+            guestToolsISOPath: existingPath(firstOf: ["DORYD_GUEST_TOOLS_ISO"])
+                ?? bundledResource(named: ["dory-guest-tools-\(hostGuestArch).iso"]),
             stateDirectory: stateDirectory,
             runtimeDirectory: string("DORYD_MACHINE_RUNTIME_DIR") ?? "\(home)/.dory/machines",
             // The journal store derives `Library/Application Support/Dory/operations` from a

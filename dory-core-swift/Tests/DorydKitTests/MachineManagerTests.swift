@@ -4543,6 +4543,79 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(starter.attemptCount, 1)
     }
 
+    func testGuestToolsMediaSwitchPreservesManagedInstallerAndReportsDistinctStatus() throws {
+        let base = "/tmp/dory-machine-guest-tools-media-\(getpid())-"
+            + "\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = base + "/ubuntu-arm64.iso"
+        let tools = base + "/dory-guest-tools-arm64.iso"
+        let disk = base + "/disk.raw"
+        let installerBytes = portableARM64Installer()
+        let toolsBytes = Data("signed-tools-repository-image".utf8)
+        try installerBytes.write(to: URL(fileURLWithPath: installer))
+        try toolsBytes.write(to: URL(fileURLWithPath: tools))
+        try Data("disk".utf8).write(to: URL(fileURLWithPath: disk))
+        let state = base + "/machines"
+        let manager = MachineManager(
+            diagnosticConfiguration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                guestToolsISOPath: tools,
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false,
+                guestArchitecture: "arm64"
+            )
+        )
+        defer { try? manager.delete(id: "linux") }
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
+            id: "linux",
+            guestArchitecture: .arm64,
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+
+        let mounted = try manager.transitionGuestToolsMedia(id: "linux", attached: true)
+        XCTAssertFalse(mounted.installerMediaAttached)
+        XCTAssertTrue(mounted.guestToolsMediaAttached)
+        XCTAssertEqual(mounted.state, .created)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: state + "/linux/guest-tools.iso")),
+            toolsBytes
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: state + "/linux/installer.iso")),
+            installerBytes,
+            "mounting Guest Tools must not overwrite the retained installer"
+        )
+        let mountedConfiguration = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: state + "/linux/machine.json"))
+        )
+        XCTAssertEqual(mountedConfiguration.opticalMediaKind, .guestTools)
+        XCTAssertEqual(mountedConfiguration.installerISOPath, state + "/linux/guest-tools.iso")
+
+        let restored = try manager.transitionInstallerMedia(id: "linux", attached: true)
+        XCTAssertTrue(restored.installerMediaAttached)
+        XCTAssertFalse(restored.guestToolsMediaAttached)
+        let restoredConfiguration = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: state + "/linux/machine.json"))
+        )
+        XCTAssertEqual(restoredConfiguration.opticalMediaKind, .installer)
+        XCTAssertEqual(restoredConfiguration.installerISOPath, state + "/linux/installer.iso")
+
+        let unrelatedEject = try manager.update(id: "linux", guestToolsMediaAttached: false)
+        XCTAssertTrue(unrelatedEject.installerMediaAttached)
+        XCTAssertFalse(unrelatedEject.guestToolsMediaAttached)
+    }
+
     func testDoryPCInstallerEjectionWaitsForFirstDiskBootReadiness() throws {
         let base = "/tmp/dory-machine-pc-eject-readiness-\(getpid())-"
             + "\(UInt32.random(in: 0..<UInt32.max))"

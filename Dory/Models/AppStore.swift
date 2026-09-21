@@ -5488,6 +5488,7 @@ final class AppStore {
             displayMode: status.displayMode,
             bootMode: status.bootMode,
             installerMediaAttached: status.installerMediaAttached,
+            guestToolsMediaAttached: status.guestToolsMediaAttached,
             runtimeIdentity: status.runtimeIdentity,
             runtimeGraphicsSelection: status.runtimeGraphicsSelection,
             cloneReceipt: status.cloneReceipt,
@@ -6395,6 +6396,25 @@ final class AppStore {
                 )
             } catch {
                 actionError = "Could not \(attached ? "attach" : "eject") the installer ISO for \(machine.name): \(error)"
+            }
+            await refreshMachines()
+        }
+    }
+
+    func setMachineGuestToolsMedia(_ machine: Machine, attached: Bool) {
+        guard requireDorydMachines(), machine.bootMode == .efi,
+              machine.guestFamily == "linux" else { return }
+        guard !busyMachines.contains(machine.name) else { return }
+        busyMachines.insert(machine.name)
+        Task {
+            defer { busyMachines.remove(machine.name) }
+            do {
+                _ = try await dorydClient.machineUpdate(
+                    machine.name,
+                    guestToolsMediaAttached: attached
+                )
+            } catch {
+                actionError = "Could not \(attached ? "mount" : "eject") the Dory Guest Tools ISO for \(machine.name): \(error)"
             }
             await refreshMachines()
         }

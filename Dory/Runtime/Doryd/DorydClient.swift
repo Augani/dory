@@ -1239,6 +1239,7 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var displayMode: MachineDisplayMode = .headless
     var bootMode: MachineBootMode = .linuxKernel
     var installerMediaAttached: Bool = false
+    var guestToolsMediaAttached: Bool = false
     var shares: [DorydMachineShareConfiguration] = []
     var environment: [String: String] = [:]
     var typedSettings: DorydMachineTypedSettings? = nil
@@ -1373,6 +1374,7 @@ nonisolated struct DorydMachineEventStatus: Sendable, Equatable {
     var displayMode: String
     var bootMode: String
     var installerMediaAttached: Bool
+    var guestToolsMediaAttached: Bool = false
     var shareCount: Int
     var integrationHealth: String
     var runtimeMode: String
@@ -2239,6 +2241,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
         typedSettings: DorydMachineTypedSettings? = nil,
         typedSettingsPatch: DorydMachineTypedSettingsPatch? = nil,
         installerMediaAttached: Bool? = nil,
+        guestToolsMediaAttached: Bool? = nil,
         operationID: UUID = UUID()
     ) async throws -> DorydMachineStatus {
         var config: [String: Any] = [:]
@@ -2270,6 +2273,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
         if let installerMediaAttached {
             config["installerMediaAttached"] = installerMediaAttached
+        }
+        if let guestToolsMediaAttached {
+            config["guestToolsMediaAttached"] = guestToolsMediaAttached
         }
         return try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
             proxy.machineUpdate(machineID, config: config as NSDictionary, reply: reply)
@@ -3225,6 +3231,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
             bootMode: (dictionary["bootMode"] as? String).flatMap(MachineBootMode.init(rawValue:)) ?? .linuxKernel,
             installerMediaAttached: (dictionary["installerMediaAttached"] as? Bool)
                 ?? (dictionary["installerMediaAttached"] as? NSNumber)?.boolValue
+                ?? false,
+            guestToolsMediaAttached: (dictionary["guestToolsMediaAttached"] as? Bool)
+                ?? (dictionary["guestToolsMediaAttached"] as? NSNumber)?.boolValue
                 ?? false,
             shares: shares,
             environment: environment,
@@ -4937,7 +4946,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
         let requiredKeys: Set<String> = [
             "schemaVersion", "machineID", "configurationRevision", "observedRevision",
             "state", "hasFailure", "memoryMB", "cpuCount", "displayMode", "bootMode",
-            "installerMediaAttached", "shareCount", "integrationHealth", "runtimeMode",
+            "installerMediaAttached", "guestToolsMediaAttached", "shareCount",
+            "integrationHealth", "runtimeMode",
             "virtualHardwareABIVersion",
         ]
         guard let rawKeys = dictionary.allKeys as? [String] else { return nil }
@@ -4967,6 +4977,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
               ["linux-kernel", "efi"].contains(bootMode),
               let installerNumber = dictionary["installerMediaAttached"] as? NSNumber,
               CFGetTypeID(installerNumber) == CFBooleanGetTypeID(),
+              let guestToolsNumber = dictionary["guestToolsMediaAttached"] as? NSNumber,
+              CFGetTypeID(guestToolsNumber) == CFBooleanGetTypeID(),
               let shareCount = int(dictionary["shareCount"]), shareCount >= 0,
               let integrationHealth = dictionary["integrationHealth"] as? String,
               Self.machineIntegrationHealthStates.contains(integrationHealth),
@@ -5032,6 +5044,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
             displayMode: displayMode,
             bootMode: bootMode,
             installerMediaAttached: installerNumber.boolValue,
+            guestToolsMediaAttached: guestToolsNumber.boolValue,
             shareCount: shareCount,
             integrationHealth: integrationHealth,
             runtimeMode: runtimeMode,

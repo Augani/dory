@@ -15,6 +15,9 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
     public var armVirtFirmwareBundlePath: String?
     /// Verified DoryPC UEFI release bundle resolved only by the trusted daemon.
     public var pcFirmwareBundlePath: String?
+    /// Signed, repository-backed Guest Tools ISO supplied by the app bundle. The manager copies
+    /// this into each machine's private state directory before attaching it.
+    public var guestToolsISOPath: String?
     public var stateDirectory: String
     public var runtimeDirectory: String
     /// Home used to derive durable mutation authority. The daemon supplies the Dory user home so
@@ -50,6 +53,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
         acceleratedDesktopExecutablePath: String? = nil,
         armVirtFirmwareBundlePath: String? = nil,
         pcFirmwareBundlePath: String? = nil,
+        guestToolsISOPath: String? = nil,
         stateDirectory: String,
         runtimeDirectory: String? = nil,
         lifecycleJournalHome: String? = nil,
@@ -74,6 +78,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
         self.acceleratedDesktopExecutablePath = acceleratedDesktopExecutablePath
         self.armVirtFirmwareBundlePath = armVirtFirmwareBundlePath
         self.pcFirmwareBundlePath = pcFirmwareBundlePath
+        self.guestToolsISOPath = guestToolsISOPath
         self.stateDirectory = stateDirectory
         self.runtimeDirectory = runtimeDirectory ?? stateDirectory
         self.lifecycleJournalHome = lifecycleJournalHome
@@ -246,6 +251,14 @@ public enum DoryMachineBootMode: String, Sendable, Equatable, Hashable, Codable,
     case macOSRestore = "macos-restore"
 }
 
+/// Meaning of the single removable optical device exposed by Linux EFI machines. The path remains
+/// the launch-runner projection; this discriminator prevents a tools disc from being mistaken for
+/// install media and entering installer-only firmware promotion.
+public enum DoryMachineOpticalMediaKind: String, Sendable, Equatable, Hashable, Codable {
+    case installer
+    case guestTools = "guest-tools"
+}
+
 /// Format of an imported existing root disk. The daemon converts QCOW2 at creation time and
 /// persists the resulting managed backing as raw, so no VM runner ever parses untrusted QCOW.
 public enum DoryMachineRootDiskFormat: String, Sendable, Equatable, Hashable, Codable, CaseIterable {
@@ -264,6 +277,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var rootfsPath: String
     public var bootMode: DoryMachineBootMode
     public var installerISOPath: String?
+    public var opticalMediaKind: DoryMachineOpticalMediaKind?
     /// Lawful local Apple restore media used only while preparing/installing a native Mac VM.
     public var macOSRestoreImagePath: String?
     /// Descriptor-backed `.dorymac` workspace containing Apple platform identity and storage.
@@ -290,6 +304,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         rootfsPath: String,
         bootMode: DoryMachineBootMode = .linuxKernel,
         installerISOPath: String? = nil,
+        opticalMediaKind: DoryMachineOpticalMediaKind? = nil,
         macOSRestoreImagePath: String? = nil,
         macOSMachineBundlePath: String? = nil,
         diskSizeBytes: UInt64? = nil,
@@ -311,6 +326,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         self.rootfsPath = rootfsPath
         self.bootMode = bootMode
         self.installerISOPath = installerISOPath
+        self.opticalMediaKind = opticalMediaKind ?? (installerISOPath == nil ? nil : .installer)
         self.macOSRestoreImagePath = macOSRestoreImagePath
         self.macOSMachineBundlePath = macOSMachineBundlePath
         self.diskSizeBytes = diskSizeBytes
@@ -334,6 +350,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         case rootfsPath
         case bootMode
         case installerISOPath
+        case opticalMediaKind
         case macOSRestoreImagePath
         case macOSMachineBundlePath
         case diskSizeBytes
@@ -365,6 +382,10 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
             rootfsPath: try container.decode(String.self, forKey: .rootfsPath),
             bootMode: try container.decodeIfPresent(DoryMachineBootMode.self, forKey: .bootMode) ?? .linuxKernel,
             installerISOPath: try container.decodeIfPresent(String.self, forKey: .installerISOPath),
+            opticalMediaKind: try container.decodeIfPresent(
+                DoryMachineOpticalMediaKind.self,
+                forKey: .opticalMediaKind
+            ),
             macOSRestoreImagePath: try container.decodeIfPresent(
                 String.self,
                 forKey: .macOSRestoreImagePath
@@ -407,6 +428,11 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         try container.encode(rootfsPath, forKey: .rootfsPath)
         try container.encode(bootMode, forKey: .bootMode)
         try container.encodeIfPresent(installerISOPath, forKey: .installerISOPath)
+        // Preserve the legacy installer representation byte-for-byte while persisting the
+        // discriminator required to distinguish the Guest Tools disc from install media.
+        if opticalMediaKind == .guestTools {
+            try container.encode(opticalMediaKind, forKey: .opticalMediaKind)
+        }
         try container.encodeIfPresent(macOSRestoreImagePath, forKey: .macOSRestoreImagePath)
         try container.encodeIfPresent(macOSMachineBundlePath, forKey: .macOSMachineBundlePath)
         try container.encodeIfPresent(diskSizeBytes, forKey: .diskSizeBytes)
@@ -470,6 +496,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var displayMode: DoryMachineDisplayMode
     public var bootMode: DoryMachineBootMode
     public var installerMediaAttached: Bool
+    public var guestToolsMediaAttached: Bool
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
     public var typedSettings: DoryMachineTypedSettingsSnapshot?
@@ -519,6 +546,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         displayMode = .headless
         bootMode = .linuxKernel
         installerMediaAttached = false
+        guestToolsMediaAttached = false
         shares = []
         environment = [:]
         typedSettings = nil
@@ -567,6 +595,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         displayMode: DoryMachineDisplayMode = .headless,
         bootMode: DoryMachineBootMode = .linuxKernel,
         installerMediaAttached: Bool = false,
+        guestToolsMediaAttached: Bool = false,
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:],
         typedSettings: DoryMachineTypedSettingsSnapshot? = nil,
@@ -613,6 +642,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.displayMode = displayMode
         self.bootMode = bootMode
         self.installerMediaAttached = installerMediaAttached
+        self.guestToolsMediaAttached = guestToolsMediaAttached
         self.shares = shares
         self.environment = environment
         self.typedSettings = typedSettings
@@ -2641,7 +2671,8 @@ public final class MachineManager: @unchecked Sendable {
             cpuCount: preparedMachine.cpuCount,
             displayMode: preparedMachine.displayMode,
             bootMode: preparedMachine.bootMode,
-            installerMediaAttached: preparedMachine.installerISOPath != nil,
+            installerMediaAttached: preparedMachine.opticalMediaKind == .installer,
+            guestToolsMediaAttached: preparedMachine.opticalMediaKind == .guestTools,
             shares: preparedMachine.shares,
             environment: preparedMachine.environment,
             typedSettings: statusTypedSettings,
@@ -8210,6 +8241,11 @@ public final class MachineManager: @unchecked Sendable {
                 "raw environment replacement and typed machine settings are mutually exclusive"
             )
         }
+        guard request.installerMediaAttached == nil || request.guestToolsMediaAttached == nil else {
+            throw MachineManagerError.persistence(
+                "installer and Guest Tools media changes are mutually exclusive"
+            )
+        }
         let (current, wasRunning) = try configurationAndRunningState(id: id, permitsPaused: permitsPaused)
         if allowsFirmwareRecovery {
             try reconcilePendingInstallerFirmwarePromotionIfNeeded(for: current)
@@ -8261,11 +8297,31 @@ public final class MachineManager: @unchecked Sendable {
                     throw MachineManagerError.persistence("managed installer ISO is unavailable")
                 }
                 updated.installerISOPath = managedInstaller
-            } else {
+                updated.opticalMediaKind = .installer
+            } else if updated.opticalMediaKind == .installer {
                 // Detaching removable media leaves the EFI disk/NVRAM boot contract intact. A
                 // generic installer must not be forced through distro-specific direct-kernel
                 // extraction merely to cold-boot the system it installed.
                 updated.installerISOPath = nil
+                updated.opticalMediaKind = nil
+            }
+        }
+        if let guestToolsMediaAttached = request.guestToolsMediaAttached {
+            guard updated.bootMode == .efi, updated.guestFamily == .linux else {
+                throw MachineManagerError.persistence(
+                    "Guest Tools media is only available for Linux EFI machines"
+                )
+            }
+            if guestToolsMediaAttached {
+                let managedTools = machineGuestToolsISOPath(id: id)
+                guard Self.isPrivateRegularFile(path: managedTools) else {
+                    throw MachineManagerError.persistence("managed Guest Tools ISO is unavailable")
+                }
+                updated.installerISOPath = managedTools
+                updated.opticalMediaKind = .guestTools
+            } else if updated.opticalMediaKind == .guestTools {
+                updated.installerISOPath = nil
+                updated.opticalMediaKind = nil
             }
         }
         try Self.validateLaunchConfiguration(updated)
@@ -8380,6 +8436,7 @@ public final class MachineManager: @unchecked Sendable {
         updatesEnvironment: Bool = false,
         typedSettingsPatch: DoryMachineTypedSettingsPatch? = nil,
         installerMediaAttached: Bool? = nil,
+        guestToolsMediaAttached: Bool? = nil,
         operationID: UUID = UUID(),
         productionPlanningController: (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil
     ) throws -> DoryMachineStatus {
@@ -8395,24 +8452,36 @@ public final class MachineManager: @unchecked Sendable {
             }
             // Older direct callers use update's media argument. Enter the same root as the
             // explicit media API unless that root is already executing its private stage.
-            if let installerMediaAttached,
+            if let transition = DoryMachineConfigurationUpdateRequest(
+                memoryMB: memoryMB, cpuCount: cpuCount, address: address,
+                updatesAddress: updatesAddress, shares: shares, updatesShares: updatesShares,
+                environment: environment, updatesEnvironment: updatesEnvironment,
+                typedSettingsPatch: typedSettingsPatch,
+                installerMediaAttached: installerMediaAttached,
+                guestToolsMediaAttached: guestToolsMediaAttached
+            ).opticalMediaTransition,
                activeLifecycleOperation(machineID: id) == nil {
                 guard memoryMB == nil, cpuCount == nil, !updatesAddress, !updatesShares,
                       !updatesEnvironment, typedSettingsPatch?.isEmpty != false else {
                     throw MachineManagerError.persistence(
-                        "installer attach/eject must be its own lifecycle transaction")
+                        "optical-media changes must be their own lifecycle transaction")
                 }
-                return try transitionInstallerMedia(id: id, attached: installerMediaAttached,
-                    operationID: operationID, productionPlanningController: productionPlanningController)
+                return try transitionOpticalMedia(
+                    id: id, kind: transition.kind, attached: transition.attached,
+                    operationID: operationID,
+                    productionPlanningController: productionPlanningController
+                )
             }
         }
         let journalsConfiguration = launchPolicy == .perWorkspaceAuthority
-            && installerMediaAttached == nil && productionPlanningController != nil
+            && installerMediaAttached == nil && guestToolsMediaAttached == nil
+            && productionPlanningController != nil
         let request = DoryMachineConfigurationUpdateRequest(
             memoryMB: memoryMB, cpuCount: cpuCount, address: address, updatesAddress: updatesAddress,
             shares: shares, updatesShares: updatesShares, environment: environment,
             updatesEnvironment: updatesEnvironment, typedSettingsPatch: typedSettingsPatch,
-            installerMediaAttached: installerMediaAttached
+            installerMediaAttached: installerMediaAttached,
+            guestToolsMediaAttached: guestToolsMediaAttached
         )
         let requestSHA256 = try request.canonicalSHA256()
         if journalsConfiguration, let productionPlanningController,
@@ -8424,7 +8493,8 @@ public final class MachineManager: @unchecked Sendable {
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
         var preparation = try prepareMachineConfigurationUpdate(
             id: id, request: request,
-            permitsPaused: journalsConfiguration || installerMediaAttached != nil,
+            permitsPaused: journalsConfiguration || installerMediaAttached != nil
+                || guestToolsMediaAttached != nil,
             allowsFirmwareRecovery: true
         )
         let current = preparation.source
@@ -8437,7 +8507,7 @@ public final class MachineManager: @unchecked Sendable {
             return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
         }
         // A parent exists only for the recursive half of a production installer transition;
-        // transitionInstallerMedia already completed the same preflight before creating it.
+        // transitionOpticalMedia already completed the same preflight before creating it.
         // Every root update therefore rejects an unbootable EFI eject before it can create a
         // lifecycle journal, checkpoint firmware, promote NVRAM, or publish configuration.
         if activeLifecycleOperation(machineID: id) == nil {
@@ -8727,7 +8797,7 @@ public final class MachineManager: @unchecked Sendable {
         id: String, operationID: UUID, request: DoryMachineConfigurationUpdateRequest,
         preparation: PreparedMachineConfigurationUpdate
     ) throws -> MachineLifecycleJournalContext? {
-        guard request.installerMediaAttached != nil,
+        guard request.opticalMediaTransition != nil,
               let parent = activeLifecycleOperation(machineID: id) else { return nil }
         let update = try DoryMachineConfigurationUpdateJournal.read(from: parent.lease)
         var candidate = preparation.nativeDefinition
@@ -8882,7 +8952,7 @@ public final class MachineManager: @unchecked Sendable {
         guard let sourceData = Self.readPrivateMetadata(path: machineConfigPath(id: id)),
               (try JSONDecoder().decode(DoryMachineConfiguration.self, from: sourceData)) == preparation.source,
               let workspaceData = Self.readPrivateMetadata(path: machineStateDirectory(id: id) + "/" + DoryWorkspaceRepository.recordFileName),
-              let attached = request.installerMediaAttached else {
+              let transition = request.opticalMediaTransition else {
             throw MachineManagerError.persistence("installer transition source authority is unavailable")
         }
         _ = try workspaceAuthority(machine: preparation.source, authoritativeLegacyData: sourceData, allowReconciliation: false)
@@ -8915,10 +8985,12 @@ public final class MachineManager: @unchecked Sendable {
             targetConfigurationData: try DoryMachineConfigurationMigrationBridge.encodeLegacy(preparation.target),
             sourceWorkspaceData: workspaceData, targetNativeDefinition: preparation.nativeDefinition,
             sourceRuntimeIdentity: identity, requiresResolvedPlan: true,
-            installerTransition: .init(attached: attached, rollbackNativeDefinition: rollbackDefinition,
+            installerTransition: .init(attached: transition.attached, mediaKind: transition.kind,
+                                       rollbackNativeDefinition: rollbackDefinition,
                                        sourceRuntimeOperationID: sourceOperationID)
         )
-        let requiresBoot = !attached || [.running, .paused].contains(originalState)
+        let requiresBoot = [.running, .paused].contains(originalState)
+            || (transition.kind == .installer && !transition.attached)
         var target = try lifecycleCondition(
             machine: preparation.target, state: requiresBoot ? .running : .stopped,
             runtimeIdentity: runtimeIdentityForUnplannedMachine(reason: .definitionChanged)
@@ -8950,7 +9022,8 @@ public final class MachineManager: @unchecked Sendable {
         let id = update.machineID
         try validatePublishedConfigurationUpdate(update, rollback: rollback, permitsLive: true)
         let mustBoot = rollback ? [.running, .paused].contains(context.operation.source.state)
-            : !intent.attached || [.running, .paused].contains(context.operation.source.state)
+            : (((intent.mediaKind ?? .installer) == .installer && !intent.attached)
+                || [.running, .paused].contains(context.operation.source.state))
         if lock.withLock({ machines[id]?.process == nil }) {
             _ = try resolveAndPublishProductionPlan(id: id, operationID: update.operationID, controller: controller)
             try validateConfigurationUpdatePlan(update, rollback: rollback)
@@ -9081,7 +9154,12 @@ public final class MachineManager: @unchecked Sendable {
             preparation: preparation, originalState: originalState, request: request, operationID: operationID
         )
         do {
-            _ = try self.update(id: update.machineID, installerMediaAttached: request.installerMediaAttached, operationID: operationID)
+            _ = try self.update(
+                id: update.machineID,
+                installerMediaAttached: request.installerMediaAttached,
+                guestToolsMediaAttached: request.guestToolsMediaAttached,
+                operationID: operationID
+            )
             return try finishInstallerMediaOperation(context, update: update, controller: controller)
         } catch {
             let operationError = error
@@ -9189,7 +9267,7 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     private func installerMediaReplay(
-        id: String, attached: Bool, operationID: UUID,
+        id: String, kind: DoryMachineOpticalMediaKind, attached: Bool, operationID: UUID,
         controller: any DoryDaemonVirtualMachineProductionPlanningControlling
     ) throws -> DoryMachineStatus? {
         guard let store = lifecycleJournalStore else {
@@ -9204,7 +9282,8 @@ public final class MachineManager: @unchecked Sendable {
         let workspaceLock = try EngineStateDirectoryLock(stateDirectory: store.root, lockFileName: ".mutation.\(id).lock", readOnly: true)
         let lease = try store.acquire(operationID, holdingMutationLock: workspaceLock)
         let update = try DoryMachineConfigurationUpdateJournal.read(from: lease)
-        guard update.installerTransition?.attached == attached else {
+        guard update.installerTransition?.attached == attached,
+              (update.installerTransition?.mediaKind ?? .installer) == kind else {
             throw MachineManagerError.persistence("installer operation UUID belongs to different media intent")
         }
         let state = try lease.read().state
@@ -9246,22 +9325,63 @@ public final class MachineManager: @unchecked Sendable {
             any DoryDaemonVirtualMachineProductionPlanningControlling
         )? = nil
     ) throws -> DoryMachineStatus {
+        try transitionOpticalMedia(
+            id: id,
+            kind: .installer,
+            attached: attached,
+            operationID: operationID,
+            productionPlanningController: productionPlanningController
+        )
+    }
+
+    public func transitionGuestToolsMedia(
+        id: String,
+        attached: Bool,
+        operationID: UUID = UUID(),
+        productionPlanningController: (
+            any DoryDaemonVirtualMachineProductionPlanningControlling
+        )? = nil
+    ) throws -> DoryMachineStatus {
+        try transitionOpticalMedia(
+            id: id,
+            kind: .guestTools,
+            attached: attached,
+            operationID: operationID,
+            productionPlanningController: productionPlanningController
+        )
+    }
+
+    private func transitionOpticalMedia(
+        id: String,
+        kind: DoryMachineOpticalMediaKind,
+        attached: Bool,
+        operationID: UUID,
+        productionPlanningController: (
+            any DoryDaemonVirtualMachineProductionPlanningControlling
+        )?
+    ) throws -> DoryMachineStatus {
         let mutationLease = mutationCoordinator.acquire(workspaceID: id)
         defer { mutationLease.release() }
         try requireNoActivePlanningMutation(id: id)
-        _ = try Self.lifecycleOperationID(operationID, action: "installer media")
+        _ = try Self.lifecycleOperationID(operationID, action: "optical media")
         if launchPolicy == .perWorkspaceAuthority, let productionPlanningController,
            let replay = try installerMediaReplay(
-               id: id, attached: attached, operationID: operationID, controller: productionPlanningController
+               id: id, kind: kind, attached: attached, operationID: operationID,
+               controller: productionPlanningController
            ) { return replay }
         let (original, originalState) = try configurationAndPowerState(id: id)
-        guard original.bootMode == .efi else {
+        guard original.bootMode == .efi,
+              kind != .guestTools || original.guestFamily == .linux else {
             throw MachineManagerError.persistence(
-                "installer media is only available for EFI machines"
+                "this optical media is unavailable for the selected machine"
             )
         }
-        let originallyAttached = original.installerISOPath != nil
-        guard originallyAttached != attached else {
+        let originalKind = original.opticalMediaKind
+        let targetKind: DoryMachineOpticalMediaKind? = attached ? kind : nil
+        guard originalKind != targetKind else {
+            return status(id: id) ?? DoryMachineStatus(id: id, state: originalState)
+        }
+        if !attached, originalKind != kind {
             return status(id: id) ?? DoryMachineStatus(id: id, state: originalState)
         }
         guard originalState != .suspended else {
@@ -9273,10 +9393,24 @@ public final class MachineManager: @unchecked Sendable {
         if launchPolicy == .perWorkspaceAuthority, productionPlanningController == nil {
             throw MachineManagerError.persistence("production planning controller is not configured")
         }
+        if kind == .guestTools, attached {
+            guard let source = configuration.guestToolsISOPath else {
+                throw MachineManagerError.persistence(
+                    "the signed Dory Guest Tools ISO is not installed"
+                )
+            }
+            try Self.cloneOrCopyFile(
+                source: source,
+                destination: machineGuestToolsISOPath(id: id),
+                replaceExisting: true
+            )
+        }
         let request = DoryMachineConfigurationUpdateRequest(
             memoryMB: nil, cpuCount: nil, address: nil, updatesAddress: false,
             shares: nil, updatesShares: false, environment: nil, updatesEnvironment: false,
-            typedSettingsPatch: nil, installerMediaAttached: attached
+            typedSettingsPatch: nil,
+            installerMediaAttached: kind == .installer ? attached : nil,
+            guestToolsMediaAttached: kind == .guestTools ? attached : nil
         )
         let preparation = try prepareMachineConfigurationUpdate(
             id: id, request: request, permitsPaused: true, allowsFirmwareRecovery: false
@@ -9287,7 +9421,7 @@ public final class MachineManager: @unchecked Sendable {
         // The production transition creates its parent lifecycle journal below. Validate an
         // ejected EFI disk first; its recursive update observes that parent and skips its
         // duplicate check.
-        if launchPolicy == .perWorkspaceAuthority {
+        if launchPolicy == .perWorkspaceAuthority, kind == .installer, !attached {
             try confirmInstalledEFIBootabilityIfNeeded(
                 from: preparation.source,
                 to: preparation.target
@@ -9316,17 +9450,19 @@ public final class MachineManager: @unchecked Sendable {
         }
         var definitionChanged = false
         do {
-            var result = try update(id: id, installerMediaAttached: attached)
+            var result = try update(
+                id: id,
+                installerMediaAttached: kind == .installer ? attached : nil,
+                guestToolsMediaAttached: kind == .guestTools ? attached : nil
+            )
             definitionChanged = true
-            if !attached || originallyActive {
+            if (kind == .installer && !attached) || originallyActive {
                 if result.state != .running {
                     result = try startAndWaitUntilReady(id: id)
                 }
                 guard result.state == .running else {
                     throw MachineManagerError.persistence(
-                        attached
-                            ? "installer media restart did not reach running"
-                            : "first installed-disk boot did not reach running"
+                        "optical-media transition did not reach running"
                     )
                 }
             }
@@ -9344,10 +9480,18 @@ public final class MachineManager: @unchecked Sendable {
                    [.starting, .running, .paused, .failed].contains(current.state) {
                     _ = try? stop(id: id)
                 }
-                _ = try update(
-                    id: id,
-                    installerMediaAttached: originallyAttached
-                )
+                switch originalKind {
+                case .installer:
+                    _ = try update(id: id, installerMediaAttached: true)
+                case .guestTools:
+                    _ = try update(id: id, guestToolsMediaAttached: true)
+                case nil:
+                    _ = try update(
+                        id: id,
+                        installerMediaAttached: kind == .installer ? false : nil,
+                        guestToolsMediaAttached: kind == .guestTools ? false : nil
+                    )
+                }
                 if originallyActive {
                     _ = try startAndWaitUntilReady(id: id)
                     if originalState == .paused { _ = try pause(id: id) }
@@ -12964,7 +13108,8 @@ public final class MachineManager: @unchecked Sendable {
         status.cpuCount = entry.configuration.cpuCount
         status.displayMode = entry.configuration.displayMode
         status.bootMode = entry.configuration.bootMode
-        status.installerMediaAttached = entry.configuration.installerISOPath != nil
+        status.installerMediaAttached = entry.configuration.opticalMediaKind == .installer
+        status.guestToolsMediaAttached = entry.configuration.opticalMediaKind == .guestTools
         status.shares = entry.configuration.shares
         status.environment = entry.configuration.environment
         status.typedSettings = typedSettings
@@ -17929,6 +18074,10 @@ public final class MachineManager: @unchecked Sendable {
         "\(machineStateDirectory(id: id))/installer.iso"
     }
 
+    private func machineGuestToolsISOPath(id: String) -> String {
+        "\(machineStateDirectory(id: id))/guest-tools.iso"
+    }
+
     private func machineMacOSRestoreImagePath(id: String) -> String {
         "\(machineStateDirectory(id: id))/Restore.ipsw"
     }
@@ -18079,8 +18228,8 @@ public final class MachineManager: @unchecked Sendable {
         to updated: DoryMachineConfiguration
     ) throws -> Bool {
         guard current.bootMode == .efi,
-              current.installerISOPath != nil,
-              updated.installerISOPath == nil else {
+              current.opticalMediaKind == .installer,
+              updated.opticalMediaKind == nil else {
             return false
         }
         if let platform = try doryUEFIVariableStorePlatform(
@@ -18140,8 +18289,8 @@ public final class MachineManager: @unchecked Sendable {
         to updated: DoryMachineConfiguration
     ) throws {
         guard current.bootMode == .efi,
-              current.installerISOPath != nil,
-              updated.installerISOPath == nil else {
+              current.opticalMediaKind == .installer,
+              updated.opticalMediaKind == nil else {
             return
         }
         do {
@@ -18172,8 +18321,8 @@ public final class MachineManager: @unchecked Sendable {
         to updated: DoryMachineConfiguration
     ) throws -> Bool {
         guard current.bootMode == .efi,
-              current.installerISOPath != nil,
-              updated.installerISOPath == nil else {
+              current.opticalMediaKind == .installer,
+              updated.opticalMediaKind == nil else {
             return false
         }
         try reconcilePendingInstallerFirmwarePromotionIfNeeded(for: current)
@@ -18219,8 +18368,8 @@ public final class MachineManager: @unchecked Sendable {
         to updated: DoryMachineConfiguration
     ) throws {
         guard current.bootMode == .efi,
-              current.installerISOPath == nil,
-              updated.installerISOPath != nil else {
+              current.opticalMediaKind == nil,
+              updated.opticalMediaKind == .installer else {
             return
         }
         let installerNVRAM = machineInstallerFirmwareNVRAMPath(id: current.id)
@@ -18873,12 +19022,24 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.persistence("machine kernel failed managed-storage validation")
         }
         if let installerISOPath = machine.installerISOPath {
-            let expectedInstallerISOPath = machineInstallerISOPath(id: machine.id)
+            let expectedInstallerISOPath: String
+            switch machine.opticalMediaKind {
+            case .installer:
+                expectedInstallerISOPath = machineInstallerISOPath(id: machine.id)
+            case .guestTools:
+                expectedInstallerISOPath = machineGuestToolsISOPath(id: machine.id)
+            case nil:
+                throw MachineManagerError.persistence(
+                    "machine optical-media kind is missing"
+                )
+            }
             guard machine.bootMode == .efi,
                   installerISOPath == expectedInstallerISOPath,
                   Self.isPrivateRegularFile(path: expectedInstallerISOPath) else {
                 throw MachineManagerError.persistence("machine installer ISO failed managed-storage validation")
             }
+        } else if machine.opticalMediaKind != nil {
+            throw MachineManagerError.persistence("machine optical-media kind has no ISO")
         }
     }
 
@@ -21264,6 +21425,16 @@ public final class MachineManager: @unchecked Sendable {
         if machine.bootMode == .linuxKernel, machine.installerISOPath != nil {
             throw MachineManagerError.persistence("installer ISO requires EFI boot mode")
         }
+        guard (machine.installerISOPath == nil) == (machine.opticalMediaKind == nil) else {
+            throw MachineManagerError.persistence(
+                "optical-media path and kind must be present together"
+            )
+        }
+        if machine.opticalMediaKind == .guestTools, machine.guestFamily != .linux {
+            throw MachineManagerError.persistence(
+                "Guest Tools media requires a Linux guest"
+            )
+        }
         let normalizedAddress = try normalizedAddress(machine.address)
         guard normalizedAddress == machine.address else {
             throw MachineManagerError.invalidAddress(machine.address ?? "")
@@ -22034,6 +22205,7 @@ public final class MachineManager: @unchecked Sendable {
             let rootfsPath = "\(root)/\(id)/rootfs.ext4"
             let kernelPath = "\(root)/\(id)/kernel"
             let installerISOPath = "\(root)/\(id)/installer.iso"
+            let guestToolsISOPath = "\(root)/\(id)/guest-tools.iso"
             guard let data = readPrivateMetadata(path: path),
                   let machine = try? decoder.decode(DoryMachineConfiguration.self, from: data),
                   machine.id == id,
@@ -22075,8 +22247,14 @@ public final class MachineManager: @unchecked Sendable {
                       isPrivateRegularFile(path: kernelPath),
                       machine.installerISOPath == nil || (
                         machine.bootMode == .efi
-                            && machine.installerISOPath == installerISOPath
-                            && isPrivateRegularFile(path: installerISOPath)
+                            && (
+                                machine.opticalMediaKind == .installer
+                                    && machine.installerISOPath == installerISOPath
+                                    && isPrivateRegularFile(path: installerISOPath)
+                                || machine.opticalMediaKind == .guestTools
+                                    && machine.installerISOPath == guestToolsISOPath
+                                    && isPrivateRegularFile(path: guestToolsISOPath)
+                            )
                       ) else {
                     continue
                 }

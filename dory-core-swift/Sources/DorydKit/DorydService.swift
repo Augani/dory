@@ -858,18 +858,26 @@ public final class DorydService: NSObject, DorydControl {
                 operationID = UUID()
             }
             let status: DoryMachineStatus
-            if let attached = update.installerMediaAttached {
-                guard update.containsOnlyInstallerMediaMutation else {
+            if let transition = update.opticalMediaTransition {
+                guard update.containsOnlyOpticalMediaMutation else {
                     throw MachineManagerError.persistence(
-                        "installer attach/eject must be its own lifecycle transaction"
+                        "optical-media changes must be their own lifecycle transaction"
                     )
                 }
-                status = try machineManager.transitionInstallerMedia(
-                    id: machineID,
-                    attached: attached,
-                    operationID: operationID,
-                    productionPlanningController: productionPlanningController
-                )
+                switch transition.kind {
+                case .installer:
+                    status = try machineManager.transitionInstallerMedia(
+                        id: machineID, attached: transition.attached,
+                        operationID: operationID,
+                        productionPlanningController: productionPlanningController
+                    )
+                case .guestTools:
+                    status = try machineManager.transitionGuestToolsMedia(
+                        id: machineID, attached: transition.attached,
+                        operationID: operationID,
+                        productionPlanningController: productionPlanningController
+                    )
+                }
             } else {
                 if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority,
                    productionPlanningController == nil {
@@ -2530,9 +2538,17 @@ private struct MachineUpdateRequest {
     var updatesShares: Bool
     var typedSettings: DoryMachineTypedSettingsPatch
     var installerMediaAttached: Bool?
+    var guestToolsMediaAttached: Bool?
 
-    var containsOnlyInstallerMediaMutation: Bool {
-        installerMediaAttached != nil
+    var opticalMediaTransition: (kind: DoryMachineOpticalMediaKind, attached: Bool)? {
+        if let installerMediaAttached { return (.installer, installerMediaAttached) }
+        if let guestToolsMediaAttached { return (.guestTools, guestToolsMediaAttached) }
+        return nil
+    }
+
+    var containsOnlyOpticalMediaMutation: Bool {
+        opticalMediaTransition != nil
+            && !(installerMediaAttached != nil && guestToolsMediaAttached != nil)
             && memoryMB == nil
             && cpuCount == nil
             && !updatesAddress
@@ -2562,8 +2578,9 @@ private struct MachineUpdateRequest {
             allowsClears: true
         )
         self.installerMediaAttached = dictionary.optionalBool("installerMediaAttached")
+        self.guestToolsMediaAttached = dictionary.optionalBool("guestToolsMediaAttached")
         if memoryMB == nil, cpuCount == nil, !updatesAddress, !updatesShares, typedSettings.isEmpty,
-           installerMediaAttached == nil {
+           opticalMediaTransition == nil {
             throw XPCRemoteConfigError.invalid("config")
         }
     }
@@ -3120,6 +3137,7 @@ private extension DoryMachineStatus {
         dictionary["displayMode"] = displayMode.rawValue
         dictionary["bootMode"] = bootMode.rawValue
         dictionary["installerMediaAttached"] = installerMediaAttached
+        dictionary["guestToolsMediaAttached"] = guestToolsMediaAttached
         if let typedSettings {
             dictionary["typedSettings"] = typedSettings.xpcDictionary
         }
@@ -3424,6 +3442,7 @@ private extension DoryMachineEventStatus {
             "displayMode": displayMode,
             "bootMode": bootMode,
             "installerMediaAttached": installerMediaAttached,
+            "guestToolsMediaAttached": guestToolsMediaAttached,
             "shareCount": shareCount,
             "integrationHealth": integrationHealth,
             "runtimeMode": runtimeMode,

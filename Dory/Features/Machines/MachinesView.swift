@@ -129,6 +129,7 @@ private struct MachineCard: View {
     @State private var confirmingDelete = false
     @State private var confirmingToolsRepair = false
     @State private var confirmingInstallerMediaChange = false
+    @State private var confirmingGuestToolsMediaChange = false
     @State private var showingIntegrationHealth = false
     @State private var showingRuntimeStatus = false
     @State private var showingSerialConsole = false
@@ -325,6 +326,27 @@ private struct MachineCard: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(installerMediaDialogMessage)
+        }
+        .confirmationDialog(
+            machine.guestToolsMediaAttached
+                ? "Eject Dory Guest Tools from \(machine.name)?"
+                : "Install Dory Guest Tools in \(machine.name)?",
+            isPresented: $confirmingGuestToolsMediaChange,
+            titleVisibility: .visible
+        ) {
+            Button(machine.guestToolsMediaAttached ? "Eject Guest Tools" : "Mount Guest Tools ISO") {
+                store.setMachineGuestToolsMedia(
+                    machine,
+                    attached: !machine.guestToolsMediaAttached
+                )
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(machine.guestToolsMediaAttached
+                ? "Dory will eject the tools disc. Installed guest services remain in place."
+                : (isActive
+                    ? "Dory will request a graceful shutdown, mount its signed packages ISO, and restart the VM. Open the disc in Linux and run install.sh."
+                    : "Dory will mount its signed packages ISO for the next start. Open the disc in Linux and run install.sh."))
         }
     }
 
@@ -606,6 +628,16 @@ private struct MachineCard: View {
             }
             if machine.bootMode == .efi {
                 Divider()
+                Button {
+                    confirmingGuestToolsMediaChange = true
+                } label: {
+                    Label(
+                        machine.guestToolsMediaAttached
+                            ? "Eject Dory Guest Tools" : "Install Dory Guest Tools…",
+                        systemImage: machine.guestToolsMediaAttached
+                            ? "eject" : "shippingbox.and.arrow.backward"
+                    )
+                }
                 Button {
                     confirmingInstallerMediaChange = true
                 } label: {

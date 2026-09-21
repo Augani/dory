@@ -15,6 +15,13 @@ struct DoryMachineConfigurationUpdateRequest: Codable, Sendable, Equatable {
     var updatesEnvironment: Bool
     var typedSettingsPatch: DoryMachineTypedSettingsPatch?
     var installerMediaAttached: Bool?
+    var guestToolsMediaAttached: Bool? = nil
+
+    var opticalMediaTransition: (kind: DoryMachineOpticalMediaKind, attached: Bool)? {
+        if let installerMediaAttached { return (.installer, installerMediaAttached) }
+        if let guestToolsMediaAttached { return (.guestTools, guestToolsMediaAttached) }
+        return nil
+    }
 
     func canonicalSHA256() throws -> String {
         let encoder = JSONEncoder()
@@ -101,6 +108,8 @@ struct DoryMachineConfigurationUpdateJournal: Codable, Sendable, Equatable {
 /// exact resolved-plan observations are appended to the same operation after quiescence.
 struct DoryMachineInstallerTransitionIntent: Codable, Sendable, Equatable {
     var attached: Bool
+    /// Nil decodes journals written before optical-media kinds existed and means installer.
+    var mediaKind: DoryMachineOpticalMediaKind? = nil
     var rollbackNativeDefinition: DoryVirtualMachineDefinition?
     var sourceRuntimeOperationID: UUID?
 
@@ -113,10 +122,14 @@ struct DoryMachineInstallerTransitionIntent: Codable, Sendable, Equatable {
         let target = try update.targetConfiguration
         var expectedTarget = source
         expectedTarget.installerISOPath = target.installerISOPath
-        let requiresBoot = !attached || [.running, .paused].contains(operation.source.state)
+        expectedTarget.opticalMediaKind = target.opticalMediaKind
         let activeSource = [.running, .paused].contains(operation.source.state)
+        let effectiveMediaKind = mediaKind ?? .installer
+        let requiresBoot = activeSource || (effectiveMediaKind == .installer && !attached)
+        let targetKind: DoryMachineOpticalMediaKind? = attached ? effectiveMediaKind : nil
         guard update.requiresResolvedPlan, source.bootMode == .efi,
-              (source.installerISOPath != nil) != attached,
+              source.opticalMediaKind != targetKind,
+              target.opticalMediaKind == targetKind,
               (target.installerISOPath != nil) == attached, target == expectedTarget,
               operation.target.state == (requiresBoot ? .running : .stopped),
               operation.source.runtime?.policy == .requireResolvedPlan,

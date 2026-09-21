@@ -29,6 +29,8 @@
 #   * Contents/Resources/dory-desktop-<distro>-rootfs-arm64.ext4.lzfse — optional desktop images.
 #   * Contents/Resources/dory-agent-linux-<arch>           — guest relay/agent for host AI bridge
 #                                                           and future vsock control features.
+#   * Contents/Resources/dory-guest-tools-<arch>.iso       — signed apt/dnf package repository
+#                                                           mounted by the in-app installer action.
 #   * Contents/Resources/dory-transfer-helper-image-arm64.tar — deterministic scratch image used
 #                                                               for exact named-volume transfer.
 #   * Contents/Resources/dory-engine-rootfs-<arch>.ext4.lzfse — offline dockerd rootfs selected by
@@ -1054,6 +1056,20 @@ guest_agent_source_for_arch() {
   return 1
 }
 
+guest_tools_iso_source_for_arch() {
+  local arch="$1" env_name candidate
+  env_name="$(env_for_arch DORY_GUEST_TOOLS_ISO "$arch")"
+  candidate="${!env_name:-}"
+  if [ -n "$candidate" ] && [ -f "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+  if [ "$arch" = "$(host_guest_arch)" ] && [ -n "${DORY_GUEST_TOOLS_ISO:-}" ] \
+     && [ -f "$DORY_GUEST_TOOLS_ISO" ]; then
+    printf '%s\n' "$DORY_GUEST_TOOLS_ISO"
+    return 0
+  fi
+  candidate="$REPO_ROOT/GuestTools/Linux/out/dory-guest-tools-$arch.iso"
+  [ -f "$candidate" ] && printf '%s\n' "$candidate"
+}
+
 engine_rootfs_source_for_arch() {
   local arch="$1" env_name
   env_name="$(env_for_arch DORY_ENGINE_ROOTFS "$arch")"
@@ -1247,6 +1263,20 @@ bundle_guest_agent_for_arch() {
   fi
 }
 
+bundle_guest_tools_iso_for_arch() {
+  local arch="$1" iso_src iso_out
+  iso_src="$(guest_tools_iso_source_for_arch "$arch" || true)"
+  iso_out="$RESOURCES/dory-guest-tools-$arch.iso"
+  if [ -n "$iso_src" ] && [ -f "$iso_src" ]; then
+    install -m0644 "$iso_src" "$iso_out"
+    echo "    bundled Resources/$(basename "$iso_out") ($(du -h "$iso_out" | awk '{print $1}'))"
+  else
+    rm -f "$iso_out"
+    warn_or_fail_missing_bundle_asset \
+      "no signed $arch Guest Tools ISO found; build GuestTools/Linux/out/dory-guest-tools-$arch.iso in qualified guest VMs or set $(env_for_arch DORY_GUEST_TOOLS_ISO "$arch")"
+  fi
+}
+
 bundle_engine_rootfs_for_arch() {
   local arch="$1" rootfs_src rootfs_out
   rootfs_src="$(engine_rootfs_source_for_arch "$arch" || true)"
@@ -1325,6 +1355,7 @@ bundle_desktop_assets_for_arch() {
 echo "==> Bundling VM kernel + initfs assets, compressed (so the engine needs no container install)…"
 for asset_arch in ${DORY_BUNDLE_ARCHES:-arm64 amd64}; do
   bundle_guest_agent_for_arch "$asset_arch"
+  bundle_guest_tools_iso_for_arch "$asset_arch"
   bundle_hv_kernel_for_arch "$asset_arch"
   bundle_hv_gpu_kernel_for_arch "$asset_arch"
   if [ "$COMPONENT_BUNDLE_MODE" = legacy ]; then
