@@ -52,6 +52,10 @@ public protocol VirtioDeviceBackend: AnyObject {
     /// Driver reset the device. Called while transport access is serialized and before queues are
     /// cleared, so backends can release retained guest buffers and fail outstanding operations.
     func deviceReset(transport: VirtioMMIOTransport)
+    /// Called after a status-0 reset has cleared every transport queue, interrupt, and negotiated
+    /// feature. Generation-bound helper replacement must wait for this boundary so the transport
+    /// cannot subsequently discard the replacement's queue generation.
+    func deviceResetCompleted(transport: VirtioMMIOTransport)
     /// A QueueReady write changed (or reconfigured) a queue. Called synchronously while transport
     /// access is serialized, after the queue has adopted its new ready state. Backends retaining
     /// guest-owned descriptors must discard them before this callback returns.
@@ -63,6 +67,7 @@ extension VirtioDeviceBackend {
     public var kickSynchronization: VirtioKickSynchronization { .transportLocked }
     public func deviceReady(transport: VirtioMMIOTransport) {}
     public func deviceReset(transport: VirtioMMIOTransport) {}
+    public func deviceResetCompleted(transport: VirtioMMIOTransport) {}
     public func queueStateChanged(queue: Int, ready: Bool, transport: VirtioMMIOTransport) {}
     public func writeConfig(offset: UInt64, value: UInt64, width: Int) {}
 }
@@ -384,6 +389,7 @@ public final class VirtioMMIOTransport: MMIODevice {
         interruptLock.unlock()
         negotiatedFeatures = 0
         driverFeatures = 0
+        backend.deviceResetCompleted(transport: self)
     }
 
     public var statistics: VirtioMMIOTransportStatistics {

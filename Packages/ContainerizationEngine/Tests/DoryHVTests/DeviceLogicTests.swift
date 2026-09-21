@@ -636,6 +636,49 @@ import Testing
         func handleKick(queue: Int, transport: VirtioMMIOTransport) {}
     }
 
+    private final class ResetOrderingBackend: VirtioDeviceBackend {
+        let deviceID: UInt32 = 26
+        let deviceFeatures: UInt64 = 0
+        let queueCount = 1
+        let configSpace: [UInt8] = []
+        private(set) var queueReadyAtReset = false
+        private(set) var queueReadyAtCompletion = true
+
+        func handleKick(queue: Int, transport: VirtioMMIOTransport) {}
+
+        func deviceReset(transport: VirtioMMIOTransport) {
+            queueReadyAtReset = transport.queues[0].ready
+        }
+
+        func deviceResetCompleted(transport: VirtioMMIOTransport) {
+            queueReadyAtCompletion = transport.queues[0].ready
+        }
+    }
+
+    @Test func resetCompletionRunsOnlyAfterTransportQueuesAreCleared() throws {
+        let base = GuestLayout.ramBase
+        let memory = try GuestMemory(guestBase: base, size: 0x20_000)
+        let backend = ResetOrderingBackend()
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: backend,
+            memory: memory
+        ) {}
+
+        transport.write(offset: 0x030, value: 0, width: 4)
+        transport.write(offset: 0x038, value: 8, width: 4)
+        transport.write(offset: 0x080, value: base + 0x1_000, width: 4)
+        transport.write(offset: 0x090, value: base + 0x4_000, width: 4)
+        transport.write(offset: 0x0A0, value: base + 0x8_000, width: 4)
+        transport.write(offset: 0x044, value: 1, width: 4)
+        #expect(transport.queues[0].ready)
+
+        transport.write(offset: 0x070, value: 0, width: 4)
+
+        #expect(backend.queueReadyAtReset)
+        #expect(!backend.queueReadyAtCompletion)
+    }
+
     @Test func publishesMonotonicTransportTelemetryCounters() throws {
         let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
         let backend = Backend(sharedMemoryRegions: [])

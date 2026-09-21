@@ -2394,6 +2394,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private let rendererRetirementQueue = DispatchQueue(label: "dev.dory.gpu.resource-retirement")
     private var retiringResources: [UInt32: UInt64] = [:]
     private var activeQuiescence: ActiveQuiescence?
+    /// `deviceReset()` runs before VirtioMMIO clears its queue registers. Record replacement
+    /// demand here and publish it only from `deviceResetCompleted()`, after that reset boundary.
+    private var pendingRendererReplacementEpoch: UInt64?
     private var rendererLifecycleHealthState: VirtioGPURendererLifecycleHealth
     private var acceptingGuestCommands = true
     private var createdContextIDs = Set<UInt32>()
@@ -3250,6 +3253,19 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 "dory-gpu: MMIO reset quiescence timed out at epoch \(receipt.epoch)\n".utf8
             ))
             return
+        }
+    }
+
+    public func deviceResetCompleted(transport: VirtioMMIOTransport) {
+        let shouldRequestReplacement = lifecycleLock.withLock { () -> Bool in
+            guard pendingRendererReplacementEpoch != nil else { return false }
+            pendingRendererReplacementEpoch = nil
+            return true
+        }
+        if shouldRequestReplacement {
+            onRendererWorkerFailure?(
+                "virtio-gpu device reset revoked the one-shot renderer generation"
+            )
         }
     }
 
@@ -8557,14 +8573,12 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 : .notConfigured
             acceptingGuestCommands = active.receipt.reason == .deviceReset
                 && !workerCannotResumeAfterReset
+            if workerCannotResumeAfterReset {
+                pendingRendererReplacementEpoch = epoch
+            }
             return receipt
         }
         receipt?.complete(.completed)
-        if workerCannotResumeAfterReset {
-            onRendererWorkerFailure?(
-                "virtio-gpu device reset revoked the one-shot renderer generation"
-            )
-        }
     }
 
     private func failRendererLifecycle(

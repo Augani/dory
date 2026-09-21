@@ -2041,6 +2041,43 @@ import Testing
 }
 
 @Suite(.serialized) struct DoryRendererWorkerVirtioGPUIntegrationTests {
+    @Test func resetReplacementSignalRunsAfterTransportClearsQueues() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 1
+        )
+        let failures = RendererFailureBoundaryRecorder()
+        let queue = try RendererWorkerGPUQueueFixture(
+            lane: lane,
+            guestBase: 0x4_4000_0000,
+            onRendererWorkerFailure: { failures.record($0) }
+        )
+        failures.attach(queue.transport)
+        queue.gpu.deviceReady(transport: queue.transport)
+
+        try queue.submit(rendererGPUContextCreateRequest(
+            contextID: 19,
+            name: "reset-boundary",
+            capsetID: 4
+        ))
+        #expect(await rendererEventually { fixture.channel.sendCount == 1 })
+        fixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 1 })
+
+        queue.transport.write(offset: 0x070, value: 0, width: 4)
+
+        let resetReason = "virtio-gpu device reset revoked the one-shot renderer generation"
+        let resetEntries = failures.entries.filter { $0.reason == resetReason }
+        #expect(resetEntries == [RendererFailureBoundaryRecorder.Entry(
+            reason: resetReason,
+            controlQueueReady: false
+        )])
+    }
+
     @Test func workerDeathRequestsOnlyVirtioGPUReset() async throws {
         let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
         let lane = try DoryRendererWorkerVirtioCommandLane(
@@ -4697,6 +4734,34 @@ private final class RendererScanoutDisableRecorder: @unchecked Sendable {
     }
 }
 
+private final class RendererFailureBoundaryRecorder: @unchecked Sendable {
+    struct Entry: Equatable {
+        var reason: String
+        var controlQueueReady: Bool?
+    }
+
+    private let lock = NSLock()
+    private weak var transport: VirtioMMIOTransport?
+    private var recorded = [Entry]()
+
+    func attach(_ transport: VirtioMMIOTransport) {
+        lock.withLock { self.transport = transport }
+    }
+
+    func record(_ reason: String) {
+        lock.withLock {
+            recorded.append(Entry(
+                reason: reason,
+                controlQueueReady: transport?.queues[0].ready
+            ))
+        }
+    }
+
+    var entries: [Entry] {
+        lock.withLock { recorded }
+    }
+}
+
 private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
     let memory: GuestMemory
     let gpu: VirtioGPU
@@ -4728,7 +4793,8 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
         onMetalScanout: (@Sendable (VirtioGPUMetalScanoutUpdate) -> Void)? = nil,
         onScanoutDisabled: (@Sendable (UInt32) -> Void)? = nil,
         onStockFenceVerification:
-            (@Sendable (VirtioGPUStockFenceVerificationOutcome) -> Void)? = nil
+            (@Sendable (VirtioGPUStockFenceVerificationOutcome) -> Void)? = nil,
+        onRendererWorkerFailure: (@Sendable (String) -> Void)? = nil
     ) throws {
         descriptorTable = guestBase + 0x1_000
         availableRing = guestBase + 0x4_000
@@ -4753,6 +4819,7 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
             onScanoutFrame: onScanoutFrame,
             onMetalScanout: onMetalScanout,
             onScanoutDisabled: onScanoutDisabled,
+            onRendererWorkerFailure: onRendererWorkerFailure,
             onStockFenceVerification: onStockFenceVerification
         )
         transport = VirtioMMIOTransport(
