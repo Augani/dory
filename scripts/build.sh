@@ -1208,6 +1208,8 @@ write_doryd_launch_agent() {
     <dict>
         <key>dev.dory.doryd</key>
         <true/>
+        <key>dev.dory.doryd.display</key>
+        <true/>
     </dict>
     <key>EnvironmentVariables</key>
     <dict>

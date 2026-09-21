@@ -42,6 +42,10 @@ public protocol DoryVMDisplayBrokerXPCProtocol: NSObjectProtocol {
 }
 
 public enum DoryVMDisplayBrokerXPCInterface {
+    public static func serviceName(controlServiceName: String) -> String {
+        controlServiceName + ".display"
+    }
+
     public static func make() -> NSXPCInterface {
         let interface = NSXPCInterface(with: DoryVMDisplayBrokerXPCProtocol.self)
         let descriptorClasses = NSSet(objects: NSArray.self, FileHandle.self) as! Set<AnyHashable>

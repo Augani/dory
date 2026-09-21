@@ -579,6 +579,25 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>0</string>"))
     }
 
+    @Test func launchAgentPublishesDedicatedDisplayMachService() throws {
+        let plist = DorydLaunchAgent.launchAgentPlist(
+            program: "/Applications/Dory.app/Contents/Helpers/doryd",
+            helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers"),
+            configuration: DorydLaunchAgent.Configuration()
+        )
+        let data = try #require(plist.data(using: .utf8))
+        let root = try #require(
+            try PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+            ) as? [String: Any]
+        )
+        let services = try #require(root["MachServices"] as? [String: Bool])
+        #expect(services[DorydLaunchAgent.label] == true)
+        #expect(services["\(DorydLaunchAgent.label).display"] == true)
+    }
+
     @Test func qualificationBootstrapIsExplicitAndOffByDefault() throws {
         func environment(_ configuration: DorydLaunchAgent.Configuration) throws -> [String: String] {
             let plist = DorydLaunchAgent.launchAgentPlist(

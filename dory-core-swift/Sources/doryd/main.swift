@@ -347,9 +347,22 @@ let service = DorydService(
 let delegate = DorydListenerDelegate(service: service)
 let listener = NSXPCListener(machServiceName: machServiceName)
 listener.delegate = delegate
+let displayBroker = DoryVMDisplayBroker { machineID, operationID, processIdentifier in
+    guard let status = machineManager?.status(id: machineID),
+          status.guestFamily == .linux,
+          status.displayMode == .desktop,
+          status.pid == processIdentifier else {
+        return false
+    }
+    return status.activeOperationID == nil || status.activeOperationID == operationID
+}
+let displayDelegate = DoryVMDisplayListenerDelegate(broker: displayBroker)
+let displayServiceName = machServiceName + ".display"
+let displayListener = NSXPCListener(machServiceName: displayServiceName)
+displayListener.delegate = displayDelegate
 
 private let shutdownCoordinator = DorydShutdownCoordinator(
-    listener: listener,
+    listeners: [listener, displayListener],
     hostCLIReconciler: hostCLIReconciler,
     idleSleepScheduler: idleSleepScheduler,
     wakeCoordinator: wakeCoordinator,
@@ -410,7 +423,9 @@ if dockerTier == nil {
 shutdownCoordinator.exitIfRequested()
 
 listener.resume()
+displayListener.resume()
 FileHandle.standardError.write(Data("doryd: serving XPC \(machServiceName)\n".utf8))
+FileHandle.standardError.write(Data("doryd: serving display XPC \(displayServiceName)\n".utf8))
 sandboxTTLReconciler?.start()
 machineDeviceTelemetryMonitor?.start()
 machineBackupScheduler?.start()
@@ -451,7 +466,7 @@ if let networkingController {
 dispatchMain()
 
 private final class DorydShutdownCoordinator {
-    private let listener: NSXPCListener
+    private let listeners: [NSXPCListener]
     private let hostCLIReconciler: HostCLIReconciler?
     private let idleSleepScheduler: IdleSleepScheduler?
     private let wakeCoordinator: HostWakeCoordinator
@@ -478,7 +493,7 @@ private final class DorydShutdownCoordinator {
     private var finalExitCode: Int32 = 0
 
     init(
-        listener: NSXPCListener,
+        listeners: [NSXPCListener],
         hostCLIReconciler: HostCLIReconciler?,
         idleSleepScheduler: IdleSleepScheduler?,
         wakeCoordinator: HostWakeCoordinator,
@@ -495,7 +510,7 @@ private final class DorydShutdownCoordinator {
         remoteManager: RemoteMachineManager,
         dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority
     ) {
-        self.listener = listener
+        self.listeners = listeners
         self.hostCLIReconciler = hostCLIReconciler
         self.idleSleepScheduler = idleSleepScheduler
         self.wakeCoordinator = wakeCoordinator
@@ -532,7 +547,7 @@ private final class DorydShutdownCoordinator {
         // still be executing, but no engineStart/engineWake can spawn or resume a helper once this
         // call begins; ordinary engineStop continues to use the reversible stop() path.
         let dockerShutdown = DorydDockerTierShutdownBoundary.complete(dockerTier: dockerTier)
-        listener.invalidate()
+        for listener in listeners { listener.invalidate() }
         hostCLIReconciler?.stop()
         idleSleepScheduler?.stop()
         wakeCoordinator.stop()

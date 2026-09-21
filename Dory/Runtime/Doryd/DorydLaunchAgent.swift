@@ -634,6 +634,8 @@ enum DorydLaunchAgent {
             <dict>
                 <key>\(label)</key>
                 <true/>
+                <key>\(label).display</key>
+                <true/>
             </dict>
             <key>EnvironmentVariables</key>
             <dict>

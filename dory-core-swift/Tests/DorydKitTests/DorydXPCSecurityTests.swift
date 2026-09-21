@@ -41,6 +41,49 @@ final class DorydXPCSecurityTests: XCTestCase {
         XCTAssertTrue(DorydXPCSecurity.productionClientRequirement.contains("com.pythonxi.Dory"))
         XCTAssertTrue(DorydXPCSecurity.productionClientRequirement.contains("dorydctl"))
         XCTAssertTrue(DorydXPCSecurity.productionDaemonRequirement.contains("identifier \"doryd\""))
+        XCTAssertTrue(
+            DorydXPCSecurity.productionDisplayApplicationRequirement.contains(
+                "identifier \"com.pythonxi.Dory\""
+            )
+        )
+    }
+
+    func testDisplayPeerRolesAreExclusiveAndSameUID() {
+        XCTAssertEqual(DorydXPCSecurity.displayPeerRole(
+            clientUID: 501,
+            daemonUID: 501,
+            daemonTeamID: DorydXPCSecurity.productionTeamID,
+            satisfiesApplicationRequirement: true,
+            satisfiesRunnerRequirement: false
+        ), .application)
+        XCTAssertEqual(DorydXPCSecurity.displayPeerRole(
+            clientUID: 501,
+            daemonUID: 501,
+            daemonTeamID: DorydXPCSecurity.productionTeamID,
+            satisfiesApplicationRequirement: false,
+            satisfiesRunnerRequirement: true
+        ), .runner)
+        XCTAssertNil(DorydXPCSecurity.displayPeerRole(
+            clientUID: 501,
+            daemonUID: 501,
+            daemonTeamID: DorydXPCSecurity.productionTeamID,
+            satisfiesApplicationRequirement: true,
+            satisfiesRunnerRequirement: true
+        ))
+        XCTAssertNil(DorydXPCSecurity.displayPeerRole(
+            clientUID: 502,
+            daemonUID: 501,
+            daemonTeamID: DorydXPCSecurity.productionTeamID,
+            satisfiesApplicationRequirement: true,
+            satisfiesRunnerRequirement: false
+        ))
+        XCTAssertEqual(DorydXPCSecurity.displayPeerRole(
+            clientUID: 501,
+            daemonUID: 501,
+            daemonTeamID: nil,
+            satisfiesApplicationRequirement: false,
+            satisfiesRunnerRequirement: false
+        ), .development)
     }
 
     func testProductionDaemonIdentityRejectsWrongTeam() {

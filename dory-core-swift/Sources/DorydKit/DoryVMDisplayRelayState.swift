@@ -106,16 +106,21 @@ struct DoryVMDisplayRelayState<Authority> {
 
     mutating func acknowledgeFrame(
         machineID: String,
-        leaseID: UUID
+        leaseID: UUID,
+        authorizedBy isAuthorized: (Authority) -> Bool = { _ in true }
     ) throws -> FrameRecord {
         guard var machine = machines[machineID] else {
             throw DoryVMDisplayRelayError.unknownMachine
         }
         for scanoutID in machine.scanouts.keys.sorted() {
             guard var scanout = machine.scanouts[scanoutID],
-                  let record = scanout.delivered.removeValue(forKey: leaseID) else {
+                  let record = scanout.delivered[leaseID] else {
                 continue
             }
+            guard isAuthorized(record.authority) else {
+                throw DoryVMDisplayRelayError.unknownLease
+            }
+            scanout.delivered.removeValue(forKey: leaseID)
             machine.scanouts[scanoutID] = scanout
             machines[machineID] = machine
             return record
@@ -181,5 +186,30 @@ struct DoryVMDisplayRelayState<Authority> {
             }.compactMap { scanout.delivered[$0] }
         }
         return RetiredRunner(frames: frames, commands: machine.commands)
+    }
+
+    mutating func reclaimDelivered(
+        where shouldReclaim: (Authority) -> Bool
+    ) -> [FrameRecord] {
+        var reclaimed: [FrameRecord] = []
+        for machineID in machines.keys.sorted() {
+            guard var machine = machines[machineID] else { continue }
+            for scanoutID in machine.scanouts.keys.sorted() {
+                guard var scanout = machine.scanouts[scanoutID] else { continue }
+                for leaseID in scanout.delivered.keys.sorted(by: {
+                    $0.uuidString < $1.uuidString
+                }) {
+                    guard let record = scanout.delivered[leaseID],
+                          shouldReclaim(record.authority) else {
+                        continue
+                    }
+                    scanout.delivered.removeValue(forKey: leaseID)
+                    reclaimed.append(record)
+                }
+                machine.scanouts[scanoutID] = scanout
+            }
+            machines[machineID] = machine
+        }
+        return reclaimed
     }
 }

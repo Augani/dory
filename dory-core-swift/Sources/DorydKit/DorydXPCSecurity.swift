@@ -1,6 +1,13 @@
 import Darwin
+import DoryRendererWorkerWireContracts
 import Foundation
 import Security
+
+public enum DoryVMDisplayPeerRole: Equatable, Sendable {
+    case application
+    case runner
+    case development
+}
 
 /// Authentication policy for doryd's user-scoped Mach service.
 ///
@@ -15,6 +22,9 @@ public enum DorydXPCSecurity {
     public static let productionDaemonRequirement =
         "anchor apple generic and certificate leaf[subject.OU] = \"\(productionTeamID)\" "
         + "and identifier \"doryd\""
+    public static let productionDisplayApplicationRequirement =
+        "anchor apple generic and certificate leaf[subject.OU] = \"\(productionTeamID)\" "
+        + "and identifier \"com.pythonxi.Dory\""
 
     public static func acceptsConnection(
         clientUID: uid_t,
@@ -46,6 +56,60 @@ public enum DorydXPCSecurity {
         return true
     }
 
+    public static func displayPeerRole(
+        clientUID: uid_t,
+        daemonUID: uid_t,
+        daemonTeamID: String?,
+        satisfiesApplicationRequirement: Bool,
+        satisfiesRunnerRequirement: Bool
+    ) -> DoryVMDisplayPeerRole? {
+        guard clientUID == daemonUID else { return nil }
+        guard let daemonTeamID, !daemonTeamID.isEmpty else {
+            return .development
+        }
+        guard daemonTeamID == productionTeamID,
+              satisfiesApplicationRequirement != satisfiesRunnerRequirement else {
+            return nil
+        }
+        return satisfiesApplicationRequirement ? .application : .runner
+    }
+
+    public static func configureDisplayConnection(
+        _ connection: NSXPCConnection,
+        daemonUID: uid_t = geteuid(),
+        daemonTeamID: String? = currentTeamIdentifier()
+    ) -> DoryVMDisplayPeerRole? {
+        let isProduction = daemonTeamID == productionTeamID
+        let applicationMatches = isProduction && process(
+            connection.processIdentifier,
+            satisfies: productionDisplayApplicationRequirement
+        )
+        let runnerMatches = isProduction && process(
+            connection.processIdentifier,
+            satisfies: DoryRendererWorkerIdentity.runnerCodeSigningRequirement
+        )
+        guard let role = displayPeerRole(
+            clientUID: connection.effectiveUserIdentifier,
+            daemonUID: daemonUID,
+            daemonTeamID: daemonTeamID,
+            satisfiesApplicationRequirement: applicationMatches,
+            satisfiesRunnerRequirement: runnerMatches
+        ) else {
+            return nil
+        }
+        switch role {
+        case .application:
+            connection.setCodeSigningRequirement(productionDisplayApplicationRequirement)
+        case .runner:
+            connection.setCodeSigningRequirement(
+                DoryRendererWorkerIdentity.runnerCodeSigningRequirement
+            )
+        case .development:
+            break
+        }
+        return role
+    }
+
     public static func currentTeamIdentifier() -> String? {
         var code: SecCode?
         guard SecCodeCopySelf(SecCSFlags(), &code) == errSecSuccess,
@@ -66,6 +130,39 @@ public enum DorydXPCSecurity {
             return nil
         }
         return team
+    }
+
+    private static func process(_ pid: pid_t, satisfies requirementText: String) -> Bool {
+        guard pid > 0,
+              let requirement = try? securityRequirement(requirementText) else {
+            return false
+        }
+        let attributes = [
+            kSecGuestAttributePid as String: NSNumber(value: pid),
+        ] as CFDictionary
+        var code: SecCode?
+        guard SecCodeCopyGuestWithAttributes(
+            nil,
+            attributes,
+            SecCSFlags(),
+            &code
+        ) == errSecSuccess, let code else {
+            return false
+        }
+        return SecCodeCheckValidity(code, SecCSFlags(), requirement) == errSecSuccess
+    }
+
+    private static func securityRequirement(_ text: String) throws -> SecRequirement {
+        var requirement: SecRequirement?
+        let status = SecRequirementCreateWithString(
+            text as CFString,
+            SecCSFlags(),
+            &requirement
+        )
+        guard status == errSecSuccess, let requirement else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        }
+        return requirement
     }
 
     public static func isProductionDaemonIdentity(

@@ -12,6 +12,8 @@
     <dict>
         <key>dev.dory.doryd</key>
         <true/>
+        <key>dev.dory.doryd.display</key>
+        <true/>
     </dict>
     <key>RunAtLoad</key>
     <true/>
