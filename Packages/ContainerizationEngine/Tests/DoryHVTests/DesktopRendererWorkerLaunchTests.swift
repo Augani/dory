@@ -9,6 +9,15 @@ import Testing
 
 @Suite(.serialized)
 struct DesktopRendererWorkerLaunchTests {
+    @Test func directAndLegacyBootsUseTheDirectRendererBootstrapSlot() {
+        #expect(desktopRendererBootstrapDescriptor(for: nil)
+            == RuntimeLaunchEnvelope.rendererBootstrapDescriptor)
+        #expect(desktopRendererBootstrapDescriptor(for: .linuxDirect(.init(
+            rootDevice: "/dev/vda2",
+            genericGuest: true
+        ))) == RuntimeLaunchEnvelope.rendererBootstrapDescriptor)
+    }
+
     @Test func exactAnonymousBootstrapReaderConsumesAndClosesDescriptor() throws {
         let bytes = DoryRendererWorkerBootstrapCodec.encode(
             try rendererLaunchBootstrap(workerGeneration: 17)

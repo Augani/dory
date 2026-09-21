@@ -37,6 +37,8 @@ import Testing
             bootDevices: [systemDisk, installer],
             bootOrder: [installer.logicalID, systemDisk.logicalID]
         )
+        #expect(desktopRendererBootstrapDescriptor(for: .uefi(launchPlan))
+            == RuntimeLaunchEnvelope.uefiRendererBootstrapDescriptor)
         let firmwareDescriptor = try anonymousReadOnlyBlob(firmware)
         let templateDescriptor = try anonymousReadOnlyBlob(variableTemplate)
         let sbomDescriptor = try anonymousReadOnlyBlob(sbom)

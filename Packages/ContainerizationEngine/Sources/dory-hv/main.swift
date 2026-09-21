@@ -777,6 +777,9 @@ case "desktop":
             resolvedGraphics: resolvedGraphics,
             rendererBootstrapAuthority: rendererBootstrapAuthority,
             exactManagedKernelSHA256: exactManagedKernelSHA256,
+            requiredBootstrapDescriptor: desktopRendererBootstrapDescriptor(
+                for: runtimeLaunchEnvelope?.boot
+            ),
             requiredProducerFenceContract: runtimeLaunchEnvelope == nil
                 ? .managedLinux612106PrepareFBV1
                 : .stockLinux613RuntimeVerifiedV1
@@ -1130,6 +1133,22 @@ case "engine":
     }
 default:
     fail("unknown command \(command)")
+}
+
+/// Direct Linux and legacy renderer bootstraps occupy FD 6. The UEFI envelope reserves three
+/// additional immutable firmware/media authorities first, so its renderer bootstrap is fixed at
+/// FD 9. Keep this selection derived from the signed boot protocol rather than from the received
+/// slot itself; otherwise a tampered envelope could choose the descriptor it wants validated.
+func desktopRendererBootstrapDescriptor(
+    for boot: RuntimeLaunchEnvelope.ARMVirtBoot?
+) -> Int32 {
+    guard let boot else { return RuntimeLaunchEnvelope.rendererBootstrapDescriptor }
+    switch boot {
+    case .linuxDirect:
+        return RuntimeLaunchEnvelope.rendererBootstrapDescriptor
+    case .uefi:
+        return RuntimeLaunchEnvelope.uefiRendererBootstrapDescriptor
+    }
 }
 
 private func parseGPUMode(_ value: String) -> EngineMode.GPUAccelerationMode {
