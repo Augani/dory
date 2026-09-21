@@ -102,6 +102,44 @@ final class DesktopRuntimeGraphicsReadinessState: @unchecked Sendable {
         }
     }
 
+    func prepareRendererReplacement(_ launch: DesktopRendererWorkerLaunch) {
+        mutate { current in
+            guard var selection = current,
+                  selection.accelerationLevel == .hardwareAccelerated3D else {
+                return false
+            }
+            selection.rendererGeneration = launch.workerGeneration.rawValue
+            selection.rendererWorkerReceiptSHA256 = launch.rendererWorkerReceiptSHA256
+            selection.guestProducerFenceProofSHA256 = selection.verificationState == .provisional
+                ? nil : launch.qualifiedProducerFenceAuthoritySHA256
+            selection.firstShaderCompletedAtUnixMilliseconds = nil
+            selection.firstPresentationCompletedAtUnixMilliseconds = nil
+            guard selection.isValid else { return false }
+            current = selection
+            return true
+        }
+    }
+
+    func publishRuntimeDetail(_ detail: String) {
+        condition.lock()
+        let renewal: VmmReadyMessage?
+        if var ready = publishedReady {
+            ready.detail = detail
+            ready.graphicsSelection = selection
+            publishedReady = ready
+            renewal = ready
+        } else {
+            renewal = nil
+        }
+        condition.unlock()
+        guard let renewal else { return }
+        do {
+            try sender(renewal)
+        } catch {
+            renewalFailureHandler(error)
+        }
+    }
+
     func waitForFirstPresentation(timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         condition.lock()

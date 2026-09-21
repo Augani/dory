@@ -16208,14 +16208,6 @@ public final class MachineManager: @unchecked Sendable {
                 "--pc-runtime-launch-envelope",
                 try pcRuntimeLaunchEnvelopeAuthority.encodedArgument(),
             ])
-            if let rendererGenerationHandoffServer {
-                arguments.append(contentsOf: [
-                    "--renderer-generation-handoff-sock",
-                    rendererGenerationHandoffServer.path,
-                    "--renderer-generation-handoff-token",
-                    rendererGenerationHandoffServer.token,
-                ])
-            }
         } else {
             if resolvedLaunchBinding?.backend.identity == .doryHypervisor {
                 throw MachineManagerError.persistence(
@@ -16238,6 +16230,20 @@ public final class MachineManager: @unchecked Sendable {
                     "--legacy-graphics", legacyGraphics.rawValue,
                 ])
             }
+        }
+        if let rendererGenerationHandoffServer {
+            guard runtimeLaunchEnvelopeAuthority != nil
+                    || pcRuntimeLaunchEnvelopeAuthority != nil else {
+                throw MachineManagerError.persistence(
+                    "renderer generation handoff requires a resolved runtime envelope"
+                )
+            }
+            arguments.append(contentsOf: [
+                "--renderer-generation-handoff-sock",
+                rendererGenerationHandoffServer.path,
+                "--renderer-generation-handoff-token",
+                rendererGenerationHandoffServer.token,
+            ])
         }
         // A schema-v3 RawHV helper receives device authority only through the immutable
         // envelope. VZ has no such envelope yet and continues to consume the resolved binding's

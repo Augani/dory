@@ -14,6 +14,9 @@ extension Notification.Name {
     static let doryCloseLinuxMachineDisplay = Notification.Name(
         "dev.dory.close-linux-machine-display"
     )
+    static let doryRestartLinuxMachineGraphics = Notification.Name(
+        "dev.dory.restart-linux-machine-graphics"
+    )
 }
 
 nonisolated struct LinuxMachineDisplayWindow: Codable, Hashable, Identifiable {
@@ -68,6 +71,16 @@ struct LinuxMachineDisplayScene: View {
                     }
                     .disabled(topology.count <= 1)
                     .help("Remove the last display from the running virtual machine")
+
+                    Button {
+                        NotificationCenter.default.post(
+                            name: .doryRestartLinuxMachineGraphics,
+                            object: display.machineID
+                        )
+                    } label: {
+                        Label("Restart Graphics", systemImage: "arrow.clockwise")
+                    }
+                    .help("Start a fresh isolated graphics renderer without restarting the VM")
                 }
             }
         }
@@ -357,6 +370,16 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
         }
     }
 
+    func sendRestartGraphics() {
+        _ = sendCommand { operationID, sequence in
+            try .restartGraphics(
+                machineID: machineID,
+                operationID: operationID,
+                sequence: sequence
+            )
+        }
+    }
+
     @discardableResult
     private func sendCommand(
         _ make: (UUID, UInt64) throws -> DoryVMDisplayCommand
@@ -603,6 +626,12 @@ final class LinuxMachineMetalView: NSView {
             cursorHandler: { [weak self] in self?.presentCursor($0) },
             failureHandler: { [weak self] in self?.showFailure($0) }
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(restartGraphicsRequested(_:)),
+            name: .doryRestartLinuxMachineGraphics,
+            object: nil
+        )
         client.start()
     }
 
@@ -612,7 +641,18 @@ final class LinuxMachineMetalView: NSView {
         resizeWorkItem?.cancel()
         resizeWorkItem = nil
         releasePressedInput()
+        NotificationCenter.default.removeObserver(
+            self,
+            name: .doryRestartLinuxMachineGraphics,
+            object: nil
+        )
         client?.stop()
+    }
+
+    @objc private func restartGraphicsRequested(_ notification: Notification) {
+        guard scanoutID == 0,
+              notification.object as? String == machineID else { return }
+        client.sendRestartGraphics()
     }
 
     func applyRuntimeTopology(_ topology: [DoryVMDisplayTopologyEntry]) {

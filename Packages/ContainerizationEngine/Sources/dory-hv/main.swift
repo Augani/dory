@@ -784,6 +784,26 @@ case "desktop":
     } catch {
         fail("desktop renderer-worker launch authority is invalid: \(error)")
     }
+    let rendererReplacementProvider: DesktopRendererWorkerReplacementProvider?
+    switch (
+        resolvedGraphics,
+        runtimeLaunchEnvelope,
+        rendererGenerationHandoffSocket,
+        rendererGenerationHandoffToken
+    ) {
+    case (.hardwareAccelerated3D, let envelope?, let socket?, let token?):
+        rendererReplacementProvider = DesktopRendererWorkerReplacementProvider(
+            path: socket,
+            token: token,
+            envelope: envelope
+        )
+    case (.hardwareAccelerated3D, .some, nil, nil):
+        fail("accelerated raw-HV graphics requires renderer generation handoff authority")
+    case (_, _, nil, nil):
+        rendererReplacementProvider = nil
+    default:
+        fail("renderer generation handoff requires both socket and token on a resolved accelerated launch")
+    }
     defer { rendererWorkerLaunch?.teardown() }
     do {
         try DesktopMode.run(.init(
@@ -808,6 +828,7 @@ case "desktop":
             legacyGraphicsBackend: legacyGraphicsBackend,
             resolvedGraphics: resolvedGraphics,
             rendererWorkerLaunch: rendererWorkerLaunch,
+            rendererReplacementProvider: rendererReplacementProvider,
             resolvedPlanSHA256: runtimeLaunchEnvelope?.resolvedPlanSHA256,
             resolvedPlanRevision: runtimeLaunchEnvelope?.planRevision,
             resolvedDevices: resolvedDevices,

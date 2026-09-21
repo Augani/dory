@@ -4,6 +4,7 @@ public enum DoryVMDisplayCommandKind: String, Codable, Sendable {
     case input
     case resize
     case topology
+    case restartGraphics = "restart-graphics"
 }
 
 public enum DoryVMDisplayInputEndpoint: String, Codable, Sendable {
@@ -149,6 +150,30 @@ public struct DoryVMDisplayCommand: Codable, Equatable, Sendable {
         return command
     }
 
+    public static func restartGraphics(
+        machineID: String,
+        operationID: UUID,
+        sequence: UInt64
+    ) throws -> Self {
+        let command = Self(
+            schemaVersion: schemaVersion,
+            machineID: machineID,
+            operationID: operationID.uuidString.lowercased(),
+            sequence: sequence,
+            kind: .restartGraphics,
+            inputEndpoint: nil,
+            inputEvents: [],
+            scanoutID: nil,
+            width: nil,
+            height: nil,
+            physicalWidthMillimeters: nil,
+            physicalHeightMillimeters: nil,
+            topology: nil
+        )
+        try command.validate()
+        return command
+    }
+
     public func validate() throws {
         guard schemaVersion == Self.schemaVersion,
               DoryVMDisplayValidation.validMachineID(machineID),
@@ -205,6 +230,17 @@ public struct DoryVMDisplayCommand: Codable, Equatable, Sendable {
                           && $0.physicalWidthMillimeters > 0
                           && $0.physicalHeightMillimeters > 0
                   }) else {
+                throw DoryVMDisplayWireError.invalidCommand
+            }
+        case .restartGraphics:
+            guard inputEndpoint == nil,
+                  inputEvents.isEmpty,
+                  scanoutID == nil,
+                  width == nil,
+                  height == nil,
+                  physicalWidthMillimeters == nil,
+                  physicalHeightMillimeters == nil,
+                  topology == nil else {
                 throw DoryVMDisplayWireError.invalidCommand
             }
         }

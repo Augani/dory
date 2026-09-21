@@ -1104,6 +1104,7 @@ enum DesktopMode {
         /// Fully authenticated before `DesktopMode.run`; nil for every software, host-display,
         /// and legacy launch. The controller never starts or discovers a renderer process.
         var rendererWorkerLaunch: DesktopRendererWorkerLaunch? = nil
+        var rendererReplacementProvider: DesktopRendererWorkerReplacementProvider? = nil
         var resolvedPlanSHA256: String? = nil
         var resolvedPlanRevision: UInt64? = nil
         var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
@@ -1355,6 +1356,33 @@ enum DesktopMode {
         }
     }
 
+    private final class RendererRestartRequestRelay: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pending = false
+        private var operation: (@MainActor @Sendable () -> Void)?
+
+        func install(_ operation: @escaping @MainActor @Sendable () -> Void) {
+            let shouldDeliver = lock.withLock { () -> Bool in
+                self.operation = operation
+                let value = pending
+                pending = false
+                return value
+            }
+            if shouldDeliver { DesktopAppRunLoop.perform(operation) }
+        }
+
+        func request() {
+            let operation = lock.withLock { () -> (@MainActor @Sendable () -> Void)? in
+                guard let operation else {
+                    pending = true
+                    return nil
+                }
+                return operation
+            }
+            if let operation { DesktopAppRunLoop.perform(operation) }
+        }
+    }
+
     @MainActor
     private final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         private struct MaterializedVirtioBackend {
@@ -1380,6 +1408,9 @@ enum DesktopMode {
         private let gpu: VirtioGPU
         private let graphicsBackend: DoryDesktopGraphicsBackend
         private let rendererWorkerLaunch: DesktopRendererWorkerLaunch?
+        private let rendererWorkerLaunchStore:
+            DoryPCRendererLaunchStore<DesktopRendererWorkerLaunch>
+        private let rendererReplacementProvider: DesktopRendererWorkerReplacementProvider?
         private let rendererRuntimeFailureLatch: DesktopRendererRuntimeFailureLatch?
         private let keyboardInput: VirtioInput
         private let pointerInput: VirtioInput
@@ -1390,6 +1421,7 @@ enum DesktopMode {
         private let displayAssignments: [DoryGuestDisplayPresentationAssignment?]
         private let displayRelaySlot: DoryVMDisplayRunnerRelaySlot
         private let displayRelayResizeTarget: DoryVMDisplayRunnerResizeTarget
+        private let rendererRestartRequests: RendererRestartRequestRelay
         private let vsock: VirtioVsock
         private let audio: DoryMacAudioBackend
         private let gvproxy: Process?
@@ -1416,6 +1448,7 @@ enum DesktopMode {
         private var gpuShutdownResult: DesktopGPUShutdownBoundaryResult?
         private var gpuShutdownWaitScheduled = false
         private var machineExecutionState = DesktopMachineExecutionState.notStarted
+        private var rendererRestartInProgress = false
         private let signalQueue = DispatchQueue(
             label: "dev.dory.dory-hv.desktop-signals",
             qos: .userInitiated
@@ -1449,6 +1482,8 @@ enum DesktopMode {
             self.displayRelaySlot = displayRelaySlot
             let displayRelayResizeTarget = DoryVMDisplayRunnerResizeTarget()
             self.displayRelayResizeTarget = displayRelayResizeTarget
+            let rendererRestartRequests = RendererRestartRequestRelay()
+            self.rendererRestartRequests = rendererRestartRequests
             let deviceTelemetry = RawDeviceTelemetryRegistry(
                 machineID: configuration.machineID,
                 operationID: configuration.operationID
@@ -1476,6 +1511,11 @@ enum DesktopMode {
             )
             self.graphicsBackend = resolvedGraphics.backend
             self.rendererWorkerLaunch = resolvedGraphics.rendererWorkerLaunch
+            self.rendererWorkerLaunchStore = DoryPCRendererLaunchStore(
+                resolvedGraphics.rendererWorkerLaunch
+            )
+            self.rendererReplacementProvider = configuration.rendererReplacementProvider
+            let rendererWorkerLaunchStore = self.rendererWorkerLaunchStore
             if configuration.displayRelayServiceName != nil,
                resolvedGraphics.rendererWorkerLaunch == nil {
                 throw VMError.invalidConfiguration(
@@ -1618,20 +1658,23 @@ enum DesktopMode {
                     metalDisplay.onDeviceFailure = {
                         [
                             weak machine,
-                            weak rendererWorkerLaunch,
+                            rendererWorkerLaunchStore,
                             rendererRuntimeFailureLatch,
                         ] reason in
                         rendererRuntimeFailureLatch?.record(
                             kind: .metalDevice,
                             reason: reason
                         )
-                        rendererWorkerLaunch?.failSynchronizedPresentation(reason)
-                        rendererWorkerLaunch?.teardown(reason: reason)
+                        rendererWorkerLaunchStore.current()?
+                            .failSynchronizedPresentation(reason)
+                        rendererWorkerLaunchStore.teardown(reason: reason)
                         machine?.requestStop(.crash("Metal display failed closed: \(reason)"))
                     }
                     metalDisplay.onWorkerPresentationCompleted = {
-                        [weak rendererWorkerLaunch, graphicsReadinessState] workerGeneration in
-                        rendererWorkerLaunch?.recordSynchronizedPresentation(
+                        [rendererWorkerLaunchStore, graphicsReadinessState] workerGeneration in
+                        rendererWorkerLaunchStore.current(
+                            matchingWorkerGeneration: workerGeneration
+                        )?.recordSynchronizedPresentation(
                             workerGeneration: workerGeneration
                         )
                         graphicsReadinessState.recordFirstPresentationCompletion()
@@ -1746,15 +1789,20 @@ enum DesktopMode {
                 },
                 onRendererWorkerFailure: {
                     [
-                        weak rendererWorkerLaunch,
+                        rendererWorkerLaunchStore,
                         rendererRuntimeFailureLatch,
+                        graphicsReadinessState,
                     ] reason in
                     rendererRuntimeFailureLatch?.record(
                         kind: .worker,
                         reason: reason
                     )
-                    rendererWorkerLaunch?.failSynchronizedPresentation(reason)
-                    rendererWorkerLaunch?.teardown(reason: reason)
+                    rendererWorkerLaunchStore.current()?
+                        .failSynchronizedPresentation(reason)
+                    rendererWorkerLaunchStore.teardown(reason: reason)
+                    graphicsReadinessState.publishRuntimeDetail(
+                        "Graphics renderer stopped; the VM is still running. \(reason)"
+                    )
                     Self.log(
                         "dory-hv desktop: renderer worker isolated; VM remains running: \(reason)"
                     )
@@ -1796,12 +1844,17 @@ enum DesktopMode {
                         },
                         topology: { [displayRelayResizeTarget] in
                             displayRelayResizeTarget.apply(topology: $0)
+                        },
+                        restartGraphics: { [rendererRestartRequests] in
+                            rendererRestartRequests.request()
                         }
                     ),
                     onPresentationCompleted: {
-                        [weak rendererWorkerLaunch, graphicsReadinessState]
+                        [rendererWorkerLaunchStore, graphicsReadinessState]
                         workerGeneration in
-                        rendererWorkerLaunch?.recordSynchronizedPresentation(
+                        rendererWorkerLaunchStore.current(
+                            matchingWorkerGeneration: workerGeneration
+                        )?.recordSynchronizedPresentation(
                             workerGeneration: workerGeneration
                         )
                         graphicsReadinessState.recordFirstPresentationCompletion()
@@ -2504,6 +2557,9 @@ enum DesktopMode {
             self.windows = windows
             self.displayAssignments = displayAssignments
             super.init()
+            rendererRestartRequests.install { [weak self] in
+                self?.restartGraphics()
+            }
             for window in windows { window.delegate = self }
             for display in displays {
                 display.onMacShortcut = { [weak clipboard] event in
@@ -2551,6 +2607,65 @@ enum DesktopMode {
                 CFRunLoopRun()
             }
             if let stopError { throw stopError }
+        }
+
+        private func restartGraphics() {
+            guard !stopping, !rendererRestartInProgress else { return }
+            guard let provider = rendererReplacementProvider,
+                  let previousLaunch = rendererWorkerLaunchStore.current() else {
+                graphicsReadinessState.publishRuntimeDetail(
+                    "Graphics restart is unavailable for this VM launch."
+                )
+                return
+            }
+            rendererRestartInProgress = true
+            graphicsReadinessState.publishRuntimeDetail(
+                "Preparing a fresh isolated graphics renderer; the VM remains running."
+            )
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                var replacementLaunch: DesktopRendererWorkerLaunch?
+                defer { rendererRestartInProgress = false }
+                do {
+                    let prepared = try await provider.prepareReplacement(after: previousLaunch)
+                    replacementLaunch = prepared
+                    let gpu = self.gpu
+                    let resetOutcome = await Task.detached(priority: .userInitiated) {
+                        let receipt = gpu.quiesce(reason: .deviceReset)
+                        return receipt.wait(timeout: 5)
+                    }.value
+                    guard resetOutcome != nil else {
+                        throw VMError.bootFailure(
+                            "virtio-gpu reset did not reach its bounded recovery boundary"
+                        )
+                    }
+                    try gpu.installRendererWorkerReplacementAfterDeviceReset(
+                        prepared.commandLane
+                    )
+                    previousLaunch.teardown(
+                        reason: "renderer generation replaced without restarting the VM"
+                    )
+                    rendererWorkerLaunchStore.replace(prepared)
+                    replacementLaunch = nil
+                    graphicsReadinessState.prepareRendererReplacement(prepared)
+                    graphicsReadinessState.publishRuntimeDetail(
+                        "Graphics renderer restarted with generation "
+                            + "\(prepared.workerGeneration.rawValue); the VM stayed running."
+                    )
+                    Self.log(
+                        "dory-hv desktop: installed renderer generation "
+                            + "\(prepared.workerGeneration.rawValue) after isolated GPU reset"
+                    )
+                } catch {
+                    replacementLaunch?.teardown(
+                        reason: "renderer replacement failed: \(error)"
+                    )
+                    graphicsReadinessState.publishRuntimeDetail(
+                        "Graphics restart failed; the VM is still running. \(error)"
+                    )
+                    Self.log("dory-hv desktop: renderer restart failed: \(error)")
+                }
+            }
         }
 
         private func installApplicationMenu() {
@@ -2671,6 +2786,7 @@ enum DesktopMode {
             let guestFSEventBridge = self.guestFSEventBridge
             let filesystemWorker = self.filesystemWorker
             let graphicsReadinessState = self.graphicsReadinessState
+            let rendererWorkerLaunchStore = self.rendererWorkerLaunchStore
             Task.detached(priority: .userInitiated) { [weak self] in
                 do {
                     if let guestFSEventBridge {
@@ -2687,7 +2803,7 @@ enum DesktopMode {
                         try await DesktopGuestReadinessBoundary.complete(
                             genericGuest: true,
                             prepare: {
-                                guard configuration.rendererWorkerLaunch != nil
+                                guard rendererWorkerLaunchStore.current() != nil
                                         || firstFrame.wait(timeout: 90) else {
                                     throw VMError.bootFailure(
                                         "generic Linux guest did not publish a graphics frame within 90s"
@@ -2699,7 +2815,7 @@ enum DesktopMode {
                                 )
                             },
                             waitForSynchronizedPresentation: {
-                                if configuration.rendererWorkerLaunch != nil {
+                                if rendererWorkerLaunchStore.current() != nil {
                                     // Generic media has no Dory-owned display-manager barrier, so
                                     // require either the Metal path or the verified CPU fallback
                                     // to complete a real presentation before readiness.
@@ -2720,7 +2836,7 @@ enum DesktopMode {
                                     }
                                     if graphicsReadinessState
                                         .requiresRendererSynchronizedPublication {
-                                        try configuration.rendererWorkerLaunch?
+                                        try rendererWorkerLaunchStore.current()?
                                             .claimSynchronizedPresentationForPublication()
                                     }
                                     try graphicsReadinessState.publish(
@@ -2750,7 +2866,7 @@ enum DesktopMode {
                                         )
                                     if graphicsReadinessState
                                         .requiresRendererSynchronizedPublication {
-                                        try configuration.rendererWorkerLaunch?
+                                        try rendererWorkerLaunchStore.current()?
                                             .claimSynchronizedPresentationForPublication()
                                     }
                                     try graphicsReadinessState.publish(
@@ -2790,7 +2906,7 @@ enum DesktopMode {
                             try Self.prepareGuest(configuration: configuration)
                         },
                         waitForSynchronizedPresentation: {
-                            if configuration.rendererWorkerLaunch != nil {
+                            if rendererWorkerLaunchStore.current() != nil {
                                 // The immutable receipt and kernel/fence authority select the
                                 // candidate, but handoff still requires a real worker-backed frame
                                 // across the producer-fence wait and Metal completion boundary.
@@ -2809,7 +2925,7 @@ enum DesktopMode {
                             }
                             if graphicsReadinessState
                                 .requiresRendererSynchronizedPublication {
-                                try configuration.rendererWorkerLaunch?
+                                try rendererWorkerLaunchStore.current()?
                                     .claimSynchronizedPresentationForPublication()
                             }
                             try graphicsReadinessState.publish(
@@ -2838,7 +2954,7 @@ enum DesktopMode {
                         }
                     )
                 } catch {
-                    configuration.rendererWorkerLaunch?.teardown(
+                    rendererWorkerLaunchStore.teardown(
                         reason: "desktop readiness failed: \(error)"
                     )
                     machine.requestStop(.crash("desktop readiness failed: \(error)"))
@@ -3083,6 +3199,7 @@ enum DesktopMode {
             sshAgentBridge?.stop()
             _ = vsock.quiesce()
             resolvedPortForwardReconciler?.stop()
+            rendererWorkerLaunchStore.teardown(reason: "desktop controller cleanup")
             signalSources.forEach { $0.cancel() }
             signalSources.removeAll()
             if let gvproxy {

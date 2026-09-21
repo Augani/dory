@@ -225,9 +225,9 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
     let hostVisibleArena: DoryRendererWorkerHostVisibleArena?
 
     private let broker: DoryRendererWorkerBroker
-    private let maximumQueuedCommands: Int
-    private let maximumQueuedReferencedBytes: UInt64
-    private let commandDeadlineNanoseconds: UInt64
+    let maximumQueuedCommands: Int
+    let maximumQueuedReferencedBytes: UInt64
+    let commandDeadlineNanoseconds: UInt64
     private let fenceQueue = DispatchQueue(
         label: "dev.dory.renderer-worker.fence-completion",
         qos: .userInteractive

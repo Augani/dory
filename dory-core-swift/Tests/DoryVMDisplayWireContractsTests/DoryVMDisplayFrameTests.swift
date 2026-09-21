@@ -131,6 +131,14 @@ struct DoryVMDisplayFrameTests {
         )
         let topologyData = try DoryVMDisplayCommandCodec.encode(topology)
         #expect(try DoryVMDisplayCommandCodec.decode(topologyData) == topology)
+
+        let restart = try DoryVMDisplayCommand.restartGraphics(
+            machineID: "ubuntu",
+            operationID: operationID,
+            sequence: 4
+        )
+        let restartData = try DoryVMDisplayCommandCodec.encode(restart)
+        #expect(try DoryVMDisplayCommandCodec.decode(restartData) == restart)
     }
 
     @Test("commands reject cross-endpoint events and mixed payloads")

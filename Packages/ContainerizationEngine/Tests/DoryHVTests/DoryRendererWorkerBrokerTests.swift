@@ -2066,6 +2066,103 @@ import Testing
         }
     }
 
+    @Test func failedWorkerCanBeReplacedAfterDeviceResetWithoutRebuildingVM() async throws {
+        let oldFixture = try rendererBrokerFixture(
+            limits: rendererLimits(maximumInFlight: 4),
+            workerGeneration: 7
+        )
+        let oldLane = try DoryRendererWorkerVirtioCommandLane(
+            broker: oldFixture.broker,
+            deviceGeneration: 1
+        )
+        let queue = try RendererWorkerGPUQueueFixture(
+            lane: oldLane,
+            guestBase: 0x4_C000_0000
+        )
+        queue.gpu.deviceReady(transport: queue.transport)
+
+        oldFixture.channel.emit(.interrupted)
+        #expect(await rendererEventually {
+            if case .failed(epoch: 1, _) = queue.gpu.rendererLifecycleHealth {
+                return true
+            }
+            return false
+        })
+        let reset = queue.gpu.quiesce(reason: .deviceReset)
+        guard case .failed = reset.wait(timeout: 1) else {
+            Issue.record("failed worker reset did not close its old device epoch")
+            return
+        }
+
+        let replacementFixture = try rendererBrokerFixture(
+            limits: rendererLimits(maximumInFlight: 4),
+            workerGeneration: 8
+        )
+        let replacementLane = try DoryRendererWorkerVirtioCommandLane(
+            broker: replacementFixture.broker,
+            deviceGeneration: 1
+        )
+        try queue.gpu.installRendererWorkerReplacementAfterDeviceReset(replacementLane)
+
+        #expect(queue.gpu.rendererLifecycleHealth == .ready(epoch: 2))
+        #expect(replacementLane.snapshot().state == .active(deviceGeneration: 2))
+        #expect(queue.gpu.deviceFeatures == 29)
+        #expect(rendererGPUUInt32(queue.gpu.configSpace, at: 12) == 2)
+        #expect(queue.transport.read(offset: 0x070, width: 4) & 0x40 != 0)
+
+        try queue.submit(rendererGPUContextCreateRequest(
+            contextID: 23,
+            name: "replacement-generation",
+            capsetID: 4
+        ))
+        #expect(await rendererEventually { replacementFixture.channel.sendCount == 1 })
+        #expect(oldFixture.channel.sendCount == 0)
+        replacementFixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 1 })
+        #expect(try queue.responseType() == 0x1100)
+    }
+
+    @Test func replacementRejectsCapabilityDriftAfterDeviceReset() async throws {
+        let oldFixture = try rendererBrokerFixture(
+            limits: rendererLimits(maximumInFlight: 4),
+            workerGeneration: 7
+        )
+        let oldLane = try DoryRendererWorkerVirtioCommandLane(
+            broker: oldFixture.broker,
+            deviceGeneration: 1
+        )
+        let queue = try RendererWorkerGPUQueueFixture(
+            lane: oldLane,
+            guestBase: 0x4_E000_0000
+        )
+        oldFixture.channel.emit(.interrupted)
+        #expect(await rendererEventually {
+            if case .failed = queue.gpu.rendererLifecycleHealth { return true }
+            return false
+        })
+        _ = queue.gpu.quiesce(reason: .deviceReset).wait(timeout: 1)
+
+        let replacementFixture = try rendererBrokerFixture(
+            limits: rendererLimits(maximumInFlight: 5),
+            workerGeneration: 8
+        )
+        let replacementLane = try DoryRendererWorkerVirtioCommandLane(
+            broker: replacementFixture.broker,
+            deviceGeneration: 1
+        )
+        #expect(throws: VirtioGPURendererWorkerReplacementError.capabilityContractMismatch) {
+            try queue.gpu.installRendererWorkerReplacementAfterDeviceReset(replacementLane)
+        }
+        #expect(replacementLane.snapshot().state == .active(deviceGeneration: 1))
+        guard case .failed = queue.gpu.rendererLifecycleHealth else {
+            Issue.record("capability drift unexpectedly reopened renderer admission")
+            return
+        }
+    }
+
     @Test func initialLinuxStatusResetRebindsUnusedWorkerWithoutRevokingIt() async throws {
         let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
         let lane = try DoryRendererWorkerVirtioCommandLane(

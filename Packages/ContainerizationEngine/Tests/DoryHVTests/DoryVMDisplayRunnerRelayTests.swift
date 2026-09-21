@@ -105,10 +105,12 @@ struct DoryVMDisplayRunnerRelayTests {
         let inputs = Recorder<(DoryVMDisplayInputEndpoint, [VirtioInputEvent])>()
         let resizes = Recorder<(UInt32, UInt32, UInt32, UInt16, UInt16)>()
         let topologies = Recorder<[DoryVMDisplayTopologyEntry]>()
+        let graphicsRestarts = Recorder<Int>()
         let handler = DoryVMDisplayRunnerCommandHandler(
             input: { inputs.append(($0, $1)) },
             resize: { resizes.append(($0, $1, $2, $3, $4)) },
-            topology: { topologies.append($0) }
+            topology: { topologies.append($0) },
+            restartGraphics: { graphicsRestarts.append(1) }
         )
         let operationID = UUID()
 
@@ -149,6 +151,11 @@ struct DoryVMDisplayRunnerRelayTests {
             sequence: 3,
             displays: topology
         ))
+        handler.apply(try .restartGraphics(
+            machineID: "ubuntu",
+            operationID: operationID,
+            sequence: 4
+        ))
 
         #expect(inputs.snapshot.count == 1)
         #expect(inputs.snapshot[0].0 == .relativePointer)
@@ -160,6 +167,7 @@ struct DoryVMDisplayRunnerRelayTests {
         #expect(resizes.snapshot[0].3 == 310)
         #expect(resizes.snapshot[0].4 == 175)
         #expect(topologies.snapshot == [topology])
+        #expect(graphicsRestarts.snapshot == [1])
     }
 
     @Test func relayPollsCanonicalCommandAndRetiresExactlyOnce() throws {

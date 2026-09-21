@@ -143,12 +143,33 @@ final class DesktopRendererWorkerLiveReadinessGate: @unchecked Sendable {
 final class DesktopRendererWorkerReplacementProvider: @unchecked Sendable {
     private let path: String
     private let token: String
-    private let envelope: DoryPCRuntimeLaunchEnvelope
+    private let machineID: String
+    private let operationID: UUID
+    private let resolvedPlanSHA256: String
+    private let planRevision: UInt64
+    private let graphics: DoryGraphicsAccelerationLevel
+    private let producerFenceContract: DoryRendererProducerFenceContract
 
     init(path: String, token: String, envelope: DoryPCRuntimeLaunchEnvelope) {
         self.path = path
         self.token = token
-        self.envelope = envelope
+        self.machineID = envelope.machineID
+        self.operationID = envelope.operationID
+        self.resolvedPlanSHA256 = envelope.resolvedPlanSHA256
+        self.planRevision = envelope.planRevision
+        self.graphics = envelope.graphics
+        self.producerFenceContract = .doryPCX8664LinuxVirGL2PrepareFBV1
+    }
+
+    init(path: String, token: String, envelope: RuntimeLaunchEnvelope) {
+        self.path = path
+        self.token = token
+        self.machineID = envelope.machineID
+        self.operationID = envelope.operationID
+        self.resolvedPlanSHA256 = envelope.resolvedPlanSHA256
+        self.planRevision = envelope.planRevision
+        self.graphics = envelope.graphics
+        self.producerFenceContract = .stockLinux613RuntimeVerifiedV1
     }
 
     func prepareReplacement(after launch: DesktopRendererWorkerLaunch) async throws -> DesktopRendererWorkerLaunch {
@@ -161,10 +182,10 @@ final class DesktopRendererWorkerReplacementProvider: @unchecked Sendable {
             path: path,
             request: DoryRendererGenerationHandoffRequest(
                 token: token,
-                machineID: envelope.machineID,
-                operationID: DoryOperationIdentity.canonical(envelope.operationID),
-                resolvedPlanSHA256: envelope.resolvedPlanSHA256,
-                planRevision: envelope.planRevision,
+                machineID: machineID,
+                operationID: DoryOperationIdentity.canonical(operationID),
+                resolvedPlanSHA256: resolvedPlanSHA256,
+                planRevision: planRevision,
                 previousRendererGeneration: previousGeneration,
                 requestedRendererGeneration: requestedGeneration
             )
@@ -185,11 +206,11 @@ final class DesktopRendererWorkerReplacementProvider: @unchecked Sendable {
             contentSHA256: sha256
         )
         guard let launch = try await DesktopRendererWorkerLaunch.prepare(
-            resolvedGraphics: envelope.graphics,
+            resolvedGraphics: graphics,
             rendererBootstrapAuthority: authority,
             exactManagedKernelSHA256: nil,
             requiredBootstrapDescriptor: descriptor,
-            requiredProducerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1
+            requiredProducerFenceContract: producerFenceContract
         ) else {
             throw DesktopRendererWorkerLaunchError.missingBootstrapAuthority
         }

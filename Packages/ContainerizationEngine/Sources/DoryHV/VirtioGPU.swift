@@ -919,6 +919,15 @@ public enum VirtioGPURendererLifecycleHealth: Equatable, Sendable {
     case failed(epoch: UInt64, fault: VirtioGPURendererHealthFault)
 }
 
+public enum VirtioGPURendererWorkerReplacementError: Error, Equatable, Sendable {
+    case rendererWorkerNotConfigured
+    case deviceResetRequired
+    case replacementIsNotPristine
+    case capabilityContractMismatch
+    case hostVisibleArenaContractMismatch
+    case replacementFailedBeforeCutover
+}
+
 public enum VirtioGPUQuiescenceReason: Equatable, Sendable {
     case deviceReset
     case shutdown
@@ -1921,7 +1930,12 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private var stockFirstShaderCompletionReported = false
     private let onStockFirstShaderCompletion: (@Sendable () -> Void)?
     private let rendererExecutor: VirtioGPURendererCommandExecutor?
-    private let rendererWorkerCandidate: DoryRendererWorkerVirtioCommandLane?
+    private let rendererWorkerCandidateLock = NSLock()
+    private var rendererWorkerCandidateStorage: DoryRendererWorkerVirtioCommandLane?
+    private var rendererWorkerCandidate: DoryRendererWorkerVirtioCommandLane? {
+        rendererWorkerCandidateLock.withLock { rendererWorkerCandidateStorage }
+    }
+    private let rendererWorkerAuthorityConfigured: Bool
     private let configuredRendererDeviceFeatures: UInt64
     private let capsets: [VirtioGPUCapset]
     private let hostVisibleMemory: VirtioGPUHostVisibleMemory?
@@ -2541,7 +2555,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         self.maximumCopiedScanoutSurfaceBytes = max(4, maximumCopiedScanoutSurfaceBytes)
         self.quiescenceTimeout = max(0.1, quiescenceTimeout)
         self.rendererExecutor = rendererExecutor
-        self.rendererWorkerCandidate = selectedWorkerCandidate
+        self.rendererWorkerCandidateStorage = selectedWorkerCandidate
+        self.rendererWorkerAuthorityConfigured = selectedWorkerCandidate != nil
         self.capsets = rendererExecutor?.capsets ?? selectedWorkerCandidate?.capsets ?? []
         let hasRendererAuthority = rendererExecutor != nil || selectedWorkerCandidate != nil
         self.rendererLifecycleHealthState = hasRendererAuthority
@@ -2582,22 +2597,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 self?.recordRendererFailure(failure, generation: generation)
             }
         )
-        selectedWorkerCandidate?.installCallbacks(
-            fence: { [weak self] generation, contextID, ringIndex, fenceID in
-                self?.fenceSignaled(
-                    generation: generation,
-                    contextID: contextID,
-                    ringIndex: ringIndex,
-                    fenceID: fenceID
-                )
-            },
-            runtimeFailure: { [weak self] generation, error in
-                self?.rendererWorkerCandidateFailed(
-                    generation: generation,
-                    error: error
-                )
-            }
-        )
+        if let selectedWorkerCandidate {
+            installRendererWorkerCallbacks(on: selectedWorkerCandidate)
+        }
         if hasRendererAuthorityConflict {
             if let state = rendererWorkerCandidate?.snapshot().state {
                 let generation: UInt64 = switch state {
@@ -2609,6 +2611,36 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 "dory-gpu: renderer authority conflict; acceleration remains disabled\n".utf8
             ))
         }
+    }
+
+    private func installRendererWorkerCallbacks(
+        on lane: DoryRendererWorkerVirtioCommandLane
+    ) {
+        lane.installCallbacks(
+            fence: { [weak self, weak lane] generation, contextID, ringIndex, fenceID in
+                guard let self, let lane,
+                      self.rendererWorkerCandidateLock.withLock({
+                          self.rendererWorkerCandidateStorage === lane
+                      }) else { return }
+                self.fenceSignaled(
+                    generation: generation,
+                    contextID: contextID,
+                    ringIndex: ringIndex,
+                    fenceID: fenceID
+                )
+            },
+            runtimeFailure: { [weak self, weak lane] generation, error in
+                guard let self, let lane,
+                      self.rendererWorkerCandidateLock.withLock({
+                          self.rendererWorkerCandidateStorage === lane
+                      }) else { return }
+                self.rendererWorkerCandidateFailed(
+                    source: lane,
+                    generation: generation,
+                    error: error
+                )
+            }
+        )
     }
 
     public var configSpace: [UInt8] {
@@ -2689,6 +2721,119 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         lifecycleLock.withLock { attachedTransport = transport }
     }
 
+    /// Atomically installs a fresh authenticated worker after a completed device reset. The
+    /// replacement must advertise the exact guest-visible capability and host-window contract of
+    /// the original lane. Old-generation callbacks are identity checked and can no longer affect
+    /// the replacement after the cutover.
+    public func installRendererWorkerReplacementAfterDeviceReset(
+        _ replacement: DoryRendererWorkerVirtioCommandLane
+    ) throws {
+        try commandLock.withLock {
+            guard rendererExecutor == nil,
+                  rendererWorkerAuthorityConfigured,
+                  let previous = rendererWorkerCandidate else {
+                throw VirtioGPURendererWorkerReplacementError.rendererWorkerNotConfigured
+            }
+            guard previous !== replacement,
+                  replacement.workerGeneration.rawValue > previous.workerGeneration.rawValue,
+                  replacement.snapshot().state == .active(deviceGeneration: 1) else {
+                throw VirtioGPURendererWorkerReplacementError.replacementIsNotPristine
+            }
+            guard replacement.capsets == capsets,
+                  replacement.maximumSharedRegions == previous.maximumSharedRegions,
+                  replacement.maximumReferencedBytes == previous.maximumReferencedBytes,
+                  replacement.maximumQueuedCommands == previous.maximumQueuedCommands,
+                  replacement.maximumQueuedReferencedBytes
+                    == previous.maximumQueuedReferencedBytes,
+                  replacement.commandDeadlineNanoseconds
+                    == previous.commandDeadlineNanoseconds else {
+                throw VirtioGPURendererWorkerReplacementError.capabilityContractMismatch
+            }
+            guard replacement.hostVisibleArena?.byteCount
+                    == previous.hostVisibleArena?.byteCount,
+                  replacement.hostVisibleArena?.byteCount
+                    == hostVisibleMemory?.length else {
+                throw VirtioGPURendererWorkerReplacementError
+                    .hostVisibleArenaContractMismatch
+            }
+
+            let resetBoundaryIsComplete = lifecycleLock.withLock { () -> Bool in
+                guard activeQuiescence == nil, !acceptingGuestCommands else { return false }
+                switch rendererLifecycleHealthState {
+                case .failed, .notConfigured:
+                    return true
+                case .ready, .quiescing:
+                    return false
+                }
+            }
+            guard resetBoundaryIsComplete,
+                  resources2D.isEmpty,
+                  resources3D.isEmpty,
+                  blobResources.isEmpty,
+                  resourceEntries.isEmpty,
+                  resourceUUIDs.isEmpty,
+                  resourceGenerations.isEmpty,
+                  rendererWorkerResourceGenerations.isEmpty,
+                  rendererWorkerResourceContextIDs.isEmpty,
+                  rendererWorkerPendingResourceIDs.isEmpty,
+                  rendererWorkerPendingBackingResourceIDs.isEmpty,
+                  rendererWorkerPendingMappingResourceIDs.isEmpty,
+                  rendererWorkerControlCommandClaim == nil,
+                  scanouts.isEmpty,
+                  cursorResourceID == nil,
+                  createdContextIDs.isEmpty,
+                  rendererWorkerPresentationLock.withLock({
+                      rendererWorkerPendingScanouts.isEmpty
+                          && rendererWorkerLiveScanouts.isEmpty
+                  }) else {
+                throw VirtioGPURendererWorkerReplacementError.deviceResetRequired
+            }
+
+            let epoch = fenceLock.withLock { () -> UInt64? in
+                guard pendingFenceCount == 0,
+                      stockFallbackFenceWaiters.isEmpty,
+                      uncertainFences.isEmpty,
+                      uncertainRendererCommandChains.isEmpty,
+                      lastTransport == nil,
+                      fenceAdmissionBlockedUntilDeviceReset else { return nil }
+                return lifecycleEpoch
+            }
+            guard let epoch,
+                  replacement.rebindPristineDeviceGeneration(from: 1, to: epoch) else {
+                throw VirtioGPURendererWorkerReplacementError.replacementIsNotPristine
+            }
+
+            fenceLock.withLock { fenceAdmissionBlockedUntilDeviceReset = false }
+            do {
+                try rendererWorkerCandidateLock.withLock {
+                    guard rendererWorkerCandidateStorage === previous else {
+                        throw VirtioGPURendererWorkerReplacementError.deviceResetRequired
+                    }
+                    installRendererWorkerCallbacks(on: replacement)
+                    guard replacement.snapshot().state == .active(deviceGeneration: epoch) else {
+                        throw VirtioGPURendererWorkerReplacementError
+                            .replacementFailedBeforeCutover
+                    }
+                    rendererWorkerCandidateStorage = replacement
+                    try lifecycleLock.withLock {
+                        guard activeQuiescence == nil, !acceptingGuestCommands else {
+                            throw VirtioGPURendererWorkerReplacementError.deviceResetRequired
+                        }
+                        rendererLifecycleHealthState = .ready(epoch: epoch)
+                        acceptingGuestCommands = true
+                    }
+                }
+            } catch {
+                fenceLock.withLock { fenceAdmissionBlockedUntilDeviceReset = true }
+                replacement.revoke(deviceGeneration: epoch)
+                throw error
+            }
+        }
+        // Force a fresh virtio feature/queue negotiation even when the guest completed its first
+        // reset before the user requested recovery. Other transports and VM state remain live.
+        lifecycleLock.withLock { attachedTransport }?.requestDeviceReset()
+    }
+
     /// Converts an asynchronous Metal failure for a worker-owned frame into the same isolated
     /// generation failure used for XPC/helper death. A CPU-only Metal failure remains a display
     /// failure; only an authenticated worker generation is eligible for this device-reset path.
@@ -2701,6 +2846,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 == .active(deviceGeneration: workerGeneration) else { return }
         rendererWorkerCandidate.revoke(deviceGeneration: workerGeneration)
         rendererWorkerCandidateFailed(
+            source: rendererWorkerCandidate,
             generation: workerGeneration,
             error: .notActive(.failed(deviceGeneration: workerGeneration))
         )
@@ -7386,9 +7532,14 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         error: DoryRendererWorkerVirtioCommandLaneError
     ) {
         guard fenceLock.withLock({ lifecycleEpoch == generation }) else { return }
-        rendererWorkerCandidate?.revoke(deviceGeneration: generation)
+        guard let rendererWorkerCandidate else { return }
+        rendererWorkerCandidate.revoke(deviceGeneration: generation)
         revokeRendererWorkerScanouts()
-        rendererWorkerCandidateFailed(generation: generation, error: error)
+        rendererWorkerCandidateFailed(
+            source: rendererWorkerCandidate,
+            generation: generation,
+            error: error
+        )
     }
 
     /// Transfers a previously snapshotted submit authority to the signed-worker lane and returns
@@ -7770,11 +7921,15 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     }
 
     private func rendererWorkerCandidateFailed(
+        source: DoryRendererWorkerVirtioCommandLane,
         generation: UInt64,
         error: DoryRendererWorkerVirtioCommandLaneError
     ) {
-        let affected = fenceLock.withLock { () -> Int in
-            guard lifecycleEpoch == generation else { return 0 }
+        guard rendererWorkerCandidateLock.withLock({
+            rendererWorkerCandidateStorage === source
+        }), fenceLock.withLock({ lifecycleEpoch == generation }) else { return }
+        let affected = fenceLock.withLock { () -> Int? in
+            guard lifecycleEpoch == generation else { return nil }
             var count = 0
             for key in Array(pendingFences.keys) {
                 guard var waiting = pendingFences[key] else { continue }
@@ -7791,6 +7946,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             )
             return count
         }
+        guard let affected else { return }
         failRendererLifecycle(
             .commandOutcomeUnknown(
                 operation: "renderer-worker",
@@ -8342,6 +8498,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         epoch requestedEpoch: UInt64? = nil
     ) {
         let currentEpoch = fenceLock.withLock { lifecycleEpoch }
+        if let requestedEpoch, requestedEpoch != currentEpoch { return }
         let epoch = requestedEpoch ?? currentEpoch
         let receipt: VirtioGPUQuiescence? = lifecycleLock.withLock {
             rendererLifecycleHealthState = !rendererAuthorityIsConfigured
@@ -9174,7 +9331,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     }
 
     private var rendererAuthorityIsConfigured: Bool {
-        rendererExecutor != nil || rendererWorkerCandidate != nil
+        rendererExecutor != nil || rendererWorkerAuthorityConfigured
     }
 
     /// Feature and capset discovery is guest-visible state, so it must close with command

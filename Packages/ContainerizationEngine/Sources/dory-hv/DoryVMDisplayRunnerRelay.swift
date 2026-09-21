@@ -129,6 +129,7 @@ struct DoryVMDisplayRunnerCommandHandler: Sendable {
         UInt16
     ) -> Void
     var topology: @Sendable ([DoryVMDisplayTopologyEntry]) -> Void = { _ in }
+    var restartGraphics: @Sendable () -> Void = {}
 
     func apply(_ command: DoryVMDisplayCommand) {
         switch command.kind {
@@ -150,6 +151,8 @@ struct DoryVMDisplayRunnerCommandHandler: Sendable {
         case .topology:
             guard let displays = command.topology else { return }
             topology(displays)
+        case .restartGraphics:
+            restartGraphics()
         }
     }
 }

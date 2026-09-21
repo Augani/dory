@@ -52,6 +52,26 @@ import Testing
         #expect(recorder.values.last?.graphicsSelection == selection)
     }
 
+    @Test func rendererFailureDetailRenewsPublishedRuntimeStatus() throws {
+        let recorder = DesktopGraphicsReadyRecorder()
+        let state = DesktopRuntimeGraphicsReadinessState(
+            selection: provisionalGraphicsSelection(),
+            sender: { recorder.record($0) }
+        )
+        try state.publish(readyMessage())
+
+        state.publishRuntimeDetail(
+            "Graphics renderer stopped; the VM is still running. worker exited"
+        )
+
+        #expect(recorder.values.count == 2)
+        #expect(
+            recorder.values.last?.detail
+                == "Graphics renderer stopped; the VM is still running. worker exited"
+        )
+        #expect(recorder.values.last?.graphicsSelection == state.snapshot)
+    }
+
     private func provisionalGraphicsSelection() -> DoryRuntimeGraphicsSelection {
         DoryRuntimeGraphicsSelection(
             operationID: "11111111-2222-3333-4444-555555555555",
