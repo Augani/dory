@@ -332,6 +332,135 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "text-only guest clipboard")
     }
 
+    @MainActor
+    func testClipboardPollingPushesHostChangesWithoutFocusTransition() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("initial host clipboard", forType: .string)
+        let recorder = ClipboardWriteRecorder()
+        let coordinator = DoryDesktopClipboardCoordinator(
+            policy: .hostToGuest,
+            execute: { argv, stdin, _, _ in
+                if argv == ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"] {
+                    recorder.recordCapabilityProbe()
+                    return Self.execResult(exitCode: 0)
+                }
+                XCTAssertEqual(argv, [
+                    "/usr/lib/dory/clipboard", "set", "text/plain;charset=utf-8",
+                ])
+                _ = recorder.record(stdin)
+                return Self.execResult(exitCode: 0)
+            },
+            sendShortcut: { _ in },
+            pasteboard: pasteboard,
+            startupRetryDelay: 0.01,
+            startupRetryLimit: 1,
+            pollInterval: 0.01,
+            log: { _ in }
+        )
+
+        coordinator.start()
+        coordinator.markGuestReady()
+        defer { coordinator.stop() }
+
+        let readyDeadline = ContinuousClock.now + .seconds(2)
+        while recorder.attemptCount < 1, ContinuousClock.now < readyDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("changed while Dory stayed active", forType: .string)
+
+        let pollDeadline = ContinuousClock.now + .seconds(2)
+        while recorder.lastPayload != Data("changed while Dory stayed active".utf8),
+              ContinuousClock.now < pollDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(recorder.lastPayload, Data("changed while Dory stayed active".utf8))
+    }
+
+    @MainActor
+    func testClipboardPollingPullsGuestChangesWithoutFocusTransition() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("original host clipboard", forType: .string)
+        let recorder = ClipboardWriteRecorder()
+        let coordinator = DoryDesktopClipboardCoordinator(
+            policy: .guestToHost,
+            execute: { argv, _, _, _ in
+                if argv == ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"] {
+                    recorder.recordCapabilityProbe()
+                    return Self.execResult(exitCode: 0)
+                }
+                if argv == ["/usr/lib/dory/clipboard", "get", "image/png"] {
+                    return Self.execResult(exitCode: 1)
+                }
+                XCTAssertEqual(argv, [
+                    "/usr/lib/dory/clipboard", "get", "text/plain;charset=utf-8",
+                ])
+                recorder.recordClipboardRead()
+                return DoryExecResult(
+                    exitCode: 0,
+                    stdout: Data("copied inside the guest".utf8),
+                    stderr: Data(),
+                    timedOut: false,
+                    stdoutTruncated: false,
+                    stderrTruncated: false
+                )
+            },
+            sendShortcut: { _ in },
+            pasteboard: pasteboard,
+            startupRetryDelay: 0.01,
+            startupRetryLimit: 1,
+            pollInterval: 0.01,
+            log: { _ in }
+        )
+
+        coordinator.start()
+        coordinator.markGuestReady()
+        defer { coordinator.stop() }
+
+        let pollDeadline = ContinuousClock.now + .seconds(2)
+        while pasteboard.string(forType: .string) != "copied inside the guest",
+              ContinuousClock.now < pollDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertGreaterThan(recorder.clipboardReadCount, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "copied inside the guest")
+    }
+
+    @MainActor
+    func testDisabledClipboardPolicyPerformsNoGuestIO() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("must remain host-only", forType: .string)
+        let recorder = ClipboardWriteRecorder()
+        let coordinator = DoryDesktopClipboardCoordinator(
+            policy: .disabled,
+            execute: { _, _, _, _ in
+                recorder.recordCapabilityProbe()
+                return Self.execResult(exitCode: 0)
+            },
+            sendShortcut: { _ in },
+            pasteboard: pasteboard,
+            startupRetryDelay: 0.01,
+            startupRetryLimit: 1,
+            pollInterval: 0.01,
+            log: { _ in }
+        )
+
+        coordinator.start()
+        coordinator.markGuestReady()
+        defer { coordinator.stop() }
+        try await Task.sleep(for: .milliseconds(75))
+
+        XCTAssertEqual(recorder.capabilityProbeCount, 0)
+        XCTAssertEqual(recorder.attemptCount, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "must remain host-only")
+    }
+
     private static func execResult(exitCode: Int32) -> DoryExecResult {
         DoryExecResult(
             exitCode: exitCode,

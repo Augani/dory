@@ -35,11 +35,14 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
     private let pasteboard: NSPasteboard
     private let startupRetryDelay: TimeInterval
     private let startupRetryLimit: Int
+    private let pollInterval: TimeInterval
     private let queue = DispatchQueue(label: "dev.dory.desktop-clipboard", qos: .userInitiated)
     private let log: @Sendable (String) -> Void
     private var observations = [NSObjectProtocol]()
+    private var pollTimer: Timer?
     private var guestReady = false
     private var lastPushedHostChangeCount = -1
+    private var lastPublishedGuestPayload: DoryDesktopClipboardPayload?
 
     public convenience init(
         policy: DoryDesktopClipboardPolicy,
@@ -54,6 +57,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
             pasteboard: .general,
             startupRetryDelay: 1,
             startupRetryLimit: 60,
+            pollInterval: 0.5,
             log: log
         )
     }
@@ -71,6 +75,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
             pasteboard: .general,
             startupRetryDelay: 1,
             startupRetryLimit: 60,
+            pollInterval: 0.5,
             log: log
         )
     }
@@ -82,6 +87,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         pasteboard: NSPasteboard,
         startupRetryDelay: TimeInterval,
         startupRetryLimit: Int,
+        pollInterval: TimeInterval = 0.5,
         log: @escaping @Sendable (String) -> Void
     ) {
         self.init(
@@ -91,6 +97,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
             pasteboard: pasteboard,
             startupRetryDelay: startupRetryDelay,
             startupRetryLimit: startupRetryLimit,
+            pollInterval: pollInterval,
             log: log
         )
     }
@@ -102,6 +109,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         pasteboard: NSPasteboard,
         startupRetryDelay: TimeInterval,
         startupRetryLimit: Int,
+        pollInterval: TimeInterval = 0.5,
         log: @escaping @Sendable (String) -> Void
     ) {
         self.policy = policy
@@ -110,11 +118,13 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         self.pasteboard = pasteboard
         self.startupRetryDelay = startupRetryDelay
         self.startupRetryLimit = max(0, startupRetryLimit)
+        self.pollInterval = max(0.01, pollInterval)
         self.log = log
     }
 
     @MainActor
     public func start() {
+        guard policy.text != .off || policy.image != .off else { return }
         lastPushedHostChangeCount = pasteboard.changeCount
         observations.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
@@ -130,10 +140,15 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.pullGuestClipboard() }
         })
+        pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) {
+            [weak self] _ in
+            MainActor.assumeIsolated { self?.pollClipboard() }
+        }
     }
 
     @MainActor
     public func markGuestReady() {
+        guard policy.text != .off || policy.image != .off else { return }
         queue.async { [weak self] in
             guard let self else { return }
             let available: Bool
@@ -172,10 +187,21 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
     @MainActor
     public func stop() {
         guestReady = false
+        pollTimer?.invalidate()
+        pollTimer = nil
         for observation in observations {
             NotificationCenter.default.removeObserver(observation)
         }
         observations.removeAll()
+    }
+
+    @MainActor
+    private func pollClipboard() {
+        pushHostClipboardIfChanged(force: false)
+        guard guestReady, policy.text.allowsGuestToHost || policy.image.allowsGuestToHost else {
+            return
+        }
+        queue.async { [weak self] in self?.readGuestClipboardAndPublishToHost() }
     }
 
     /// Returns true when a macOS Command+C/X/V gesture was translated to its Linux Ctrl shortcut.
@@ -209,6 +235,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
                         guard let self else { return }
                         if didWrite {
                             self.lastPushedHostChangeCount = self.pasteboard.changeCount
+                            self.lastPublishedGuestPayload = payload
                         }
                         self.sendShortcut(47)
                     }
@@ -248,6 +275,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
                     guard let self else { return }
                     if didWrite, self.pasteboard.changeCount == changeCount {
                         self.lastPushedHostChangeCount = changeCount
+                        self.lastPublishedGuestPayload = payload
                     } else if !didWrite,
                               self.guestReady,
                               startupRetriesRemaining > 0 {
@@ -299,8 +327,10 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                guard payload != self.lastPublishedGuestPayload else { return }
                 Self.writeHostClipboard(payload, to: self.pasteboard)
                 self.lastPushedHostChangeCount = self.pasteboard.changeCount
+                self.lastPublishedGuestPayload = payload
             }
         }
     }
