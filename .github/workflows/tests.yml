@@ -437,6 +437,11 @@ jobs:
           python3 -B scripts/test-package-macos-guest-tools.py -v
           python3 -B scripts/test-verify-macos-guest-tools-package.py -v
           python3 -B GuestTools/Linux/test-package-source.py -v
+          python3 -B GuestTools/Linux/test-iso-source.py -v
+          python3 -B guest-probes/test-contract.py
+          python3 -B guest-probes/test-displayed-pixel.py
+          python3 -B guest-probes/test-opengl-strategy.py -v
+          bash scripts/test-arm-ubuntu-daemon-live-gate.sh
           python3 .github/scripts/test-release-orchestrator.py
           python3 .github/scripts/verify-release-workflow-contract.py
           bash scripts/test-dmg-distribution-signing.sh
