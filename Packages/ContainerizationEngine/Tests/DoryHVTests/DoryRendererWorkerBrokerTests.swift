@@ -2716,7 +2716,7 @@ import Testing
         #expect(await rendererEventually { (try? queue.usedIndex()) == 5 })
     }
 
-    @Test func workerDumbFramebufferScansOutThroughMetalWithoutContextAttachment() async throws {
+    @Test func workerDumbFramebufferScansOutFromGuestBackingWithoutContextAttachment() async throws {
         let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
         let lane = try DoryRendererWorkerVirtioCommandLane(
             broker: fixture.broker,
@@ -2800,62 +2800,16 @@ import Testing
             resourceID: resourceID,
             rect: fullRect
         ))
-        #expect(await rendererEventually { fixture.channel.sendCount == 4 })
-        let acquire = try fixture.channel.command(at: 3, limits: fixture.bootstrap.limits)
-        #expect(acquire.operation == .acquireScanoutLease)
-        #expect(acquire.contextID == 0)
-        #expect(acquire.resourceGeneration == 55)
-
-        let device = try #require(MTLCreateSystemDefaultDevice())
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba8Unorm,
-            width: 64,
-            height: 64,
-            mipmapped: false
-        )
-        descriptor.storageMode = .private
-        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
-        let texture = try #require(device.makeSharedTexture(descriptor: descriptor))
-        let handle = try #require(texture.makeSharedTextureHandle())
-        let lease = try DoryRendererSharedTextureScanoutLease(
-            workerGeneration: fixture.bootstrap.generation,
-            resourceID: resourceID,
-            resourceGeneration: 55,
-            leaseID: DoryRendererScanoutLeaseID(rawValue: UUID()),
-            releaseToken: DoryRendererScanoutReleaseToken(rawValue: UUID()),
-            synchronization: .managedGuestProducerCompleteFlush,
-            pixelFormat: .rgba8Unorm,
-            yOriginTop: true,
-            width: 64,
-            height: 64,
-            limits: fixture.bootstrap.limits
-        )
-        fixture.channel.complete(
-            at: 3,
-            with: .success(DoryRendererWorkerChannelReply(
-                payload: DoryRendererSharedTextureScanoutLeaseCodec.encode(lease),
-                descriptors: [],
-                sharedTextureHandle: handle
-            ))
-        )
-        #expect(await rendererEventually { metalFrames.values.count == 1 })
-        let update = try #require(metalFrames.takeFirst())
-        #expect(update.rendererResourceGeneration == 55)
-        #expect(update.presentation.yOriginTop)
-        update.acceptHostSubmission()
         #expect(await rendererEventually { (try? queue.usedIndex()) == 5 })
-        update.presentation.discardWithoutPresentation()
-        #expect(await rendererEventually { fixture.channel.sendCount == 5 })
-        #expect(try fixture.channel.command(
-            at: 4,
-            limits: fixture.bootstrap.limits
-        ).operation == .releaseScanoutLease)
-        fixture.channel.complete(
-            at: 4,
-            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
-        )
-        #expect(await rendererEventually { lane.snapshot().liveScanoutLeases == 0 })
-        #expect(softwareFrames.values.isEmpty)
+        #expect(fixture.channel.sendCount == 3)
+        let frame = try #require(softwareFrames.values.first)
+        #expect(frame.resourceID == resourceID)
+        #expect(frame.width == 64)
+        #expect(frame.height == 64)
+        #expect(frame.dirtyRect == fullRect)
+        #expect(frame.bytes == Data(backing))
+        #expect(metalFrames.values.isEmpty)
+        #expect(lane.snapshot().liveScanoutLeases == 0)
         #expect(queue.gpu.statistics.rendererWorkerScanoutCopyBytes == 0)
     }
 

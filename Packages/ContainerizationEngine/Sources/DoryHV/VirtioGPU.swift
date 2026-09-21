@@ -4014,6 +4014,17 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         return .rejected(.insufficientResponseCapacity)
                     }
                     let resourceID = request.leUInt32(at: 40)
+                    // Firmware and early boot consoles use a context-free 2D dumb framebuffer.
+                    // Its authoritative pixels are the attached guest backing, even when an
+                    // accelerated renderer worker is present for the later Venus desktop. Keep
+                    // that path on the bounded CPU-copy scanout below; asking the worker for a
+                    // private Metal lease makes firmware presentation depend on 3D renderer
+                    // semantics and can leave the app-owned window black before Linux starts.
+                    let usesGuestBackedDumbFramebuffer = commandLock.withLock {
+                        resources2D[resourceID] != nil
+                            && resourceEntries[resourceID] != nil
+                            && (rendererWorkerResourceContextIDs[resourceID] ?? []).isEmpty
+                    }
                     let workerState = commandLock.withLock { () -> (
                         WorkerScanoutSurface?,
                         UInt64,
@@ -4021,6 +4032,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         [WorkerFlushTarget],
                         VirtioGPURect
                     )? in
+                        guard !usesGuestBackedDumbFramebuffer else { return nil }
                         guard let workerGeneration =
                                 rendererWorkerResourceGenerations[resourceID],
                               let displayGeneration = resourceGenerations[resourceID],
@@ -4108,6 +4120,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         rendererOwned: Bool,
                         detail: String
                     ) in
+                        guard !usesGuestBackedDumbFramebuffer else { return (false, "") }
                         let rendererOwned = resources2D[resourceID] != nil
                             || resources3D[resourceID] != nil
                             || rendererWorkerResourceGenerations[resourceID] != nil
