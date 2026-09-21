@@ -1689,7 +1689,14 @@ enum DesktopMode {
                     guard mailboxes.indices.contains(Int(scanoutID)) else { return }
                     mailboxes[Int(scanoutID)].disable()
                 },
-                onCursorUpdate: { [cursorMailboxes] update in
+                onCursorUpdate: { [cursorMailboxes, displayRelaySlot] update in
+                    if usesDisplayRelay {
+                        displayRelaySlot.publishCursor(
+                            update,
+                            scanoutCount: cursorMailboxes.count
+                        )
+                        return
+                    }
                     guard let update else {
                         for mailbox in cursorMailboxes { mailbox.submit(nil) }
                         return

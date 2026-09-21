@@ -108,6 +108,54 @@ final class DoryVMDisplayBrokerTests: XCTestCase {
         XCTAssertEqual(first.values, [.init(presented: false, detail: "runner-disconnected")])
     }
 
+    func testCursorRegistersRunnerAndOnlyPublishesMonotonicLatestUpdate() throws {
+        let broker = broker()
+        let runner = UUID()
+        let first = try makeCursor(sequence: 1, visible: true)
+        try broker.publishCursor(
+            cursorData: DoryVMDisplayCursorCodec.encode(first),
+            runnerSessionID: runner,
+            processIdentifier: 42
+        )
+        let delivered = try XCTUnwrap(broker.nextCursor(
+            machineID: "ubuntu",
+            scanoutID: 0,
+            afterSequence: 0
+        ))
+        XCTAssertEqual(try DoryVMDisplayCursorCodec.decode(delivered), first)
+        XCTAssertNil(try broker.nextCursor(
+            machineID: "ubuntu",
+            scanoutID: 0,
+            afterSequence: 1
+        ))
+        XCTAssertThrowsError(try broker.publishCursor(
+            cursorData: DoryVMDisplayCursorCodec.encode(first),
+            runnerSessionID: runner,
+            processIdentifier: 42
+        ))
+
+        let hidden = try makeCursor(sequence: 2, visible: false)
+        try broker.publishCursor(
+            cursorData: DoryVMDisplayCursorCodec.encode(hidden),
+            runnerSessionID: runner,
+            processIdentifier: 42
+        )
+        XCTAssertEqual(
+            try DoryVMDisplayCursorCodec.decode(XCTUnwrap(broker.nextCursor(
+                machineID: "ubuntu",
+                scanoutID: 0,
+                afterSequence: 1
+            ))),
+            hidden
+        )
+        broker.invalidateRunner(sessionID: runner)
+        XCTAssertThrowsError(try broker.nextCursor(
+            machineID: "ubuntu",
+            scanoutID: 0,
+            afterSequence: 0
+        ))
+    }
+
     private func broker() -> DoryVMDisplayBroker {
         DoryVMDisplayBroker { machineID, operationID, pid in
             machineID == "ubuntu"
@@ -146,6 +194,35 @@ final class DoryVMDisplayBrokerTests: XCTestCase {
             leasePayload: DoryRendererScanoutLeaseCodec.encode(lease),
             sourceRect: .init(x: 0, y: 0, width: 64, height: 64),
             dirtyRect: .init(x: 0, y: 0, width: 64, height: 64)
+        )
+    }
+
+    private func makeCursor(
+        sequence: UInt64,
+        visible: Bool
+    ) throws -> DoryVMDisplayCursor {
+        let operationID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        if visible {
+            return try .visible(
+                machineID: "ubuntu",
+                operationID: operationID,
+                scanoutID: 0,
+                sequence: sequence,
+                resourceID: 2,
+                x: 4,
+                y: 8,
+                width: 2,
+                height: 2,
+                hotX: 0,
+                hotY: 1,
+                bytes: Data(repeating: 0xFF, count: 16)
+            )
+        }
+        return try .hidden(
+            machineID: "ubuntu",
+            operationID: operationID,
+            scanoutID: 0,
+            sequence: sequence
         )
     }
 }

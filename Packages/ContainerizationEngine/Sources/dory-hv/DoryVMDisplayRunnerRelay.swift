@@ -12,6 +12,10 @@ protocol DoryVMDisplayRunnerTransport: AnyObject, Sendable {
         sharedTextureHandle: MTLSharedTextureHandle?,
         reply: @escaping @Sendable (Bool, String) -> Void
     )
+    func publishCursor(
+        _ cursor: Data,
+        reply: @escaping @Sendable (Bool, String) -> Void
+    )
     func nextCommand(
         machineID: String,
         operationID: String,
@@ -61,6 +65,19 @@ final class DoryVMDisplayRunnerXPCTransport: DoryVMDisplayRunnerTransport,
             sharedTextureHandle: sharedTextureHandle,
             withReply: reply
         )
+    }
+
+    func publishCursor(
+        _ cursor: Data,
+        reply: @escaping @Sendable (Bool, String) -> Void
+    ) {
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+            reply(false, "display-broker-error: \(error)")
+        }) as? DoryVMDisplayBrokerXPCProtocol else {
+            reply(false, "display-broker-proxy-unavailable")
+            return
+        }
+        proxy.publishCursor(cursor, withReply: reply)
     }
 
     func nextCommand(
@@ -153,6 +170,10 @@ final class DoryVMDisplayRunnerRelaySlot: @unchecked Sendable {
             return
         }
         relay.publish(update)
+    }
+
+    func publishCursor(_ update: VirtioGPUCursorUpdate?, scanoutCount: Int) {
+        lock.withLock { relay }?.publishCursor(update, scanoutCount: scanoutCount)
     }
 
     func start() {
@@ -263,6 +284,7 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
 
     private struct State {
         var nextFrameSequence: UInt64 = 1
+        var nextCursorSequence: UInt64 = 1
         var lastCommandSequence: UInt64 = 0
         var pending: [UUID: PendingFrame] = [:]
         var started = false
@@ -470,6 +492,53 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         }
     }
 
+    func publishCursor(_ update: VirtioGPUCursorUpdate?, scanoutCount: Int) {
+        let scanoutIDs: [UInt32]
+        if let update {
+            scanoutIDs = [update.scanoutID]
+        } else {
+            scanoutIDs = (0..<max(0, scanoutCount)).map(UInt32.init)
+        }
+        for scanoutID in scanoutIDs {
+            do {
+                let sequence = try nextCursorSequence()
+                let operation = UUID(uuidString: operationID)!
+                let cursor: DoryVMDisplayCursor
+                if let update {
+                    cursor = try .visible(
+                        machineID: machineID,
+                        operationID: operation,
+                        scanoutID: update.scanoutID,
+                        sequence: sequence,
+                        resourceID: update.resourceID,
+                        x: update.x,
+                        y: update.y,
+                        width: update.width,
+                        height: update.height,
+                        hotX: update.hotX,
+                        hotY: update.hotY,
+                        bytes: update.bytes
+                    )
+                } else {
+                    cursor = try .hidden(
+                        machineID: machineID,
+                        operationID: operation,
+                        scanoutID: scanoutID,
+                        sequence: sequence
+                    )
+                }
+                transport.publishCursor(try DoryVMDisplayCursorCodec.encode(cursor)) {
+                    [log] accepted, detail in
+                    if !accepted, !detail.isEmpty {
+                        log("dory-hv display relay cursor: \(detail)")
+                    }
+                }
+            } catch {
+                log("dory-hv display relay rejected cursor: \(error)")
+            }
+        }
+    }
+
     func stop() {
         let retirement = lock.withLock { () -> [PendingFrame]? in
             guard !state.stopped else { return nil }
@@ -496,6 +565,17 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
             }
             let sequence = state.nextFrameSequence
             state.nextFrameSequence += 1
+            return sequence
+        }
+    }
+
+    private func nextCursorSequence() throws -> UInt64 {
+        try lock.withLock {
+            guard !state.stopped, state.nextCursorSequence < UInt64.max else {
+                throw CancellationError()
+            }
+            let sequence = state.nextCursorSequence
+            state.nextCursorSequence += 1
             return sequence
         }
     }

@@ -24,6 +24,7 @@ struct DoryVMDisplayRunnerRelayTests {
         private var commands: [Data]
         private(set) var retireCount = 0
         private(set) var invalidateCount = 0
+        private var publishedCursors: [Data] = []
 
         init(commands: [Data] = []) {
             self.commands = commands
@@ -36,6 +37,14 @@ struct DoryVMDisplayRunnerRelayTests {
             reply: @escaping @Sendable (Bool, String) -> Void
         ) {
             reply(false, "unused")
+        }
+
+        func publishCursor(
+            _ cursor: Data,
+            reply: @escaping @Sendable (Bool, String) -> Void
+        ) {
+            lock.withLock { publishedCursors.append(cursor) }
+            reply(true, "")
         }
 
         func nextCommand(
@@ -70,6 +79,9 @@ struct DoryVMDisplayRunnerRelayTests {
         var lifecycleCounts: (retire: Int, invalidate: Int) {
             lock.withLock { (retireCount, invalidateCount) }
         }
+
+
+        var cursors: [Data] { lock.withLock { publishedCursors } }
     }
 
     @Test func commandHandlerRoutesOnlyToSelectedVirtioEndpoint() throws {
@@ -143,5 +155,38 @@ struct DoryVMDisplayRunnerRelayTests {
         #expect(inputs.snapshot == [[VirtioInputEvent(type: 1, code: 30, value: 1)]])
         #expect(transport.lifecycleCounts.retire == 1)
         #expect(transport.lifecycleCounts.invalidate == 1)
+    }
+
+    @Test func relayPublishesCopiedCursorAndExplicitHideForEveryScanout() throws {
+        let operationID = UUID()
+        let transport = FakeTransport()
+        let relay = DoryVMDisplayRunnerRelay(
+            machineID: "ubuntu",
+            operationID: operationID,
+            transport: transport,
+            commandHandler: .init(input: { _, _ in }, resize: { _, _, _, _, _ in })
+        )
+        relay.publishCursor(.init(
+            scanoutID: 1,
+            resourceID: 8,
+            x: 12,
+            y: 24,
+            width: 2,
+            height: 2,
+            hotX: 1,
+            hotY: 1,
+            bytes: Data(repeating: 0xA5, count: 16)
+        ), scanoutCount: 2)
+        relay.publishCursor(nil, scanoutCount: 2)
+
+        let cursors = try transport.cursors.map(DoryVMDisplayCursorCodec.decode)
+        #expect(cursors.count == 3)
+        #expect(cursors[0].scanoutID == 1)
+        #expect(cursors[0].visible)
+        #expect(cursors[0].bytes == Data(repeating: 0xA5, count: 16))
+        #expect(cursors[1].scanoutID == 0 && !cursors[1].visible)
+        #expect(cursors[2].scanoutID == 1 && !cursors[2].visible)
+        #expect(cursors.map(\.sequence) == [1, 2, 3])
+        relay.stop()
     }
 }

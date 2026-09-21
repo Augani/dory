@@ -24,6 +24,16 @@ public protocol DoryVMDisplayBrokerXPCProtocol: NSObjectProtocol {
         presented: Bool,
         withReply reply: @escaping (Bool, String) -> Void
     )
+    func publishCursor(
+        _ cursor: Data,
+        withReply reply: @escaping (Bool, String) -> Void
+    )
+    func nextCursor(
+        _ machineID: String,
+        scanoutID: UInt32,
+        afterSequence: UInt64,
+        withReply reply: @escaping (Bool, Data, String) -> Void
+    )
     func sendCommand(
         _ command: Data,
         withReply reply: @escaping (Bool, String) -> Void

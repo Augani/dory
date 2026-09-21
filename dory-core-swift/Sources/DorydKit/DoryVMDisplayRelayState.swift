@@ -46,6 +46,21 @@ struct DoryVMDisplayRelayState<Authority> {
 
     private var machines: [String: MachineState] = [:]
 
+    mutating func registerRunner(machineID: String, operationID: String) throws {
+        guard !machineID.isEmpty,
+              let parsedOperationID = UUID(uuidString: operationID),
+              parsedOperationID.uuidString.lowercased() == operationID else {
+            throw DoryVMDisplayRelayError.staleRunner
+        }
+        if let machine = machines[machineID] {
+            guard machine.operationID == operationID else {
+                throw DoryVMDisplayRelayError.staleRunner
+            }
+            return
+        }
+        machines[machineID] = MachineState(operationID: operationID)
+    }
+
     mutating func publish(
         frame: DoryVMDisplayFrame,
         authority: Authority

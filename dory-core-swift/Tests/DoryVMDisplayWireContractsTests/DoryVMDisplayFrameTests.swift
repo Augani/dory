@@ -137,6 +137,51 @@ struct DoryVMDisplayFrameTests {
         }
     }
 
+    @Test("cursor updates are canonical, bounded, and hide explicitly")
+    func cursorRoundTrip() throws {
+        let operationID = UUID(uuidString: "b0000000-0000-0000-0000-00000000000b")!
+        let visible = try DoryVMDisplayCursor.visible(
+            machineID: "ubuntu",
+            operationID: operationID,
+            scanoutID: 1,
+            sequence: 3,
+            resourceID: 9,
+            x: 100,
+            y: 200,
+            width: 2,
+            height: 2,
+            hotX: 1,
+            hotY: 1,
+            bytes: Data(repeating: 0x7F, count: 16)
+        )
+        let encoded = try DoryVMDisplayCursorCodec.encode(visible)
+        #expect(try DoryVMDisplayCursorCodec.decode(encoded) == visible)
+
+        let hidden = try DoryVMDisplayCursor.hidden(
+            machineID: "ubuntu",
+            operationID: operationID,
+            scanoutID: 0,
+            sequence: 4
+        )
+        #expect(!hidden.visible && hidden.bytes.isEmpty)
+        #expect(throws: DoryVMDisplayWireError.invalidCursor) {
+            _ = try DoryVMDisplayCursor.visible(
+                machineID: "ubuntu",
+                operationID: operationID,
+                scanoutID: 0,
+                sequence: 5,
+                resourceID: 1,
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                hotX: 0,
+                hotY: 0,
+                bytes: Data(repeating: 0, count: 15)
+            )
+        }
+    }
+
     private func memoryLease() throws -> DoryRendererScanoutLease {
         try DoryRendererScanoutLease(
             workerGeneration: DoryRendererWorkerGeneration(rawValue: 4),

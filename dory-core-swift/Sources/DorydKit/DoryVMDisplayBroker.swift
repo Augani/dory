@@ -62,6 +62,7 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
     private let runnerValidator: RunnerValidator
     private var state = DoryVMDisplayRelayState<FrameAuthority>()
     private var runnerOwners: [String: RunnerOwner] = [:]
+    private var cursors: [String: [UInt32: DoryVMDisplayCursor]] = [:]
 
     public init(runnerValidator: @escaping RunnerValidator) {
         self.runnerValidator = runnerValidator
@@ -163,6 +164,53 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
         )
     }
 
+    func publishCursor(
+        cursorData: Data,
+        runnerSessionID: UUID,
+        processIdentifier: pid_t
+    ) throws {
+        let cursor = try DoryVMDisplayCursorCodec.decode(cursorData)
+        guard runnerValidator(cursor.machineID, cursor.operationID, processIdentifier) else {
+            throw DoryVMDisplayRelayError.staleRunner
+        }
+        try lock.withLock {
+            let proposedOwner = RunnerOwner(
+                operationID: cursor.operationID,
+                sessionID: runnerSessionID,
+                processIdentifier: processIdentifier
+            )
+            if let owner = runnerOwners[cursor.machineID], owner != proposedOwner {
+                throw DoryVMDisplayRelayError.staleRunner
+            }
+            try state.registerRunner(
+                machineID: cursor.machineID,
+                operationID: cursor.operationID
+            )
+            if let current = cursors[cursor.machineID]?[cursor.scanoutID],
+               cursor.sequence <= current.sequence {
+                throw DoryVMDisplayRelayError.nonMonotonicSequence
+            }
+            runnerOwners[cursor.machineID] = proposedOwner
+            cursors[cursor.machineID, default: [:]][cursor.scanoutID] = cursor
+        }
+    }
+
+    func nextCursor(
+        machineID: String,
+        scanoutID: UInt32,
+        afterSequence: UInt64
+    ) throws -> Data? {
+        let cursor = try lock.withLock { () throws -> DoryVMDisplayCursor? in
+            guard runnerOwners[machineID] != nil else {
+                throw DoryVMDisplayRelayError.unknownMachine
+            }
+            guard let cursor = cursors[machineID]?[scanoutID],
+                  cursor.sequence > afterSequence else { return nil }
+            return cursor
+        }
+        return try cursor.map(DoryVMDisplayCursorCodec.encode)
+    }
+
     func send(commandData: Data) throws {
         let command = try DoryVMDisplayCommandCodec.decode(commandData)
         try lock.withLock { try state.send(command: command) }
@@ -213,6 +261,7 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
                 operationID: operationID
             )
             runnerOwners.removeValue(forKey: machineID)
+            cursors.removeValue(forKey: machineID)
             return retired.frames.map(\.authority)
         }
         for authority in retired {
@@ -243,6 +292,7 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
                       ) else {
                     continue
                 }
+                cursors.removeValue(forKey: machineID)
                 authorities.append(contentsOf: result.frames.map(\.authority))
             }
             return authorities
@@ -262,6 +312,8 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
         case DoryVMDisplayWireError.invalidCommand: "invalid-command"
         case DoryVMDisplayWireError.frameTooLarge: "frame-too-large"
         case DoryVMDisplayWireError.commandTooLarge: "command-too-large"
+        case DoryVMDisplayWireError.cursorTooLarge: "cursor-too-large"
+        case DoryVMDisplayWireError.invalidCursor: "invalid-cursor"
         case DoryVMDisplayWireError.nonCanonicalEncoding: "non-canonical"
         case DoryVMDisplayRelayError.staleRunner: "stale-runner"
         case DoryVMDisplayRelayError.nonMonotonicSequence: "non-monotonic"
@@ -397,6 +449,51 @@ private final class DoryVMDisplayConnectionService:
             reply(true, "")
         } catch {
             reply(false, DoryVMDisplayBroker.detail(for: error))
+        }
+    }
+
+    func publishCursor(
+        _ cursor: Data,
+        withReply reply: @escaping (Bool, String) -> Void
+    ) {
+        guard role == .runner || role == .development else {
+            reply(false, "unauthorized-role")
+            return
+        }
+        do {
+            try broker.publishCursor(
+                cursorData: cursor,
+                runnerSessionID: sessionID,
+                processIdentifier: processIdentifier
+            )
+            reply(true, "")
+        } catch {
+            reply(false, DoryVMDisplayBroker.detail(for: error))
+        }
+    }
+
+    func nextCursor(
+        _ machineID: String,
+        scanoutID: UInt32,
+        afterSequence: UInt64,
+        withReply reply: @escaping (Bool, Data, String) -> Void
+    ) {
+        guard role == .application || role == .development else {
+            reply(false, Data(), "unauthorized-role")
+            return
+        }
+        do {
+            guard let cursor = try broker.nextCursor(
+                machineID: machineID,
+                scanoutID: scanoutID,
+                afterSequence: afterSequence
+            ) else {
+                reply(false, Data(), "")
+                return
+            }
+            reply(true, cursor, "")
+        } catch {
+            reply(false, Data(), DoryVMDisplayBroker.detail(for: error))
         }
     }
 

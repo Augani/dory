@@ -10,6 +10,8 @@ public enum DoryVMDisplayWireError: Error, Equatable, Sendable {
     case invalidCommand
     case frameTooLarge
     case commandTooLarge
+    case cursorTooLarge
+    case invalidCursor
     case nonCanonicalEncoding
 }
 

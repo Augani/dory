@@ -67,17 +67,63 @@ private final class LinuxMachineImportedFrame: @unchecked Sendable {
     }
 }
 
+private enum LinuxMachineCaptureModifierTransition {
+    case forward
+    case release
+    case consume
+}
+
+private struct LinuxMachinePointerCaptureState {
+    private(set) var isCaptured = false
+    private(set) var acceptsAbsoluteInput = true
+    private var consumesReleaseChord = false
+
+    mutating func capture() -> Bool {
+        guard !isCaptured else { return false }
+        isCaptured = true
+        acceptsAbsoluteInput = false
+        consumesReleaseChord = false
+        return true
+    }
+
+    mutating func cancel() -> Bool {
+        let wasCaptured = isCaptured
+        isCaptured = false
+        consumesReleaseChord = false
+        return wasCaptured
+    }
+
+    mutating func modifierTransition(
+        command: Bool,
+        control: Bool
+    ) -> LinuxMachineCaptureModifierTransition {
+        if isCaptured, command, control {
+            isCaptured = false
+            consumesReleaseChord = true
+            return .release
+        }
+        if consumesReleaseChord {
+            if !command && !control { consumesReleaseChord = false }
+            return .consume
+        }
+        return .forward
+    }
+}
+
 private final class LinuxMachineDisplayClient: @unchecked Sendable {
     typealias FrameHandler = @MainActor @Sendable (
         DoryVMDisplayFrame,
         [FileHandle],
         MTLSharedTextureHandle?
     ) -> Void
+    typealias CursorHandler = @MainActor @Sendable (DoryVMDisplayCursor?) -> Void
 
     private struct State {
         var stopped = false
-        var pollInFlight = false
+        var framePollInFlight = false
+        var cursorPollInFlight = false
         var afterFrameSequence: UInt64 = 0
+        var afterCursorSequence: UInt64 = 0
         var operationID: UUID?
         var nextCommandSequence: UInt64 = 1
     }
@@ -86,6 +132,7 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
     private let scanoutID: UInt32
     private let connection: NSXPCConnection
     private let frameHandler: FrameHandler
+    private let cursorHandler: CursorHandler
     private let failureHandler: @MainActor @Sendable (String) -> Void
     private let queue = DispatchQueue(
         label: "dev.dory.app.linux-display-relay",
@@ -98,11 +145,13 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
         machineID: String,
         scanoutID: UInt32,
         frameHandler: @escaping FrameHandler,
+        cursorHandler: @escaping CursorHandler,
         failureHandler: @escaping @MainActor @Sendable (String) -> Void
     ) {
         self.machineID = machineID
         self.scanoutID = scanoutID
         self.frameHandler = frameHandler
+        self.cursorHandler = cursorHandler
         self.failureHandler = failureHandler
         let controlName = ProcessInfo.processInfo.environment["DORYD_MACH_SERVICE"]
             ?? "dev.dory.doryd"
@@ -123,6 +172,7 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
 
     func start() {
         schedulePoll(after: 0)
+        scheduleCursorPoll(after: 0)
     }
 
     func stop() {
@@ -232,8 +282,8 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
 
     private func poll() {
         let afterSequence = lock.withLock { () -> UInt64? in
-            guard !state.stopped, !state.pollInFlight else { return nil }
-            state.pollInFlight = true
+            guard !state.stopped, !state.framePollInFlight else { return nil }
+            state.framePollInFlight = true
             return state.afterFrameSequence
         }
         guard let afterSequence else { return }
@@ -261,7 +311,7 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
         handle: MTLSharedTextureHandle?,
         detail: String
     ) {
-        lock.withLock { state.pollInFlight = false }
+        lock.withLock { state.framePollInFlight = false }
         guard found else {
             if !detail.isEmpty, detail != "no-frame" {
                 failed("The VM display broker could not provide a frame: \(detail)")
@@ -288,6 +338,60 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
             for descriptor in descriptors { try? descriptor.close() }
             failed("The VM display broker returned an invalid frame: \(error)")
             schedulePoll(after: 0.25)
+        }
+    }
+
+    private func scheduleCursorPoll(after delay: TimeInterval) {
+        queue.asyncAfter(deadline: .now() + max(0, delay)) { [weak self] in
+            self?.pollCursor()
+        }
+    }
+
+    private func pollCursor() {
+        let afterSequence = lock.withLock { () -> UInt64? in
+            guard !state.stopped, !state.cursorPollInFlight else { return nil }
+            state.cursorPollInFlight = true
+            return state.afterCursorSequence
+        }
+        guard let afterSequence else { return }
+        proxy { proxy in
+            proxy.nextCursor(
+                self.machineID,
+                scanoutID: self.scanoutID,
+                afterSequence: afterSequence
+            ) { [weak self] found, data, detail in
+                self?.receivedCursor(found: found, data: data, detail: detail)
+            }
+        }
+    }
+
+    private func receivedCursor(found: Bool, data: Data, detail: String) {
+        lock.withLock { state.cursorPollInFlight = false }
+        guard found else {
+            if !detail.isEmpty, detail != "no-cursor" {
+                failed("The VM display broker could not provide a cursor: \(detail)")
+                scheduleCursorPoll(after: 0.25)
+            } else {
+                scheduleCursorPoll(after: 1.0 / 60.0)
+            }
+            return
+        }
+        do {
+            let cursor = try DoryVMDisplayCursorCodec.decode(data)
+            guard cursor.machineID == machineID,
+                  cursor.scanoutID == scanoutID,
+                  lock.withLock({ state.operationID?.uuidString.lowercased() })
+                    == cursor.operationID else {
+                throw DoryVMDisplayWireError.invalidCursor
+            }
+            lock.withLock { state.afterCursorSequence = cursor.sequence }
+            Task { @MainActor [cursorHandler] in
+                cursorHandler(cursor.visible ? cursor : nil)
+            }
+            scheduleCursorPoll(after: 0)
+        } catch {
+            failed("The VM display broker returned an invalid cursor: \(error)")
+            scheduleCursorPoll(after: 0.25)
         }
     }
 
@@ -320,9 +424,18 @@ final class LinuxMachineMetalView: NSView {
     private var resizeWorkItem: DispatchWorkItem?
     private var trackingAreaReference: NSTrackingArea?
     private var lastFailure: String?
+    private var guestCursor = NSCursor.arrow
+    private var guestCursorUpdate: DoryVMDisplayCursor?
+    private var scanoutSize = CGSize.zero
+    private var pointerCaptureState = LinuxMachinePointerCaptureState()
+    private var pressedKeyboardCodes = Set<UInt16>()
+    private var pressedAbsoluteButtons = Set<UInt16>()
+    private var pressedRelativeButtons = Set<UInt16>()
+    private var hostCursorHidden = false
 
     override var acceptsFirstResponder: Bool { true }
     override var wantsUpdateLayer: Bool { true }
+    override var isFlipped: Bool { true }
     override func makeBackingLayer() -> CALayer { CAMetalLayer() }
 
     init(machineID: String, scanoutID: UInt32) {
@@ -369,6 +482,7 @@ final class LinuxMachineMetalView: NSView {
             machineID: machineID,
             scanoutID: scanoutID,
             frameHandler: { [weak self] in self?.present($0, descriptors: $1, handle: $2) },
+            cursorHandler: { [weak self] in self?.presentCursor($0) },
             failureHandler: { [weak self] in self?.showFailure($0) }
         )
         client.start()
@@ -379,6 +493,7 @@ final class LinuxMachineMetalView: NSView {
     func stop() {
         resizeWorkItem?.cancel()
         resizeWorkItem = nil
+        releasePressedInput()
         client?.stop()
     }
 
@@ -387,6 +502,13 @@ final class LinuxMachineMetalView: NSView {
         window?.makeFirstResponder(self)
         updateDrawableSizeAndScheduleResize()
     }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { releasePressedInput() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func layout() {
         super.layout()
@@ -466,6 +588,11 @@ final class LinuxMachineMetalView: NSView {
     ) {
         do {
             let imported = try importFrame(frame, descriptors: descriptors, handle: handle)
+            scanoutSize = CGSize(
+                width: Int(frame.sourceRect.width),
+                height: Int(frame.sourceRect.height)
+            )
+            if guestCursorUpdate != nil { rebuildGuestCursor() }
             guard render(imported) else {
                 client.acknowledge(frame, presented: false)
                 return
@@ -620,19 +747,40 @@ final class LinuxMachineMetalView: NSView {
         toolTip = message
     }
 
+    private func presentCursor(_ cursor: DoryVMDisplayCursor?) {
+        guestCursorUpdate = cursor
+        rebuildGuestCursor()
+    }
+
+    private func rebuildGuestCursor() {
+        guard let cursor = guestCursorUpdate else {
+            guestCursor = Self.transparentCursor
+            window?.invalidateCursorRects(for: self)
+            return
+        }
+        let scale = bounds.width > 0 && scanoutSize.width > 0
+            ? max(1, scanoutSize.width / bounds.width)
+            : max(1, window?.backingScaleFactor ?? 1)
+        guestCursor = Self.makeCursor(cursor, scale: scale) ?? Self.transparentCursor
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: guestCursor)
+    }
+
     override func keyDown(with event: NSEvent) {
         guard let code = Self.keyMap[event.keyCode] else {
             super.keyDown(with: event)
             return
         }
-        client.sendInput(
-            endpoint: .keyboard,
-            events: [DoryVMDisplayInputEvent(
+        sendKeyboard([
+            DoryVMDisplayInputEvent(
                 type: 1,
                 code: code,
                 value: event.isARepeat ? 2 : 1
-            )]
-        )
+            )
+        ])
     }
 
     override func keyUp(with event: NSEvent) {
@@ -640,10 +788,33 @@ final class LinuxMachineMetalView: NSView {
             super.keyUp(with: event)
             return
         }
-        client.sendInput(
-            endpoint: .keyboard,
-            events: [DoryVMDisplayInputEvent(type: 1, code: code, value: 0)]
-        )
+        sendKeyboard([DoryVMDisplayInputEvent(type: 1, code: code, value: 0)])
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        switch pointerCaptureState.modifierTransition(
+            command: event.modifierFlags.contains(.command),
+            control: event.modifierFlags.contains(.control)
+        ) {
+        case .release:
+            releaseTrackedInput()
+            restoreHostPointerAfterCapture()
+            return
+        case .consume:
+            return
+        case .forward:
+            break
+        }
+        guard let code = Self.keyMap[event.keyCode],
+              let flag = Self.modifierFlag(for: event.keyCode) else {
+            super.flagsChanged(with: event)
+            return
+        }
+        sendKeyboard([.init(
+            type: 1,
+            code: code,
+            value: event.modifierFlags.contains(flag) ? 1 : 0
+        )])
     }
 
     override func mouseMoved(with event: NSEvent) { sendPointer(event) }
@@ -654,9 +825,29 @@ final class LinuxMachineMetalView: NSView {
     override func mouseUp(with event: NSEvent) { sendPointer(event, button: 272, pressed: false) }
     override func rightMouseDown(with event: NSEvent) { sendPointer(event, button: 273, pressed: true) }
     override func rightMouseUp(with event: NSEvent) { sendPointer(event, button: 273, pressed: false) }
+    override func otherMouseDown(with event: NSEvent) {
+        sendPointer(event, button: Self.otherButton(event.buttonNumber), pressed: true)
+    }
+    override func otherMouseUp(with event: NSEvent) {
+        sendPointer(event, button: Self.otherButton(event.buttonNumber), pressed: false)
+    }
 
     private func sendPointer(_ event: NSEvent, button: UInt16? = nil, pressed: Bool = false) {
         window?.makeFirstResponder(self)
+        if button != nil, !pointerCaptureState.isCaptured { enterPointerCapture() }
+        if pointerCaptureState.isCaptured {
+            var events: [DoryVMDisplayInputEvent] = []
+            let x = Self.relativeDelta(event.deltaX)
+            let y = Self.relativeDelta(-event.deltaY)
+            if x != 0 { events.append(.init(type: 2, code: 0, value: x)) }
+            if y != 0 { events.append(.init(type: 2, code: 1, value: y)) }
+            if let button {
+                events.append(.init(type: 1, code: button, value: pressed ? 1 : 0))
+            }
+            if !events.isEmpty { sendPointer(events, endpoint: .relativePointer) }
+            return
+        }
+        guard pointerCaptureState.acceptsAbsoluteInput else { return }
         let point = convert(event.locationInWindow, from: nil)
         let x = Int32((min(1, max(0, point.x / max(1, bounds.width))) * 32_767).rounded())
         let y = Int32((min(1, max(0, point.y / max(1, bounds.height))) * 32_767).rounded())
@@ -671,7 +862,7 @@ final class LinuxMachineMetalView: NSView {
                 value: pressed ? 1 : 0
             ))
         }
-        client.sendInput(endpoint: .absolutePointer, events: events)
+        sendPointer(events, endpoint: .absolutePointer)
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -684,7 +875,163 @@ final class LinuxMachineMetalView: NSView {
         if horizontal != 0 {
             events.append(.init(type: 2, code: 6, value: horizontal))
         }
-        if !events.isEmpty { client.sendInput(endpoint: .absolutePointer, events: events) }
+        if !events.isEmpty {
+            sendPointer(
+                events,
+                endpoint: pointerCaptureState.isCaptured ? .relativePointer : .absolutePointer
+            )
+        }
+    }
+
+    private func sendKeyboard(_ events: [DoryVMDisplayInputEvent]) {
+        for event in events where event.type == 1 {
+            if event.value == 0 {
+                pressedKeyboardCodes.remove(event.code)
+            } else {
+                pressedKeyboardCodes.insert(event.code)
+            }
+        }
+        client.sendInput(endpoint: .keyboard, events: events)
+    }
+
+    private func sendPointer(
+        _ events: [DoryVMDisplayInputEvent],
+        endpoint: DoryVMDisplayInputEndpoint
+    ) {
+        for event in events where event.type == 1 {
+            if event.value == 0 {
+                if endpoint == .relativePointer {
+                    pressedRelativeButtons.remove(event.code)
+                } else {
+                    pressedAbsoluteButtons.remove(event.code)
+                }
+            } else if endpoint == .relativePointer {
+                pressedRelativeButtons.insert(event.code)
+            } else {
+                pressedAbsoluteButtons.insert(event.code)
+            }
+        }
+        client.sendInput(endpoint: endpoint, events: events)
+    }
+
+    private func releasePressedInput() {
+        if pointerCaptureState.cancel() { restoreHostPointerAfterCapture() }
+        releaseTrackedInput()
+    }
+
+    private func releaseTrackedInput() {
+        let keys = pressedKeyboardCodes.sorted()
+        let absoluteButtons = pressedAbsoluteButtons.sorted()
+        let relativeButtons = pressedRelativeButtons.sorted()
+        pressedKeyboardCodes.removeAll()
+        pressedAbsoluteButtons.removeAll()
+        pressedRelativeButtons.removeAll()
+        if !keys.isEmpty {
+            client.sendInput(
+                endpoint: .keyboard,
+                events: keys.map { .init(type: 1, code: $0, value: 0) }
+            )
+        }
+        if !absoluteButtons.isEmpty {
+            client.sendInput(
+                endpoint: .absolutePointer,
+                events: absoluteButtons.map { .init(type: 1, code: $0, value: 0) }
+            )
+        }
+        if !relativeButtons.isEmpty {
+            client.sendInput(
+                endpoint: .relativePointer,
+                events: relativeButtons.map { .init(type: 1, code: $0, value: 0) }
+            )
+        }
+    }
+
+    private func enterPointerCapture() {
+        guard !pointerCaptureState.isCaptured,
+              CGAssociateMouseAndMouseCursorPosition(0) == .success else { return }
+        guard pointerCaptureState.capture() else {
+            _ = CGAssociateMouseAndMouseCursorPosition(1)
+            return
+        }
+        NSCursor.hide()
+        hostCursorHidden = true
+    }
+
+    private func restoreHostPointerAfterCapture() {
+        _ = CGAssociateMouseAndMouseCursorPosition(1)
+        if hostCursorHidden {
+            NSCursor.unhide()
+            hostCursorHidden = false
+        }
+    }
+
+    private static func relativeDelta(_ value: Double) -> Int32 {
+        guard value.isFinite else { return 0 }
+        if value >= Double(Int32.max) { return .max }
+        if value <= Double(Int32.min) { return .min }
+        return Int32(value.rounded())
+    }
+
+    private static func otherButton(_ buttonNumber: Int) -> UInt16 {
+        switch buttonNumber {
+        case 2: 274
+        case 3: 275
+        default: 276
+        }
+    }
+
+    private static func modifierFlag(for keyCode: UInt16) -> NSEvent.ModifierFlags? {
+        switch keyCode {
+        case 54, 55: .command
+        case 56, 60: .shift
+        case 57: .capsLock
+        case 58, 61: .option
+        case 59, 62: .control
+        default: nil
+        }
+    }
+
+    private static let transparentCursor: NSCursor = {
+        let image = NSImage(
+            size: NSSize(width: 1, height: 1),
+            flipped: false,
+            drawingHandler: { _ in true }
+        )
+        return NSCursor(image: image, hotSpot: .zero)
+    }()
+
+    private static func makeCursor(
+        _ update: DoryVMDisplayCursor,
+        scale: CGFloat
+    ) -> NSCursor? {
+        guard update.visible,
+              let provider = CGDataProvider(data: update.bytes as CFData),
+              let image = CGImage(
+                width: Int(update.width),
+                height: Int(update.height),
+                bitsPerComponent: 8,
+                bitsPerPixel: 32,
+                bytesPerRow: Int(update.width) * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo.byteOrder32Little.union(CGBitmapInfo(
+                    rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
+                )),
+                provider: provider,
+                decode: nil,
+                shouldInterpolate: false,
+                intent: .defaultIntent
+              ) else { return nil }
+        let imageSize = NSSize(
+            width: CGFloat(update.width) / scale,
+            height: CGFloat(update.height) / scale
+        )
+        return NSCursor(
+            image: NSImage(cgImage: image, size: imageSize),
+            hotSpot: NSPoint(
+                x: CGFloat(update.hotX) / scale,
+                y: CGFloat(update.hotY) / scale
+            )
+        )
     }
 
     private static func pixelFormat(
