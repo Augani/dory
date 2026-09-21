@@ -37,20 +37,44 @@ final class DoryVMDisplayBrokerTests: XCTestCase {
             machineID: "ubuntu",
             leaseID: leaseID,
             presented: true,
+            metalCommandBufferCompletionID: 73,
             applicationSessionID: wrongAppSession
         ))
+        XCTAssertTrue(completion.values.isEmpty)
+        XCTAssertThrowsError(try broker.acknowledgeFrame(
+            machineID: "ubuntu",
+            leaseID: leaseID,
+            presented: true,
+            metalCommandBufferCompletionID: 0,
+            applicationSessionID: appSession
+        )) { error in
+            XCTAssertEqual(error as? DoryVMDisplayRelayError, .invalidAcknowledgement)
+        }
+        XCTAssertThrowsError(try broker.acknowledgeFrame(
+            machineID: "ubuntu",
+            leaseID: leaseID,
+            presented: false,
+            metalCommandBufferCompletionID: 73,
+            applicationSessionID: appSession
+        )) { error in
+            XCTAssertEqual(error as? DoryVMDisplayRelayError, .invalidAcknowledgement)
+        }
         XCTAssertTrue(completion.values.isEmpty)
         try broker.acknowledgeFrame(
             machineID: "ubuntu",
             leaseID: leaseID,
             presented: true,
+            metalCommandBufferCompletionID: 73,
             applicationSessionID: appSession
         )
-        XCTAssertEqual(completion.values, [.init(presented: true, detail: "")])
+        XCTAssertEqual(completion.values, [
+            .init(presented: true, metalCommandBufferCompletionID: 73, detail: ""),
+        ])
         XCTAssertThrowsError(try broker.acknowledgeFrame(
             machineID: "ubuntu",
             leaseID: leaseID,
             presented: true,
+            metalCommandBufferCompletionID: 74,
             applicationSessionID: appSession
         ))
         XCTAssertEqual(completion.values.count, 1)
@@ -77,7 +101,11 @@ final class DoryVMDisplayBrokerTests: XCTestCase {
         broker.invalidateApplication(sessionID: appSession)
         broker.invalidateApplication(sessionID: appSession)
         XCTAssertEqual(completion.values, [
-            .init(presented: false, detail: "application-disconnected"),
+            .init(
+                presented: false,
+                metalCommandBufferCompletionID: 0,
+                detail: "application-disconnected"
+            ),
         ])
     }
 
@@ -103,9 +131,21 @@ final class DoryVMDisplayBrokerTests: XCTestCase {
             processIdentifier: 42,
             reply: rejected.record
         )
-        XCTAssertEqual(rejected.values, [.init(presented: false, detail: "stale-runner")])
+        XCTAssertEqual(rejected.values, [
+            .init(
+                presented: false,
+                metalCommandBufferCompletionID: 0,
+                detail: "stale-runner"
+            ),
+        ])
         broker.invalidateRunner(sessionID: owner)
-        XCTAssertEqual(first.values, [.init(presented: false, detail: "runner-disconnected")])
+        XCTAssertEqual(first.values, [
+            .init(
+                presented: false,
+                metalCommandBufferCompletionID: 0,
+                detail: "runner-disconnected"
+            ),
+        ])
     }
 
     func testCursorRegistersRunnerAndOnlyPublishesMonotonicLatestUpdate() throws {
@@ -166,7 +206,7 @@ final class DoryVMDisplayBrokerTests: XCTestCase {
             sharedTextureHandle: nil,
             runnerSessionID: runner,
             processIdentifier: 42,
-            reply: { _, _ in }
+            reply: { _, _, _ in }
         )
         let command = try DoryVMDisplayCommand.input(
             machineID: "ubuntu",
@@ -295,6 +335,7 @@ final class DoryVMDisplayBrokerTests: XCTestCase {
 
 private struct CompletionValue: Equatable {
     let presented: Bool
+    let metalCommandBufferCompletionID: UInt64
     let detail: String
 }
 
@@ -304,7 +345,17 @@ private final class CompletionCapture: @unchecked Sendable {
 
     var values: [CompletionValue] { lock.withLock { storage } }
 
-    func record(presented: Bool, detail: String) {
-        lock.withLock { storage.append(.init(presented: presented, detail: detail)) }
+    func record(
+        presented: Bool,
+        metalCommandBufferCompletionID: UInt64,
+        detail: String
+    ) {
+        lock.withLock {
+            storage.append(.init(
+                presented: presented,
+                metalCommandBufferCompletionID: metalCommandBufferCompletionID,
+                detail: detail
+            ))
+        }
     }
 }

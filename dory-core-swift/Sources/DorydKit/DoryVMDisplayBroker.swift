@@ -37,14 +37,14 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
         let sharedTextureHandle: MTLSharedTextureHandle?
 
         private let lock = NSLock()
-        private let reply: (Bool, String) -> Void
+        private let reply: (Bool, UInt64, String) -> Void
         private var completed = false
         private var consumerSessionID: UUID?
 
         init(
             descriptors: [FileHandle],
             sharedTextureHandle: MTLSharedTextureHandle?,
-            reply: @escaping (Bool, String) -> Void
+            reply: @escaping (Bool, UInt64, String) -> Void
         ) {
             self.descriptors = descriptors
             self.sharedTextureHandle = sharedTextureHandle
@@ -59,13 +59,19 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
             lock.withLock { consumerSessionID == sessionID }
         }
 
-        func complete(_ presented: Bool, detail: String) {
+        func complete(
+            _ presented: Bool,
+            metalCommandBufferCompletionID: UInt64 = 0,
+            detail: String
+        ) {
             let shouldReply = lock.withLock { () -> Bool in
                 guard !completed else { return false }
                 completed = true
                 return true
             }
-            if shouldReply { reply(presented, detail) }
+            if shouldReply {
+                reply(presented, metalCommandBufferCompletionID, detail)
+            }
         }
     }
 
@@ -86,7 +92,7 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
         sharedTextureHandle: MTLSharedTextureHandle?,
         runnerSessionID: UUID,
         processIdentifier: pid_t,
-        reply: @escaping (Bool, String) -> Void
+        reply: @escaping (Bool, UInt64, String) -> Void
     ) {
         let authority = FrameAuthority(
             descriptors: descriptors,
@@ -161,8 +167,12 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
         machineID: String,
         leaseID: UUID,
         presented: Bool,
+        metalCommandBufferCompletionID: UInt64,
         applicationSessionID: UUID
     ) throws {
+        guard presented == (metalCommandBufferCompletionID > 0) else {
+            throw DoryVMDisplayRelayError.invalidAcknowledgement
+        }
         let record = try lock.withLock {
             try state.acknowledgeFrame(
                 machineID: machineID,
@@ -172,6 +182,7 @@ public final class DoryVMDisplayBroker: @unchecked Sendable {
         }
         record.authority.complete(
             presented,
+            metalCommandBufferCompletionID: metalCommandBufferCompletionID,
             detail: presented ? "" : "presentation-rejected"
         )
     }
@@ -493,10 +504,10 @@ private final class DoryVMDisplayConnectionService:
         _ frame: Data,
         descriptors: [FileHandle],
         sharedTextureHandle: MTLSharedTextureHandle?,
-        withReply reply: @escaping (Bool, String) -> Void
+        withReply reply: @escaping (Bool, UInt64, String) -> Void
     ) {
         guard role == .runner || role == .development else {
-            reply(false, "unauthorized-role")
+            reply(false, 0, "unauthorized-role")
             return
         }
         broker.publish(
@@ -545,6 +556,7 @@ private final class DoryVMDisplayConnectionService:
         _ machineID: String,
         leaseID: String,
         presented: Bool,
+        metalCommandBufferCompletionID: UInt64,
         withReply reply: @escaping (Bool, String) -> Void
     ) {
         guard role == .application || role == .development,
@@ -558,6 +570,7 @@ private final class DoryVMDisplayConnectionService:
                 machineID: machineID,
                 leaseID: parsedLeaseID,
                 presented: presented,
+                metalCommandBufferCompletionID: metalCommandBufferCompletionID,
                 applicationSessionID: sessionID
             )
             reply(true, "")

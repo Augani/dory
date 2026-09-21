@@ -29,6 +29,9 @@ nonisolated enum DoryDisplayQualificationLaunchError: Error, Equatable,
     case incompleteInputAuthority
     case invalidInputScriptPath
     case invalidInputReceiptPath
+    case incompleteCaptureAuthority
+    case invalidCaptureRequestPath
+    case invalidCaptureReceiptPath
 
     var description: String {
         switch self {
@@ -48,6 +51,12 @@ nonisolated enum DoryDisplayQualificationLaunchError: Error, Equatable,
             "DORY_DISPLAY_QUALIFICATION_INPUT_SCRIPT must be a normalized absolute path"
         case .invalidInputReceiptPath:
             "DORY_DISPLAY_QUALIFICATION_INPUT_RECEIPT must be a normalized absolute path"
+        case .incompleteCaptureAuthority:
+            "qualification capture requires both request and receipt paths"
+        case .invalidCaptureRequestPath:
+            "DORY_DISPLAY_QUALIFICATION_CAPTURE_REQUEST must be a normalized absolute path"
+        case .invalidCaptureReceiptPath:
+            "DORY_DISPLAY_QUALIFICATION_CAPTURE_RECEIPT must be a normalized absolute path"
         }
     }
 }
@@ -64,6 +73,8 @@ nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
     static let windowReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_WINDOW_RECEIPT"
     static let inputScriptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_INPUT_SCRIPT"
     static let inputReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_INPUT_RECEIPT"
+    static let captureRequestEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_CAPTURE_REQUEST"
+    static let captureReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_CAPTURE_RECEIPT"
     static let productionMachServiceName = "dev.dory.doryd"
 
     let machineID: String
@@ -72,6 +83,8 @@ nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
     let windowReceiptPath: String
     let inputScriptPath: String?
     let inputReceiptPath: String?
+    let captureRequestPath: String?
+    let captureReceiptPath: String?
 
     var display: LinuxMachineDisplayWindow {
         LinuxMachineDisplayWindow(machineID: machineID, scanoutID: scanoutID)
@@ -113,6 +126,28 @@ nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
         if inputScriptPath == inputReceiptPath, inputScriptPath != nil {
             throw DoryDisplayQualificationLaunchError.invalidInputReceiptPath
         }
+        let captureRequestPath = environment[captureRequestEnvironmentKey]
+        let captureReceiptPath = environment[captureReceiptEnvironmentKey]
+        guard (captureRequestPath == nil) == (captureReceiptPath == nil) else {
+            throw DoryDisplayQualificationLaunchError.incompleteCaptureAuthority
+        }
+        if let captureRequestPath, !validAbsolutePath(captureRequestPath) {
+            throw DoryDisplayQualificationLaunchError.invalidCaptureRequestPath
+        }
+        if let captureReceiptPath, !validAbsolutePath(captureReceiptPath) {
+            throw DoryDisplayQualificationLaunchError.invalidCaptureReceiptPath
+        }
+        let existingPaths = Set([
+            windowReceiptPath,
+            inputScriptPath,
+            inputReceiptPath,
+        ].compactMap { $0 })
+        if let captureRequestPath, let captureReceiptPath,
+           captureRequestPath == captureReceiptPath
+            || existingPaths.contains(captureRequestPath)
+            || existingPaths.contains(captureReceiptPath) {
+            throw DoryDisplayQualificationLaunchError.invalidCaptureReceiptPath
+        }
         let scanoutID: UInt32
         if let rawScanoutID = environment[scanoutIDEnvironmentKey] {
             guard let parsed = UInt32(rawScanoutID),
@@ -129,7 +164,9 @@ nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
             machServiceName: machServiceName,
             windowReceiptPath: windowReceiptPath,
             inputScriptPath: inputScriptPath,
-            inputReceiptPath: inputReceiptPath
+            inputReceiptPath: inputReceiptPath,
+            captureRequestPath: captureRequestPath,
+            captureReceiptPath: captureReceiptPath
         )
     }
 
@@ -182,6 +219,7 @@ private nonisolated struct DoryDisplayQualificationWindowReceipt: Encodable {
     let operationID: String
     let frameSequence: UInt64
     let displayResourceGeneration: UInt64
+    let metalCommandBufferCompletionID: UInt64
     let transport: String
 }
 
@@ -457,7 +495,11 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
         if shouldInvalidate { connection.invalidate() }
     }
 
-    func acknowledge(_ frame: DoryVMDisplayFrame, presented: Bool) {
+    func acknowledge(
+        _ frame: DoryVMDisplayFrame,
+        presented: Bool,
+        metalCommandBufferCompletionID: UInt64 = 0
+    ) {
         guard let leaseID = try? frame.leaseID.rawValue.uuidString else {
             failed("The VM display frame carried an invalid lease.")
             return
@@ -466,7 +508,8 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
             proxy.acknowledgeFrame(
                 self.machineID,
                 leaseID: leaseID,
-                presented: presented
+                presented: presented,
+                metalCommandBufferCompletionID: metalCommandBufferCompletionID
             ) { [weak self] accepted, detail in
                 guard let self else { return }
                 if accepted {
@@ -807,6 +850,8 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
 
 @MainActor
 final class LinuxMachineMetalView: NSView {
+    private static var nextMetalCommandBufferCompletionID: UInt64 = 1
+
     private let machineID: String
     private let scanoutID: UInt32
     private let device: any MTLDevice
@@ -827,6 +872,7 @@ final class LinuxMachineMetalView: NSView {
     private var hostCursorHidden = false
     private var requestedTopology: [DoryVMDisplayTopologyEntry]?
     private var qualificationWindowReceiptWritten = false
+    private var qualificationCaptureFrameReceiptWritten = false
     private var qualificationInputStarted = false
     private var qualificationInputTask: Task<Void, Never>?
 
@@ -1015,12 +1061,23 @@ final class LinuxMachineMetalView: NSView {
                 height: Int(frame.sourceRect.height)
             )
             if guestCursorUpdate != nil { rebuildGuestCursor() }
-            guard render(imported, completion: { [weak self] presented in
+            guard render(imported, completion: { [weak self] presented, completionID in
                 guard let self else { return }
-                self.client.acknowledge(frame, presented: presented)
-                if presented {
-                    self.writeQualificationWindowReceipt(for: frame)
+                self.client.acknowledge(
+                    frame,
+                    presented: presented,
+                    metalCommandBufferCompletionID: completionID ?? 0
+                )
+                if presented, let completionID {
+                    self.writeQualificationWindowReceipt(
+                        for: frame,
+                        metalCommandBufferCompletionID: completionID
+                    )
                     self.startQualificationInputIfNeeded(for: frame)
+                    self.writeQualificationCaptureFrameReceiptIfRequested(
+                        for: frame,
+                        metalCommandBufferCompletionID: completionID
+                    )
                 }
             }) else {
                 client.acknowledge(frame, presented: false)
@@ -1114,7 +1171,7 @@ final class LinuxMachineMetalView: NSView {
 
     private func render(
         _ imported: LinuxMachineImportedFrame,
-        completion: @escaping @MainActor @Sendable (Bool) -> Void
+        completion: @escaping @MainActor @Sendable (Bool, UInt64?) -> Void
     ) -> Bool {
         guard let metalLayer = layer as? CAMetalLayer,
               let drawable = metalLayer.nextDrawable(),
@@ -1166,7 +1223,10 @@ final class LinuxMachineMetalView: NSView {
                 ?? "Metal presentation failed with status \(buffer.status.rawValue)"
             Task { @MainActor in
                 if let detail { failureTarget.showFailure(detail) }
-                completion(presented)
+                let completionID = presented
+                    ? Self.takeMetalCommandBufferCompletionID()
+                    : nil
+                completion(presented, completionID)
             }
             _ = imported
         }
@@ -1175,7 +1235,17 @@ final class LinuxMachineMetalView: NSView {
         return true
     }
 
-    private func writeQualificationWindowReceipt(for frame: DoryVMDisplayFrame) {
+    private static func takeMetalCommandBufferCompletionID() -> UInt64? {
+        guard nextMetalCommandBufferCompletionID < UInt64.max else { return nil }
+        let completionID = nextMetalCommandBufferCompletionID
+        nextMetalCommandBufferCompletionID += 1
+        return completionID
+    }
+
+    private func writeQualificationWindowReceipt(
+        for frame: DoryVMDisplayFrame,
+        metalCommandBufferCompletionID: UInt64
+    ) {
         guard !qualificationWindowReceiptWritten,
               let launch = try? DoryDisplayQualificationLaunch.parse(
                 environment: ProcessInfo.processInfo.environment
@@ -1183,15 +1253,66 @@ final class LinuxMachineMetalView: NSView {
               launch.machineID == machineID, launch.scanoutID == scanoutID,
               let window, window.windowNumber > 0,
               window.title == launch.display.windowTitle else { return }
-        let destination = URL(fileURLWithPath: launch.windowReceiptPath)
+        if writeQualificationReceipt(
+            at: launch.windowReceiptPath,
+            launch: launch,
+            window: window,
+            frame: frame,
+            metalCommandBufferCompletionID: metalCommandBufferCompletionID,
+            label: "window"
+        ) {
+            qualificationWindowReceiptWritten = true
+        }
+    }
+
+    private func writeQualificationCaptureFrameReceiptIfRequested(
+        for frame: DoryVMDisplayFrame,
+        metalCommandBufferCompletionID: UInt64
+    ) {
+        guard !qualificationCaptureFrameReceiptWritten,
+              let launch = try? DoryDisplayQualificationLaunch.parse(
+                environment: ProcessInfo.processInfo.environment
+              ),
+              launch.machineID == machineID, launch.scanoutID == scanoutID,
+              let requestPath = launch.captureRequestPath,
+              let receiptPath = launch.captureReceiptPath,
+              let window, window.windowNumber > 0,
+              window.title == launch.display.windowTitle else { return }
+        let request = URL(fileURLWithPath: requestPath)
+        let requestValues = try? request.resourceValues(forKeys: [
+            .isRegularFileKey, .isSymbolicLinkKey,
+        ])
+        guard requestValues?.isRegularFile == true,
+              requestValues?.isSymbolicLink != true else { return }
+        if writeQualificationReceipt(
+            at: receiptPath,
+            launch: launch,
+            window: window,
+            frame: frame,
+            metalCommandBufferCompletionID: metalCommandBufferCompletionID,
+            label: "capture"
+        ) {
+            qualificationCaptureFrameReceiptWritten = true
+        }
+    }
+
+    private func writeQualificationReceipt(
+        at path: String,
+        launch: DoryDisplayQualificationLaunch,
+        window: NSWindow,
+        frame: DoryVMDisplayFrame,
+        metalCommandBufferCompletionID: UInt64,
+        label: String
+    ) -> Bool {
+        let destination = URL(fileURLWithPath: path)
         let parent = destination.deletingLastPathComponent()
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory),
               isDirectory.boolValue,
               (try? parent.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
               !FileManager.default.fileExists(atPath: destination.path) else {
-            showFailure("Dory could not create the display qualification window receipt.")
-            return
+            showFailure("Dory could not create the display qualification \(label) receipt.")
+            return false
         }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -1207,6 +1328,7 @@ final class LinuxMachineMetalView: NSView {
             operationID: frame.operationID,
             frameSequence: frame.sequence,
             displayResourceGeneration: frame.displayResourceGeneration,
+            metalCommandBufferCompletionID: metalCommandBufferCompletionID,
             transport: frame.transport.rawValue
         )
         let temporary = parent.appendingPathComponent(
@@ -1219,9 +1341,12 @@ final class LinuxMachineMetalView: NSView {
             let data = try encoder.encode(receipt) + Data("\n".utf8)
             try data.write(to: temporary, options: .withoutOverwriting)
             try FileManager.default.moveItem(at: temporary, to: destination)
-            qualificationWindowReceiptWritten = true
+            return true
         } catch {
-            showFailure("Dory could not write the display qualification window receipt: \(error)")
+            showFailure(
+                "Dory could not write the display qualification \(label) receipt: \(error)"
+            )
+            return false
         }
     }
 

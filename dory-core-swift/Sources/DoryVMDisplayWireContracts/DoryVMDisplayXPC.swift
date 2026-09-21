@@ -2,15 +2,16 @@ import Foundation
 import Metal
 
 /// Least-authority display relay shared by the VM owner, doryd broker, and Dory app. The runner
-/// keeps a publish reply open until the app commits or rejects the corresponding Metal command
-/// buffer, preserving the existing exactly-once guest-flush acknowledgement.
+/// keeps a publish reply open until the app completes or rejects the corresponding Metal command
+/// buffer. Successful replies carry the app's process-local completion ID back to the runner,
+/// preserving the existing exactly-once guest-flush acknowledgement and trace correlation.
 @objc(DoryVMDisplayBrokerXPCProtocol)
 public protocol DoryVMDisplayBrokerXPCProtocol: NSObjectProtocol {
     func publishFrame(
         _ frame: Data,
         descriptors: [FileHandle],
         sharedTextureHandle: MTLSharedTextureHandle?,
-        withReply reply: @escaping (Bool, String) -> Void
+        withReply reply: @escaping (Bool, UInt64, String) -> Void
     )
     func nextFrame(
         _ machineID: String,
@@ -22,6 +23,7 @@ public protocol DoryVMDisplayBrokerXPCProtocol: NSObjectProtocol {
         _ machineID: String,
         leaseID: String,
         presented: Bool,
+        metalCommandBufferCompletionID: UInt64,
         withReply reply: @escaping (Bool, String) -> Void
     )
     func publishCursor(

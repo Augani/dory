@@ -147,6 +147,32 @@ struct AgentModeTests {
         #expect(
             inputLaunch.inputReceiptPath == "/tmp/gpu-campaign-1-input-receipt.json"
         )
+
+        var incompleteCapture = inputPaths
+        incompleteCapture[DoryDisplayQualificationLaunch.captureRequestEnvironmentKey] =
+            "/tmp/gpu-campaign-1-capture.request"
+        #expect(throws: DoryDisplayQualificationLaunchError.incompleteCaptureAuthority) {
+            try DoryDisplayQualificationLaunch.parse(environment: incompleteCapture)
+        }
+
+        var capturePaths = inputPaths
+        capturePaths[DoryDisplayQualificationLaunch.captureRequestEnvironmentKey] =
+            "/tmp/gpu-campaign-1-capture.request"
+        capturePaths[DoryDisplayQualificationLaunch.captureReceiptEnvironmentKey] =
+            "/tmp/gpu-campaign-1-capture.json"
+        let captureLaunch = try #require(
+            try DoryDisplayQualificationLaunch.parse(environment: capturePaths)
+        )
+        #expect(
+            captureLaunch.captureRequestPath == "/tmp/gpu-campaign-1-capture.request"
+        )
+        #expect(captureLaunch.captureReceiptPath == "/tmp/gpu-campaign-1-capture.json")
+
+        capturePaths[DoryDisplayQualificationLaunch.captureReceiptEnvironmentKey] =
+            "/tmp/gpu-campaign-1-input.json"
+        #expect(throws: DoryDisplayQualificationLaunchError.invalidCaptureReceiptPath) {
+            try DoryDisplayQualificationLaunch.parse(environment: capturePaths)
+        }
     }
 
     @Test func displayQualificationKeyboardScriptIsBoundedAndBalanced() throws {

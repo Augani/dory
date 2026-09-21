@@ -10,7 +10,7 @@ protocol DoryVMDisplayRunnerTransport: AnyObject, Sendable {
         _ frame: Data,
         descriptors: [FileHandle],
         sharedTextureHandle: MTLSharedTextureHandle?,
-        reply: @escaping @Sendable (Bool, String) -> Void
+        reply: @escaping @Sendable (Bool, UInt64, String) -> Void
     )
     func publishCursor(
         _ cursor: Data,
@@ -59,12 +59,12 @@ final class DoryVMDisplayRunnerXPCTransport: DoryVMDisplayRunnerTransport,
         _ frame: Data,
         descriptors: [FileHandle],
         sharedTextureHandle: MTLSharedTextureHandle?,
-        reply: @escaping @Sendable (Bool, String) -> Void
+        reply: @escaping @Sendable (Bool, UInt64, String) -> Void
     ) {
         guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
-            reply(false, "display-broker-error: \(error)")
+            reply(false, 0, "display-broker-error: \(error)")
         }) as? DoryVMDisplayBrokerXPCProtocol else {
-            reply(false, "display-broker-proxy-unavailable")
+            reply(false, 0, "display-broker-proxy-unavailable")
             return
         }
         proxy.publishFrame(
@@ -393,7 +393,11 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
             self.onPresentationFailed = onPresentationFailed
         }
 
-        func complete(presented: Bool, detail: String = "presentation-rejected") {
+        func complete(
+            presented: Bool,
+            metalCommandBufferCompletionID: UInt64 = 0,
+            detail: String = "presentation-rejected"
+        ) {
             let shouldComplete = lock.withLock { () -> Bool in
                 guard !completed else { return false }
                 completed = true
@@ -401,6 +405,9 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
             }
             guard shouldComplete else { return }
             if presented {
+                update.recordPresentationCompleted(
+                    completionID: metalCommandBufferCompletionID
+                )
                 update.acceptHostSubmission()
                 onPresentationCompleted(update.presentation.workerGeneration.rawValue)
             } else {
@@ -617,10 +624,11 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
                 encoded,
                 descriptors: prepared.descriptor.map { [$0] } ?? [],
                 sharedTextureHandle: prepared.handle
-            ) { [weak self] presented, detail in
+            ) { [weak self] presented, completionID, detail in
                 self?.completeFrame(
                     leaseID: leaseID,
                     presented: presented,
+                    metalCommandBufferCompletionID: completionID,
                     detail: detail
                 )
             }
@@ -721,14 +729,34 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         }
     }
 
-    private func completeFrame(leaseID: UUID, presented: Bool, detail: String) {
+    private func completeFrame(
+        leaseID: UUID,
+        presented: Bool,
+        metalCommandBufferCompletionID: UInt64 = 0,
+        detail: String
+    ) {
+        let validCompletion = presented == (metalCommandBufferCompletionID > 0)
+        let effectivePresented = presented && validCompletion
+        let effectiveCompletionID = effectivePresented
+            ? metalCommandBufferCompletionID
+            : 0
+        let effectiveDetail = validCompletion
+            ? detail
+            : "invalid-metal-command-buffer-completion"
         let pending = lock.withLock { state.pending.removeValue(forKey: leaseID) }
-        if presented, let pending {
+        if effectivePresented, let pending {
             presentationIntervals.recordPresented(scanoutID: pending.update.scanoutID)
         }
-        pending?.complete(presented: presented, detail: detail)
-        if !presented, !detail.isEmpty {
-            log("dory-hv display relay frame \(leaseID.uuidString.lowercased()): \(detail)")
+        pending?.complete(
+            presented: effectivePresented,
+            metalCommandBufferCompletionID: effectiveCompletionID,
+            detail: effectiveDetail
+        )
+        if !effectivePresented, !effectiveDetail.isEmpty {
+            log(
+                "dory-hv display relay frame \(leaseID.uuidString.lowercased()): "
+                    + effectiveDetail
+            )
         }
     }
 

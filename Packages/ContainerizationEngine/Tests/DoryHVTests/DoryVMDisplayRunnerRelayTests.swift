@@ -36,9 +36,9 @@ struct DoryVMDisplayRunnerRelayTests {
             _ frame: Data,
             descriptors: [FileHandle],
             sharedTextureHandle: MTLSharedTextureHandle?,
-            reply: @escaping @Sendable (Bool, String) -> Void
+            reply: @escaping @Sendable (Bool, UInt64, String) -> Void
         ) {
-            reply(false, "unused")
+            reply(false, 0, "unused")
         }
 
         func publishCursor(

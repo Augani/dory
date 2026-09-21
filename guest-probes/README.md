@@ -41,3 +41,16 @@ Validate each retained result before correlating it with host-side evidence:
 ```
 
 The validator rejects malformed records, nonce mismatches, non-finite timings, and llvmpipe/lavapipe/software-rasterizer identities.
+
+For a physical displayed-pixel run, launch the probe from the bounded keyboard script with a
+campaign-owned ready marker written immediately before `exec`. Pass a `--guest-command` to
+`scripts/arm-ubuntu-scenario-driver.sh` that waits for that marker. The driver then requests the
+next Metal-completed app frame and captures the Dory window while the probe's `--hold-ms` interval
+is active. Use `--probe-result-command` to read the probe's saved stdout, `--probe-nonce` to bind
+it to the run, and `--graphics-trace` to name the isolated runner's
+`graphics-trace.ndjson`. Probe mode fails closed unless all three are available.
+
+The retained `gpu-display-evidence.json` binds the validated probe hash, window PNG hash,
+capture-frame receipt, display resource generation, and the identical process-local Metal
+completion ID recorded in the runner trace. It is a sub-result only; the outer ARM installer and
+fault campaign remains fail-closed until its other authorities complete.
