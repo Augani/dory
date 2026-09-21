@@ -32,6 +32,8 @@ Useful environment controls:
   DORY_ALLOW_MISSING_GVPROXY=1    Permit an intentionally incomplete development bundle
   DORY_BUNDLE_RENDERER=0|1        Disable or require the production renderer tuple
   DORY_BUNDLE_VENUS=0|1           Disable or require the matching Venus guest path
+  DORY_RENDERER_RELEASE_IDENTITY_MODE=production|disabled
+                                  Override doryd's signed renderer identity carrier mode
 EOF
 }
 
@@ -630,6 +632,7 @@ verify_debug_renderer_packaging() {
           --expected-team "$BUNDLE_EXPECTED_TEAM" \
           "${renderer_pc_args[@]+"${renderer_pc_args[@]}"}" || return 1
       fi
+      verify_doryd_renderer_release_identity "$app" || return 1
       continue
     fi
     [ ! -e "$runner_app/Contents/Resources/renderer-production-inventory.json" ] \
@@ -1134,12 +1137,86 @@ seal_unqualified_runner_graph() {
   codesign --verify --deep --strict "$runner_app" || return 1
 }
 
+renderer_release_identity_mode() {
+  local renderer_enabled mode
+  mode="${DORY_RENDERER_RELEASE_IDENTITY_MODE:-}"
+  if [ -z "$mode" ]; then
+    renderer_enabled="${DORY_BUNDLE_RENDERER:-${DORY_BUNDLE_VENUS:-}}"
+    if [ -z "$renderer_enabled" ]; then
+      if [ "$XCODE_CONFIGURATION" = Release ]; then
+        renderer_enabled=1
+      else
+        renderer_enabled=0
+      fi
+    fi
+    if [ "$XCODE_CONFIGURATION" = Release ] \
+        && [ "$renderer_enabled" = 1 ] \
+        && [ "$BUNDLE_EXPECTED_TEAM" != - ]; then
+      mode=production
+    else
+      mode=disabled
+    fi
+  fi
+  case "$mode" in
+    production|disabled) ;;
+    *)
+      echo "error: DORY_RENDERER_RELEASE_IDENTITY_MODE must be 'production' or 'disabled'" >&2
+      return 64
+      ;;
+  esac
+  if [ "${DORY_PUBLIC_RELEASE:-0}" = 1 ] && [ "$mode" != production ]; then
+    echo "error: public releases require DORY_RENDERER_RELEASE_IDENTITY_MODE=production" >&2
+    return 1
+  fi
+  printf '%s\n' "$mode"
+}
+
+finalize_doryd_renderer_release_identity() {
+  local app="$1" doryd runner_app mode
+  [ "${DORY_BUILD_DORYD_HELPERS:-1}" = 1 ] || return 0
+  doryd="$app/Contents/Helpers/doryd"
+  runner_app="$app/Contents/Helpers/DoryHVRunner.app"
+  [ -x "$doryd" ] && [ ! -L "$doryd" ] \
+    || { echo "error: renderer release identity requires a direct doryd helper" >&2; return 1; }
+  mode="$(renderer_release_identity_mode)" || return $?
+  if [ "$mode" = disabled ]; then
+    python3 scripts/renderer-release-identity.py verify-absent --doryd "$doryd"
+    return $?
+  fi
+  [ "$BUNDLE_SIGN_IDENTITY" != - ] && [ "$BUNDLE_EXPECTED_TEAM" = 864H636QW4 ] \
+    || { echo "error: production renderer release identity requires Dory Developer-ID team 864H636QW4" >&2; return 1; }
+  python3 scripts/renderer-release-identity.py embed-info-plist \
+    --runner-app "$runner_app" --doryd "$doryd" \
+    --expected-team "$BUNDLE_EXPECTED_TEAM" || return 1
+  /usr/bin/codesign --force --sign "$BUNDLE_SIGN_IDENTITY" \
+    --identifier doryd --options runtime --timestamp "$doryd" || return 1
+  python3 scripts/renderer-release-identity.py verify \
+    --runner-app "$runner_app" --doryd "$doryd" \
+    --expected-team "$BUNDLE_EXPECTED_TEAM"
+}
+
+verify_doryd_renderer_release_identity() {
+  local app="$1" doryd runner_app mode
+  [ "${DORY_BUILD_DORYD_HELPERS:-1}" = 1 ] || return 0
+  doryd="$app/Contents/Helpers/doryd"
+  runner_app="$app/Contents/Helpers/DoryHVRunner.app"
+  mode="$(renderer_release_identity_mode)" || return $?
+  if [ "$mode" = production ]; then
+    python3 scripts/renderer-release-identity.py verify \
+      --runner-app "$runner_app" --doryd "$doryd" \
+      --expected-team "$BUNDLE_EXPECTED_TEAM"
+  else
+    python3 scripts/renderer-release-identity.py verify-absent --doryd "$doryd"
+  fi
+}
+
 sign_debug_apps() {
   local app helper framework extension
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     xattr -cr "$app" 2>/dev/null || true
     seal_unqualified_runner_graph "$app" || return 1
+    finalize_doryd_renderer_release_identity "$app" || return 1
     for helper in docker docker-credential-osxkeychain docker-buildx docker-compose kubectl dory dory-doctor; do
       [ -f "$app/Contents/Helpers/$helper" ] || continue
       codesign --force -s "$BUNDLE_SIGN_IDENTITY" "$app/Contents/Helpers/$helper" >/dev/null 2>&1 || true

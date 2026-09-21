@@ -87,6 +87,24 @@ assert 'sign_hardened_payload "$fs_worker_app"' in release_signer
 assert 'sign_hardened_payload "$renderer_worker_app"' in release_signer
 assert 'sign_hardened_payload "$runner_app"' in release_signer
 assert 'codesign --verify --deep --strict "$runner_app"' in release_signer
+identity_mode = function_body("renderer_release_identity_mode")
+assert 'XCODE_CONFIGURATION" = Release' in identity_mode
+assert 'BUNDLE_EXPECTED_TEAM" != -' in identity_mode
+assert 'mode=production' in identity_mode
+identity_finalizer = function_body("finalize_doryd_renderer_release_identity")
+assert 'renderer-release-identity.py embed-info-plist' in identity_finalizer
+assert '--identifier doryd --options runtime --timestamp' in identity_finalizer
+assert 'renderer-release-identity.py verify' in identity_finalizer
+identity_verifier = function_body("verify_doryd_renderer_release_identity")
+assert 'renderer-release-identity.py verify' in identity_verifier
+assert 'renderer-release-identity.py verify-absent' in identity_verifier
+app_signer = function_body("sign_debug_apps")
+assert app_signer.index('seal_unqualified_runner_graph "$app"') < app_signer.index(
+    'finalize_doryd_renderer_release_identity "$app"'
+)
+assert app_signer.index('finalize_doryd_renderer_release_identity "$app"') < app_signer.index(
+    'codesign --force --options runtime --entitlements Dory/Dory.entitlements'
+)
 renderer_verifier = function_body("verify_debug_renderer_packaging")
 assert 'renderer_enabled="${DORY_BUNDLE_RENDERER:-${DORY_BUNDLE_VENUS:-}}"' in renderer_verifier
 assert '[ "$XCODE_CONFIGURATION" = Release ] && [ "$renderer_enabled" = 1 ]' in renderer_verifier
@@ -95,6 +113,7 @@ assert 'DORY_RENDERER_PC_GUEST_MESA' in renderer_verifier
 assert 'renderer_pc_args=(--pc-managed-kernel "$pc_kernel" --pc-guest-mesa "$pc_mesa")' in renderer_verifier
 assert '"${renderer_pc_args[@]+"${renderer_pc_args[@]}"}"' in renderer_verifier
 assert '--managed-kernel "$managed_kernel"' not in renderer_verifier
+assert 'verify_doryd_renderer_release_identity "$app"' in renderer_verifier
 preview_resealer = function_body("reseal_preview_renderer_graph")
 assert '--producer-fence-contract stock-linux-6.13-runtime-verified' in preview_resealer
 assert '--managed-kernel-sha256 "$managed_kernel_sha256"' not in preview_resealer
