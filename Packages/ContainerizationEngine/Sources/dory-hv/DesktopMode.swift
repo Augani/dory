@@ -2637,18 +2637,16 @@ enum DesktopMode {
             graphicsReadinessState.publishRuntimeDetail(
                 "Preparing a fresh isolated graphics renderer; the VM remains running."
             )
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+            let gpu = self.gpu
+            let launchStore = rendererWorkerLaunchStore
+            let readinessState = graphicsReadinessState
+            Task.detached(priority: .userInitiated) { [weak self] in
                 var replacementLaunch: DesktopRendererWorkerLaunch?
-                defer { rendererRestartInProgress = false }
                 do {
                     let prepared = try await provider.prepareReplacement(after: previousLaunch)
                     replacementLaunch = prepared
-                    let gpu = self.gpu
-                    let resetOutcome = await Task.detached(priority: .userInitiated) {
-                        let receipt = gpu.quiesce(reason: .deviceReset)
-                        return receipt.wait(timeout: 5)
-                    }.value
+                    let receipt = gpu.quiesce(reason: .deviceReset)
+                    let resetOutcome = receipt.wait(timeout: 5)
                     guard resetOutcome != nil else {
                         throw VMError.bootFailure(
                             "virtio-gpu reset did not reach its bounded recovery boundary"
@@ -2660,25 +2658,31 @@ enum DesktopMode {
                     previousLaunch.teardown(
                         reason: "renderer generation replaced without restarting the VM"
                     )
-                    rendererWorkerLaunchStore.replace(prepared)
+                    launchStore.replace(prepared)
                     replacementLaunch = nil
-                    graphicsReadinessState.prepareRendererReplacement(prepared)
-                    graphicsReadinessState.publishRuntimeDetail(
-                        "Graphics renderer restarted with generation "
-                            + "\(prepared.workerGeneration.rawValue); the VM stayed running."
-                    )
-                    Self.log(
-                        "dory-hv desktop: installed renderer generation "
-                            + "\(prepared.workerGeneration.rawValue) after isolated GPU reset"
-                    )
+                    DesktopAppRunLoop.perform { [weak self] in
+                        self?.rendererRestartInProgress = false
+                        readinessState.prepareRendererReplacement(prepared)
+                        readinessState.publishRuntimeDetail(
+                            "Graphics renderer restarted with generation "
+                                + "\(prepared.workerGeneration.rawValue); the VM stayed running."
+                        )
+                        Self.log(
+                            "dory-hv desktop: installed renderer generation "
+                                + "\(prepared.workerGeneration.rawValue) after isolated GPU reset"
+                        )
+                    }
                 } catch {
                     replacementLaunch?.teardown(
                         reason: "renderer replacement failed: \(error)"
                     )
-                    graphicsReadinessState.publishRuntimeDetail(
-                        "Graphics restart failed; the VM is still running. \(error)"
-                    )
-                    Self.log("dory-hv desktop: renderer restart failed: \(error)")
+                    DesktopAppRunLoop.perform { [weak self] in
+                        self?.rendererRestartInProgress = false
+                        readinessState.publishRuntimeDetail(
+                            "Graphics restart failed; the VM is still running. \(error)"
+                        )
+                        Self.log("dory-hv desktop: renderer restart failed: \(error)")
+                    }
                 }
             }
         }
