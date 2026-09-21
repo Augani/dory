@@ -2093,6 +2093,12 @@ import Testing
         queue.reconfigureAfterReset()
         queue.transport.write(offset: 0x070, value: 1, width: 4)
         queue.transport.write(offset: 0x070, value: 3, width: 4)
+        try queue.submit(rendererGPUContextCreateRequest(
+            contextID: 23,
+            name: "replacement-generation",
+            capsetID: 4
+        ))
+        #expect((try? queue.usedIndex()) == 0)
 
         let replacementFixture = try rendererBrokerFixture(
             limits: rendererLimits(maximumInFlight: 4),
@@ -2110,11 +2116,6 @@ import Testing
         #expect(rendererGPUUInt32(queue.gpu.configSpace, at: 12) == 2)
         #expect(queue.transport.read(offset: 0x070, width: 4) == 3)
 
-        try queue.submit(rendererGPUContextCreateRequest(
-            contextID: 23,
-            name: "replacement-generation",
-            capsetID: 4
-        ))
         #expect(await rendererEventually { replacementFixture.channel.sendCount == 1 })
         #expect(oldFixture.channel.sendCount == 0)
         replacementFixture.channel.complete(

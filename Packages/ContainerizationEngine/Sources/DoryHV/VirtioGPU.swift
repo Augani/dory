@@ -2864,6 +2864,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         // negotiation. The replacement joins that new device epoch; asking for another reset here
         // races the driver's probe and can strand Linux with DEVICE_NEEDS_RESET after it has
         // already rebuilt its queues.
+        if let transport = lifecycleLock.withLock({ attachedTransport }) {
+            handleKick(queue: 0, transport: transport)
+        }
     }
 
     /// Converts an asynchronous Metal failure for a worker-owned frame into the same isolated
@@ -3304,6 +3307,15 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
         guard queue == 0 || queue == 1 else { return }
+        if queue == 0,
+           rendererWorkerAuthorityConfigured,
+           !lifecycleLock.withLock({ acceptingGuestCommands }) {
+            // A status-0 reset can be followed immediately by Linux rebuilding and kicking its
+            // control queue while a fresh one-shot renderer process is still launching. Leave the
+            // available ring untouched; replacement installation drains it after the atomic
+            // generation cutover.
+            return
+        }
         let outcome = drainQueue(queue: queue, transport: transport)
         switch outcome {
         case .drained(let wantsInterrupt),
