@@ -2877,6 +2877,16 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             // Serialize this synthetic replay with both transitions so it observes one coherent
             // queue layout and cannot lose the only notification published during replacement.
             transport.withQueueLock {
+                let ready = transport.queues[0].ready
+                let pending = (try? transport.queues[0].pendingCount()).map(String.init)
+                    ?? "invalid"
+                let deferred = lifecycleLock.withLock {
+                    deferredRendererWorkerControlKick
+                }
+                FileHandle.standardError.write(Data((
+                    "dory-gpu: renderer replacement queue replay ready=\(ready) "
+                        + "pending=\(pending) deferred=\(deferred)\n"
+                ).utf8))
                 handleKick(queue: 0, transport: transport)
             }
         }
