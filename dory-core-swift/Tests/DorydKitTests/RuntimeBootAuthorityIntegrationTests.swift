@@ -249,6 +249,62 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
         })
     }
 
+    func testStockRendererBootstrapUsesUEFIFD9WithoutManagedKernelAuthority() throws {
+        let fixture = try makeManagedMachineDirectory(
+            prefix: "dory-runtime-uefi-stock-renderer-bootstrap"
+        )
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        let request = try rendererBootstrapRequest()
+
+        let admitted = try fixture.lease.withBorrowedDescriptor { descriptor in
+            try MachineManager.stageResolvedRawHVRendererBootstrap(
+                machineDirectoryDescriptor: descriptor,
+                machineDirectoryGeneration: fixture.lease.generation,
+                exactKernelSHA256: nil,
+                request: request,
+                childDescriptor: RuntimeLaunchEnvelope.uefiRendererBootstrapDescriptor
+            )
+        }
+        defer { admitted.close() }
+
+        XCTAssertEqual(
+            admitted.authority.childDescriptor,
+            RuntimeLaunchEnvelope.uefiRendererBootstrapDescriptor
+        )
+        let bootstrap = try DoryRendererWorkerBootstrapCodec.decode(
+            try contents(of: admitted.authority)
+        )
+        XCTAssertEqual(
+            bootstrap.producerFenceContract,
+            .stockLinux613RuntimeVerifiedV1
+        )
+        XCTAssertNil(bootstrap.artifacts.managedGuestKernel)
+        XCTAssertFalse(try directoryEntries(fixture.directory).contains {
+            $0.hasPrefix(".rawhv-renderer-bootstrap-")
+        })
+    }
+
+    func testManagedRendererBootstrapRejectsMissingKernelAuthority() throws {
+        let fixture = try makeManagedMachineDirectory(
+            prefix: "dory-runtime-managed-renderer-missing-kernel"
+        )
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        let request = try rendererBootstrapRequest(
+            producerFenceContract: .managedLinux612106PrepareFBV1
+        )
+
+        XCTAssertThrowsError(try fixture.lease.withBorrowedDescriptor { descriptor in
+            try MachineManager.stageResolvedRawHVRendererBootstrap(
+                machineDirectoryDescriptor: descriptor,
+                machineDirectoryGeneration: fixture.lease.generation,
+                exactKernelSHA256: nil,
+                request: request
+            )
+        }) { error in
+            XCTAssertTrue("\(error)".contains("requires exact guest kernel authority"))
+        }
+    }
+
     func testPCRendererBootstrapUsesUEFIFD9AndX86VirGL2Profile() throws {
         let fixture = try makeManagedMachineDirectory(
             prefix: "dory-runtime-pc-renderer-bootstrap"

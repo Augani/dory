@@ -1520,10 +1520,22 @@ struct RawHVAdmittedUEFIBoot: @unchecked Sendable {
 struct RawHVAdmittedUEFIRuntimeResources: @unchecked Sendable {
     let disk: RawHVAdmittedSystemDisk
     let boot: RawHVAdmittedUEFIBoot
+    let rendererBootstrap: RawHVAdmittedRendererBootstrap?
+
+    init(
+        disk: RawHVAdmittedSystemDisk,
+        boot: RawHVAdmittedUEFIBoot,
+        rendererBootstrap: RawHVAdmittedRendererBootstrap? = nil
+    ) {
+        self.disk = disk
+        self.boot = boot
+        self.rendererBootstrap = rendererBootstrap
+    }
 
     func close() {
         disk.authority.close()
         boot.close()
+        rendererBootstrap?.close()
     }
 }
 
@@ -5694,13 +5706,39 @@ public final class MachineManager: @unchecked Sendable {
 
                 case .installerISO, .virtualDisk:
                     guard launchMachine.bootMode == .efi,
-                          launchBinding.graphics == .none
-                            || launchBinding.graphics == .software,
                           let firmwareBundlePath =
                             configuration.armVirtFirmwareBundlePath,
                           let firmware = resolvedPlan.firmware else {
                         throw MachineManagerError.persistence(
-                            "resolved UEFI launch requires software graphics and configured ARMVirt firmware"
+                            "resolved UEFI launch requires configured ARMVirt firmware"
+                        )
+                    }
+                    let rendererBootstrapRequest: RawHVRendererBootstrapRequest?
+                    switch launchBinding.graphics {
+                    case .none, .software:
+                        rendererBootstrapRequest = nil
+                    case .hostAcceleratedDisplay:
+                        throw MachineManagerError.persistence(
+                            "resolved UEFI host-accelerated display is not admitted"
+                        )
+                    case .hardwareAccelerated3D:
+                        guard resolvedPlan.guest
+                                == DoryGuestPlatform(family: .linux, architecture: .arm64),
+                              resolvedPlan.qualificationEvidence.runtime != nil,
+                              let rendererReleaseIdentity else {
+                            throw MachineManagerError.persistence(
+                                "accelerated UEFI launch is missing stock-guest runtime or worker authority"
+                            )
+                        }
+                        rendererBootstrapRequest = RawHVRendererBootstrapRequest(
+                            workspaceID: operationID,
+                            generation: resolvedPlan.planRevision,
+                            runtimeBuildIdentifier:
+                                resolvedPlan.backendRuntimeBuildIdentifier,
+                            components: resolvedPlan.components,
+                            rendererWorkerCodeDirectoryHash:
+                                rendererReleaseIdentity.rendererWorkerCodeDirectoryHash,
+                            producerFenceContract: .stockLinux613RuntimeVerifiedV1
                         )
                     }
                     let installerSHA256: String?
@@ -5724,7 +5762,7 @@ public final class MachineManager: @unchecked Sendable {
                     }
                     let admitted = try machineDirectoryLease.withBorrowedDescriptor {
                         descriptor in
-                        try Self.admitResolvedARMVirtUEFIResources(
+                        let resources = try Self.admitResolvedARMVirtUEFIResources(
                             machineDirectoryDescriptor: descriptor,
                             machineDirectoryGeneration: machineDirectoryLease.generation,
                             expectedDiskCapacityBytes: admittedStorageBytes,
@@ -5734,6 +5772,28 @@ public final class MachineManager: @unchecked Sendable {
                             mediaKind: resolvedPlan.bootMedia.media.kind,
                             expectedInstallerSHA256: installerSHA256
                         )
+                        do {
+                            let rendererBootstrap = try rendererBootstrapRequest.map {
+                                request in
+                                try Self.stageResolvedRawHVRendererBootstrap(
+                                    machineDirectoryDescriptor: descriptor,
+                                    machineDirectoryGeneration:
+                                        machineDirectoryLease.generation,
+                                    exactKernelSHA256: nil,
+                                    request: request,
+                                    childDescriptor:
+                                        RuntimeLaunchEnvelope.uefiRendererBootstrapDescriptor
+                                )
+                            }
+                            return RawHVAdmittedUEFIRuntimeResources(
+                                disk: resources.disk,
+                                boot: resources.boot,
+                                rendererBootstrap: rendererBootstrap
+                            )
+                        } catch {
+                            resources.close()
+                            throw error
+                        }
                     }
                     var transferred = false
                     defer { if !transferred { admitted.close() } }
@@ -5763,13 +5823,39 @@ public final class MachineManager: @unchecked Sendable {
                         firmwareSBOMByteCount: admitted.boot.firmwareSBOM.byteCount,
                         installerMediaByteCount: admitted.boot.installerMedia?.byteCount,
                         installerMediaSHA256: admitted.boot.installerMedia?.sha256,
-                        installerMediaLogicalID: removableLogicalID
+                        installerMediaLogicalID: removableLogicalID,
+                        rendererBootstrapByteCount: admitted.rendererBootstrap?.byteCount,
+                        rendererBootstrapSHA256: admitted.rendererBootstrap?.sha256
                     )
                     _ = try envelope.validatedResolvedARMVirtUEFIResources()
+                    let rendererGenerationHandoffServer = try rendererBootstrapRequest.map {
+                        request in
+                        try makeRendererGenerationHandoffServer(
+                            machineID: launchMachine.id,
+                            operationID: operationID,
+                            launchID: launchID,
+                            resolvedPlanSHA256: planSHA256,
+                            planRevision: resolvedPlan.planRevision,
+                            rendererBootstrapRequest: request,
+                            exactKernelSHA256: nil,
+                            childDescriptor:
+                                RuntimeLaunchEnvelope.uefiRendererBootstrapDescriptor,
+                            launchKind: "resolved DoryARMVirt-v1 UEFI"
+                        )
+                    }
                     runtimeLaunchAuthority = try RawHVRuntimeLaunchAuthority(
                         envelope: envelope,
                         inheritedFileDescriptors: [admitted.disk.authority]
-                            + admitted.boot.authorities
+                            + [
+                                admitted.boot.firmwareCode.authority,
+                                admitted.boot.variableStoreTemplate.authority,
+                                admitted.boot.firmwareSBOM.authority,
+                            ]
+                            + (admitted.boot.installerMedia.map { [$0.authority] } ?? [])
+                            + (admitted.rendererBootstrap.map { [$0.authority] } ?? [])
+                            + [admitted.boot.variableStoreDirectory],
+                        rendererGenerationHandoffServer: rendererGenerationHandoffServer,
+                        initialRendererGeneration: rendererBootstrapRequest?.generation
                     )
                     transferred = true
 
@@ -14021,7 +14107,7 @@ public final class MachineManager: @unchecked Sendable {
         resolvedPlanSHA256: String,
         planRevision: UInt64,
         rendererBootstrapRequest: RawHVRendererBootstrapRequest,
-        exactKernelSHA256: String,
+        exactKernelSHA256: String?,
         childDescriptor: Int32,
         launchKind: String
     ) throws -> DoryRendererGenerationHandoffServer {
@@ -15341,7 +15427,7 @@ public final class MachineManager: @unchecked Sendable {
     static func stageResolvedRawHVRendererBootstrap(
         machineDirectoryDescriptor: Int32,
         machineDirectoryGeneration: DoryTrustedDirectoryIdentity,
-        exactKernelSHA256: String,
+        exactKernelSHA256: String?,
         request: RawHVRendererBootstrapRequest,
         childDescriptor: Int32 = RuntimeLaunchEnvelope.rendererBootstrapDescriptor
     ) throws -> RawHVAdmittedRendererBootstrap {
@@ -15357,6 +15443,11 @@ public final class MachineManager: @unchecked Sendable {
         if request.producerFenceContract == .stockLinux613RuntimeVerifiedV1 {
             kernel = nil
         } else {
+            guard let exactKernelSHA256 else {
+                throw MachineManagerError.persistence(
+                    "managed renderer bootstrap requires exact guest kernel authority"
+                )
+            }
             kernel = try DoryRendererArtifactDigest(
                 lowercaseSHA256: exactKernelSHA256,
                 field: "managedGuestKernel"
