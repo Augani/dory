@@ -205,6 +205,29 @@ nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
     }
 }
 
+/// Maps a relayed scanout rectangle into Metal texture coordinates. The AppKit display surface
+/// and guest pointer both use a top-left origin, so top-origin frame leases keep their natural
+/// row order. Only bottom-origin renderer textures need their vertical endpoints swapped.
+nonisolated enum LinuxMachineScanoutTextureCoordinates {
+    static func sourceUV(
+        sourceRect: DoryVMDisplayRect,
+        backingWidth: Int,
+        backingHeight: Int,
+        yOriginTop: Bool
+    ) -> SIMD4<Float> {
+        let left = Float(sourceRect.x) / Float(backingWidth)
+        let right = Float(sourceRect.x + sourceRect.width) / Float(backingWidth)
+        let firstY = Float(sourceRect.y) / Float(backingHeight)
+        let secondY = Float(sourceRect.y + sourceRect.height) / Float(backingHeight)
+        return SIMD4<Float>(
+            left,
+            yOriginTop ? firstY : secondY,
+            right,
+            yOriginTop ? secondY : firstY
+        )
+    }
+}
+
 private nonisolated struct DoryDisplayQualificationWindowReceipt: Encodable {
     let kind = "dev.dory.display-qualification-window"
     let schemaVersion = 1
@@ -1228,15 +1251,6 @@ final class LinuxMachineMetalView: NSView {
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
             return false
         }
-        let leaseWidth = Float(imported.texture.width)
-        let leaseHeight = Float(imported.texture.height)
-        let source = imported.frame.sourceRect
-        var uv = SIMD4<Float>(
-            Float(source.x) / leaseWidth,
-            Float(source.y) / leaseHeight,
-            Float(source.x + source.width) / leaseWidth,
-            Float(source.y + source.height) / leaseHeight
-        )
         let yOriginTop: Bool
         switch imported.frame.transport {
         case .cpuCopy:
@@ -1252,15 +1266,12 @@ final class LinuxMachineMetalView: NSView {
                 imported.frame.leasePayload
             ).yOriginTop) ?? true
         }
-        // Metal's viewport maps clip-space +Y to the top of the drawable, while the vertex table
-        // below assigns increasing V to clip-space +Y. Flip top-origin guest textures so their
-        // first row is sampled at the top of the window; bottom-origin textures already match the
-        // table's default mapping.
-        if yOriginTop {
-            let top = uv.y
-            uv.y = uv.w
-            uv.w = top
-        }
+        var uv = LinuxMachineScanoutTextureCoordinates.sourceUV(
+            sourceRect: imported.frame.sourceRect,
+            backingWidth: imported.texture.width,
+            backingHeight: imported.texture.height,
+            yOriginTop: yOriginTop
+        )
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&uv, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
         encoder.setFragmentTexture(imported.texture, index: 0)

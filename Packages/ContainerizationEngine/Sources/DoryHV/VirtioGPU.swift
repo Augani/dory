@@ -2014,6 +2014,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private var scanouts: [UInt32: ScanoutBinding] = [:]
     private var cursorResourceID: UInt32?
     private var commandFailureCounts: [UInt32: Int] = [:]
+    private var commandObservationCounts: [UInt32: Int] = [:]
+    private var rendererControlKickDiagnosticCount = 0
     private let traceResourceLifecycle: Bool
     private var resourceTraceSequence: UInt64 = 0
     /// The structured trace is intentionally opt-in. Normal rendering keeps its existing bounded
@@ -3225,6 +3227,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         rendererWorkerPendingMappingResourceIDs.removeAll()
         rendererWorkerScanoutDiagnosticLock.withLock {
             rendererWorkerScanoutDiagnosticStages.removeAll()
+            commandObservationCounts.removeAll()
         }
         scanouts.removeAll()
         cursorResourceID = nil
@@ -3364,13 +3367,21 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             let pending = (try? transport.queues[0].pendingCount()).map(String.init)
                 ?? "invalid"
             let admissionState = lifecycleLock.withLock {
-                (acceptingGuestCommands, deferredRendererWorkerControlKick)
+                rendererControlKickDiagnosticCount += 1
+                return (
+                    acceptingGuestCommands,
+                    deferredRendererWorkerControlKick,
+                    rendererControlKickDiagnosticCount
+                )
             }
-            FileHandle.standardError.write(Data((
-                "dory-gpu: renderer control kick ready=\(transport.queues[0].ready) "
-                    + "pending=\(pending) accepting=\(admissionState.0) "
-                    + "deferred=\(admissionState.1)\n"
-            ).utf8))
+            if admissionState.2 <= 8 || admissionState.1
+                || !admissionState.0 || !transport.queues[0].ready {
+                FileHandle.standardError.write(Data((
+                    "dory-gpu: renderer control kick ready=\(transport.queues[0].ready) "
+                        + "pending=\(pending) accepting=\(admissionState.0) "
+                        + "deferred=\(admissionState.1) ordinal=\(admissionState.2)\n"
+                ).utf8))
+            }
             let shouldDefer = lifecycleLock.withLock { () -> Bool in
                 guard acceptingGuestCommands, transport.queues[0].ready else {
                     deferredRendererWorkerControlKick = true
@@ -3835,6 +3846,19 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 let header = access.readBytes(maximum: 24)
                 if header.count == 24 {
                     let command = header.leUInt32(at: 0)
+                    let observation = rendererWorkerScanoutDiagnosticLock.withLock {
+                        let next = commandObservationCounts[command, default: 0] + 1
+                        commandObservationCounts[command] = next
+                        return next
+                    }
+                    if observation <= 3 {
+                        FileHandle.standardError.write(Data((
+                            "dory-gpu: renderer control command=0x"
+                                + "\(String(command, radix: 16)) readable=\(readable) "
+                                + "context=\(header.leUInt32(at: 16)) "
+                                + "ordinal=\(observation)\n"
+                        ).utf8))
+                    }
                     let exactWorkerRequestBytes: Int? = switch command {
                     case Command.resourceCreate2D: 40
                     case Command.resourceUnref,
