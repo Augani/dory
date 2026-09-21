@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <sys/posix_shm.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -44,14 +45,19 @@ int DoryCreateRendererHostVisibleArena(uint64_t byte_count)
     }
     int descriptor = -1;
     for (int attempt = 0; attempt < 16; ++attempt) {
-        uint64_t nonce = 0;
+        uint32_t nonce = 0;
         arc4random_buf(&nonce, sizeof(nonce));
-        char name[40];
+        /*
+         * App Sandbox permits POSIX shared memory only inside an entitled app-group namespace.
+         * Darwin limits the complete identifier to PSHMNAMLEN (31) bytes, so retain 20 random
+         * bits and retry collisions instead of using the otherwise conventional leading slash.
+         */
+        char name[PSHMNAMLEN + 1];
         int length = snprintf(
             name,
             sizeof(name),
-            "/dory-gpu-%016llx",
-            (unsigned long long)nonce
+            "864H636QW4.dory-renderer/g%05x",
+            nonce & 0xfffffU
         );
         if (length <= 0 || (size_t)length >= sizeof(name)) {
             errno = EINVAL;
