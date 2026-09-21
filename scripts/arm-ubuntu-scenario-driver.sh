@@ -7,7 +7,8 @@
 #
 # This driver now launches the exact signed candidate in its display-only qualification mode and
 # captures the exact campaign-owned Dory window after a Metal-completed frame. It remains
-# intentionally fail-closed for unattended UEFI/installer input and daemon fault injection.
+# intentionally fail-closed for installer orchestration and daemon fault injection. Keyboard
+# commands are delivered only by the signed app through the isolated display broker.
 set -euo pipefail
 
 APP=""
@@ -17,6 +18,7 @@ MACHINE=""
 RUN_DIR=""
 GUEST_COMMAND=""
 EXPECTED_OUTPUT=""
+INPUT_SCRIPT=""
 TIMEOUT_SECONDS=900
 
 usage() {
@@ -31,14 +33,15 @@ Required:
   --run-directory PATH
   --guest-command COMMAND
   --expected-output TEXT
+  --input-script PATH       Bounded, balanced evdev keyboard script for this machine
 
 Optional:
   --timeout-seconds N      Per-operation deadline (default: 900)
   --help
 
-This in-tree driver retains a machine-scoped Dory-window capture, then fails closed until Dory
-exposes authenticated unattended UEFI/input and fault-injection controls. It never derives PASS
-for an unexecuted phase.
+This in-tree driver retains a machine-scoped Dory-window capture and an app-authored receipt for
+keyboard commands accepted by the isolated display broker. It still fails closed for unexecuted
+installer and fault-injection phases.
 EOF
 }
 
@@ -60,6 +63,7 @@ while [ "$#" -gt 0 ]; do
     --run-directory) need_value "$1" "$#"; RUN_DIR="$2"; shift 2 ;;
     --guest-command) need_value "$1" "$#"; GUEST_COMMAND="$2"; shift 2 ;;
     --expected-output) need_value "$1" "$#"; EXPECTED_OUTPUT="$2"; shift 2 ;;
+    --input-script) need_value "$1" "$#"; INPUT_SCRIPT="$2"; shift 2 ;;
     --timeout-seconds) need_value "$1" "$#"; TIMEOUT_SECONDS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -89,6 +93,23 @@ printf '%s\n' "$app_details" | grep -Fq 'Authority=Developer ID Application:' \
 [ -n "$RUN_DIR" ] || die "--run-directory is required"
 [ -n "$GUEST_COMMAND" ] || die "--guest-command is required"
 [ -n "$EXPECTED_OUTPUT" ] || die "--expected-output is required"
+[ -n "$INPUT_SCRIPT" ] || die "--input-script is required"
+[ -f "$INPUT_SCRIPT" ] && [ ! -L "$INPUT_SCRIPT" ] && [ -s "$INPUT_SCRIPT" ] \
+  || die "--input-script must be a nonempty direct file: $INPUT_SCRIPT"
+INPUT_SCRIPT="$(cd "$(dirname "$INPUT_SCRIPT")" && pwd -P)/$(basename "$INPUT_SCRIPT")"
+command -v jq >/dev/null || die "jq is required"
+jq -e --arg machine "$MACHINE" '
+  .kind == "dev.dory.display-qualification-keyboard-script"
+  and .schemaVersion == 1 and .machineID == $machine
+  and (.steps | type == "array" and length > 0 and length <= 1024)
+  and all(.steps[];
+    (.delayMilliseconds | type == "number" and . >= 0 and . <= 300000)
+    and (.events | type == "array" and length > 0 and length <= 64)
+    and all(.events[];
+      .type == 1 and (.code | type == "number" and . >= 1 and . <= 255)
+      and (.value == 0 or .value == 1 or .value == 2)))
+' "$INPUT_SCRIPT" >/dev/null || die "--input-script has an invalid qualification envelope"
+INPUT_SCRIPT_SHA256="$(shasum -a 256 "$INPUT_SCRIPT" | awk '{print $1}')"
 [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "timeout must be a positive integer"
 [ "$TIMEOUT_SECONDS" -le 7200 ] || die "timeout must not exceed 7200 seconds"
 case "$RUN_DIR" in /*) ;; *) die "--run-directory must be absolute" ;; esac
@@ -97,9 +118,10 @@ mkdir -p "$RUN_DIR/home"
 chmod 0700 "$RUN_DIR/home"
 
 WINDOW_RECEIPT="$RUN_DIR/display-window.json"
+INPUT_RECEIPT="$RUN_DIR/display-input.json"
 FRAMEBUFFER="$RUN_DIR/framebuffer.png"
 CAPTURE_RECEIPT="$RUN_DIR/window-capture.json"
-for output in "$WINDOW_RECEIPT" "$FRAMEBUFFER" "$CAPTURE_RECEIPT" \
+for output in "$WINDOW_RECEIPT" "$INPUT_RECEIPT" "$FRAMEBUFFER" "$CAPTURE_RECEIPT" \
     "$RUN_DIR/scenario-driver-readiness.json"; do
   [ ! -e "$output" ] && [ ! -L "$output" ] \
     || die "refusing pre-existing scenario output: $output"
@@ -118,6 +140,8 @@ DORYD_MACH_SERVICE="$MACH_SERVICE" \
 DORY_DISPLAY_QUALIFICATION_MACHINE_ID="$MACHINE" \
 DORY_DISPLAY_QUALIFICATION_SCANOUT_ID=0 \
 DORY_DISPLAY_QUALIFICATION_WINDOW_RECEIPT="$WINDOW_RECEIPT" \
+DORY_DISPLAY_QUALIFICATION_INPUT_SCRIPT="$INPUT_SCRIPT" \
+DORY_DISPLAY_QUALIFICATION_INPUT_RECEIPT="$INPUT_RECEIPT" \
   "$APP_EXECUTABLE" > "$RUN_DIR/display-app.out" 2> "$RUN_DIR/display-app.err" &
 APP_PID=$!
 
@@ -130,7 +154,6 @@ while [ ! -s "$WINDOW_RECEIPT" ]; do
   sleep 1
 done
 
-command -v jq >/dev/null || die "jq is required"
 jq -e --arg machine "$MACHINE" --arg service "$MACH_SERVICE" --argjson pid "$APP_PID" '
   .kind == "dev.dory.display-qualification-window" and .schemaVersion == 1
   and .bundleIdentifier == "com.pythonxi.Dory" and .processID == $pid
@@ -142,6 +165,31 @@ jq -e --arg machine "$MACHINE" --arg service "$MACH_SERVICE" --argjson pid "$APP
   and (.transport == "sharedMemory" or .transport == "sharedTexture")
 ' "$WINDOW_RECEIPT" >/dev/null || die "display qualification window receipt is invalid"
 WINDOW_NUMBER="$(jq -r '.windowNumber' "$WINDOW_RECEIPT")"
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+while [ ! -s "$INPUT_RECEIPT" ]; do
+  kill -0 "$APP_PID" 2>/dev/null \
+    || die "display qualification app exited before producing its input receipt"
+  [ "$SECONDS" -lt "$deadline" ] \
+    || die "timed out waiting for authenticated qualification keyboard input"
+  sleep 1
+done
+[ "$(shasum -a 256 "$INPUT_SCRIPT" | awk '{print $1}')" = "$INPUT_SCRIPT_SHA256" ] \
+  || die "qualification input script changed during execution"
+INPUT_STEP_COUNT="$(jq '.steps | length' "$INPUT_SCRIPT")"
+INPUT_EVENT_COUNT="$(jq '[.steps[].events | length] | add' "$INPUT_SCRIPT")"
+jq -e --arg machine "$MACHINE" --arg service "$MACH_SERVICE" \
+  --arg operation "$(jq -r '.operationID' "$WINDOW_RECEIPT")" \
+  --arg script "$INPUT_SCRIPT_SHA256" --argjson pid "$APP_PID" \
+  --argjson steps "$INPUT_STEP_COUNT" --argjson events "$INPUT_EVENT_COUNT" '
+  .kind == "dev.dory.display-qualification-input" and .schemaVersion == 1
+  and .bundleIdentifier == "com.pythonxi.Dory" and .processID == $pid
+  and .machineID == $machine and .machServiceName == $service
+  and .operationID == $operation and .scriptSHA256 == $script
+  and .stepCount == $steps and .eventCount == $events
+  and (.firstCommandSequence | type == "number") and .firstCommandSequence > 0
+  and (.lastCommandSequence | type == "number")
+  and .lastCommandSequence >= .firstCommandSequence
+' "$INPUT_RECEIPT" >/dev/null || die "display qualification input receipt is invalid"
 sleep 1
 /usr/sbin/screencapture -x -o -l"$WINDOW_NUMBER" "$FRAMEBUFFER" \
   || die "WindowServer could not capture the campaign Dory window"
@@ -177,13 +225,15 @@ output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding
 PY
 
 python3 - "$RUN_DIR/scenario-driver-readiness.json" \
-  "$MACH_SERVICE" "$MACHINE" "$TIMEOUT_SECONDS" "$CAPTURE_RECEIPT" <<'PY'
+  "$MACH_SERVICE" "$MACHINE" "$TIMEOUT_SECONDS" "$CAPTURE_RECEIPT" \
+  "$INPUT_RECEIPT" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-path, service, machine, timeout, capture_path = sys.argv[1:]
+path, service, machine, timeout, capture_path, input_path = sys.argv[1:]
 capture = json.loads(Path(capture_path).read_text(encoding="utf-8"))
+keyboard = json.loads(Path(input_path).read_text(encoding="utf-8"))
 record = {
     "kind": "dev.dory.arm-ubuntu-scenario-driver-readiness",
     "schemaVersion": 1,
@@ -192,19 +242,27 @@ record = {
     "machService": service,
     "timeoutSeconds": int(timeout),
     "missingAuthorities": [
-        "authenticated-uefi-keyboard-input",
         "daemon-storage-fault-injection",
         "daemon-mapped-page-retry-injection",
     ],
-    "completedAuthorities": ["machine-scoped-window-capture"],
+    "completedAuthorities": [
+        "machine-scoped-window-capture",
+        "authenticated-machine-keyboard-input",
+    ],
     "framebufferSHA256": capture["framebufferSHA256"],
     "windowReceiptSHA256": capture["windowReceiptSHA256"],
+    "inputScriptSHA256": keyboard["scriptSHA256"],
+    "inputCommandSequence": {
+        "first": keyboard["firstCommandSequence"],
+        "last": keyboard["lastCommandSequence"],
+    },
     "detail": (
-        "The signed candidate displayed and retained one machine-scoped Metal frame. The "
-        "remaining input and fault phases were not executed and no PASS was synthesized for them."
+        "The signed candidate displayed one machine-scoped Metal frame and the isolated broker "
+        "accepted the bounded keyboard script. Installer navigation and fault phases remain "
+        "unverified; no PASS was synthesized for them."
     ),
 }
 Path(path).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
 PY
 
-die "required input/fault campaign authorities are unavailable; retained machine-scoped capture and readiness evidence"
+die "required installer/fault campaign phases are incomplete; retained authenticated input, machine-scoped capture, and readiness evidence"

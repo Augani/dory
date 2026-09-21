@@ -1,5 +1,6 @@
 import Testing
 import AppKit
+import DoryVMDisplayWireContracts
 @testable import Dory
 
 @MainActor
@@ -125,6 +126,137 @@ struct AgentModeTests {
             "../gpu-campaign-1-window.json"
         #expect(throws: DoryDisplayQualificationLaunchError.invalidWindowReceiptPath) {
             try DoryDisplayQualificationLaunch.parse(environment: invalidReceipt)
+        }
+
+        var incompleteInput = base
+        incompleteInput[DoryDisplayQualificationLaunch.inputScriptEnvironmentKey] =
+            "/tmp/gpu-campaign-1-input.json"
+        #expect(throws: DoryDisplayQualificationLaunchError.incompleteInputAuthority) {
+            try DoryDisplayQualificationLaunch.parse(environment: incompleteInput)
+        }
+
+        var inputPaths = base
+        inputPaths[DoryDisplayQualificationLaunch.inputScriptEnvironmentKey] =
+            "/tmp/gpu-campaign-1-input.json"
+        inputPaths[DoryDisplayQualificationLaunch.inputReceiptEnvironmentKey] =
+            "/tmp/gpu-campaign-1-input-receipt.json"
+        let inputLaunch = try #require(
+            try DoryDisplayQualificationLaunch.parse(environment: inputPaths)
+        )
+        #expect(inputLaunch.inputScriptPath == "/tmp/gpu-campaign-1-input.json")
+        #expect(
+            inputLaunch.inputReceiptPath == "/tmp/gpu-campaign-1-input-receipt.json"
+        )
+    }
+
+    @Test func displayQualificationKeyboardScriptIsBoundedAndBalanced() throws {
+        let valid = DoryDisplayQualificationInputScript(
+            kind: DoryDisplayQualificationInputScript.kind,
+            schemaVersion: DoryDisplayQualificationInputScript.schemaVersion,
+            machineID: "gpu-campaign-1",
+            steps: [
+                .init(delayMilliseconds: 250, events: [
+                    .init(type: 1, code: 28, value: 1),
+                    .init(type: 1, code: 28, value: 0),
+                ]),
+            ]
+        )
+        let encoded = try JSONEncoder().encode(valid)
+        let decoded = try DoryDisplayQualificationInputScript.decode(
+            encoded,
+            machineID: "gpu-campaign-1"
+        )
+        #expect(decoded == valid)
+        #expect(decoded.eventCount == 2)
+        #expect(decoded.totalDelayMilliseconds == 250)
+
+        #expect(throws: DoryDisplayQualificationInputError.invalidScript) {
+            try DoryDisplayQualificationInputScript.decode(
+                encoded,
+                machineID: "another-machine"
+            )
+        }
+
+        let stuckKey = DoryDisplayQualificationInputScript(
+            kind: DoryDisplayQualificationInputScript.kind,
+            schemaVersion: DoryDisplayQualificationInputScript.schemaVersion,
+            machineID: "gpu-campaign-1",
+            steps: [
+                .init(delayMilliseconds: 0, events: [
+                    DoryVMDisplayInputEvent(type: 1, code: 28, value: 1),
+                ]),
+            ]
+        )
+        #expect(throws: DoryDisplayQualificationInputError.invalidScript) {
+            try stuckKey.validate(machineID: "gpu-campaign-1")
+        }
+
+        let pointerEvent = DoryDisplayQualificationInputScript(
+            kind: DoryDisplayQualificationInputScript.kind,
+            schemaVersion: DoryDisplayQualificationInputScript.schemaVersion,
+            machineID: "gpu-campaign-1",
+            steps: [
+                .init(delayMilliseconds: 0, events: [
+                    DoryVMDisplayInputEvent(type: 3, code: 0, value: 16_384),
+                ]),
+            ]
+        )
+        #expect(throws: DoryDisplayQualificationInputError.invalidScript) {
+            try pointerEvent.validate(machineID: "gpu-campaign-1")
+        }
+    }
+
+    @Test func displayQualificationInputFilesAreDirectAndReceiptsAreExclusive() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "dory-display-input-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = DoryDisplayQualificationInputScript(
+            kind: DoryDisplayQualificationInputScript.kind,
+            schemaVersion: DoryDisplayQualificationInputScript.schemaVersion,
+            machineID: "gpu-campaign-1",
+            steps: [
+                .init(delayMilliseconds: 0, events: [
+                    .init(type: 1, code: 28, value: 1),
+                    .init(type: 1, code: 28, value: 0),
+                ]),
+            ]
+        )
+        let scriptURL = root.appendingPathComponent("input.json")
+        try JSONEncoder().encode(script).write(to: scriptURL, options: .withoutOverwriting)
+        let loaded = try DoryDisplayQualificationInputFiles.loadScript(
+            at: scriptURL.path,
+            machineID: "gpu-campaign-1"
+        )
+        #expect(loaded.script == script)
+        #expect(loaded.sha256.count == 64)
+
+        let linkURL = root.appendingPathComponent("input-link.json")
+        try FileManager.default.createSymbolicLink(
+            at: linkURL,
+            withDestinationURL: scriptURL
+        )
+        #expect(throws: DoryDisplayQualificationInputError.scriptUnavailable) {
+            try DoryDisplayQualificationInputFiles.loadScript(
+                at: linkURL.path,
+                machineID: "gpu-campaign-1"
+            )
+        }
+
+        let receiptURL = root.appendingPathComponent("receipt.json")
+        try DoryDisplayQualificationInputFiles.writeReceipt(
+            ["status": "PASS"],
+            at: receiptURL.path
+        )
+        #expect(FileManager.default.fileExists(atPath: receiptURL.path))
+        #expect(throws: DoryDisplayQualificationInputError.receiptExists) {
+            try DoryDisplayQualificationInputFiles.writeReceipt(
+                ["status": "PASS"],
+                at: receiptURL.path
+            )
         }
     }
 

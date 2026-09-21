@@ -26,6 +26,9 @@ nonisolated enum DoryDisplayQualificationLaunchError: Error, Equatable,
     case productionMachService
     case invalidScanoutID
     case invalidWindowReceiptPath
+    case incompleteInputAuthority
+    case invalidInputScriptPath
+    case invalidInputReceiptPath
 
     var description: String {
         switch self {
@@ -39,6 +42,12 @@ nonisolated enum DoryDisplayQualificationLaunchError: Error, Equatable,
             "DORY_DISPLAY_QUALIFICATION_SCANOUT_ID must name an available scanout"
         case .invalidWindowReceiptPath:
             "DORY_DISPLAY_QUALIFICATION_WINDOW_RECEIPT must be a normalized absolute path"
+        case .incompleteInputAuthority:
+            "qualification input requires both script and receipt paths"
+        case .invalidInputScriptPath:
+            "DORY_DISPLAY_QUALIFICATION_INPUT_SCRIPT must be a normalized absolute path"
+        case .invalidInputReceiptPath:
+            "DORY_DISPLAY_QUALIFICATION_INPUT_RECEIPT must be a normalized absolute path"
         }
     }
 }
@@ -53,12 +62,16 @@ nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
     static let scanoutIDEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_SCANOUT_ID"
     static let machServiceEnvironmentKey = "DORYD_MACH_SERVICE"
     static let windowReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_WINDOW_RECEIPT"
+    static let inputScriptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_INPUT_SCRIPT"
+    static let inputReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_INPUT_RECEIPT"
     static let productionMachServiceName = "dev.dory.doryd"
 
     let machineID: String
     let scanoutID: UInt32
     let machServiceName: String
     let windowReceiptPath: String
+    let inputScriptPath: String?
+    let inputReceiptPath: String?
 
     var display: LinuxMachineDisplayWindow {
         LinuxMachineDisplayWindow(machineID: machineID, scanoutID: scanoutID)
@@ -83,8 +96,22 @@ nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
             throw DoryDisplayQualificationLaunchError.productionMachService
         }
         guard let windowReceiptPath = environment[windowReceiptEnvironmentKey],
-              validWindowReceiptPath(windowReceiptPath) else {
+              validAbsolutePath(windowReceiptPath) else {
             throw DoryDisplayQualificationLaunchError.invalidWindowReceiptPath
+        }
+        let inputScriptPath = environment[inputScriptEnvironmentKey]
+        let inputReceiptPath = environment[inputReceiptEnvironmentKey]
+        guard (inputScriptPath == nil) == (inputReceiptPath == nil) else {
+            throw DoryDisplayQualificationLaunchError.incompleteInputAuthority
+        }
+        if let inputScriptPath, !validAbsolutePath(inputScriptPath) {
+            throw DoryDisplayQualificationLaunchError.invalidInputScriptPath
+        }
+        if let inputReceiptPath, !validAbsolutePath(inputReceiptPath) {
+            throw DoryDisplayQualificationLaunchError.invalidInputReceiptPath
+        }
+        if inputScriptPath == inputReceiptPath, inputScriptPath != nil {
+            throw DoryDisplayQualificationLaunchError.invalidInputReceiptPath
         }
         let scanoutID: UInt32
         if let rawScanoutID = environment[scanoutIDEnvironmentKey] {
@@ -100,7 +127,9 @@ nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
             machineID: machineID,
             scanoutID: scanoutID,
             machServiceName: machServiceName,
-            windowReceiptPath: windowReceiptPath
+            windowReceiptPath: windowReceiptPath,
+            inputScriptPath: inputScriptPath,
+            inputReceiptPath: inputReceiptPath
         )
     }
 
@@ -126,7 +155,7 @@ nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
         }
     }
 
-    private static func validWindowReceiptPath(_ value: String) -> Bool {
+    static func validAbsolutePath(_ value: String) -> Bool {
         guard value.hasPrefix("/"), value != "/", !value.utf8.contains(0) else {
             return false
         }
@@ -470,6 +499,28 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    func sendQualificationKeyboardInput(
+        expectedOperationID: UUID,
+        events: [DoryVMDisplayInputEvent],
+        completion: @escaping @Sendable (UInt64, Bool, String) -> Void
+    ) -> Bool {
+        guard lock.withLock({ !state.stopped ? state.operationID : nil })
+            == expectedOperationID else { return false }
+        return sendCommand({ operationID, sequence in
+            guard operationID == expectedOperationID else {
+                throw DoryDisplayQualificationInputCommandError.operationChanged
+            }
+            return try DoryVMDisplayCommand.input(
+                machineID: machineID,
+                operationID: operationID,
+                sequence: sequence,
+                endpoint: .keyboard,
+                events: events
+            )
+        }, completion: completion)
+    }
+
     func sendResize(
         width: UInt32,
         height: UInt32,
@@ -521,7 +572,8 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
 
     @discardableResult
     private func sendCommand(
-        _ make: (UUID, UInt64) throws -> DoryVMDisplayCommand
+        _ make: (UUID, UInt64) throws -> DoryVMDisplayCommand,
+        completion: (@Sendable (UInt64, Bool, String) -> Void)? = nil
     ) -> Bool {
         let operationID = lock.withLock { !state.stopped ? state.operationID : nil }
         let identity = operationID.flatMap { operationID in
@@ -540,6 +592,7 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
                     if !accepted {
                         self?.failed("The VM rejected a display command: \(detail)")
                     }
+                    completion?(identity.1, accepted, detail)
                 }
             }
             return true
@@ -713,6 +766,8 @@ final class LinuxMachineMetalView: NSView {
     private var hostCursorHidden = false
     private var requestedTopology: [DoryVMDisplayTopologyEntry]?
     private var qualificationWindowReceiptWritten = false
+    private var qualificationInputStarted = false
+    private var qualificationInputTask: Task<Void, Never>?
 
     override var acceptsFirstResponder: Bool { true }
     override var wantsUpdateLayer: Bool { true }
@@ -778,6 +833,8 @@ final class LinuxMachineMetalView: NSView {
     required init?(coder: NSCoder) { nil }
 
     func stop() {
+        qualificationInputTask?.cancel()
+        qualificationInputTask = nil
         resizeWorkItem?.cancel()
         resizeWorkItem = nil
         releasePressedInput()
@@ -900,7 +957,10 @@ final class LinuxMachineMetalView: NSView {
             guard render(imported, completion: { [weak self] presented in
                 guard let self else { return }
                 self.client.acknowledge(frame, presented: presented)
-                if presented { self.writeQualificationWindowReceipt(for: frame) }
+                if presented {
+                    self.writeQualificationWindowReceipt(for: frame)
+                    self.startQualificationInputIfNeeded(for: frame)
+                }
             }) else {
                 client.acknowledge(frame, presented: false)
                 return
@@ -1101,6 +1161,99 @@ final class LinuxMachineMetalView: NSView {
             qualificationWindowReceiptWritten = true
         } catch {
             showFailure("Dory could not write the display qualification window receipt: \(error)")
+        }
+    }
+
+    private func startQualificationInputIfNeeded(for frame: DoryVMDisplayFrame) {
+        guard !qualificationInputStarted,
+              let launch = try? DoryDisplayQualificationLaunch.parse(
+                environment: ProcessInfo.processInfo.environment
+              ),
+              launch.machineID == machineID,
+              launch.scanoutID == scanoutID,
+              let scriptPath = launch.inputScriptPath,
+              let receiptPath = launch.inputReceiptPath,
+              let operationID = UUID(uuidString: frame.operationID) else { return }
+        qualificationInputStarted = true
+        do {
+            let loaded = try DoryDisplayQualificationInputFiles.loadScript(
+                at: scriptPath,
+                machineID: machineID
+            )
+            qualificationInputTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    var firstSequence: UInt64?
+                    var lastSequence: UInt64?
+                    for step in loaded.script.steps {
+                        try Task.checkCancellation()
+                        if step.delayMilliseconds > 0 {
+                            try await Task.sleep(
+                                for: .milliseconds(step.delayMilliseconds)
+                            )
+                        }
+                        let sequence = try await sendQualificationKeyboardStep(
+                            step.events,
+                            operationID: operationID
+                        )
+                        firstSequence = firstSequence ?? sequence
+                        lastSequence = sequence
+                    }
+                    guard let firstSequence, let lastSequence else {
+                        throw DoryDisplayQualificationInputError.invalidScript
+                    }
+                    let formatter = ISO8601DateFormatter()
+                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    try DoryDisplayQualificationInputFiles.writeReceipt(
+                        DoryDisplayQualificationInputReceipt(
+                            completedAt: formatter.string(from: Date()),
+                            bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
+                            processID: getpid(),
+                            machineID: machineID,
+                            machServiceName: launch.machServiceName,
+                            operationID: frame.operationID,
+                            scriptSHA256: loaded.sha256,
+                            stepCount: loaded.script.steps.count,
+                            eventCount: loaded.script.eventCount,
+                            firstCommandSequence: firstSequence,
+                            lastCommandSequence: lastSequence
+                        ),
+                        at: receiptPath
+                    )
+                } catch is CancellationError {
+                    return
+                } catch {
+                    showFailure("Dory qualification input failed: \(error)")
+                }
+            }
+        } catch {
+            showFailure("Dory could not load qualification input: \(error)")
+        }
+    }
+
+    private func sendQualificationKeyboardStep(
+        _ events: [DoryVMDisplayInputEvent],
+        operationID: UUID
+    ) async throws -> UInt64 {
+        try await withCheckedThrowingContinuation { continuation in
+            let submitted = client.sendQualificationKeyboardInput(
+                expectedOperationID: operationID,
+                events: events
+            ) {
+                sequence, accepted, detail in
+                if accepted {
+                    continuation.resume(returning: sequence)
+                } else {
+                    continuation.resume(
+                        throwing: DoryDisplayQualificationInputCommandError.rejected(detail)
+                    )
+                }
+            }
+            if !submitted {
+                continuation.resume(
+                    throwing: DoryDisplayQualificationInputCommandError.unavailable
+                )
+            }
         }
     }
 
