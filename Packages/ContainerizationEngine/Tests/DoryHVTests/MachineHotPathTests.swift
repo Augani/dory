@@ -1,4 +1,5 @@
 import Darwin
+import DoryOperations
 import Foundation
 import Synchronization
 import Testing
@@ -62,7 +63,11 @@ import Testing
     }
 
     @Test func sustainedGuestWorkDoesNotClaimTheAppKitSchedulingClass() {
-        #expect(RawHVSchedulingPolicy.revision == 1)
+        #expect(
+            RawHVSchedulingPolicy.revision
+                == RuntimeLaunchEnvelope.ARMVirtExecutionResources.currentSchedulingPolicyRevision
+        )
+        #expect(RawHVSchedulingPolicy.revision == 2)
         #expect(RawHVSchedulingPolicy.vCPUThreadQualityOfService == .userInitiated)
         #expect(RawHVSchedulingPolicy.machineOwnerThreadQualityOfService == .userInitiated)
         #expect(RawHVSchedulingPolicy.machineOwnerThreadStackSize == 1 << 21)

@@ -13,7 +13,11 @@ import Synchronization
 /// class to input and presentation. Revision changes require a new runtime-envelope identity and
 /// matched physical responsiveness/workload calibration before release qualification.
 public enum RawHVSchedulingPolicy {
-  public static let revision: UInt16 = 1
+  /// Keep runtime admission tied to the canonical envelope contract. Duplicating this revision
+  /// here allowed the daemon to issue a newer queue/scheduling policy that the matching runner
+  /// rejected before boot.
+  public static let revision =
+    RuntimeLaunchEnvelope.ARMVirtExecutionResources.currentSchedulingPolicyRevision
   public static let vCPUThreadQualityOfService: QualityOfService = .userInitiated
   public static let machineOwnerThreadQualityOfService: QualityOfService = .userInitiated
   public static let machineOwnerThreadStackSize = 1 << 21
