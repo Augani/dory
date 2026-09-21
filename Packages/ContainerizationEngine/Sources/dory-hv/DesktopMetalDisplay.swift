@@ -2547,6 +2547,22 @@ enum DesktopMetalDisplayError: Error, CustomStringConvertible {
 /// The production display boundary for both damage-proportional CPU uploads and descriptor-backed
 /// worker scanout. Worker pixels remain in their SHM mapping and are sampled directly by Metal;
 /// no `Data`, IOSurface, or intermediate frame allocation exists on that path.
+private final class DesktopMetalCommandBufferCompletionSequencer: @unchecked Sendable {
+    static let shared = DesktopMetalCommandBufferCompletionSequencer()
+
+    private let lock = NSLock()
+    private var nextValue: UInt64 = 1
+
+    func next() -> UInt64 {
+        lock.withLock {
+            let value = nextValue
+            nextValue &+= 1
+            if nextValue == 0 { nextValue = 1 }
+            return value
+        }
+    }
+}
+
 @MainActor
 final class DesktopMetalView: DesktopDisplayView {
     private struct CPUTexture {
@@ -2762,6 +2778,7 @@ final class DesktopMetalView: DesktopDisplayView {
             width: Int(update.sourceRect.width),
             height: Int(update.sourceRect.height)
         )
+        let completionID = DesktopMetalCommandBufferCompletionSequencer.shared.next()
         guard render(
             texture: workerScanout.texture,
             sourceRect: update.sourceRect,
@@ -2772,6 +2789,7 @@ final class DesktopMetalView: DesktopDisplayView {
             workerGeneration: update.presentation.workerGeneration.rawValue,
             completion: { [onWorkerPresentationCompleted] completed in
                 guard completed else { return }
+                update.recordPresentationCompleted(completionID: completionID)
                 onWorkerPresentationCompleted?(
                     update.presentation.workerGeneration.rawValue
                 )

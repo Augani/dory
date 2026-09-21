@@ -4097,6 +4097,8 @@ import Testing
         #expect(update.sourceRect == VirtioGPURect(x: 0, y: 0, width: 64, height: 64))
         #expect(update.dirtyRect == VirtioGPURect(x: 0, y: 0, width: 64, height: 64))
         update.acceptHostSubmission()
+        update.recordPresentationCompleted(completionID: 73)
+        update.recordPresentationCompleted(completionID: 74)
         #expect(await rendererEventually {
             graphicsTrace.values.contains { $0.stage == .hostSubmissionAccepted }
         })
@@ -4106,6 +4108,10 @@ import Testing
         let accepted = try #require(graphicsTrace.values.first {
             $0.stage == .hostSubmissionAccepted
         })
+        let completed = try #require(graphicsTrace.values.first {
+            $0.stage == .metalPresentationCompleted
+        })
+        #expect(graphicsTrace.values.filter { $0.stage == .metalPresentationCompleted }.count == 1)
         #expect(published.context.machineID == "trace-machine")
         #expect(published.context.operationID == "trace-operation")
         #expect(published.context.workerGeneration == fixture.bootstrap.generation.rawValue)
@@ -4119,6 +4125,12 @@ import Testing
         #expect(published.stride == 256)
         #expect(published.format == 1)
         #expect(accepted.frameSequence == published.frameSequence)
+        #expect(completed.frameSequence == published.frameSequence)
+        #expect(completed.fenceID == published.fenceID)
+        #expect(completed.resourceID == published.resourceID)
+        #expect(completed.rendererResourceGeneration == published.rendererResourceGeneration)
+        #expect(completed.metalCommandBufferCompletionID == 73)
+        #expect(completed.sequence > accepted.sequence)
         #expect(accepted.scanoutID == 0)
         #expect(accepted.sequence > published.sequence)
         #expect(accepted.monotonicNanoseconds >= published.monotonicNanoseconds)

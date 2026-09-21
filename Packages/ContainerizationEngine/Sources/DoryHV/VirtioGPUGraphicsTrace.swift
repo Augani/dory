@@ -25,6 +25,7 @@ public struct VirtioGPUGraphicsTraceEvent: Codable, Equatable, Sendable {
         case scanoutPublished
         case hostSubmissionAccepted
         case hostSubmissionRejected
+        case metalPresentationCompleted
     }
 
     public let sequence: UInt64
@@ -38,6 +39,7 @@ public struct VirtioGPUGraphicsTraceEvent: Codable, Equatable, Sendable {
     public let contextID: UInt32?
     public let frameSequence: UInt64?
     public let fenceID: UInt64?
+    public let metalCommandBufferCompletionID: UInt64?
     public let scanoutID: UInt32?
     public let width: UInt32?
     public let height: UInt32?
@@ -57,6 +59,7 @@ public struct VirtioGPUGraphicsTraceEvent: Codable, Equatable, Sendable {
         contextID: UInt32? = nil,
         frameSequence: UInt64? = nil,
         fenceID: UInt64? = nil,
+        metalCommandBufferCompletionID: UInt64? = nil,
         scanoutID: UInt32? = nil,
         width: UInt32? = nil,
         height: UInt32? = nil,
@@ -75,6 +78,7 @@ public struct VirtioGPUGraphicsTraceEvent: Codable, Equatable, Sendable {
         self.contextID = contextID
         self.frameSequence = frameSequence
         self.fenceID = fenceID
+        self.metalCommandBufferCompletionID = metalCommandBufferCompletionID
         self.scanoutID = scanoutID
         self.width = width
         self.height = height

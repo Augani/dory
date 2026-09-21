@@ -447,6 +447,25 @@ private final class VirtioGPUMetalScanoutHostSubmission: @unchecked Sendable {
     }
 }
 
+private final class VirtioGPUMetalPresentationCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callback: (@Sendable (UInt64) -> Void)?
+
+    init(callback: @escaping @Sendable (UInt64) -> Void) {
+        self.callback = callback
+    }
+
+    func resolve(completionID: UInt64) {
+        guard completionID > 0 else { return }
+        let callback = lock.withLock { () -> (@Sendable (UInt64) -> Void)? in
+            let callback = callback
+            self.callback = nil
+            return callback
+        }
+        callback?(completionID)
+    }
+}
+
 /// One zero-copy Metal scanout update. `sourceRect` selects the guest scanout from the immutable
 /// worker resource; `dirtyRect` is scanout-local damage and never carries frame bytes.
 public struct VirtioGPUMetalScanoutUpdate: Sendable, Equatable {
@@ -461,6 +480,7 @@ public struct VirtioGPUMetalScanoutUpdate: Sendable, Equatable {
     public let dirtyRect: VirtioGPURect
     private let hostSubmission: VirtioGPUMetalScanoutHostSubmission
     private let recordHostSubmission: (@Sendable (Bool) -> Void)?
+    private let presentationCompletion: VirtioGPUMetalPresentationCompletion?
 
     fileprivate init(
         scanoutID: UInt32,
@@ -471,7 +491,8 @@ public struct VirtioGPUMetalScanoutUpdate: Sendable, Equatable {
         sourceRect: VirtioGPURect,
         dirtyRect: VirtioGPURect,
         hostSubmission: VirtioGPUMetalScanoutHostSubmission,
-        recordHostSubmission: (@Sendable (Bool) -> Void)? = nil
+        recordHostSubmission: (@Sendable (Bool) -> Void)? = nil,
+        recordPresentationCompletion: (@Sendable (UInt64) -> Void)? = nil
     ) {
         self.scanoutID = scanoutID
         self.resourceID = resourceID
@@ -482,6 +503,9 @@ public struct VirtioGPUMetalScanoutUpdate: Sendable, Equatable {
         self.dirtyRect = dirtyRect
         self.hostSubmission = hostSubmission
         self.recordHostSubmission = recordHostSubmission
+        self.presentationCompletion = recordPresentationCompletion.map {
+            VirtioGPUMetalPresentationCompletion(callback: $0)
+        }
     }
 
     /// Completes the guest flush only after the display consumer has imported the lease and
@@ -498,6 +522,13 @@ public struct VirtioGPUMetalScanoutUpdate: Sendable, Equatable {
         if hostSubmission.resolve(accepted: false) {
             recordHostSubmission?(false)
         }
+    }
+
+    /// Retains the exact Metal completion edge for physical displayed-pixel correlation. The
+    /// caller supplies a process-local monotonically increasing identifier only after the
+    /// command buffer reaches `.completed`; failed or merely committed buffers never emit it.
+    public func recordPresentationCompleted(completionID: UInt64) {
+        presentationCompletion?.resolve(completionID: completionID)
     }
 
     public static func == (lhs: Self, rhs: Self) -> Bool {
@@ -7304,6 +7335,24 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                             stride: admission.surface?.stride,
                             format: admission.surface?.format
                         )
+                    },
+                    recordPresentationCompletion: { [weak self] completionID in
+                        self?.recordGraphicsTrace(
+                            stage: .metalPresentationCompleted,
+                            resourceID: admission.resourceID,
+                            displayResourceGeneration: admission.displayResourceGeneration,
+                            rendererResourceGeneration: admission.workerResourceGeneration,
+                            deviceGeneration: generation,
+                            contextID: admission.fence?.contextID,
+                            frameSequence: frameSequence,
+                            fenceID: admission.fence?.fenceID,
+                            metalCommandBufferCompletionID: completionID,
+                            scanoutID: target.scanoutID,
+                            width: admission.surface?.width,
+                            height: admission.surface?.height,
+                            stride: admission.surface?.stride,
+                            format: admission.surface?.format
+                        )
                     }
                 ))
             }
@@ -9464,6 +9513,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         contextID: UInt32? = nil,
         frameSequence: UInt64? = nil,
         fenceID: UInt64? = nil,
+        metalCommandBufferCompletionID: UInt64? = nil,
         scanoutID: UInt32? = nil,
         width: UInt32? = nil,
         height: UInt32? = nil,
@@ -9486,6 +9536,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 contextID: contextID,
                 frameSequence: frameSequence,
                 fenceID: fenceID,
+                metalCommandBufferCompletionID: metalCommandBufferCompletionID,
                 scanoutID: scanoutID,
                 width: width,
                 height: height,
