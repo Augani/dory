@@ -337,15 +337,25 @@ warn_or_fail_missing_bundle_asset() {
 }
 
 bundle_venus_renderer() {
-  local expected_team managed_kernel
+  local expected_team pc_kernel pc_kernel_sha256 pc_mesa pc_mesa_sha256
   local adhoc_arguments=()
   local release_arguments=()
+  local renderer_pc_arguments=()
   expected_team="${DORY_RENDERER_EXPECTED_TEAM:-864H636QW4}"
-  managed_kernel="${DORY_RENDERER_MANAGED_KERNEL:-${DORY_DESKTOP_KERNEL_ARM64:-${DORY_DESKTOP_KERNEL:-$REPO_ROOT/guest/out/Image-desktop}}}"
-  [ -f "$managed_kernel" ] && [ ! -L "$managed_kernel" ] || {
-    echo "renderer verification requires the exact managed desktop kernel: $managed_kernel" >&2
-    exit 1
-  }
+  pc_kernel="${DORY_RENDERER_PC_MANAGED_KERNEL:-}"
+  pc_kernel_sha256="${DORY_RENDERER_PC_MANAGED_KERNEL_SHA256:-}"
+  pc_mesa="${DORY_RENDERER_PC_GUEST_MESA:-}"
+  pc_mesa_sha256="${DORY_RENDERER_PC_GUEST_MESA_SHA256:-}"
+  if [ -n "$pc_kernel$pc_kernel_sha256$pc_mesa$pc_mesa_sha256" ]; then
+    [ -n "$pc_kernel" ] && [ -n "$pc_kernel_sha256" ] \
+      && [ -n "$pc_mesa" ] && [ -n "$pc_mesa_sha256" ] \
+      && [ -f "$pc_kernel" ] && [ ! -L "$pc_kernel" ] \
+      && [ -f "$pc_mesa" ] && [ ! -L "$pc_mesa" ] || {
+        echo "renderer verification requires all exact PC kernel and Mesa inputs" >&2
+        exit 1
+      }
+    renderer_pc_arguments=(--pc-managed-kernel "$pc_kernel" --pc-guest-mesa "$pc_mesa")
+  fi
   if [ "${DORY_SIGN_ID:-Developer ID Application}" = "-" ]; then
     expected_team=-
     if [ "${DORY_RENDERER_ALLOW_ADHOC_TEST:-0}" != 1 ]; then
@@ -359,7 +369,7 @@ bundle_venus_renderer() {
   python3 "$REPO_ROOT/scripts/package-renderer-production-bundle.py" verify \
     --runner-app "$HV_RUNNER_APP" \
     --expected-team "$expected_team" \
-    --managed-kernel "$managed_kernel" \
+    "${renderer_pc_arguments[@]+"${renderer_pc_arguments[@]}"}" \
     "${adhoc_arguments[@]+"${adhoc_arguments[@]}"}" \
     "${release_arguments[@]+"${release_arguments[@]}"}"
   echo "    accepted the immutable Xcode renderer bundle; no post-signing mutation was performed"
