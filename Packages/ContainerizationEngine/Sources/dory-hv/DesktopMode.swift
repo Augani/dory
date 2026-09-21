@@ -1796,6 +1796,7 @@ enum DesktopMode {
                         rendererWorkerLaunchStore,
                         rendererRuntimeFailureLatch,
                         graphicsReadinessState,
+                        rendererRestartRequests,
                     ] reason in
                     rendererRuntimeFailureLatch?.record(
                         kind: .worker,
@@ -1803,6 +1804,16 @@ enum DesktopMode {
                     )
                     rendererWorkerLaunchStore.current()?
                         .failSynchronizedPresentation(reason)
+                    if reason == "virtio-gpu device reset revoked the one-shot renderer generation" {
+                        graphicsReadinessState.publishRuntimeDetail(
+                            "The guest reset its GPU; preparing a fresh isolated renderer."
+                        )
+                        rendererRestartRequests.request()
+                        Self.log(
+                            "dory-hv desktop: guest GPU reset requested a fresh renderer generation"
+                        )
+                        return
+                    }
                     rendererWorkerLaunchStore.teardown(reason: reason)
                     graphicsReadinessState.publishRuntimeDetail(
                         "Graphics renderer stopped; the VM is still running. \(reason)"
