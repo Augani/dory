@@ -54,3 +54,12 @@ The retained `gpu-display-evidence.json` binds the validated probe hash, window 
 capture-frame receipt, display resource generation, and the identical process-local Metal
 completion ID recorded in the runner trace. It is a sub-result only; the outer ARM installer and
 fault campaign remains fail-closed until its other authorities complete.
+
+Replay verification is independent of the scenario process:
+
+```sh
+./verify-displayed-pixel.py --nonce=campaign-001 /path/to/retained/run
+```
+
+The verifier revalidates the probe, every retained digest, the capture-frame identity, and the
+unique matching `metalPresentationCompleted` event in the retained runner trace.

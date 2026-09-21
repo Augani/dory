@@ -6,6 +6,7 @@ import importlib.util
 import json
 import pathlib
 import subprocess
+import sys
 import tempfile
 
 
@@ -75,5 +76,10 @@ assert "gl_GlobalInvocationID" in compute_shader
 assert "GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA" in gl_source
 assert "FRAME:%06u NONCE:" in gl_source
 assert all(name in (compute_source + gl_source).lower() for name in ("llvmpipe", "lavapipe"))
+
+subprocess.run(
+    [sys.executable, str(ROOT / "guest-probes" / "test-displayed-pixel.py")],
+    check=True,
+)
 
 print("guest GPU probe contract tests passed")

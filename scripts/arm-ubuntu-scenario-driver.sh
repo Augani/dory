@@ -160,6 +160,7 @@ GUEST_COMMAND_RESULT="$RUN_DIR/guest-command.json"
 GPU_PROBE_TRANSPORT=""
 GPU_PROBE_RESULT=""
 GPU_DISPLAY_EVIDENCE=""
+GPU_DISPLAY_VERIFICATION=""
 GRAPHICS_TRACE_COPY=""
 GRAPHICS_CORRELATION=""
 for output in "$WINDOW_RECEIPT" "$CAPTURE_FRAME_REQUEST" "$CAPTURE_FRAME_RECEIPT" \
@@ -173,8 +174,9 @@ if [ -n "$PROBE_NONCE" ]; then
   GPU_PROBE_TRANSPORT="$RUN_DIR/gpu-probe-transport.json"
   GPU_PROBE_RESULT="$RUN_DIR/gpu-probe.json"
   GPU_DISPLAY_EVIDENCE="$RUN_DIR/gpu-display-evidence.json"
+  GPU_DISPLAY_VERIFICATION="$RUN_DIR/gpu-display-verification.json"
   for output in "$GPU_PROBE_TRANSPORT" "$GPU_PROBE_RESULT" \
-      "$GPU_DISPLAY_EVIDENCE"; do
+      "$GPU_DISPLAY_EVIDENCE" "$GPU_DISPLAY_VERIFICATION"; do
     [ ! -e "$output" ] && [ ! -L "$output" ] \
       || die "refusing pre-existing scenario output: $output"
   done
@@ -472,25 +474,44 @@ record = {
     "probeSHA256": hashlib.sha256(probe_path.read_bytes()).hexdigest(),
     "framebufferSHA256": capture["framebufferSHA256"],
     "windowReceiptSHA256": capture["windowReceiptSHA256"],
+    "captureReceiptSHA256": hashlib.sha256(capture_path.read_bytes()).hexdigest(),
     "graphicsTraceSHA256": correlation["graphicsTraceSHA256"],
+    "graphicsCorrelationSHA256": hashlib.sha256(
+        correlation_path.read_bytes()
+    ).hexdigest(),
     "displayResourceGeneration": capture["displayResourceGeneration"],
     "metalCommandBufferCompletionID": capture["metalCommandBufferCompletionID"],
 }
 output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  GPU_DISPLAY_VERIFICATION_PAYLOAD="$(
+    python3 "$(cd "$(dirname "$0")/.." && pwd -P)/guest-probes/verify-displayed-pixel.py" \
+      --nonce "$PROBE_NONCE" "$RUN_DIR"
+  )" || die "retained GPU displayed-pixel evidence failed replay verification"
+  python3 - "$GPU_DISPLAY_VERIFICATION" "$GPU_DISPLAY_VERIFICATION_PAYLOAD" <<'PY'
+import os
+import sys
+
+descriptor = os.open(
+    sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+)
+with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+    target.write(sys.argv[2] + "\n")
 PY
 fi
 
 python3 - "$RUN_DIR/scenario-driver-readiness.json" \
   "$MACH_SERVICE" "$MACHINE" "$TIMEOUT_SECONDS" "$CAPTURE_RECEIPT" \
   "$INPUT_RECEIPT" "$GUEST_COMMAND_RESULT" "$GPU_PROBE_RESULT" \
-  "$GRAPHICS_CORRELATION" "$GPU_DISPLAY_EVIDENCE" <<'PY'
+  "$GRAPHICS_CORRELATION" "$GPU_DISPLAY_EVIDENCE" \
+  "$GPU_DISPLAY_VERIFICATION" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 (
     path, service, machine, timeout, capture_path, input_path, command_path,
-    probe_path, correlation_path, gpu_display_path,
+    probe_path, correlation_path, gpu_display_path, gpu_display_verification_path,
 ) = sys.argv[1:]
 capture = json.loads(Path(capture_path).read_text(encoding="utf-8"))
 keyboard = json.loads(Path(input_path).read_text(encoding="utf-8"))
@@ -515,6 +536,17 @@ if gpu_display_path:
     completed.append("displayed-pixel-gpu-correlation")
     gpu_display_sha256 = __import__("hashlib").sha256(
         Path(gpu_display_path).read_bytes()
+    ).hexdigest()
+gpu_display_verification_sha256 = None
+if gpu_display_verification_path:
+    verification = json.loads(
+        Path(gpu_display_verification_path).read_text(encoding="utf-8")
+    )
+    if verification.get("status") != "evidence-verified":
+        raise SystemExit("displayed-pixel replay verification did not pass")
+    completed.append("replay-verified-displayed-pixel-evidence")
+    gpu_display_verification_sha256 = __import__("hashlib").sha256(
+        Path(gpu_display_verification_path).read_bytes()
     ).hexdigest()
 record = {
     "kind": "dev.dory.arm-ubuntu-scenario-driver-readiness",
@@ -553,6 +585,8 @@ if correlation_sha256 is not None:
     record["graphicsCorrelationSHA256"] = correlation_sha256
 if gpu_display_sha256 is not None:
     record["gpuDisplayedPixelEvidenceSHA256"] = gpu_display_sha256
+if gpu_display_verification_sha256 is not None:
+    record["gpuDisplayedPixelVerificationSHA256"] = gpu_display_verification_sha256
 Path(path).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
 PY
 
