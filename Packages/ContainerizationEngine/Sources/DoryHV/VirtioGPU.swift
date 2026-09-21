@@ -3339,9 +3339,18 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 revokeRendererWorkerScanouts()
             }
         }
-        let shouldDrainDeferredKick = ready && lifecycleLock.withLock {
-            acceptingGuestCommands && deferredRendererWorkerControlKick
+        let deferredState = lifecycleLock.withLock {
+            (acceptingGuestCommands, deferredRendererWorkerControlKick)
         }
+        if deferredState.1 {
+            let pending = (try? transport.queues[0].pendingCount()).map(String.init)
+                ?? "invalid"
+            FileHandle.standardError.write(Data((
+                "dory-gpu: deferred renderer queue state ready=\(ready) "
+                    + "pending=\(pending) accepting=\(deferredState.0)\n"
+            ).utf8))
+        }
+        let shouldDrainDeferredKick = ready && deferredState.0 && deferredState.1
         if shouldDrainDeferredKick {
             // QueueStateChanged is invoked under VirtioMMIO's transport lock, the same exclusion
             // used by an ordinary QueueNotify, so this is the safe place to replay the edge.
