@@ -2163,6 +2163,57 @@ import Testing
         #expect(try queue.responseType() == 0x1100)
     }
 
+    @Test func replacementReplaysDeferredControlKickWhenResetQueueBecomesReady() async throws {
+        let oldFixture = try rendererBrokerFixture(
+            limits: rendererLimits(maximumInFlight: 4),
+            workerGeneration: 9
+        )
+        let oldLane = try DoryRendererWorkerVirtioCommandLane(
+            broker: oldFixture.broker,
+            deviceGeneration: 1
+        )
+        let queue = try RendererWorkerGPUQueueFixture(
+            lane: oldLane,
+            guestBase: 0x4_D000_0000
+        )
+        queue.gpu.deviceReady(transport: queue.transport)
+
+        oldFixture.channel.emit(.interrupted)
+        #expect(await rendererEventually {
+            if case .failed(epoch: 1, _) = queue.gpu.rendererLifecycleHealth {
+                return true
+            }
+            return false
+        })
+        queue.transport.write(offset: 0x070, value: 0, width: 4)
+        queue.reconfigureControlQueueAfterReset(ready: false)
+        try queue.submit(rendererGPUContextCreateRequest(
+            contextID: 29,
+            name: "deferred-until-queue-ready",
+            capsetID: 4
+        ))
+
+        let replacementFixture = try rendererBrokerFixture(
+            limits: rendererLimits(maximumInFlight: 4),
+            workerGeneration: 10
+        )
+        let replacementLane = try DoryRendererWorkerVirtioCommandLane(
+            broker: replacementFixture.broker,
+            deviceGeneration: 1
+        )
+        try queue.gpu.installRendererWorkerReplacementAfterDeviceReset(replacementLane)
+        #expect(replacementFixture.channel.sendCount == 0)
+
+        queue.activateControlQueueAfterReset()
+        #expect(await rendererEventually { replacementFixture.channel.sendCount == 1 })
+        replacementFixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 1 })
+        #expect(try queue.responseType() == 0x1100)
+    }
+
     @Test func replacementRejectsCapabilityDriftAfterDeviceReset() async throws {
         let oldFixture = try rendererBrokerFixture(
             limits: rendererLimits(maximumInFlight: 4),
@@ -4858,6 +4909,21 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
             usedRing: cursorUsedRing
         )
         transport.queues[1].setReady(true)
+    }
+
+    func reconfigureControlQueueAfterReset(ready: Bool) {
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descriptorTable,
+            availRing: availableRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(ready)
+    }
+
+    func activateControlQueueAfterReset() {
+        transport.queues[0].setReady(true)
+        gpu.queueStateChanged(queue: 0, ready: true, transport: transport)
     }
 
     func submit(_ request: [UInt8]) throws {

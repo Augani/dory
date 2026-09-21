@@ -2397,6 +2397,11 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     /// `deviceReset()` runs before VirtioMMIO clears its queue registers. Record replacement
     /// demand here and publish it only from `deviceResetCompleted()`, after that reset boundary.
     private var pendingRendererReplacementEpoch: UInt64?
+    /// Linux can notify controlq after a reset while the replacement worker is still launching.
+    /// If another reset clears that queue before cutover, the replacement's eager drain observes
+    /// an unready queue. Preserve the notification until the final QueueReady write so the fresh
+    /// generation cannot strand descriptors that the driver has already made available.
+    private var deferredRendererWorkerControlKick = false
     private var rendererLifecycleHealthState: VirtioGPURendererLifecycleHealth
     private var acceptingGuestCommands = true
     private var createdContextIDs = Set<UInt32>()
@@ -3275,62 +3280,78 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         transport: VirtioMMIOTransport
     ) {
         guard queue == 0 else { return }
-        commandLock.lock()
-        defer { commandLock.unlock() }
-        let workerSnapshot = rendererWorkerCandidate?.snapshot()
-        let workerRequiresRevocation = rendererWorkerCandidate != nil && (
-            !ready
-                || rendererWorkerControlCommandClaim != nil
-                || (workerSnapshot?.queuedCommands ?? 0) > 0
-                || (workerSnapshot?.armedFences ?? 0) > 0
-        )
-        let revokedFenceGeneration = fenceLock.withLock { () -> UInt64? in
-            guard workerRequiresRevocation
-                    || pendingFenceCount > 0
-                    || !uncertainRendererCommandChains.isEmpty else {
-                return nil
+        commandLock.withLock {
+            let workerSnapshot = rendererWorkerCandidate?.snapshot()
+            let workerRequiresRevocation = rendererWorkerCandidate != nil && (
+                !ready
+                    || rendererWorkerControlCommandClaim != nil
+                    || (workerSnapshot?.queuedCommands ?? 0) > 0
+                    || (workerSnapshot?.armedFences ?? 0) > 0
+            )
+            let revokedFenceGeneration = fenceLock.withLock { () -> UInt64? in
+                guard workerRequiresRevocation
+                        || pendingFenceCount > 0
+                        || !uncertainRendererCommandChains.isEmpty else {
+                    return nil
+                }
+                let revokedGeneration = lifecycleEpoch
+                recordTelemetryWhileLocked(
+                    .queueRevokedFence,
+                    count: UInt64(pendingFenceCount)
+                )
+                pendingFences.removeAll()
+                stockFallbackFenceWaiters.removeAll()
+                uncertainFences.removeAll()
+                recordTelemetryWhileLocked(
+                    .revokedUncertainRendererCommand,
+                    count: UInt64(uncertainRendererCommandChains.count)
+                )
+                uncertainRendererCommandChains.removeAll()
+                pendingFenceCount = 0
+                pendingFenceResponseBytes = 0
+                lastTransport = nil
+                lifecycleEpoch &+= 1
+                if lifecycleEpoch == 0 { lifecycleEpoch = 1 }
+                fenceAdmissionBlockedUntilDeviceReset = true
+                return revokedGeneration
             }
-            let revokedGeneration = lifecycleEpoch
-            recordTelemetryWhileLocked(
-                .queueRevokedFence,
-                count: UInt64(pendingFenceCount)
-            )
-            pendingFences.removeAll()
-            stockFallbackFenceWaiters.removeAll()
-            uncertainFences.removeAll()
-            recordTelemetryWhileLocked(
-                .revokedUncertainRendererCommand,
-                count: UInt64(uncertainRendererCommandChains.count)
-            )
-            uncertainRendererCommandChains.removeAll()
-            pendingFenceCount = 0
-            pendingFenceResponseBytes = 0
-            lastTransport = nil
-            lifecycleEpoch &+= 1
-            if lifecycleEpoch == 0 { lifecycleEpoch = 1 }
-            fenceAdmissionBlockedUntilDeviceReset = true
-            return revokedGeneration
+            if let revokedFenceGeneration {
+                if rendererWorkerControlCommandClaim?.generation == revokedFenceGeneration {
+                    rendererWorkerControlCommandClaim = nil
+                }
+                rendererExecutor?.revokeActiveGeneration()
+                rendererWorkerCandidate?.revoke(deviceGeneration: revokedFenceGeneration)
+                revokeRendererWorkerScanouts()
+            }
         }
-        if let revokedFenceGeneration {
-            if rendererWorkerControlCommandClaim?.generation == revokedFenceGeneration {
-                rendererWorkerControlCommandClaim = nil
-            }
-            rendererExecutor?.revokeActiveGeneration()
-            rendererWorkerCandidate?.revoke(deviceGeneration: revokedFenceGeneration)
-            revokeRendererWorkerScanouts()
+        let shouldDrainDeferredKick = ready && lifecycleLock.withLock {
+            acceptingGuestCommands && deferredRendererWorkerControlKick
+        }
+        if shouldDrainDeferredKick {
+            // QueueStateChanged is invoked under VirtioMMIO's transport lock, the same exclusion
+            // used by an ordinary QueueNotify, so this is the safe place to replay the edge.
+            handleKick(queue: 0, transport: transport)
         }
     }
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
         guard queue == 0 || queue == 1 else { return }
-        if queue == 0,
-           rendererWorkerAuthorityConfigured,
-           !lifecycleLock.withLock({ acceptingGuestCommands }) {
-            // A status-0 reset can be followed immediately by Linux rebuilding and kicking its
-            // control queue while a fresh one-shot renderer process is still launching. Leave the
-            // available ring untouched; replacement installation drains it after the atomic
-            // generation cutover.
-            return
+        if queue == 0, rendererWorkerAuthorityConfigured {
+            let shouldDefer = lifecycleLock.withLock { () -> Bool in
+                guard acceptingGuestCommands, transport.queues[0].ready else {
+                    deferredRendererWorkerControlKick = true
+                    return true
+                }
+                deferredRendererWorkerControlKick = false
+                return false
+            }
+            if shouldDefer {
+                // A status-0 reset can be followed immediately by Linux rebuilding and kicking its
+                // control queue while a fresh one-shot renderer process is still launching. Leave
+                // the available ring untouched; replacement installation or the final QueueReady
+                // edge drains it after the atomic generation cutover.
+                return
+            }
         }
         let outcome = drainQueue(queue: queue, transport: transport)
         switch outcome {
