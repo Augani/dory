@@ -810,9 +810,16 @@ public final class DoryRendererWorkerVirglBackend:
             return .success(payload: Data(), descriptors: [])
 
         case .detachResource:
-            guard active.contexts[command.contextID] != nil,
-                  let resource = matchingResource(command, active: active) else {
+            guard let resource = matchingResource(command, active: active) else {
                 return .rejected
+            }
+            // Linux can close an early dumb-KMS GEM object with a file-local ctx_id before it has
+            // emitted CTX_CREATE (notably while CONTEXT_INIT is negotiated). QEMU forwards the
+            // request to virglrenderer's void detach API and completes it successfully. Preserve
+            // that cleanup contract without calling the foreign renderer for an unknown context;
+            // the authenticated resource generation above still prevents stale-resource cleanup.
+            guard active.contexts[command.contextID] != nil else {
+                return .success(payload: Data(), descriptors: [])
             }
             // The matching Linux GEM close path and virglrenderer detach callback are likewise
             // idempotent. Do not turn harmless duplicate cleanup into a guest-visible GPU fault.

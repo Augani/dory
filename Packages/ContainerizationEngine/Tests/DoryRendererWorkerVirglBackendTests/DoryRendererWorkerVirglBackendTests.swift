@@ -1291,6 +1291,51 @@ import Testing
         #expect(userDetachments.first?.0 == 7)
     }
 
+    @Test func unknownContextDetachIsSuccessfulGenerationCheckedCleanup() throws {
+        let session = FakeRendererForeignSession()
+        let backend = makeBackend(session: session)
+        _ = try backend.activate(bootstrap: makeBootstrap())
+        let payload = try DoryRendererBlobCreatePayload(
+            blobMemory: 2,
+            blobFlags: 1,
+            blobID: 0,
+            size: 4_096
+        )
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 1,
+                operation: .createBlob,
+                resourceID: 42,
+                payload: payload.encoded
+            ),
+            descriptors: []
+        ))
+
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 2,
+                operation: .detachResource,
+                contextID: 1,
+                resourceID: 42,
+                resourceGeneration: 1
+            ),
+            descriptors: []
+        ))
+        #expect(session.detachedResources.allSatisfy { $0.1 != 42 })
+
+        #expect(isRejected(try backend.execute(
+            command: command(
+                requestID: 3,
+                operation: .detachResource,
+                contextID: 1,
+                resourceID: 42,
+                resourceGeneration: 2
+            ),
+            descriptors: []
+        )))
+        #expect(session.detachedResources.allSatisfy { $0.1 != 42 })
+    }
+
     @Test func classicVirGLResourceWithoutScanoutBindCannotExportMetalTexture() throws {
         let session = FakeRendererForeignSession()
         let backend = makeBackend(session: session)
