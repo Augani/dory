@@ -694,11 +694,31 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         for specification in runtimeSpecifications.values.sorted(by: {
             $0.descriptor.identity.rawValue < $1.descriptor.identity.rawValue
         }) {
-            guard let runtime = try? runtimeVerifier(
-                specification.executablePath,
-                specification.descriptor,
-                specification.componentIdentifier
-            ), runtime.descriptor == specification.descriptor else { continue }
+            let runtime: DoryDaemonVerifiedBackendRuntime
+            do {
+                runtime = try runtimeVerifier(
+                    specification.executablePath,
+                    specification.descriptor,
+                    specification.componentIdentifier
+                )
+            } catch {
+                if case .candidateCampaign = qualificationMode {
+                    throw DoryDaemonProductionTrustInventoryError.qualificationMismatch(
+                        "candidate backend \(specification.descriptor.identity.rawValue) "
+                            + "verification failed: \(error)"
+                    )
+                }
+                continue
+            }
+            guard runtime.descriptor == specification.descriptor else {
+                if case .candidateCampaign = qualificationMode {
+                    throw DoryDaemonProductionTrustInventoryError.qualificationMismatch(
+                        "candidate backend \(specification.descriptor.identity.rawValue) "
+                            + "descriptor mismatch"
+                    )
+                }
+                continue
+            }
             runtimes.append(runtime)
         }
         guard !runtimes.isEmpty else {
