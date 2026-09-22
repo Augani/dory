@@ -9506,11 +9506,17 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         rendererExecutor != nil || rendererWorkerAuthorityConfigured
     }
 
-    /// Feature and capset discovery is guest-visible state, so it must close with command
-    /// admission. In particular, successful shutdown and a renderer that requires recreation are
-    /// both quarantined rather than masquerading as a newly usable renderer epoch.
+    /// The signed worker's feature and capset contract is immutable for the lifetime of the
+    /// virtio device. Keep it visible while a device reset replaces the one-shot worker generation:
+    /// Linux renegotiates features immediately after status 0, before the asynchronous replacement
+    /// can arrive, and permanently disables VirGL if the bits disappear in that window. Command
+    /// admission remains closed until `installRendererWorkerReplacementAfterDeviceReset` binds the
+    /// fresh generation, so preserving discovery does not let guest mutations cross the reset.
+    /// Legacy in-process renderers retain the stricter lifecycle-coupled behavior because they have
+    /// no authenticated replacement lane.
     private var rendererCapabilitiesAreAdvertised: Bool {
-        lifecycleLock.withLock {
+        if rendererWorkerAuthorityConfigured { return true }
+        return lifecycleLock.withLock {
             guard acceptingGuestCommands else { return false }
             if case .ready = rendererLifecycleHealthState { return true }
             return false

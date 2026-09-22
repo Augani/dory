@@ -2130,6 +2130,11 @@ import Testing
         queue.reconfigureAfterReset()
         queue.transport.write(offset: 0x070, value: 1, width: 4)
         queue.transport.write(offset: 0x070, value: 3, width: 4)
+        // Device features are immutable across status-0. Linux probes them before the
+        // asynchronous replacement worker arrives and permanently disables VirGL if Dory
+        // transiently reports a 2D-only device here.
+        #expect(queue.gpu.deviceFeatures == 29)
+        #expect(rendererGPUUInt32(queue.gpu.configSpace, at: 12) == 2)
         try queue.submit(rendererGPUContextCreateRequest(
             contextID: 23,
             name: "replacement-generation",
