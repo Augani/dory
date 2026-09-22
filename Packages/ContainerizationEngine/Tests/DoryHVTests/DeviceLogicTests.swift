@@ -1622,7 +1622,7 @@ import Testing
 
         var request = gpuRequest(type: 0x010A, fenceID: 43, contextID: 7, ringIndex: 3)
         request.appendLE(UInt32(0))
-        request.appendLE(UInt32(0))
+        #expect(request.count == 28)
         let response = try gpuResponse(gpu: gpu, request: request)
         #expect(response.count == 1_056)
         #expect(leUInt32(response, at: 0) == 0x1104)
@@ -1667,8 +1667,10 @@ import Testing
 
         var invalid = gpuRequest(type: 0x010A, fenceID: 0, contextID: 0, ringIndex: 0)
         invalid.appendLE(UInt32(1))
-        invalid.appendLE(UInt32(0))
         #expect(leUInt32(try gpuResponse(gpu: gpu, request: invalid), at: 0) == 0x1205)
+
+        let truncated = Array(request.dropLast())
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: truncated), at: 0) == 0x1205)
     }
 
     @Test func publishesAndResizesEachScanoutIndependently() throws {
