@@ -172,6 +172,7 @@ public enum DoryCandidateCampaignAuthorizationError:
     case artifactMismatch(String)
     case hostMismatch
     case campaignCellUnavailable
+    case campaignCellMismatch([String])
     case replayRejected
 
     public var description: String {
@@ -185,6 +186,8 @@ public enum DoryCandidateCampaignAuthorizationError:
         case let .artifactMismatch(role): "candidate campaign artifact does not match: \(role)"
         case .hostMismatch: "candidate campaign host does not match"
         case .campaignCellUnavailable: "candidate campaign does not authorize this exact cell"
+        case let .campaignCellMismatch(fields):
+            "candidate campaign cell mismatch: \(fields.joined(separator: ", "))"
         case .replayRejected: "candidate campaign replay state rejected the authority"
         }
     }
@@ -237,19 +240,46 @@ public struct DoryVerifiedVirtualMachineCandidateCampaignAuthority: Sendable {
         let components = installedComponents.sorted {
             $0.componentIdentifier < $1.componentIdentifier
         }
-        let matches = manifest.cells.filter { cell in
-            cell.capability.matchesRuntimeQualificationContract(request)
-                && cell.backendImplementationIdentifier == backendImplementationIdentifier
-                && cell.backendRuntimeBuildIdentifier == backendRuntimeBuildIdentifier
-                && cell.components == components
-                && virtualCPUCount > 0
-                && virtualCPUCount <= cell.resources.maximumVirtualCPUCount
-                && memoryBytes > 0
-                && memoryBytes <= cell.resources.maximumMemoryBytes
-                && storageBytes > 0
-                && storageBytes <= cell.resources.maximumStorageBytes
+        let evaluations = manifest.cells.map { cell -> (DoryCandidateCampaignCell, [String]) in
+            var mismatches: [String] = []
+            if cell.capability.guest != request.guest { mismatches.append("guest") }
+            if cell.capability.bootMedia != request.bootMedia { mismatches.append("bootMedia") }
+            if cell.capability.backend != request.backend { mismatches.append("backend") }
+            if cell.capability.graphics != request.graphics { mismatches.append("graphics") }
+            if !cell.capability.devices.matchesRuntimeQualificationContract(request.devices) {
+                mismatches.append("devices")
+            }
+            if cell.capability.virtualHardwareABIVersion
+                != request.virtualHardwareABIVersion {
+                mismatches.append("virtualHardwareABI")
+            }
+            if cell.backendImplementationIdentifier != backendImplementationIdentifier {
+                mismatches.append("backendImplementation")
+            }
+            if cell.backendRuntimeBuildIdentifier != backendRuntimeBuildIdentifier {
+                mismatches.append("backendRuntimeBuild")
+            }
+            if cell.components != components { mismatches.append("components") }
+            if virtualCPUCount == 0
+                || virtualCPUCount > cell.resources.maximumVirtualCPUCount {
+                mismatches.append("virtualCPUCount")
+            }
+            if memoryBytes == 0 || memoryBytes > cell.resources.maximumMemoryBytes {
+                mismatches.append("memoryBytes")
+            }
+            if storageBytes == 0 || storageBytes > cell.resources.maximumStorageBytes {
+                mismatches.append("storageBytes")
+            }
+            return (cell, mismatches)
         }
+        let matches = evaluations.filter { $0.1.isEmpty }.map(\.0)
         guard matches.count == 1, let cell = matches.first else {
+            let closest = evaluations.min {
+                ($0.1.count, $0.0.cellIdentifier) < ($1.1.count, $1.0.cellIdentifier)
+            }
+            if let closest, !closest.1.isEmpty {
+                throw DoryCandidateCampaignAuthorizationError.campaignCellMismatch(closest.1)
+            }
             throw DoryCandidateCampaignAuthorizationError.campaignCellUnavailable
         }
         return DoryResolvedCandidateCampaignCell(

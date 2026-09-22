@@ -459,6 +459,7 @@ enum DoryDaemonProductionTrustInventoryError:
     case mediaInvalid
     case backendUnavailable
     case qualificationUnavailable
+    case qualificationMismatch(String)
     case resourceAdmissionUnavailable
     case firmwareUnavailable
 }
@@ -706,6 +707,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
 
         var qualifications: [DoryResolvedTrustedVirtualMachineQualification] = []
         var candidateCampaignCells: [DoryResolvedCandidateCampaignCell] = []
+        var candidateCampaignFailures: Set<String> = []
         for runtime in runtimes {
             for graphics in request.acceptableGraphics {
                 let capability = DoryVirtualMachineCapabilityRequest(
@@ -730,20 +732,23 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                         qualifications.append(qualification)
                     }
                 case let .candidateCampaign(authority):
-                    if let cell = try? authority.resolve(
-                        request: capability,
-                        backendImplementationIdentifier:
-                            runtime.descriptor.implementationIdentifier,
-                        backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
-                        hostHardwareModelIdentifier: host.hardwareModelIdentifier,
-                        hostOperatingSystemBuild: host.operatingSystemBuild,
-                        installedComponents: runtime.components,
-                        machineID: request.machineID,
-                        virtualCPUCount: request.resources.virtualCPUCount,
-                        memoryBytes: request.resources.memoryBytes,
-                        storageBytes: request.resources.diskBytes
-                    ) {
+                    do {
+                        let cell = try authority.resolve(
+                            request: capability,
+                            backendImplementationIdentifier:
+                                runtime.descriptor.implementationIdentifier,
+                            backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
+                            hostHardwareModelIdentifier: host.hardwareModelIdentifier,
+                            hostOperatingSystemBuild: host.operatingSystemBuild,
+                            installedComponents: runtime.components,
+                            machineID: request.machineID,
+                            virtualCPUCount: request.resources.virtualCPUCount,
+                            memoryBytes: request.resources.memoryBytes,
+                            storageBytes: request.resources.diskBytes
+                        )
                         candidateCampaignCells.append(cell)
+                    } catch {
+                        candidateCampaignFailures.insert(String(describing: error))
                     }
                 }
             }
@@ -762,6 +767,12 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         }
         guard !qualifications.isEmpty || !candidateCampaignCells.isEmpty
                 || portableRuntime != nil else {
+            if case .candidateCampaign = qualificationMode,
+               !candidateCampaignFailures.isEmpty {
+                throw DoryDaemonProductionTrustInventoryError.qualificationMismatch(
+                    candidateCampaignFailures.sorted().joined(separator: "; ")
+                )
+            }
             throw DoryDaemonProductionTrustInventoryError.qualificationUnavailable
         }
 
