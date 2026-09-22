@@ -446,6 +446,7 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         var pending: [UUID: PendingFrame] = [:]
         var cpuSurfaces: [UInt32: CPUFrameSurface] = [:]
         var cpuFrameInFlightScanouts: Set<UInt32> = []
+        var cpuFrameRefreshPendingScanouts: Set<UInt32> = []
         var started = false
         var stopped = false
         var pollInFlight = false
@@ -459,6 +460,12 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         var height: UInt32
         var stride: UInt32
         var bytes: Data
+    }
+
+    private struct CPUFrameSnapshot {
+        var scanoutID: UInt32
+        var sequence: UInt64
+        var surface: CPUFrameSurface
     }
 
     private let machineID: String
@@ -673,7 +680,7 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
     /// This path is deliberately distinct from renderer-backed presentation: its acknowledgement
     /// never satisfies the synchronized-renderer readiness boundary.
     func publish(_ frame: VirtioGPUScanoutFrame) {
-        let snapshot: (sequence: UInt64, surface: CPUFrameSurface)?
+        let snapshot: CPUFrameSnapshot?
         do {
             snapshot = try lock.withLock {
                 guard !state.stopped, state.nextFrameSequence < UInt64.max else {
@@ -740,70 +747,20 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
                 // canonical surface and let the next guest flush publish them after this lease is
                 // retired.
                 guard !state.cpuFrameInFlightScanouts.contains(frame.scanoutID) else {
+                    state.cpuFrameRefreshPendingScanouts.insert(frame.scanoutID)
                     return nil
                 }
                 state.cpuFrameInFlightScanouts.insert(frame.scanoutID)
                 let sequence = state.nextFrameSequence
                 state.nextFrameSequence += 1
-                return (sequence, surface)
-            }
-            guard let snapshot else { return }
-
-            let descriptor = try Self.makeCPUFrameDescriptor(snapshot.surface.bytes)
-            let leaseID = UUID()
-            let releaseToken = UUID()
-            let lease = try DoryVMDisplayCPUFrameLease(
-                leaseID: leaseID,
-                releaseToken: releaseToken,
-                pixelFormat: snapshot.surface.format,
-                yOriginTop: true,
-                width: snapshot.surface.width,
-                height: snapshot.surface.height,
-                stride: snapshot.surface.stride,
-                declaredFileSize: UInt64(snapshot.surface.bytes.count)
-            )
-            let fullRect = DoryVMDisplayRect(
-                x: 0,
-                y: 0,
-                width: snapshot.surface.width,
-                height: snapshot.surface.height
-            )
-            let relayed = try DoryVMDisplayFrame(
-                machineID: machineID,
-                operationID: UUID(uuidString: operationID)!,
-                scanoutID: frame.scanoutID,
-                sequence: snapshot.sequence,
-                displayResourceGeneration: snapshot.surface.resourceGeneration,
-                transport: .cpuCopy,
-                leasePayload: try DoryVMDisplayCPUFrameLeaseCodec.encode(lease),
-                sourceRect: fullRect,
-                dirtyRect: fullRect
-            )
-            let pending = PendingFrame(scanoutID: frame.scanoutID, descriptor: descriptor)
-            let admitted = lock.withLock { () -> Bool in
-                guard !state.stopped, state.pending[leaseID] == nil else { return false }
-                state.pending[leaseID] = pending
-                return true
-            }
-            guard admitted else {
-                _ = lock.withLock {
-                    state.cpuFrameInFlightScanouts.remove(frame.scanoutID)
-                }
-                pending.complete(presented: false, detail: "runner-not-accepting-frames")
-                return
-            }
-            transport.publishFrame(
-                try DoryVMDisplayFrameCodec.encode(relayed),
-                descriptors: [descriptor],
-                sharedTextureHandle: nil
-            ) { [weak self] presented, completionID, detail in
-                self?.completeFrame(
-                    leaseID: leaseID,
-                    presented: presented,
-                    metalCommandBufferCompletionID: completionID,
-                    detail: detail
+                return CPUFrameSnapshot(
+                    scanoutID: frame.scanoutID,
+                    sequence: sequence,
+                    surface: surface
                 )
             }
+            guard let snapshot else { return }
+            try publishCPUFrame(snapshot)
         } catch {
             _ = lock.withLock {
                 state.cpuFrameInFlightScanouts.remove(frame.scanoutID)
@@ -814,7 +771,9 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
 
     func canPublishCPUFrame(scanoutID: UInt32) -> Bool {
         lock.withLock {
-            !state.stopped && !state.cpuFrameInFlightScanouts.contains(scanoutID)
+            guard !state.stopped else { return false }
+            guard state.cpuFrameInFlightScanouts.contains(scanoutID) else { return true }
+            return state.cpuFrameRefreshPendingScanouts.insert(scanoutID).inserted
         }
     }
 
@@ -912,13 +871,27 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         metalCommandBufferCompletionID: UInt64 = 0,
         detail: String
     ) {
-        guard let pending = lock.withLock({ () -> PendingFrame? in
+        let completed = lock.withLock { () -> (PendingFrame, CPUFrameSnapshot?)? in
             guard let pending = state.pending.removeValue(forKey: leaseID) else { return nil }
+            var refresh: CPUFrameSnapshot?
             if !pending.requiresMetalCompletion {
                 state.cpuFrameInFlightScanouts.remove(pending.scanoutID)
+                if state.cpuFrameRefreshPendingScanouts.remove(pending.scanoutID) != nil,
+                   !state.stopped,
+                   state.nextFrameSequence < UInt64.max,
+                   let surface = state.cpuSurfaces[pending.scanoutID] {
+                    state.cpuFrameInFlightScanouts.insert(pending.scanoutID)
+                    refresh = CPUFrameSnapshot(
+                        scanoutID: pending.scanoutID,
+                        sequence: state.nextFrameSequence,
+                        surface: surface
+                    )
+                    state.nextFrameSequence += 1
+                }
             }
-            return pending
-        }) else {
+            return (pending, refresh)
+        }
+        guard let (pending, refresh) = completed else {
             return
         }
         let validCompletion = pending.requiresMetalCompletion
@@ -939,10 +912,77 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
             metalCommandBufferCompletionID: effectiveCompletionID,
             detail: effectiveDetail
         )
+        if let refresh {
+            do {
+                try publishCPUFrame(refresh)
+            } catch {
+                _ = lock.withLock {
+                    state.cpuFrameInFlightScanouts.remove(refresh.scanoutID)
+                }
+                log("dory-hv display relay rejected coalesced CPU frame: \(error)")
+            }
+        }
         if !effectivePresented, !effectiveDetail.isEmpty {
             log(
                 "dory-hv display relay frame \(leaseID.uuidString.lowercased()): "
                     + effectiveDetail
+            )
+        }
+    }
+
+    private func publishCPUFrame(_ snapshot: CPUFrameSnapshot) throws {
+        let descriptor = try Self.makeCPUFrameDescriptor(snapshot.surface.bytes)
+        let leaseID = UUID()
+        let lease = try DoryVMDisplayCPUFrameLease(
+            leaseID: leaseID,
+            releaseToken: UUID(),
+            pixelFormat: snapshot.surface.format,
+            yOriginTop: true,
+            width: snapshot.surface.width,
+            height: snapshot.surface.height,
+            stride: snapshot.surface.stride,
+            declaredFileSize: UInt64(snapshot.surface.bytes.count)
+        )
+        let fullRect = DoryVMDisplayRect(
+            x: 0,
+            y: 0,
+            width: snapshot.surface.width,
+            height: snapshot.surface.height
+        )
+        let relayed = try DoryVMDisplayFrame(
+            machineID: machineID,
+            operationID: UUID(uuidString: operationID)!,
+            scanoutID: snapshot.scanoutID,
+            sequence: snapshot.sequence,
+            displayResourceGeneration: snapshot.surface.resourceGeneration,
+            transport: .cpuCopy,
+            leasePayload: try DoryVMDisplayCPUFrameLeaseCodec.encode(lease),
+            sourceRect: fullRect,
+            dirtyRect: fullRect
+        )
+        let pending = PendingFrame(scanoutID: snapshot.scanoutID, descriptor: descriptor)
+        let admitted = lock.withLock { () -> Bool in
+            guard !state.stopped, state.pending[leaseID] == nil else { return false }
+            state.pending[leaseID] = pending
+            return true
+        }
+        guard admitted else {
+            _ = lock.withLock {
+                state.cpuFrameInFlightScanouts.remove(snapshot.scanoutID)
+            }
+            pending.complete(presented: false, detail: "runner-not-accepting-frames")
+            return
+        }
+        transport.publishFrame(
+            try DoryVMDisplayFrameCodec.encode(relayed),
+            descriptors: [descriptor],
+            sharedTextureHandle: nil
+        ) { [weak self] presented, completionID, detail in
+            self?.completeFrame(
+                leaseID: leaseID,
+                presented: presented,
+                metalCommandBufferCompletionID: completionID,
+                detail: detail
             )
         }
     }

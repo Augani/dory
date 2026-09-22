@@ -372,7 +372,6 @@ struct DoryVMDisplayRunnerRelayTests {
         #expect(transport.frames.count == 1)
 
         transport.completeNextFrame()
-        relay.publish(frame)
         #expect(transport.frames.count == 2)
         relay.stop()
     }
