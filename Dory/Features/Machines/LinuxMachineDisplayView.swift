@@ -770,6 +770,10 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
         guard found else {
             if !detail.isEmpty, detail != "no-frame" {
                 failed("The VM display broker could not provide a frame: \(detail)")
+                // A desktop window commonly opens while its VM is still planning or starting.
+                // In that interval the broker has no registered runner yet. Keep polling so the
+                // same window attaches as soon as the runner publishes its first frame.
+                schedulePoll(after: 0.25)
             } else {
                 schedulePoll(after: 1.0 / 60.0)
             }
