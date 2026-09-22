@@ -1358,25 +1358,41 @@ enum DesktopMode {
 
     private final class RendererRestartRequestRelay: @unchecked Sendable {
         private let lock = NSLock()
+        private var active = false
         private var pending = false
         private var operation: (@MainActor @Sendable () -> Void)?
 
         func install(_ operation: @escaping @MainActor @Sendable () -> Void) {
             let shouldDeliver = lock.withLock { () -> Bool in
                 self.operation = operation
-                let value = pending
+                let value = active && pending
+                guard value else { return false }
                 pending = false
-                return value
+                return true
             }
             if shouldDeliver { DesktopAppRunLoop.perform(operation) }
         }
 
         func request() {
             let installedOperation = lock.withLock { () -> (@MainActor @Sendable () -> Void)? in
-                guard let operation = self.operation else {
+                guard active, let operation = self.operation else {
                     pending = true
                     return nil
                 }
+                return operation
+            }
+            if let installedOperation { DesktopAppRunLoop.perform(installedOperation) }
+        }
+
+        /// Guest drivers commonly reset virtio-gpu while probing the device during boot.
+        /// Keep that reset queued until the initial renderer generation has crossed the
+        /// readiness handoff; otherwise the daemon can admit the replacement before the
+        /// VMM publishes readiness for the generation that produced the first frame.
+        func activate() {
+            let installedOperation = lock.withLock { () -> (@MainActor @Sendable () -> Void)? in
+                active = true
+                guard pending, let operation else { return nil }
+                pending = false
                 return operation
             }
             if let installedOperation { DesktopAppRunLoop.perform(installedOperation) }
@@ -2831,6 +2847,7 @@ enum DesktopMode {
             let filesystemWorker = self.filesystemWorker
             let graphicsReadinessState = self.graphicsReadinessState
             let rendererWorkerLaunchStore = self.rendererWorkerLaunchStore
+            let rendererRestartRequests = self.rendererRestartRequests
             Task.detached(priority: .userInitiated) { [weak self] in
                 do {
                     if let guestFSEventBridge {
@@ -2939,6 +2956,7 @@ enum DesktopMode {
                                 }
                             }
                         )
+                        rendererRestartRequests.activate()
                         return
                     }
                     try await DesktopGuestReadinessBoundary.complete(
@@ -2997,6 +3015,7 @@ enum DesktopMode {
                             _ = await cameraAttachment?.attachIfAvailable()
                         }
                     )
+                    rendererRestartRequests.activate()
                 } catch {
                     rendererWorkerLaunchStore.teardown(
                         reason: "desktop readiness failed: \(error)"
