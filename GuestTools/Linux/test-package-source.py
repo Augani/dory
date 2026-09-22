@@ -55,6 +55,12 @@ class LinuxGuestToolsPackageSourceTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("clipboard-session", helper)
+        self.assertIn('session_process="/proc/$session_pid"', helper)
+        self.assertIn('$session_process/environ', helper)
+        self.assertIn("session_environment DISPLAY", helper)
+        self.assertIn("session_environment XAUTHORITY", helper)
+        self.assertIn("session_environment WAYLAND_DISPLAY", helper)
+        self.assertNotIn('DISPLAY="${DISPLAY:-:0}"', helper)
         self.assertIn("XDG_RUNTIME_DIR", session.read_text(encoding="utf-8"))
         self.assertIn("PartOf=graphical-session.target", unit)
         self.assertIn("WantedBy=graphical-session.target", unit)

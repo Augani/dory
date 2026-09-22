@@ -25,6 +25,25 @@ session_marker="$runtime/dory/clipboard-session"
   || { echo "Dory clipboard user service is not active" >&2; exit 69; }
 [ "$(stat -c %u "$session_marker" 2>/dev/null || true)" = "$uid" ] \
   || { echo "Dory clipboard session marker has the wrong owner" >&2; exit 69; }
+session_pid="$(cat "$session_marker" 2>/dev/null || true)"
+case "$session_pid" in
+  ''|*[!0-9]*)
+    echo "Dory clipboard session marker has an invalid process" >&2
+    exit 69
+    ;;
+esac
+session_process="/proc/$session_pid"
+[ -r "$session_process/environ" ] \
+  || { echo "Dory clipboard user service is no longer active" >&2; exit 69; }
+[ "$(stat -c %u "$session_process" 2>/dev/null || true)" = "$uid" ] \
+  || { echo "Dory clipboard session process has the wrong owner" >&2; exit 69; }
+
+session_environment() {
+  key="$1"
+  tr '\0' '\n' < "$session_process/environ" \
+    | sed -n "s/^${key}=//p" \
+    | sed -n '1p'
+}
 
 run_as_user() {
   runuser -u "$user" -- env \
@@ -36,14 +55,14 @@ run_as_user() {
     "$@"
 }
 
-wayland_socket=""
-for candidate in "$runtime"/wayland-*; do
-  [ -S "$candidate" ] || continue
-  wayland_socket="${candidate##*/}"
-  break
-done
+wayland_socket="$(session_environment WAYLAND_DISPLAY)"
+case "$wayland_socket" in
+  */*) wayland_socket="" ;;
+esac
 
-if [ -n "$wayland_socket" ] && command -v wl-copy >/dev/null 2>&1; then
+if [ -n "$wayland_socket" ] && [ -S "$runtime/$wayland_socket" ] \
+  && command -v wl-copy >/dev/null 2>&1 \
+  && command -v wl-paste >/dev/null 2>&1; then
   case "$operation" in
     set) run_as_user env WAYLAND_DISPLAY="$wayland_socket" wl-copy --type "$mime" ;;
     get) run_as_user env WAYLAND_DISPLAY="$wayland_socket" wl-paste --no-newline --type "$mime" ;;
@@ -54,11 +73,24 @@ fi
 
 command -v xclip >/dev/null 2>&1 \
   || { echo "no supported Wayland or X11 clipboard backend is installed" >&2; exit 69; }
-display="${DISPLAY:-:0}"
-xauthority="$home/.Xauthority"
-[ -f "$xauthority" ] || xauthority=""
-x11_env=(DISPLAY="$display")
-[ -z "$xauthority" ] || x11_env+=(XAUTHORITY="$xauthority")
+display="$(session_environment DISPLAY)"
+printf '%s\n' "$display" | grep -Eq '^:[0-9]+(\.[0-9]+)?$' \
+  || { echo "Dory clipboard user service has no local X11 display" >&2; exit 69; }
+xauthority="$(session_environment XAUTHORITY)"
+if [ -z "$xauthority" ] && [ -f "$runtime/gdm/Xauthority" ]; then
+  xauthority="$runtime/gdm/Xauthority"
+fi
+if [ -z "$xauthority" ] && [ -f "$home/.Xauthority" ]; then
+  xauthority="$home/.Xauthority"
+fi
+case "$xauthority" in
+  /*) ;;
+  *) echo "Dory clipboard user service has no X11 authority" >&2; exit 69 ;;
+esac
+[ -f "$xauthority" ] && [ ! -L "$xauthority" ] \
+  && [ "$(stat -c %u "$xauthority" 2>/dev/null || true)" = "$uid" ] \
+  || { echo "Dory clipboard X11 authority is invalid" >&2; exit 69; }
+x11_env=(DISPLAY="$display" XAUTHORITY="$xauthority")
 x11_target="$mime"
 case "$mime" in
   text/plain|text/plain\;charset=utf-8) x11_target="UTF8_STRING" ;;
