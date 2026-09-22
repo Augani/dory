@@ -546,7 +546,11 @@ Reference behavior: [Linux DRM framebuffer helpers](https://docs.kernel.org/gpu/
 
 ### 3.5 P3-05 — Prove hardware execution and displayed pixels
 
-**Code to retain:** extend guest/mesa/dory-vulkan-probe.c and dory-vulkan-compositor-probe.c for their existing WSI, DRM/dmabuf synchronization and pixel-check plumbing; add the missing owned compute/GL coverage, build scripts, workload inputs and guest-result schema.
+**Code to retain:** `guest-probes/` is the sole owned probe authority. Keep
+`dory-vulkan-probe.c`, `dory-vulkan-compositor-probe.c`, `dory-compute-probe.c`,
+`dory-gl-probe.c`, their shader/build inputs, and the displayed-pixel/OpenGL result verifiers in
+that tree. CI must reject an incomplete source inventory or a result that does not bind the exact
+probe inputs, signed launch authority, guest identity, host completion, and displayed-window hash.
 
 1. Compute probe: deterministic input/output, more than a trivial dispatch, checked result count/hash, explicit error paths and device/API identity.
 2. Render probes: known colored geometry/pattern, transformations, texture sampling, alpha and multiple frames. Include frame number and campaign nonce in visible output so stale frames are detectable.
