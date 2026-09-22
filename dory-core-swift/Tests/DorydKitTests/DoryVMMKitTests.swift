@@ -410,6 +410,81 @@ final class DoryVMMKitTests: XCTestCase {
     }
 
     @MainActor
+    func testClipboardPushesPNGImagesToGuest() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01])
+        pasteboard.clearContents()
+        pasteboard.setData(png, forType: .png)
+        let recorder = ClipboardWriteRecorder()
+        let coordinator = DoryDesktopClipboardCoordinator(
+            policy: .hostToGuest,
+            transport: DoryDesktopClipboardTransport(
+                availability: { true },
+                get: { _ in Data() },
+                set: { mimeType, data in
+                    XCTAssertEqual(mimeType, "image/png")
+                    _ = recorder.record(data)
+                }
+            ),
+            sendShortcut: { _ in },
+            pasteboard: pasteboard,
+            startupRetryDelay: 0.01,
+            startupRetryLimit: 1,
+            pollInterval: 0.01,
+            log: { _ in }
+        )
+
+        coordinator.start()
+        coordinator.markGuestReady()
+        defer { coordinator.stop() }
+
+        let deadline = ContinuousClock.now + .seconds(2)
+        while recorder.lastPayload != png, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(recorder.lastPayload, png)
+    }
+
+    @MainActor
+    func testClipboardPullsPNGImagesFromGuest() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x02])
+        pasteboard.clearContents()
+        let recorder = ClipboardWriteRecorder()
+        let coordinator = DoryDesktopClipboardCoordinator(
+            policy: .guestToHost,
+            transport: DoryDesktopClipboardTransport(
+                availability: { true },
+                get: { mimeType in
+                    XCTAssertEqual(mimeType, "image/png")
+                    recorder.recordClipboardRead()
+                    return png
+                },
+                set: { _, _ in }
+            ),
+            sendShortcut: { _ in },
+            pasteboard: pasteboard,
+            startupRetryDelay: 0.01,
+            startupRetryLimit: 1,
+            pollInterval: 0.01,
+            log: { _ in }
+        )
+
+        coordinator.start()
+        coordinator.markGuestReady()
+        defer { coordinator.stop() }
+
+        let deadline = ContinuousClock.now + .seconds(2)
+        while pasteboard.data(forType: .png) != png, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertGreaterThan(recorder.clipboardReadCount, 0)
+        XCTAssertEqual(pasteboard.data(forType: .png), png)
+    }
+
+    @MainActor
     func testDisabledClipboardPolicyPerformsNoGuestIO() async throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
@@ -444,6 +519,7 @@ final class DoryVMMKitTests: XCTestCase {
 
         XCTAssertEqual(recorder.capabilityProbeCount, 0)
         XCTAssertEqual(recorder.attemptCount, 0)
+        XCTAssertEqual(recorder.clipboardReadCount, 0)
         XCTAssertEqual(pasteboard.string(forType: .string), "must remain host-only")
     }
 
