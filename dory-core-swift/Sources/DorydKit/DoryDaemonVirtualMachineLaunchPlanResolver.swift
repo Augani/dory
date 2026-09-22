@@ -7,6 +7,7 @@ public enum DoryDaemonVirtualMachinePreSpawnAuthorizationError:
 {
     case alreadyConsumed
     case revalidationFailed
+    case revalidationFailure(String)
 }
 
 /// Non-persisted output of the final production revalidation. Most launches require no renderer
@@ -91,7 +92,9 @@ public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sen
         }
         do { return try resolveLaunchAuthority() }
         catch {
-            throw DoryDaemonVirtualMachinePreSpawnAuthorizationError.revalidationFailed
+            throw DoryDaemonVirtualMachinePreSpawnAuthorizationError.revalidationFailure(
+                String(describing: error)
+            )
         }
     }
 }

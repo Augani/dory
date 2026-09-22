@@ -1061,7 +1061,9 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                 )
                 qualification = nil
             } catch {
-                throw DoryDaemonProductionTrustInventoryError.qualificationUnavailable
+                throw DoryDaemonProductionTrustInventoryError.qualificationMismatch(
+                    String(describing: error)
+                )
             }
         } else if usesPortableBaseline {
             qualification = nil
