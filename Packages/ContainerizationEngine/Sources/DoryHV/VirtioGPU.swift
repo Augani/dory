@@ -8779,10 +8779,10 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             }
             return response
         case Command.getEDID:
-            try requireLength(request, 28)
+            try requireLength(request, 32)
             let scanoutID = request.leUInt32(at: 24)
             displayLock.lock()
-            let size = scanoutID < activeScanoutCount
+            let size = scanoutID < scanoutCount
                 ? scanoutSizes[Int(scanoutID)] : nil
             displayLock.unlock()
             guard let size else {
