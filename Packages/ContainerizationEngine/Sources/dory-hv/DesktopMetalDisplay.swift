@@ -91,9 +91,10 @@ final class DesktopPointerTopology: @unchecked Sendable {
 /// Maps a scanout rectangle into the Metal texture coordinates consumed by
 /// `DesktopDisplayView`'s flipped AppKit surface.
 ///
-/// The AppKit display surface is flipped to a top-left origin, matching guest scanout and pointer
-/// coordinates. Top-origin frame leases therefore keep their natural row order; bottom-origin
-/// textures swap endpoints.
+/// Metal viewport Y maps clip-space +1 to the drawable's top edge, while the vertex table assigns
+/// that edge the second V endpoint. A top-origin frame therefore swaps the V endpoints so its first
+/// row appears at the drawable's top. `NSView.isFlipped` affects AppKit coordinates, not this Metal
+/// clip-space-to-viewport mapping.
 enum DesktopScanoutTextureCoordinates {
     static func sourceUV(
         sourceRect: VirtioGPURect,
@@ -107,9 +108,9 @@ enum DesktopScanoutTextureCoordinates {
         let secondY = Float(sourceRect.y + sourceRect.height) / Float(backingHeight)
         return SIMD4<Float>(
             left,
-            yOriginTop ? firstY : secondY,
+            yOriginTop ? secondY : firstY,
             right,
-            yOriginTop ? secondY : firstY
+            yOriginTop ? firstY : secondY
         )
     }
 }

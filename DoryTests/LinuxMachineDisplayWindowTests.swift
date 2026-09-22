@@ -20,7 +20,7 @@ struct LinuxMachineDisplayWindowTests {
             backingHeight: 500,
             yOriginTop: true
         )
-        #expect(topOrigin == SIMD4<Float>(0.1, 0.1, 0.5, 0.5))
+        #expect(topOrigin == SIMD4<Float>(0.1, 0.5, 0.5, 0.1))
 
         let bottomOrigin = LinuxMachineScanoutTextureCoordinates.sourceUV(
             sourceRect: .init(x: 100, y: 50, width: 400, height: 200),
@@ -28,6 +28,6 @@ struct LinuxMachineDisplayWindowTests {
             backingHeight: 500,
             yOriginTop: false
         )
-        #expect(bottomOrigin == SIMD4<Float>(0.1, 0.5, 0.5, 0.1))
+        #expect(bottomOrigin == SIMD4<Float>(0.1, 0.1, 0.5, 0.5))
     }
 }
