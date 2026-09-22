@@ -23,6 +23,7 @@ EXPECTED_BUNDLE_IDENTIFIER = "com.pythonxi.Dory.GuestTools"
 EXPECTED_TEAM_IDENTIFIER = "864H636QW4"
 SOURCE_FILES = (
     "GuestTools/DoryGuestTools/DoryGuestMetalProbe.swift",
+    "GuestTools/DoryGuestTools/DoryGuestMetalProbeTransport.swift",
     "GuestTools/DoryGuestTools/DoryGuestToolsApp.swift",
     "GuestTools/DoryGuestTools/DoryGuestTools.entitlements",
     "GuestTools/METAL_PROBE.md",

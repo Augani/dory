@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression coverage for audited manual macOS guest Metal-probe exports."""
+"""Regression coverage for manual and VZ-socket macOS guest Metal evidence."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 VERIFIER = ROOT / "scripts/verify-macos-guest-metal-probe.py"
 SOURCE_FILES = (
     "GuestTools/DoryGuestTools/DoryGuestMetalProbe.swift",
+    "GuestTools/DoryGuestTools/DoryGuestMetalProbeTransport.swift",
     "GuestTools/DoryGuestTools/DoryGuestToolsApp.swift",
     "GuestTools/DoryGuestTools/DoryGuestTools.entitlements",
     "GuestTools/METAL_PROBE.md",
@@ -40,6 +41,7 @@ class GuestMetalProbeVerifierTests(unittest.TestCase):
         self.manifest = self.root / "guest-tools-manifest.json"
         self.challenge = self.root / "challenge.json"
         self.result = self.root / "result.json"
+        self.transport = self.root / "result.transport.json"
         self.output = self.root / "verification.json"
         self.write_json(self.manifest, self.make_manifest())
         self.write_json(self.result, self.make_result())
@@ -110,19 +112,35 @@ class GuestMetalProbeVerifierTests(unittest.TestCase):
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
-    def invoke_verify(self) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [
+    def invoke_verify(self, transport: bool = False) -> subprocess.CompletedProcess[str]:
+        arguments = [
                 sys.executable, str(VERIFIER), "verify", "--challenge", str(self.challenge),
                 "--result", str(self.result), "--guest-tools-manifest", str(self.manifest),
                 "--source-root", str(ROOT), "--output", str(self.output),
-            ],
+            ]
+        if transport:
+            arguments += ["--transport-receipt", str(self.transport)]
+        return subprocess.run(
+            arguments,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
     def issue_challenge(self) -> None:
         completed = self.invoke_issue()
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def write_transport_receipt(self) -> None:
+        payload = self.result.read_bytes()
+        self.write_json(self.transport, {
+            "schema": "dory.macos-guest-metal-probe-transport@1",
+            "collectedAt": "2026-09-14T00:00:02Z",
+            "collection": "vz-virtio-socket",
+            "candidateID": "macos-dev-1",
+            "machineID": "machine-1",
+            "nonce": "nonce-1",
+            "resultSHA256": sha256(payload),
+            "resultByteCount": len(payload),
+        })
 
     def test_verified_export_is_explicit_development_evidence(self) -> None:
         self.issue_challenge()
@@ -140,6 +158,28 @@ class GuestMetalProbeVerifierTests(unittest.TestCase):
         self.assertEqual(verification["observed"]["guestOperatingSystemBuild"], "25A123")
         self.assertEqual(verification["observed"]["guestActiveProcessorCount"], 4)
         self.assertEqual(verification["observed"]["guestPhysicalMemoryBytes"], 8 * 1024 * 1024 * 1024)
+
+    def test_vz_socket_receipt_proves_machine_bound_collection(self) -> None:
+        self.issue_challenge()
+        self.write_transport_receipt()
+        completed = self.invoke_verify(transport=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        verification = json.loads(self.output.read_text())
+        self.assertEqual(verification["status"], "transport-collected")
+        self.assertEqual(verification["collection"], "vz-virtio-socket")
+        self.assertFalse(verification["releaseEligible"])
+        self.assertEqual(len(verification["limitations"]), 2)
+
+    def test_vz_socket_receipt_rejects_tampered_raw_result(self) -> None:
+        self.issue_challenge()
+        self.write_transport_receipt()
+        result = self.make_result()
+        result["metalDeviceName"] = "Tampered GPU"
+        self.write_json(self.result, result)
+        completed = self.invoke_verify(transport=True)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("result digest", completed.stderr)
+        self.assertFalse(self.output.exists())
 
     def test_nonce_mismatch_is_rejected(self) -> None:
         self.issue_challenge()

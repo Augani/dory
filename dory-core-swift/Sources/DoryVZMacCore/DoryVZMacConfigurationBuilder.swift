@@ -9,6 +9,7 @@ public enum DoryVZMacConfigurationError: Error, Sendable, Equatable, CustomStrin
     case invalidMACAddress(String)
     case missingHostOnlyNetworkAttachment
     case cameraSocketUnavailable
+    case metalProbeSocketUnavailable
     case integrationDisabled(String)
 
     public var description: String {
@@ -19,6 +20,8 @@ public enum DoryVZMacConfigurationError: Error, Sendable, Equatable, CustomStrin
             "VZMac host-only networking requires its gvproxy-backed attachment"
         case .cameraSocketUnavailable:
             "VZMac did not expose the configured VirtIO socket device"
+        case .metalProbeSocketUnavailable:
+            "VZMac did not expose the VirtIO socket device required for Metal probe collection"
         case .integrationDisabled(let name):
             "VZMac \(name) integration is disabled by the effective device policy"
         }
@@ -542,6 +545,7 @@ public final class DoryVZMacRuntime {
     public let configuration: VZVirtualMachineConfiguration
     public let virtualMachine: VZVirtualMachine
     public let cameraBridge: DoryVZMacCameraBridge?
+    public let metalProbeCollector: DoryVZMacMetalProbeCollector?
     public let configurationSHA256: String
 
     public init(
@@ -551,6 +555,7 @@ public final class DoryVZMacRuntime {
         devicePolicy: DoryVZMacDevicePolicy = .legacyDefault,
         networkAttachment: VZNetworkDeviceAttachment? = nil,
         camera: DoryMacCameraBackend? = nil,
+        metalProbeCollector: DoryVZMacMetalProbeCollector? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws {
         self.bundle = bundle
@@ -571,6 +576,13 @@ public final class DoryVZMacRuntime {
             dataDisks: bundle.manifest.resources.dataDisks
         )
         virtualMachine = VZVirtualMachine(configuration: configuration)
+        if let metalProbeCollector {
+            guard let socket = virtualMachine.socketDevices.first as? VZVirtioSocketDevice else {
+                throw DoryVZMacConfigurationError.metalProbeSocketUnavailable
+            }
+            try metalProbeCollector.install(on: socket)
+        }
+        self.metalProbeCollector = metalProbeCollector
         if devicePolicy.cameraBridgeEnabled {
             let bridge = DoryVZMacCameraBridge(
                 camera: camera ?? DoryMacCameraBackend(log: log),

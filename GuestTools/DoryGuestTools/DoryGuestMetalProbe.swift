@@ -410,6 +410,7 @@ final class DoryGuestMetalProbeController: ObservableObject {
     @Published var machineID = ""
     @Published private(set) var status = "Enter the host-issued nonce, candidate ID, and machine ID, then run the probe inside this guest."
     @Published private(set) var resultJSON = ""
+    @Published private(set) var isCollecting = false
 
     var hasResult: Bool { !resultJSON.isEmpty }
 
@@ -425,6 +426,25 @@ final class DoryGuestMetalProbeController: ObservableObject {
         } catch {
             resultJSON = ""
             status = error.localizedDescription
+        }
+    }
+
+    func runAndSendToHost() {
+        guard !isCollecting else { return }
+        isCollecting = true
+        resultJSON = ""
+        status = "Connecting to the matching Dory qualification run…"
+        Task { @MainActor in
+            defer { isCollecting = false }
+            do {
+                resultJSON = try await Task.detached(priority: .userInitiated) {
+                    try DoryGuestMetalProbeTransport.collect()
+                }.value
+                status = "Metal compute and render completed. The raw result was retained by the matching Dory host run."
+            } catch {
+                resultJSON = ""
+                status = error.localizedDescription
+            }
         }
     }
 

@@ -252,8 +252,10 @@ struct DoryGuestToolsApp: App {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         HStack {
-                            Button("Run Metal Probe") { metalProbe.run() }
+                            Button("Run & Send to Dory") { metalProbe.runAndSendToHost() }
                                 .buttonStyle(.borderedProminent)
+                                .disabled(metalProbe.isCollecting)
+                            Button("Run Metal Probe") { metalProbe.run() }
                             Button("Copy Raw JSON") { metalProbe.copyResult() }
                                 .disabled(!metalProbe.hasResult)
                         }

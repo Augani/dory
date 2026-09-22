@@ -18,12 +18,14 @@ private enum Command {
         machine: URL,
         guestTools: URL?,
         usbMassStorage: DoryVZMacUSBMassStorage?,
+        metalProbe: MetalProbeCollection?,
         suspendOnExit: Bool
     )
     case resume(
         machine: URL,
         guestTools: URL?,
         usbMassStorage: DoryVZMacUSBMassStorage?,
+        metalProbe: MetalProbeCollection?,
         suspendOnExit: Bool
     )
     case clone(machine: URL, destination: URL)
@@ -31,6 +33,11 @@ private enum Command {
     case `import`(source: URL, machine: URL)
     case status(machine: URL)
     case recover(machine: URL, discardSavedState: Bool)
+}
+
+private struct MetalProbeCollection {
+    let challenge: URL
+    let result: URL
 }
 
 private enum CommandError: Error, CustomStringConvertible {
@@ -70,6 +77,20 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
             readOnly: readOnly
         )
     }
+    func takeMetalProbeCollection() throws -> MetalProbeCollection? {
+        let hasChallenge = values.contains("--metal-probe-challenge")
+        let hasResult = values.contains("--metal-probe-result")
+        guard hasChallenge == hasResult else {
+            throw CommandError.usage(
+                "--metal-probe-challenge and --metal-probe-result must be supplied together\n\n\(usage)"
+            )
+        }
+        guard hasChallenge else { return nil }
+        return MetalProbeCollection(
+            challenge: URL(fileURLWithPath: try take("--metal-probe-challenge")),
+            result: URL(fileURLWithPath: try take("--metal-probe-result"))
+        )
+    }
     switch verb {
     case "latest":
         guard values.isEmpty else { throw CommandError.usage(usage) }
@@ -105,6 +126,7 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
             ? URL(fileURLWithPath: try take("--guest-tools"), isDirectory: true)
             : nil
         let usbMassStorage = try takeUSBMassStorage()
+        let metalProbe = try takeMetalProbeCollection()
         let suspendOnExit = values.contains("--suspend-on-exit")
         values.removeAll { $0 == "--suspend-on-exit" }
         guard values.isEmpty else { throw CommandError.usage(usage) }
@@ -112,6 +134,7 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
             machine: machine,
             guestTools: guestTools,
             usbMassStorage: usbMassStorage,
+            metalProbe: metalProbe,
             suspendOnExit: suspendOnExit
         )
     case "resume":
@@ -120,6 +143,7 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
             ? URL(fileURLWithPath: try take("--guest-tools"), isDirectory: true)
             : nil
         let usbMassStorage = try takeUSBMassStorage()
+        let metalProbe = try takeMetalProbeCollection()
         let suspendOnExit = values.contains("--suspend-on-exit")
         values.removeAll { $0 == "--suspend-on-exit" }
         guard values.isEmpty else { throw CommandError.usage(usage) }
@@ -127,6 +151,7 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
             machine: machine,
             guestTools: guestTools,
             usbMassStorage: usbMassStorage,
+            metalProbe: metalProbe,
             suspendOnExit: suspendOnExit
         )
     case "clone":
@@ -170,8 +195,8 @@ Usage:
   dory-vzmac-qualification latest
   dory-vzmac-qualification prepare --ipsw <file> [--source-url <https-url>] --machine <bundle> [--cpus N] [--memory-gib N] [--disk-gib N]
   dory-vzmac-qualification install --ipsw <file> --machine <bundle>
-  dory-vzmac-qualification run --machine <bundle> [--guest-tools <directory>] [--usb-disk <image> [--usb-disk-read-only]] [--suspend-on-exit]
-  dory-vzmac-qualification resume --machine <bundle> [--guest-tools <directory>] [--usb-disk <image> [--usb-disk-read-only]] [--suspend-on-exit]
+  dory-vzmac-qualification run --machine <bundle> [--guest-tools <directory>] [--usb-disk <image> [--usb-disk-read-only]] [--metal-probe-challenge <json> --metal-probe-result <json>] [--suspend-on-exit]
+  dory-vzmac-qualification resume --machine <bundle> [--guest-tools <directory>] [--usb-disk <image> [--usb-disk-read-only]] [--metal-probe-challenge <json> --metal-probe-result <json>] [--suspend-on-exit]
   dory-vzmac-qualification clone --machine <bundle> --destination <bundle>
   dory-vzmac-qualification export --machine <bundle> --destination <dorymachine>
   dory-vzmac-qualification import --source <dorymachine> --machine <bundle>
@@ -267,20 +292,22 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
                 self?.window?.title = "Dory — Installing macOS \(Int(fraction * 100))%"
             }
             window?.title = "Dory — macOS installation complete"
-        case .run(let machine, let guestTools, let usbMassStorage, _):
+        case .run(let machine, let guestTools, let usbMassStorage, let metalProbe, _):
             let runtime = try makeRuntime(
                 machine: machine,
                 guestTools: guestTools,
-                usbMassStorage: usbMassStorage
+                usbMassStorage: usbMassStorage,
+                metalProbe: metalProbe
             )
             show(runtime: runtime, title: "Dory — macOS")
             try await runtime.start()
             window?.title = "Dory — macOS running"
-        case .resume(let machine, let guestTools, let usbMassStorage, _):
+        case .resume(let machine, let guestTools, let usbMassStorage, let metalProbe, _):
             let runtime = try makeRuntime(
                 machine: machine,
                 guestTools: guestTools,
-                usbMassStorage: usbMassStorage
+                usbMassStorage: usbMassStorage,
+                metalProbe: metalProbe
             )
             show(runtime: runtime, title: "Dory — Restoring macOS")
             try await runtime.restoreSuspendedState()
@@ -362,16 +389,39 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
     private func makeRuntime(
         machine: URL,
         guestTools: URL? = nil,
-        usbMassStorage: DoryVZMacUSBMassStorage? = nil
+        usbMassStorage: DoryVZMacUSBMassStorage? = nil,
+        metalProbe: MetalProbeCollection? = nil
     ) throws -> DoryVZMacRuntime {
         let bundle = try DoryVZMacMachineBundle.load(from: machine)
         let shares = try guestTools.map {
             [try DoryVZMacSharedDirectory(name: "Dory Guest Tools", url: $0, readOnly: true)]
         } ?? []
+        let collector: DoryVZMacMetalProbeCollector?
+        if let metalProbe {
+            let challenge = try JSONDecoder().decode(
+                DoryVZMacMetalProbeChallenge.self,
+                from: Data(contentsOf: metalProbe.challenge)
+            )
+            try challenge.validate()
+            guard challenge.machineID == bundle.manifest.machineIdentifierSHA256 else {
+                throw CommandError.usage(
+                    "Metal probe challenge machine ID must equal this bundle's machineIdentifierSHA256"
+                )
+            }
+            collector = try DoryVZMacMetalProbeCollector(
+                challenge: challenge,
+                resultURL: metalProbe.result
+            ) { message in
+                FileHandle.standardError.write(Data("\(message)\n".utf8))
+            }
+        } else {
+            collector = nil
+        }
         let runtime = try DoryVZMacRuntime(
             bundle: bundle,
             sharedDirectories: shares,
-            usbMassStorage: usbMassStorage
+            usbMassStorage: usbMassStorage,
+            metalProbeCollector: collector
         ) { message in
             FileHandle.standardError.write(Data("\(message)\n".utf8))
         }
@@ -428,7 +478,7 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
         guard let runtime, runtime.virtualMachine.state == .running else { return .terminateNow }
         let suspendOnExit: Bool
         switch command {
-        case .run(_, _, _, let enabled), .resume(_, _, _, let enabled):
+        case .run(_, _, _, _, let enabled), .resume(_, _, _, _, let enabled):
             suspendOnExit = enabled
         default:
             suspendOnExit = false

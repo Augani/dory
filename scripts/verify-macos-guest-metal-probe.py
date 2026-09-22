@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Audit a manually exported Dory macOS guest Metal probe result.
+"""Audit a Dory macOS guest Metal probe result and its optional VZ-socket receipt.
 
-This is deliberately a development-evidence boundary, not guest-to-host
-authentication.  It makes the manual handoff reviewable by binding one raw
-guest result to a host-issued challenge, the staged Guest Tools manifest, and
-the retained probe source inventory.  Its output is never release eligible.
+The manual path remains development-only. A transport receipt proves that the
+selected VZ runtime collected the raw result over its machine-local VirtIO
+socket, while visible-window and lifecycle correlation remain separate gates.
 """
 
 from __future__ import annotations
@@ -27,9 +26,11 @@ MANIFEST_SCHEMA = "dory.macos-guest-tools-manifest@1"
 RESULT_SCHEMA = "dory.guest-tools.metal-probe@1"
 CHALLENGE_SCHEMA = "dory.macos-guest-metal-probe-challenge@1"
 VERIFICATION_SCHEMA = "dory.macos-guest-metal-probe-verification@1"
+TRANSPORT_SCHEMA = "dory.macos-guest-metal-probe-transport@1"
 BUNDLE_IDENTIFIER = "com.pythonxi.Dory.GuestTools"
 SOURCE_FILES = (
     "GuestTools/DoryGuestTools/DoryGuestMetalProbe.swift",
+    "GuestTools/DoryGuestTools/DoryGuestMetalProbeTransport.swift",
     "GuestTools/DoryGuestTools/DoryGuestToolsApp.swift",
     "GuestTools/DoryGuestTools/DoryGuestTools.entitlements",
     "GuestTools/METAL_PROBE.md",
@@ -278,6 +279,25 @@ def validate_result(value: dict[str, Any], challenge: dict[str, str]) -> dict[st
     }
 
 
+def validate_transport_receipt(
+    value: dict[str, Any], result_payload: bytes, challenge: dict[str, str]
+) -> None:
+    exact_keys(value, {
+        "schema", "collectedAt", "collection", "candidateID", "machineID", "nonce",
+        "resultSHA256", "resultByteCount",
+    }, "transport receipt")
+    if value["schema"] != TRANSPORT_SCHEMA or value["collection"] != "vz-virtio-socket":
+        raise ProbeError("transport receipt is not a supported VZ virtio-socket collection")
+    utc_timestamp(value["collectedAt"], "transport receipt collectedAt")
+    for field in ("candidateID", "machineID", "nonce"):
+        if value[field] != challenge[field]:
+            raise ProbeError(f"transport receipt {field} does not match the host challenge")
+    if value["resultSHA256"] != digest(result_payload):
+        raise ProbeError("transport receipt result digest does not match the raw guest result")
+    if value["resultByteCount"] != len(result_payload):
+        raise ProbeError("transport receipt byte count does not match the raw guest result")
+
+
 def issue(arguments: argparse.Namespace) -> None:
     manifest, payload = load_json(arguments.guest_tools_manifest, "guest tools manifest")
     manifest_fields = validate_manifest(manifest, payload, None)
@@ -312,11 +332,15 @@ def verify(arguments: argparse.Namespace) -> None:
         raise ProbeError("host challenge and staged Guest Tools manifest disagree")
     result, result_payload = load_json(arguments.result, "guest probe result")
     observed = validate_result(result, challenge_fields)
+    transport_collected = arguments.transport_receipt is not None
+    if transport_collected:
+        transport, _ = load_json(arguments.transport_receipt, "transport receipt")
+        validate_transport_receipt(transport, result_payload, challenge_fields)
     document = {
         "schema": VERIFICATION_SCHEMA,
-        "status": "development-observed",
+        "status": "transport-collected" if transport_collected else "development-observed",
         "releaseEligible": False,
-        "collection": "audited-manual",
+        "collection": "vz-virtio-socket" if transport_collected else "audited-manual",
         "challengeSHA256": digest(challenge_payload),
         "resultSHA256": digest(result_payload),
         "guestToolsManifestSHA256": manifest_fields["manifestSHA256"],
@@ -324,11 +348,16 @@ def verify(arguments: argparse.Namespace) -> None:
         "machineID": challenge_fields["machineID"],
         "nonce": challenge_fields["nonce"],
         "observed": observed,
-        "limitations": [
-            "Manual export is not authenticated guest-to-host transport.",
-            "This verifier cannot prove that the result came from the selected Dory window or machine.",
-            "This development observation is not final-candidate qualification or release evidence.",
-        ],
+        "limitations": (
+            [
+                "VZ virtio-socket binds collection to the selected machine runtime, but this receipt does not prove the rendered pattern was visible in the selected Dory window.",
+                "This transport receipt must be correlated with product-window capture and lifecycle evidence before release qualification.",
+            ] if transport_collected else [
+                "Manual export is not authenticated guest-to-host transport.",
+                "This verifier cannot prove that the result came from the selected Dory window or machine.",
+                "This development observation is not final-candidate qualification or release evidence.",
+            ]
+        ),
     }
     atomic_write(arguments.output, canonical_json(document))
 
@@ -346,6 +375,7 @@ def main() -> int:
     verify_parser = commands.add_parser("verify", help="verify one manual guest result against a challenge")
     verify_parser.add_argument("--challenge", required=True, type=Path)
     verify_parser.add_argument("--result", required=True, type=Path)
+    verify_parser.add_argument("--transport-receipt", type=Path)
     verify_parser.add_argument("--guest-tools-manifest", required=True, type=Path)
     verify_parser.add_argument("--source-root", type=Path, default=ROOT)
     verify_parser.add_argument("--output", required=True, type=Path)
