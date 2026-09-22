@@ -523,7 +523,7 @@ private final class LinuxMachineDisplayClient: @unchecked Sendable {
         presented: Bool,
         metalCommandBufferCompletionID: UInt64 = 0
     ) {
-        guard let leaseID = try? frame.leaseID.rawValue.uuidString else {
+        guard let leaseID = try? frame.leaseID.rawValue.uuidString.lowercased() else {
             failed("The VM display frame carried an invalid lease.")
             return
         }
