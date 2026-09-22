@@ -205,10 +205,9 @@ nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
     }
 }
 
-/// Maps a relayed scanout rectangle into Metal texture coordinates. Metal viewport Y maps
-/// clip-space +1 to the drawable's top edge, while the vertex table assigns that edge the second V
-/// endpoint. A top-origin frame therefore swaps the V endpoints. `NSView.isFlipped` affects AppKit
-/// coordinates, not this Metal clip-space-to-viewport mapping.
+/// Maps a relayed scanout rectangle into Metal texture coordinates. The display view is a flipped
+/// AppKit surface, so its CAMetalLayer presents top-origin guest rows in their stored order. Only a
+/// renderer texture explicitly marked bottom-origin needs its V endpoints swapped.
 nonisolated enum LinuxMachineScanoutTextureCoordinates {
     static func sourceUV(
         sourceRect: DoryVMDisplayRect,
@@ -222,9 +221,9 @@ nonisolated enum LinuxMachineScanoutTextureCoordinates {
         let secondY = Float(sourceRect.y + sourceRect.height) / Float(backingHeight)
         return SIMD4<Float>(
             left,
-            yOriginTop ? secondY : firstY,
+            yOriginTop ? firstY : secondY,
             right,
-            yOriginTop ? firstY : secondY
+            yOriginTop ? secondY : firstY
         )
     }
 }
