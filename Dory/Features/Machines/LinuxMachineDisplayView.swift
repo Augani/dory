@@ -205,9 +205,9 @@ nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
     }
 }
 
-/// Maps a relayed scanout rectangle into Metal texture coordinates. Metal maps clip-space +Y to
-/// the top of the drawable, while the vertex table assigns that edge the second V endpoint. A
-/// top-origin frame must therefore put its first row in the second endpoint.
+/// Maps a relayed scanout rectangle into Metal texture coordinates. The AppKit display surface
+/// is flipped to a top-left origin, matching guest scanout and pointer coordinates. Top-origin
+/// frame leases therefore keep their natural row order; bottom-origin textures swap endpoints.
 nonisolated enum LinuxMachineScanoutTextureCoordinates {
     static func sourceUV(
         sourceRect: DoryVMDisplayRect,
@@ -221,9 +221,9 @@ nonisolated enum LinuxMachineScanoutTextureCoordinates {
         let secondY = Float(sourceRect.y + sourceRect.height) / Float(backingHeight)
         return SIMD4<Float>(
             left,
-            yOriginTop ? secondY : firstY,
+            yOriginTop ? firstY : secondY,
             right,
-            yOriginTop ? firstY : secondY
+            yOriginTop ? secondY : firstY
         )
     }
 }
