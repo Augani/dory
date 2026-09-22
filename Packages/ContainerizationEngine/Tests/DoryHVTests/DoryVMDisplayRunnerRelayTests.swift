@@ -368,11 +368,14 @@ struct DoryVMDisplayRunnerRelayTests {
         )
 
         relay.publish(frame)
-        relay.publish(frame)
+        var refreshedFrame = frame
+        refreshedFrame.bytes = Data(repeating: 0x5A, count: 16)
+        relay.publish(refreshedFrame)
         #expect(transport.frames.count == 1)
 
         transport.completeNextFrame()
         #expect(transport.frames.count == 2)
+        #expect(transport.frames[1].pixels == Data(repeating: 0x5A, count: 16))
         relay.stop()
     }
 }
