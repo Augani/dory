@@ -391,7 +391,7 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
             update: VirtioGPUMetalScanoutUpdate,
             descriptor: FileHandle?,
             sharedTextureHandle: MTLSharedTextureHandle?,
-            onPresentationCompleted: @escaping @Sendable (UInt64) -> Void,
+            onPresentationCompleted: @escaping @Sendable (UInt64, UInt32) -> Void,
             onPresentationFailed: @escaping @Sendable (UInt64, String) -> Void
         ) {
             self.scanoutID = update.scanoutID
@@ -402,7 +402,10 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
                 if presented {
                     update.recordPresentationCompleted(completionID: completionID)
                     update.acceptHostSubmission()
-                    onPresentationCompleted(update.presentation.workerGeneration.rawValue)
+                    onPresentationCompleted(
+                        update.presentation.workerGeneration.rawValue,
+                        update.scanoutID
+                    )
                 } else {
                     update.rejectHostSubmission()
                     onPresentationFailed(update.presentation.workerGeneration.rawValue, detail)
@@ -411,12 +414,18 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
             }
         }
 
-        init(scanoutID: UInt32, descriptor: FileHandle) {
+        init(
+            scanoutID: UInt32,
+            descriptor: FileHandle,
+            onPresentationCompleted: @escaping @Sendable (UInt32) -> Void
+        ) {
             self.scanoutID = scanoutID
             self.descriptor = descriptor
             self.sharedTextureHandle = nil
             self.requiresMetalCompletion = false
-            self.completion = { _, _, _ in }
+            self.completion = { presented, _, _ in
+                if presented { onPresentationCompleted(scanoutID) }
+            }
         }
 
         func complete(
@@ -473,8 +482,9 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
     private let transport: any DoryVMDisplayRunnerTransport
     private let commandHandler: DoryVMDisplayRunnerCommandHandler
     private let log: @Sendable (String) -> Void
-    private let onPresentationCompleted: @Sendable (UInt64) -> Void
+    private let onPresentationCompleted: @Sendable (UInt64, UInt32) -> Void
     private let onPresentationFailed: @Sendable (UInt64, String) -> Void
+    private let onCPUPresentationCompleted: @Sendable (UInt32) -> Void
     private let presentationIntervals: DoryVMDisplayPresentationIntervals
     private let pollQueue = DispatchQueue(
         label: "dev.dory.dory-hv.display-command-relay",
@@ -488,8 +498,9 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         operationID: UUID,
         serviceName: String,
         commandHandler: DoryVMDisplayRunnerCommandHandler,
-        onPresentationCompleted: @escaping @Sendable (UInt64) -> Void = { _ in },
+        onPresentationCompleted: @escaping @Sendable (UInt64, UInt32) -> Void = { _, _ in },
         onPresentationFailed: @escaping @Sendable (UInt64, String) -> Void = { _, _ in },
+        onCPUPresentationCompleted: @escaping @Sendable (UInt32) -> Void = { _ in },
         log: @escaping @Sendable (String) -> Void
     ) -> DoryVMDisplayRunnerRelay {
         final class TransportBox: @unchecked Sendable {
@@ -509,6 +520,7 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
             commandHandler: commandHandler,
             onPresentationCompleted: onPresentationCompleted,
             onPresentationFailed: onPresentationFailed,
+            onCPUPresentationCompleted: onCPUPresentationCompleted,
             log: log
         )
         box.relay = relay
@@ -520,8 +532,9 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         operationID: UUID,
         transport: any DoryVMDisplayRunnerTransport,
         commandHandler: DoryVMDisplayRunnerCommandHandler,
-        onPresentationCompleted: @escaping @Sendable (UInt64) -> Void = { _ in },
+        onPresentationCompleted: @escaping @Sendable (UInt64, UInt32) -> Void = { _, _ in },
         onPresentationFailed: @escaping @Sendable (UInt64, String) -> Void = { _, _ in },
+        onCPUPresentationCompleted: @escaping @Sendable (UInt32) -> Void = { _ in },
         presentationIntervals: DoryVMDisplayPresentationIntervals = .init(),
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
@@ -531,6 +544,7 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         self.commandHandler = commandHandler
         self.onPresentationCompleted = onPresentationCompleted
         self.onPresentationFailed = onPresentationFailed
+        self.onCPUPresentationCompleted = onCPUPresentationCompleted
         self.presentationIntervals = presentationIntervals
         self.log = log
     }
@@ -894,9 +908,11 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         guard let (pending, refresh) = completed else {
             return
         }
-        let validCompletion = pending.requiresMetalCompletion
-            ? presented == (metalCommandBufferCompletionID > 0)
-            : metalCommandBufferCompletionID == 0
+        // Every app-owned display frame is rendered by Metal, including a descriptor-backed
+        // CPU copy. The broker therefore proves a successful presentation with a nonzero command
+        // buffer completion ID for both transports. CPU frames remain separate from renderer
+        // synchronization: PendingFrame's CPU completion only signals visible installer output.
+        let validCompletion = presented == (metalCommandBufferCompletionID > 0)
         let effectivePresented = presented && validCompletion
         let effectiveCompletionID = effectivePresented
             ? metalCommandBufferCompletionID
@@ -904,7 +920,7 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         let effectiveDetail = validCompletion
             ? detail
             : "invalid-metal-command-buffer-completion"
-        if effectivePresented, pending.requiresMetalCompletion {
+        if effectivePresented {
             presentationIntervals.recordPresented(scanoutID: pending.scanoutID)
         }
         pending.complete(
@@ -960,7 +976,11 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
             sourceRect: fullRect,
             dirtyRect: fullRect
         )
-        let pending = PendingFrame(scanoutID: snapshot.scanoutID, descriptor: descriptor)
+        let pending = PendingFrame(
+            scanoutID: snapshot.scanoutID,
+            descriptor: descriptor,
+            onPresentationCompleted: onCPUPresentationCompleted
+        )
         let admitted = lock.withLock { () -> Bool in
             guard !state.stopped, state.pending[leaseID] == nil else { return false }
             state.pending[leaseID] = pending

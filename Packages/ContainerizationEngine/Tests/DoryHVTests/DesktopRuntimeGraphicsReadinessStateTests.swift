@@ -12,6 +12,7 @@ import Testing
             selection: provisionalGraphicsSelection(),
             sender: { recorder.record($0) }
         )
+        #expect(!state.hasCompletedRendererPresentation)
         try state.publish(readyMessage())
         state.recordFirstShaderCompletion(atUnixMilliseconds: 10)
         state.apply(.verified(proofSHA256: String(repeating: "c", count: 64)))
@@ -22,6 +23,7 @@ import Testing
         #expect(selection.guestProducerFenceProofSHA256 == String(repeating: "c", count: 64))
         #expect(selection.firstShaderCompletedAtUnixMilliseconds == 10)
         #expect(selection.firstPresentationCompletedAtUnixMilliseconds == 11)
+        #expect(state.hasCompletedRendererPresentation)
         #expect(selection.isValid)
         #expect(recorder.values.last?.graphicsSelection == selection)
         #expect(recorder.values.count == 4)

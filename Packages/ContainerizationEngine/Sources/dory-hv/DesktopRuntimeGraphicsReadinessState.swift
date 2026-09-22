@@ -33,6 +33,14 @@ final class DesktopRuntimeGraphicsReadinessState: @unchecked Sendable {
         }
     }
 
+    var hasCompletedRendererPresentation: Bool {
+        condition.withLock {
+            selection?.accelerationLevel != .software
+                && selection?.rendererGeneration != nil
+                && selection?.firstPresentationCompletedAtUnixMilliseconds != nil
+        }
+    }
+
     func publish(_ ready: VmmReadyMessage) throws {
         condition.lock()
         defer { condition.unlock() }

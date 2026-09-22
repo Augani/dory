@@ -60,7 +60,7 @@ struct DoryVMDisplayRunnerRelayTests {
                 if !automaticallyReplyToFrames { frameReplies.append(reply) }
                 return automaticallyReplyToFrames
             }
-            if shouldReply { reply(true, 0, "") }
+            if shouldReply { reply(true, 1, "") }
         }
 
         func publishCursor(
@@ -128,7 +128,7 @@ struct DoryVMDisplayRunnerRelayTests {
 
         func completeNextFrame(presented: Bool = true) {
             let reply = lock.withLock { frameReplies.isEmpty ? nil : frameReplies.removeFirst() }
-            reply?(presented, 0, presented ? "" : "rejected")
+            reply?(presented, presented ? 1 : 0, presented ? "" : "rejected")
         }
 
         func waitForCommandAcknowledgement() -> DispatchTimeoutResult {
@@ -300,13 +300,17 @@ struct DoryVMDisplayRunnerRelayTests {
         let transport = FakeTransport()
         let rendererCompletions = Recorder<UInt64>()
         let rendererFailures = Recorder<UInt64>()
+        let cpuCompletions = Recorder<UInt32>()
         let relay = DoryVMDisplayRunnerRelay(
             machineID: "ubuntu",
             operationID: UUID(),
             transport: transport,
             commandHandler: .init(input: { _, _ in true }, resize: { _, _, _, _, _ in }),
-            onPresentationCompleted: { rendererCompletions.append($0) },
-            onPresentationFailed: { generation, _ in rendererFailures.append(generation) }
+            onPresentationCompleted: { generation, _ in
+                rendererCompletions.append(generation)
+            },
+            onPresentationFailed: { generation, _ in rendererFailures.append(generation) },
+            onCPUPresentationCompleted: { cpuCompletions.append($0) }
         )
 
         relay.publish(VirtioGPUScanoutFrame(
@@ -344,6 +348,7 @@ struct DoryVMDisplayRunnerRelayTests {
         ]))
         #expect(rendererCompletions.snapshot.isEmpty)
         #expect(rendererFailures.snapshot.isEmpty)
+        #expect(cpuCompletions.snapshot == [0, 0])
         relay.stop()
     }
 

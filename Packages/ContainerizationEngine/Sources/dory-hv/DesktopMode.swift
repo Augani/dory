@@ -1435,6 +1435,7 @@ enum DesktopMode {
         private let usbControlServer: UsbControlServer?
         private let clipboard: DoryDesktopClipboardCoordinator?
         private let firstFrame: FirstFrameGate
+        private let firstCompletedPresentation: FirstFrameGate
         private let deviceTelemetry: RawDeviceTelemetryRegistry
         private let lifecycleReceiptServer: VmmLifecycleReceiptServer
         private let graphicsReadinessState: DesktopRuntimeGraphicsReadinessState
@@ -1626,6 +1627,9 @@ enum DesktopMode {
             var cursorMailboxes = [DesktopCursorMailbox]()
             var displays = [DesktopDisplayView]()
             let presentationBudget = DesktopCPUPresentationBudget.processDefault
+            let firstCompletedPresentation = FirstFrameGate(
+                requiredScanoutCount: displayPlans.count
+            )
             let initialPointerSizes = displayPlans.map {
                 VirtioGPUScanoutSize(width: $0.widthPixels, height: $0.heightPixels)
             }
@@ -1641,8 +1645,8 @@ enum DesktopMode {
                     scanoutID: UInt32(index),
                     sharedCPUPresentationBudget: presentationBudget
                 )
-                mailbox.installCPUFramePresentationObserver { _ in
-                    graphicsReadinessState.recordFirstPresentationCompletion()
+                mailbox.installCPUFramePresentationObserver { frame in
+                    firstCompletedPresentation.signal(scanoutID: frame.scanoutID)
                 }
                 let cursorMailbox = DesktopCursorMailbox()
                 if configuration.displayRelayServiceName == nil, let plan {
@@ -1671,13 +1675,18 @@ enum DesktopMode {
                         machine?.requestStop(.crash("Metal display failed closed: \(reason)"))
                     }
                     metalDisplay.onWorkerPresentationCompleted = {
-                        [rendererWorkerLaunchStore, graphicsReadinessState] workerGeneration in
+                        [
+                            rendererWorkerLaunchStore,
+                            graphicsReadinessState,
+                            firstCompletedPresentation,
+                        ] workerGeneration in
                         rendererWorkerLaunchStore.current(
                             matchingWorkerGeneration: workerGeneration
                         )?.recordSynchronizedPresentation(
                             workerGeneration: workerGeneration
                         )
                         graphicsReadinessState.recordFirstPresentationCompletion()
+                        firstCompletedPresentation.signal(scanoutID: plan.scanoutID)
                     }
                     let display: DesktopDisplayView = metalDisplay
                     mailbox.view = display
@@ -1691,6 +1700,7 @@ enum DesktopMode {
             self.displays = displays
             let firstFrame = FirstFrameGate(requiredScanoutCount: displayPlans.count)
             self.firstFrame = firstFrame
+            self.firstCompletedPresentation = firstCompletedPresentation
 
             let hostVisibleArenaByteCount = rendererWorkerLaunch?
                 .broker.bootstrap.hostVisibleArenaByteCount ?? 0
@@ -1874,20 +1884,28 @@ enum DesktopMode {
                         }
                     ),
                     onPresentationCompleted: {
-                        [rendererWorkerLaunchStore, graphicsReadinessState]
-                        workerGeneration in
+                        [
+                            rendererWorkerLaunchStore,
+                            graphicsReadinessState,
+                            firstCompletedPresentation,
+                        ]
+                        workerGeneration, scanoutID in
                         rendererWorkerLaunchStore.current(
                             matchingWorkerGeneration: workerGeneration
                         )?.recordSynchronizedPresentation(
                             workerGeneration: workerGeneration
                         )
                         graphicsReadinessState.recordFirstPresentationCompletion()
+                        firstCompletedPresentation.signal(scanoutID: scanoutID)
                     },
                     onPresentationFailed: { [weak gpu] workerGeneration, reason in
                         gpu?.reportRendererWorkerPresentationFailure(
                             workerGeneration: workerGeneration,
                             reason: "app-owned display rejected frame: \(reason)"
                         )
+                    },
+                    onCPUPresentationCompleted: { [firstCompletedPresentation] scanoutID in
+                        firstCompletedPresentation.signal(scanoutID: scanoutID)
                     },
                     log: Self.log
                 )
@@ -2807,6 +2825,7 @@ enum DesktopMode {
             let configuration = self.configuration
             let graphicsDisplayName = graphicsBackend.displayName
             let firstFrame = self.firstFrame
+            let firstCompletedPresentation = self.firstCompletedPresentation
             let cameraAttachment = self.cameraAttachment
             let guestFSEventBridge = self.guestFSEventBridge
             let filesystemWorker = self.filesystemWorker
@@ -2844,7 +2863,7 @@ enum DesktopMode {
                                     // Generic media has no Dory-owned display-manager barrier, so
                                     // require either the Metal path or the verified CPU fallback
                                     // to complete a real presentation before readiness.
-                                    guard graphicsReadinessState.waitForFirstPresentation(
+                                    guard firstCompletedPresentation.wait(
                                         timeout: 300
                                     ) else {
                                         throw VMError.bootFailure(
@@ -2860,7 +2879,7 @@ enum DesktopMode {
                                         self?.clipboard?.markGuestReady()
                                     }
                                     if graphicsReadinessState
-                                        .requiresRendererSynchronizedPublication {
+                                        .hasCompletedRendererPresentation {
                                         try rendererWorkerLaunchStore.current()?
                                             .claimSynchronizedPresentationForPublication()
                                     }
@@ -2890,7 +2909,7 @@ enum DesktopMode {
                                             configuration.attachedShares.map(\.tag)
                                         )
                                     if graphicsReadinessState
-                                        .requiresRendererSynchronizedPublication {
+                                        .hasCompletedRendererPresentation {
                                         try rendererWorkerLaunchStore.current()?
                                             .claimSynchronizedPresentationForPublication()
                                     }
