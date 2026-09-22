@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.gpu-stock-capability-reset-observation",
+  "observedAt": "2026-09-22T05:57:00Z",
+  "host": {
+    "hardwareModel": "Mac14,10",
+    "operatingSystemBuild": "26B5086k"
+  },
+  "guest": {
+    "architecture": "arm64",
+    "distribution": "Ubuntu",
+    "version": "24.04.5",
+    "bootMediaSHA256": "2be09ca883921bff6d8e6b0bfbafd13e32436553b7086f33bce3a4c5bad8bd14",
+    "kernelCommandLineAddition": "console=ttyAMA0,115200 earlycon=pl011,0x09000000 loglevel=7 systemd.log_target=console"
+  },
+  "candidate": {
+    "campaignIdentifier": "gpu-resetcap-seq60",
+    "revocationSequence": 60,
+    "sourceCommit": "75c8f9235",
+    "doryHVExecutableSHA256": "d806448fa300e5d70ce64dd9ee0a0421fe31eb4eade9f55d78af392e0187d088",
+    "rendererBootstrapQualificationSHA256": "cd620f33c4dc54b4fd167a5a123499a603574aee9098557d20aa9af64d043403",
+    "rendererInventorySHA256": "ba2fb1cb0063963993f195cd7028fe8be9b682b94869a5efe3394dd8a99b01db",
+    "rendererWorkerExecutableSHA256": "2e599abea8eb706ee5649bfb3221d0932a73945eb249d9975ab362d6c5bc5ce9"
+  },
+  "observation": {
+    "deviceResetRequestedFreshRendererGeneration": true,
+    "replacementRendererGeneration": 32,
+    "kernelProbe": [
+      "[drm] Host memory window: 0xc00000000 +0x10000000",
+      "[drm] features: +virgl -edid +resource_blob +host_visible",
+      "[drm] features: +context_init",
+      "[drm] number of scanouts: 16",
+      "[drm] number of cap sets: 2",
+      "[drm] cap set 0: id 2, max-version 2, max-size 1408",
+      "[drm] cap set 1: id 4, max-version 0, max-size 160"
+    ],
+    "hostCommandsAfterReset": [
+      "GET_CAPSET_INFO index=0",
+      "GET_CAPSET_INFO index=1"
+    ]
+  },
+  "result": {
+    "status": "passed",
+    "claim": "A signed worker's immutable virtio-gpu feature and capset contract survives the firmware-to-Linux status-0 reset and is visible at the stock Linux probe."
+  },
+  "scope": {
+    "proved": [
+      "VirGL, resource-blob, and context-init feature advertisement survives device reset",
+      "VirGL2 and Venus capset metadata is visible to the stock Ubuntu kernel",
+      "the asynchronous replacement renderer generation is installed after isolated reset"
+    ],
+    "notYetProved": [
+      "stock Mesa GET_CAPSET and CTX_CREATE",
+      "RESOURCE_CREATE_BLOB and MAP_BLOB",
+      "SUBMIT_3D, producer fence, shared-texture export, and displayed-pixel receipt"
+    ]
+  }
+}
