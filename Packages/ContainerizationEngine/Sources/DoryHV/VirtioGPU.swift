@@ -457,12 +457,12 @@ private final class VirtioGPUMetalPresentationCompletion: @unchecked Sendable {
 
     func resolve(completionID: UInt64) {
         guard completionID > 0 else { return }
-        let callback = lock.withLock { () -> (@Sendable (UInt64) -> Void)? in
-            let callback = callback
+        let completion = lock.withLock { () -> (@Sendable (UInt64) -> Void)? in
+            let completion = self.callback
             self.callback = nil
-            return callback
+            return completion
         }
-        callback?(completionID)
+        completion?(completionID)
     }
 }
 
@@ -3010,11 +3010,12 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         timing[10] = UInt8(
             (verticalSyncOffset & 0x0F) << 4 | (verticalSyncPulse & 0x0F)
         )
+        let horizontalOffsetHigh = ((horizontalSyncOffset >> 8) & 0x03) << 6
+        let horizontalPulseHigh = ((horizontalSyncPulse >> 8) & 0x03) << 4
+        let verticalOffsetHigh = ((verticalSyncOffset >> 4) & 0x03) << 2
+        let verticalPulseHigh = (verticalSyncPulse >> 4) & 0x03
         timing[11] = UInt8(
-            ((horizontalSyncOffset >> 8) & 0x03) << 6
-                | ((horizontalSyncPulse >> 8) & 0x03) << 4
-                | ((verticalSyncOffset >> 4) & 0x03) << 2
-                | ((verticalSyncPulse >> 4) & 0x03)
+            horizontalOffsetHigh | horizontalPulseHigh | verticalOffsetHigh | verticalPulseHigh
         )
         timing[12] = UInt8(truncatingIfNeeded: physicalWidth)
         timing[13] = UInt8(truncatingIfNeeded: physicalHeight)

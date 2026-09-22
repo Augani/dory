@@ -1372,14 +1372,14 @@ enum DesktopMode {
         }
 
         func request() {
-            let operation = lock.withLock { () -> (@MainActor @Sendable () -> Void)? in
-                guard let operation else {
+            let installedOperation = lock.withLock { () -> (@MainActor @Sendable () -> Void)? in
+                guard let operation = self.operation else {
                     pending = true
                     return nil
                 }
                 return operation
             }
-            if let operation { DesktopAppRunLoop.perform(operation) }
+            if let installedOperation { DesktopAppRunLoop.perform(installedOperation) }
         }
     }
 

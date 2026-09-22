@@ -1,9 +1,23 @@
+import Darwin
 import Hypervisor
 
 #if arch(arm64)
 /// One guest CPU. Hypervisor.framework requires that a vcpu is created, run, and destroyed on the
 /// SAME thread, so instances are confined to their owning thread by construction and never shared.
 public final class VCPU {
+    private typealias SetSErrorFunction = @convention(c) (hv_vcpu_t, Bool) -> hv_return_t
+
+    /// Xcode 26 SDKs do not declare the macOS 27 SError API. Resolve it from the running
+    /// Hypervisor framework so one binary still builds with the older SDK and retains injection
+    /// when it actually runs on macOS 27 or newer.
+    private static let setSErrorFunction: SetSErrorFunction? = {
+        guard let symbol = dlsym(
+            UnsafeMutableRawPointer(bitPattern: -2), // RTLD_DEFAULT
+            "hv_vcpu_set_serror"
+        ) else { return nil }
+        return unsafeBitCast(symbol, to: SetSErrorFunction.self)
+    }()
+
     public let handle: hv_vcpu_t
     private let exitInfo: UnsafeMutablePointer<hv_vcpu_exit_t>
 
@@ -55,7 +69,12 @@ public final class VCPU {
     /// (log, retry, or panic) without losing the entire VM.
     func injectSError() throws {
         if #available(macOS 27.0, *) {
-            try hvCheck(hv_vcpu_set_serror(handle, true), "hv_vcpu_set_serror")
+            guard let setSError = Self.setSErrorFunction else {
+                throw VMError.unexpectedExit(
+                    "SError injection is missing from the running Hypervisor framework"
+                )
+            }
+            try hvCheck(setSError(handle, true), "hv_vcpu_set_serror")
         } else {
             // On older macOS where hv_vcpu_set_serror is unavailable, fall back to
             // the existing crash behavior. The caller should have already decided
