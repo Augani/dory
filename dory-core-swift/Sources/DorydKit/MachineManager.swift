@@ -3608,10 +3608,47 @@ public final class MachineManager: @unchecked Sendable {
                                            requestedOperationID: context.operation.operationID)
         } catch {
             if activeLifecycleOperation(machineID: id) === context {
-                retainConfigurationUpdateForRecovery(context)
+                do {
+                    if try !terminateDurablyAbortedProductionStart(context) {
+                        retainConfigurationUpdateForRecovery(context)
+                    }
+                } catch {
+                    retainConfigurationUpdateForRecovery(context)
+                }
             }
             throw error
         }
+    }
+
+    private func terminateDurablyAbortedProductionStart(
+        _ context: MachineLifecycleJournalContext
+    ) throws -> Bool {
+        guard let controller = managerStateLock.withLock({ productionPlanningController }),
+              let descriptor = try controller.recoveryDescriptor(for: context.machineID),
+              descriptor.operationID == context.operation.operationID,
+              descriptor.isAborted else {
+            return false
+        }
+        let invalidated = DoryMachineRuntimeIdentity.requiresReplanning(
+            virtualHardwareABIVersion:
+                context.operation.target.plannedRuntime?.virtualHardwareABIVersion
+                    ?? DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion,
+            reason: .planRecoveryFailed
+        )
+        guard let machine = lock.withLock({ machines[context.machineID]?.configuration }) else {
+            throw MachineManagerError.unknownMachine(context.machineID)
+        }
+        try persistRuntimeIdentity(invalidated, configuration: machine)
+        lock.withLock {
+            guard var entry = machines[context.machineID], entry.process?.isRunning != true else {
+                return
+            }
+            entry.runtimeIdentity = invalidated
+            entry.state = context.operation.source.state == .created ? .created : .stopped
+            machines[context.machineID] = entry
+        }
+        failLifecycle(context, stepID: "start.planning-aborted")
+        return true
     }
 
     private func recoverInterruptedProductionStarts() throws {
@@ -3624,7 +3661,18 @@ public final class MachineManager: @unchecked Sendable {
             }()
             guard operation.target.plannedRuntime != nil else { continue }
             let id = operation.source.workspaceID
-            _ = try resumeProductionStartRoot(productionStartContext(id: id, operationID: operation.operationID))
+            do {
+                _ = try resumeProductionStartRoot(
+                    productionStartContext(id: id, operationID: operation.operationID)
+                )
+            } catch {
+                // A durably aborted planning transaction is terminal for this caller UUID.
+                // resumeProductionStartRoot records that terminal state; activation can then
+                // continue and a fresh caller UUID may safely re-plan.
+                guard try store.read(operation.operationID).state.status == .failed else {
+                    throw error
+                }
+            }
         }
     }
 

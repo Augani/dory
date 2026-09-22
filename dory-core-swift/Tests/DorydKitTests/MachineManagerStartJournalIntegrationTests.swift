@@ -122,6 +122,57 @@ struct MachineManagerStartJournalIntegrationTests {
         }
     }
 
+    @Test("aborted production planning terminates its start root and permits a fresh retry")
+    func abortedPlanningIsTerminal() throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: "stopped")
+            defer { harness.cleanup() }
+            let operationID = UUID()
+            harness.rejectProductionPlanning()
+
+            #expect(throws: (any Error).self) {
+                try harness.context.machineManager.start(
+                    id: harness.id,
+                    operationID: operationID
+                )
+            }
+            #expect(try harness.journal.read(operationID).state.status == .failed)
+            #expect(harness.context.machineManager.status(id: harness.id)?.state == .stopped)
+            #expect(harness.context.machineManager.status(id: harness.id)?.pid == nil)
+            #expect(throws: (any Error).self) {
+                try harness.context.machineManager.start(
+                    id: harness.id,
+                    operationID: operationID
+                )
+            }
+
+            harness.restoreProductionPlanning()
+            let activation = harness.fixture.factory.activate(
+                store: harness.fixture.store,
+                machineConfiguration: harness.fixture.machineConfiguration,
+                appVersion: harness.fixture.appVersion,
+                publicKey: harness.fixture.publicKey,
+                expectedArchitecture: "arm64"
+            )
+            guard case .activated(let recovered) = activation else {
+                Issue.record("aborted start planning blocked activation: \(activation)")
+                return
+            }
+            let retryID = UUID()
+            _ = try harness.drive {
+                try recovered.machineManager.start(id: harness.id, operationID: retryID)
+            }
+            let deadline = Date().addingTimeInterval(20)
+            while Date() < deadline,
+                  try harness.journal.read(retryID).state.status != .completed {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            #expect(try harness.journal.read(operationID).state.status == .failed)
+            #expect(try harness.journal.read(retryID).state.status == .completed)
+            #expect(recovered.machineManager.status(id: harness.id)?.state == .running)
+        }
+    }
+
     @Test("fresh activation retains start UUID across planning and completed readiness", arguments: [false, true])
     func interruptedStartRecovery(afterReadiness: Bool) throws {
         try withProductionIntegrationTestStack {

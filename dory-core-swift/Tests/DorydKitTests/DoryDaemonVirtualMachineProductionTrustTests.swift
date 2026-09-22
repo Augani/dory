@@ -3378,6 +3378,23 @@ final class ProductionDesktopUpdateHarness: @unchecked Sendable {
         return try input.read(upToCount: 64) ?? Data()
     }
 
+    func rejectProductionPlanning() {
+        let host = fixture.host
+        fixture.hostState.set(DoryDaemonProductionHostObservation(
+            hardwareModelIdentifier: host.hardwareModelIdentifier,
+            operatingSystemBuild: host.operatingSystemBuild,
+            macOSMajorVersion: host.macOSMajorVersion,
+            virtualizationFrameworkAvailable: host.virtualizationFrameworkAvailable,
+            hypervisorFrameworkAvailable: false,
+            metalAvailable: host.metalAvailable,
+            resources: host.resources
+        ))
+    }
+
+    func restoreProductionPlanning() {
+        fixture.hostState.set(fixture.host)
+    }
+
     func drive<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) throws -> T {
         try Self.drive(operation)
     }
