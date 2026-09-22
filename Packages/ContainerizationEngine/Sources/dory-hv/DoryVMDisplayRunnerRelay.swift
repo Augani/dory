@@ -219,6 +219,10 @@ final class DoryVMDisplayRunnerRelaySlot: @unchecked Sendable {
         lock.withLock { relay }?.publish(frame)
     }
 
+    func canPublishCPUFrame(scanoutID: UInt32) -> Bool {
+        lock.withLock { relay }?.canPublishCPUFrame(scanoutID: scanoutID) ?? false
+    }
+
     func publishCursor(_ update: VirtioGPUCursorUpdate?, scanoutCount: Int) {
         lock.withLock { relay }?.publishCursor(update, scanoutCount: scanoutCount)
     }
@@ -805,6 +809,12 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
                 state.cpuFrameInFlightScanouts.remove(frame.scanoutID)
             }
             log("dory-hv display relay rejected CPU frame: \(error)")
+        }
+    }
+
+    func canPublishCPUFrame(scanoutID: UInt32) -> Bool {
+        lock.withLock {
+            !state.stopped && !state.cpuFrameInFlightScanouts.contains(scanoutID)
         }
     }
 

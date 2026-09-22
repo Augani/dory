@@ -1733,6 +1733,14 @@ enum DesktopMode {
                 graphicsTraceContext = nil
                 onGraphicsTrace = nil
             }
+            let shouldPublishCPUFrame: (@Sendable (UInt32) -> Bool)?
+            if usesDisplayRelay {
+                shouldPublishCPUFrame = { [displayRelaySlot] scanoutID in
+                    displayRelaySlot.canPublishCPUFrame(scanoutID: scanoutID)
+                }
+            } else {
+                shouldPublishCPUFrame = nil
+            }
             let gpu = VirtioGPU(
                 hostMemoryBase: GuestLayout.daxWindowBase,
                 hostMemorySize: rendererWorkerLaunch == nil
@@ -1746,6 +1754,7 @@ enum DesktopMode {
                 hostVisibleMemory: hostVisibleMemory,
                 graphicsTraceContext: graphicsTraceContext,
                 onGraphicsTrace: onGraphicsTrace,
+                shouldPublishScanoutFrame: shouldPublishCPUFrame,
                 onScanoutFrame: { [mailboxes, firstFrame, displayRelaySlot] frame in
                     guard mailboxes.indices.contains(Int(frame.scanoutID)) else { return }
                     if usesDisplayRelay {

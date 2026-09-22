@@ -2079,6 +2079,8 @@ import Testing
     @Test func twoDimensionalBindingFlushAndReleaseFollowScanoutLifetime() throws {
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
         let frameBox = ScanoutFrameBox()
+        let frameAdmission = DeviceLogicLockedBox(true)
+        let frameCount = DeviceLogicLockedBox(0)
         let releasedResources = ScanoutReleaseBox()
         let renderer = FakeVirtioGPURenderer(capsets: [])
         let gpu = VirtioGPU(
@@ -2087,7 +2089,11 @@ import Testing
             scanoutWidth: 2,
             scanoutHeight: 2,
             renderer: renderer,
-            onScanoutFrame: { frameBox.store($0) },
+            shouldPublishScanoutFrame: { _ in frameAdmission.value },
+            onScanoutFrame: {
+                frameBox.store($0)
+                frameCount.withLock { $0 += 1 }
+            },
             onScanoutResourceReleased: { releasedResources.store($0) }
         )
         let transport = VirtioMMIOTransport(
@@ -2187,6 +2193,11 @@ import Testing
         #expect(frame.stride == 4)
         #expect(frame.dirtyRect == VirtioGPURect(x: 1, y: 0, width: 1, height: 2))
         #expect(Array(frame.bytes) == [5, 6, 7, 8, 13, 14, 15, 16])
+
+        let publishedFrameCount = frameCount.value
+        frameAdmission.withLock { $0 = false }
+        #expect(leUInt32(try submit(flush), at: 0) == 0x1100)
+        #expect(frameCount.value == publishedFrameCount)
 
         var detach = gpuRequest(type: 0x0107, fenceID: 0, contextID: 0, ringIndex: 0)
         detach.appendLE(UInt32(7))

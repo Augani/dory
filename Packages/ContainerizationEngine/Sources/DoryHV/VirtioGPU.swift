@@ -1947,6 +1947,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private var scanoutSizes: [VirtioGPUScanoutSize]
     private var activeScanoutCount: UInt32
     private var pendingDisplayEvents: UInt32 = 0
+    private let shouldPublishScanoutFrame: (@Sendable (UInt32) -> Bool)?
     private let onScanoutFrame: (@Sendable (VirtioGPUScanoutFrame) -> Void)?
     private let onScanoutTexture: (@Sendable (VirtioGPUScanoutTextureUpdate) -> Void)?
     private let onMetalScanout: (@Sendable (VirtioGPUMetalScanoutUpdate) -> Void)?
@@ -2509,6 +2510,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         maximumPendingFenceResponseBytes: Int = 8 * 1_024 * 1_024,
         maximumCopiedScanoutSurfaceBytes: UInt64 = 128 * 1_024 * 1_024,
         quiescenceTimeout: TimeInterval = 5,
+        shouldPublishScanoutFrame: (@Sendable (UInt32) -> Bool)? = nil,
         onScanoutFrame: (@Sendable (VirtioGPUScanoutFrame) -> Void)? = nil,
         onScanoutTexture: (@Sendable (VirtioGPUScanoutTextureUpdate) -> Void)? = nil,
         onMetalScanout: (@Sendable (VirtioGPUMetalScanoutUpdate) -> Void)? = nil,
@@ -2613,6 +2615,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         self.scanoutSizes = reservedScanoutSizes
         self.activeScanoutCount = boundedActiveScanoutCount
         self.hostVisibleMemory = hostVisibleMemory
+        self.shouldPublishScanoutFrame = shouldPublishScanoutFrame
         self.onScanoutFrame = onScanoutFrame
         self.onScanoutTexture = onScanoutTexture
         self.onMetalScanout = onMetalScanout
@@ -10014,6 +10017,10 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         where binding.resourceID == resourceID {
             guard case .resource2D = binding.source else { continue }
             guard let dirty = Self.intersection(dirtyRect, binding.rect) else { continue }
+            // CPU scanout extraction happens while the virtio command lock is held. If the
+            // display broker is still presenting the previous lease, avoid copying another
+            // multi-megabyte framebuffer and blocking unrelated MMIO/guest progress.
+            guard shouldPublishScanoutFrame?(scanoutID) ?? true else { continue }
             let outputStride = Int(dirty.width) * 4
             var pixels = Data(capacity: outputStride * Int(dirty.height))
             for row in 0..<UInt64(dirty.height) {
