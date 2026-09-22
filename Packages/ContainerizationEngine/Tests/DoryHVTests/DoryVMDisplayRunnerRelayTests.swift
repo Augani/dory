@@ -33,11 +33,14 @@ struct DoryVMDisplayRunnerRelayTests {
         private(set) var invalidateCount = 0
         private var publishedCursors: [Data] = []
         private var publishedFrames: [PublishedFrame] = []
+        private var frameReplies: [@Sendable (Bool, UInt64, String) -> Void] = []
         private var acknowledgedCommandSequences: [UInt64] = []
         private let commandAcknowledgement = DispatchSemaphore(value: 0)
+        private let automaticallyReplyToFrames: Bool
 
-        init(commands: [Data] = []) {
+        init(commands: [Data] = [], automaticallyReplyToFrames: Bool = true) {
             self.commands = commands
+            self.automaticallyReplyToFrames = automaticallyReplyToFrames
         }
 
         func publishFrame(
@@ -47,15 +50,17 @@ struct DoryVMDisplayRunnerRelayTests {
             reply: @escaping @Sendable (Bool, UInt64, String) -> Void
         ) {
             let pixels = descriptors.first.flatMap { try? $0.readToEnd() } ?? Data()
-            lock.withLock {
+            let shouldReply = lock.withLock {
                 publishedFrames.append(PublishedFrame(
                     frame: frame,
                     pixels: pixels,
                     descriptorCount: descriptors.count,
                     hasSharedTextureHandle: sharedTextureHandle != nil
                 ))
+                if !automaticallyReplyToFrames { frameReplies.append(reply) }
+                return automaticallyReplyToFrames
             }
-            reply(true, 0, "")
+            if shouldReply { reply(true, 0, "") }
         }
 
         func publishCursor(
@@ -120,6 +125,11 @@ struct DoryVMDisplayRunnerRelayTests {
         var cursors: [Data] { lock.withLock { publishedCursors } }
         var frames: [PublishedFrame] { lock.withLock { publishedFrames } }
         var commandSequences: [UInt64] { lock.withLock { acknowledgedCommandSequences } }
+
+        func completeNextFrame(presented: Bool = true) {
+            let reply = lock.withLock { frameReplies.isEmpty ? nil : frameReplies.removeFirst() }
+            reply?(presented, 0, presented ? "" : "rejected")
+        }
 
         func waitForCommandAcknowledgement() -> DispatchTimeoutResult {
             commandAcknowledgement.wait(timeout: .now() + 1)
@@ -334,6 +344,36 @@ struct DoryVMDisplayRunnerRelayTests {
         ]))
         #expect(rendererCompletions.snapshot.isEmpty)
         #expect(rendererFailures.snapshot.isEmpty)
+        relay.stop()
+    }
+
+    @Test func relayDoesNotPrepareAnotherCPUFrameWhileOneIsInFlight() throws {
+        let transport = FakeTransport(automaticallyReplyToFrames: false)
+        let relay = DoryVMDisplayRunnerRelay(
+            machineID: "ubuntu",
+            operationID: UUID(),
+            transport: transport,
+            commandHandler: .init(input: { _, _ in true }, resize: { _, _, _, _, _ in })
+        )
+        let frame = VirtioGPUScanoutFrame(
+            scanoutID: 0,
+            resourceID: 7,
+            resourceGeneration: 2,
+            format: 1,
+            width: 2,
+            height: 2,
+            stride: 8,
+            dirtyRect: .init(x: 0, y: 0, width: 2, height: 2),
+            bytes: Data(repeating: 0xA5, count: 16)
+        )
+
+        relay.publish(frame)
+        relay.publish(frame)
+        #expect(transport.frames.count == 1)
+
+        transport.completeNextFrame()
+        relay.publish(frame)
+        #expect(transport.frames.count == 2)
         relay.stop()
     }
 }
