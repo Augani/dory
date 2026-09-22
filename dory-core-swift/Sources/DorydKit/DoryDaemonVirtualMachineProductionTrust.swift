@@ -2005,11 +2005,17 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
                 message: "The candidate Virtualization.framework helper failed verification."
             ))
         }
-        if let rawPath = machineConfiguration.acceleratedDesktopExecutablePath,
-           let runtime = try? runtimeVerifier(
-               rawPath, RawHVLinuxMachineBackend.backendDescriptor, "dory-hv"
-           ) {
-            runtimes.append(runtime)
+        if let rawPath = machineConfiguration.acceleratedDesktopExecutablePath {
+            do {
+                runtimes.append(try runtimeVerifier(
+                    rawPath, RawHVLinuxMachineBackend.backendDescriptor, "dory-hv"
+                ))
+            } catch {
+                return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                    code: .backendRuntimeUnavailable,
+                    message: "The candidate RawHV helper failed verification: \(error)"
+                ))
+            }
         }
         guard authority.stateRoot == machineConfiguration.stateDirectory else {
             return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
