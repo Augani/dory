@@ -20,12 +20,12 @@ dory-remote = { path = "../remote" }
 uniffi = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
-zstd = "0.13.3"
+zstd = "0.14.0"
 
 [dev-dependencies]
 serde_json = { workspace = true }
 dory-agent = { path = "../agent" }
-russh = { version = "0.60.3", default-features = false, features = ["aws-lc-rs", "flate2"] }
+russh = { version = "0.63.3", default-features = false, features = ["aws-lc-rs", "flate2"] }
 rand = "0.10"
 
 [features]
