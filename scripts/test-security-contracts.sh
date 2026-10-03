@@ -26,13 +26,16 @@ done
 
 for required_vmm_entitlement in \
   com.apple.security.virtualization \
-  com.apple.security.device.audio-input; do
+  com.apple.security.device.audio-input \
+  com.apple.security.device.camera; do
   grep -F "$required_vmm_entitlement" \
     dory-core-swift/Sources/dory-vmm/dory-vmm.entitlements >/dev/null \
     || fail "dory-vmm lost $required_vmm_entitlement"
 done
 grep -F 'NSMicrophoneUsageDescription' dory-core-swift/Sources/dory-vmm/Info.plist >/dev/null \
   || fail "dory-vmm lost its microphone privacy description"
+grep -F 'NSCameraUsageDescription' dory-core-swift/Sources/dory-vmm/Info.plist >/dev/null \
+  || fail "dory-vmm lost its camera privacy description"
 
 for required_runner_entitlement in \
   com.apple.security.hypervisor \

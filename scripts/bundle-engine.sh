@@ -89,15 +89,26 @@ fi
 DESKTOP_APPCAST_URL="${DORY_DESKTOP_APPCAST_URL:-https://augani.github.io/dory/appcast-desktop.xml}"
 
 find_xcode() {
-  local dev app found
+  local dev app found version
   for app in /Applications/Xcode.app /Applications/Xcode-*.app \
              "$HOME"/Applications/Xcode*.app "$HOME"/Downloads/Xcode*.app; do
     dev="$app/Contents/Developer"
-    [ -x "$dev/usr/bin/xcodebuild" ] && { printf '%s' "$dev"; return 0; }
+    [ -x "$dev/usr/bin/xcodebuild" ] || continue
+    version="$(DEVELOPER_DIR="$dev" xcodebuild -version 2>/dev/null || true)"
+    case "$version" in
+      $'Xcode 27.0\nBuild version 27A266a'|$'Xcode 26.6\nBuild version 17F113')
+        printf '%s' "$dev"; return 0 ;;
+    esac
   done
-  found="$(mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'" 2>/dev/null | head -1)"
-  [ -n "$found" ] && [ -x "$found/Contents/Developer/usr/bin/xcodebuild" ] \
-    && { printf '%s' "$found/Contents/Developer"; return 0; }
+  while IFS= read -r found; do
+    dev="$found/Contents/Developer"
+    [ -x "$dev/usr/bin/xcodebuild" ] || continue
+    version="$(DEVELOPER_DIR="$dev" xcodebuild -version 2>/dev/null || true)"
+    case "$version" in
+      $'Xcode 27.0\nBuild version 27A266a'|$'Xcode 26.6\nBuild version 17F113')
+        printf '%s' "$dev"; return 0 ;;
+    esac
+  done < <(mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'" 2>/dev/null)
   return 1
 }
 
@@ -118,6 +129,17 @@ if [ -z "${DEVELOPER_DIR:-}" ]; then
     fi
   fi
 fi
+
+DEVELOPER_DIR="${DEVELOPER_DIR:-$(xcode-select -p)}"
+export DEVELOPER_DIR
+selected_xcode_version="$(xcodebuild -version 2>/dev/null || true)"
+case "$selected_xcode_version" in
+  $'Xcode 27.0\nBuild version 27A266a'|$'Xcode 26.6\nBuild version 17F113') ;;
+  *)
+    echo "error: bundle-engine requires final Xcode 27.0 (27A266a) or final Xcode 26.6 (17F113); selected ${selected_xcode_version:-unknown}" >&2
+    exit 64
+    ;;
+esac
 
 # DoryCore's generated bindings and universal static XCFramework are ignored artifacts. Release
 # bundling must create them from this checkout before building either doryd/dory-vmm or dory-hv.
@@ -1070,6 +1092,11 @@ guest_agent_source_for_arch() {
 
 guest_tools_iso_source_for_arch() {
   local arch="$1" env_name candidate
+  if [ "$arch" = amd64 ] && [ -n "${DORY_GUEST_TOOLS_ISO_X86_64:-}" ] \
+     && [ -f "$DORY_GUEST_TOOLS_ISO_X86_64" ]; then
+    printf '%s\n' "$DORY_GUEST_TOOLS_ISO_X86_64"
+    return 0
+  fi
   env_name="$(env_for_arch DORY_GUEST_TOOLS_ISO "$arch")"
   candidate="${!env_name:-}"
   if [ -n "$candidate" ] && [ -f "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
@@ -1077,6 +1104,10 @@ guest_tools_iso_source_for_arch() {
      && [ -f "$DORY_GUEST_TOOLS_ISO" ]; then
     printf '%s\n' "$DORY_GUEST_TOOLS_ISO"
     return 0
+  fi
+  if [ "$arch" = amd64 ]; then
+    candidate="$REPO_ROOT/GuestTools/Linux/out/dory-guest-tools-x86_64.iso"
+    if [ -f "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
   fi
   candidate="$REPO_ROOT/GuestTools/Linux/out/dory-guest-tools-$arch.iso"
   [ -f "$candidate" ] && printf '%s\n' "$candidate"
@@ -1276,16 +1307,35 @@ bundle_guest_agent_for_arch() {
 }
 
 bundle_guest_tools_iso_for_arch() {
-  local arch="$1" iso_src iso_out
+  local arch="$1" guest_arch iso_src iso_out expected_commit fingerprint
+  guest_arch="$arch"
+  [ "$arch" = amd64 ] && guest_arch=x86_64
   iso_src="$(guest_tools_iso_source_for_arch "$arch" || true)"
-  iso_out="$RESOURCES/dory-guest-tools-$arch.iso"
+  iso_out="$RESOURCES/dory-guest-tools-$guest_arch.iso"
   if [ -n "$iso_src" ] && [ -f "$iso_src" ]; then
     install -m0644 "$iso_src" "$iso_out"
+    fingerprint="${DORY_LINUX_GUEST_TOOLS_GPG_FINGERPRINT:-}"
+    if [ -z "$fingerprint" ]; then
+      if [ "${DORY_PUBLIC_RELEASE:-0}" = 1 ] \
+        || [ "${DORY_ALLOW_UNVERIFIED_GUEST_TOOLS_ISO:-0}" != 1 ]; then
+        echo "    ERROR: set DORY_LINUX_GUEST_TOOLS_GPG_FINGERPRINT to verify the $guest_arch tools ISO" >&2
+        return 1
+      fi
+      echo "    WARNING: development-only unverified $guest_arch Guest Tools ISO" >&2
+    else
+      expected_commit="${DORY_RELEASE_SOURCE_COMMIT:-$(git rev-parse HEAD)}"
+      "$REPO_ROOT/GuestTools/Linux/verify-tools-iso.sh" \
+        --iso "$iso_out" \
+        --expected-gpg-key "$fingerprint" \
+        --expected-source-commit "$expected_commit" \
+        --expected-architecture "$guest_arch" \
+        --portable
+    fi
     echo "    bundled Resources/$(basename "$iso_out") ($(du -h "$iso_out" | awk '{print $1}'))"
   else
     rm -f "$iso_out"
     warn_or_fail_missing_bundle_asset \
-      "no signed $arch Guest Tools ISO found; build GuestTools/Linux/out/dory-guest-tools-$arch.iso in qualified guest VMs or set $(env_for_arch DORY_GUEST_TOOLS_ISO "$arch")"
+      "no signed $guest_arch Guest Tools ISO found; build GuestTools/Linux/out/dory-guest-tools-$guest_arch.iso in qualified guest VMs or set $(env_for_arch DORY_GUEST_TOOLS_ISO "$guest_arch")"
   fi
 }
 

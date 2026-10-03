@@ -274,6 +274,7 @@ expected = {
     },
     "vmm": {
         "com.apple.security.device.audio-input": True,
+        "com.apple.security.device.camera": True,
         "com.apple.security.virtualization": True,
     },
 }[policy]
@@ -323,7 +324,7 @@ verify_bundle_info "$FS_WORKER_APP/Contents/Info.plist" \
 verify_bundle_info "$RENDERER_WORKER_APP/Contents/Info.plist" \
   com.pythonxi.Dory.HVRunner.RendererWorker DoryRendererWorker 'XPC!' Application DoryRendererWorker
 verify_bundle_info "$VZ_VMM_INFO" dory-vmm dory-vmm APPL - DoryVMM \
-  NSMicrophoneUsageDescription
+  NSCameraUsageDescription NSMicrophoneUsageDescription
 verify_exact_worker_graph
 [ ! -e "$VZ_VMM_APP/Contents/XPCServices" ] \
   || { echo "desktop live gate: DoryVMM must not contain XPCServices" >&2; exit 1; }
@@ -385,7 +386,7 @@ OUTER_EXECUTABLE="$OUTER_APP/Contents/MacOS/Dory"
   || { echo "desktop live gate: outer Dory executable is missing or indirect" >&2; exit 66; }
 require_arm64_slice "$OUTER_EXECUTABLE" 'outer Dory application'
 verify_bundle_info "$OUTER_INFO" com.pythonxi.Dory Dory APPL - Dory \
-  NSMicrophoneUsageDescription
+  NSCameraUsageDescription NSMicrophoneUsageDescription
 python3 - "$OUTER_INFO" "$DESKTOP_VERSION" <<'PY'
 import plistlib
 import re

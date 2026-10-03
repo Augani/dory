@@ -21,6 +21,21 @@ def digest(path: Path) -> str:
 
 
 class MatrixTests(unittest.TestCase):
+    def test_repository_matrix_names_desktop_candidates_without_release_approval(self) -> None:
+        matrix_path = ROOT / "Config/DoryWave0QualificationMatrix.json"
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR), "--matrix", str(matrix_path),
+             "--source-root", str(ROOT)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["status"], "review-pending")
+        self.assertEqual(report["guestCells"], 6)
+        self.assertEqual(report["linuxFamilies"], {
+            "arm64": ["debian", "fedora"], "x86_64": ["debian", "fedora"]
+        })
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="dory-wave0-matrix-")
         self.addCleanup(self.temporary.cleanup)

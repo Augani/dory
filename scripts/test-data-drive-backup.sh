@@ -2,8 +2,16 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer}"
+DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 export DEVELOPER_DIR
+selected_xcode_version="$(xcodebuild -version 2>/dev/null || true)"
+case "$selected_xcode_version" in
+  $'Xcode 27.0\nBuild version 27A266a'|$'Xcode 26.6\nBuild version 17F113') ;;
+  *)
+    echo "backup gate: final Xcode 27.0 (27A266a) or 26.6 (17F113) is required" >&2
+    exit 69
+    ;;
+esac
 HELPER="${DORY_HV_BIN:-$REPO_ROOT/Packages/ContainerizationEngine/.build/debug/dory-hv}"
 
 if [ ! -x "$HELPER" ]; then

@@ -20,10 +20,18 @@ if [ -z "${DEVELOPER_DIR:-}" ]; then
   if [ "${DORY_PUBLIC_RELEASE:-0}" = "1" ]; then
     export DEVELOPER_DIR=/Applications/Xcode-26.6.app/Contents/Developer
   else
-    for app in /Applications/Xcode-26.6.app \
+    for app in /Applications/Xcode.app /Applications/Xcode-26.6.app \
                /Applications/Xcode_26.6.app /Applications/Xcode_26.6.0.app \
-               /Applications/Xcode.app /Applications/Xcode-*.app "$HOME"/Applications/Xcode*.app; do
-      [ -x "$app/Contents/Developer/usr/bin/xcodebuild" ] && { export DEVELOPER_DIR="$app/Contents/Developer"; break; }
+               /Applications/Xcode-*.app "$HOME"/Applications/Xcode*.app; do
+      developer="$app/Contents/Developer"
+      [ -x "$developer/usr/bin/xcodebuild" ] || continue
+      candidate_version="$(DEVELOPER_DIR="$developer" xcodebuild -version 2>/dev/null || true)"
+      case "$candidate_version" in
+        $'Xcode 27.0\nBuild version 27A266a'|$'Xcode 26.6\nBuild version 17F113')
+          export DEVELOPER_DIR="$developer"
+          break
+          ;;
+      esac
     done
   fi
 fi
@@ -880,6 +888,18 @@ verify_desktop_bundle() {
     assert_file_exists "$resources/dory-desktop-$distro-build-arm64.stamp" "$distro Desktop provenance"
     assert_file_exists "$resources/dory-desktop-$distro-packages-arm64.txt" "$distro Desktop package manifest"
   done
+  if [ "$(guest_tools_package_enabled)" = 1 ]; then
+    assert_file_exists "$resources/DoryMacGuestTools/$(basename "$GUEST_TOOLS_PACKAGE")" \
+      "Desktop macOS Guest Tools package"
+    assert_file_exists "$resources/DoryMacGuestTools/$(basename "$GUEST_TOOLS_PACKAGE_MANIFEST")" \
+      "Desktop macOS Guest Tools package manifest"
+    cmp -s "$GUEST_TOOLS_PACKAGE" \
+      "$resources/DoryMacGuestTools/$(basename "$GUEST_TOOLS_PACKAGE")" \
+      || release_error "Desktop embedded Guest Tools package differs from release artifact"
+    cmp -s "$GUEST_TOOLS_PACKAGE_MANIFEST" \
+      "$resources/DoryMacGuestTools/$(basename "$GUEST_TOOLS_PACKAGE_MANIFEST")" \
+      || release_error "Desktop embedded Guest Tools manifest differs from release artifact"
+  fi
 }
 
 sign_app() {
@@ -1170,6 +1190,22 @@ COMPONENT_ASSETS=()
 GUEST_TOOLS_PACKAGE=""
 GUEST_TOOLS_PACKAGE_MANIFEST=""
 
+# The package must exist before the Desktop app is signed and notarized so its exact bytes are
+# covered by the app signature. A notarization resume must reuse those same package bytes.
+if [ "${DORY_RELEASE_RESUME_ACCEPTED_DESKTOP:-0}" = "1" ]; then
+  if [ "$(guest_tools_package_enabled)" = 1 ]; then
+    GUEST_TOOLS_PACKAGE="$BUILD_DIR/DoryGuestTools-$VERSION-arm64.pkg"
+    GUEST_TOOLS_PACKAGE_MANIFEST="$BUILD_DIR/DoryGuestTools-$VERSION-arm64.pkg.json"
+    python3 scripts/verify-macos-guest-tools-package.py \
+      --package "$GUEST_TOOLS_PACKAGE" \
+      --manifest "$GUEST_TOOLS_PACKAGE_MANIFEST" \
+      --candidate-id "$(guest_tools_candidate_id)" \
+      --source-commit "$SOURCE_COMMIT"
+  fi
+else
+  package_macos_guest_tools
+fi
+
 if [ "${DORY_RELEASE_RESUME_ACCEPTED_DESKTOP:-0}" = "1" ]; then
   echo "==> Resuming after accepted Desktop ZIP notarization..."
   configure_variant arm64
@@ -1250,6 +1286,7 @@ for requested in $RELEASE_VARIANTS; do
     DORY_COMPONENT_KUBECTL_OUTPUT="$COMPONENT_KUBECTL" \
     DORY_COMPONENT_KUBECTL_PROVENANCE_OUTPUT="$COMPONENT_KUBECTL_PROVENANCE" \
     DORY_DESKTOP_BUNDLE_MODE=none \
+    DORY_RELEASE_SOURCE_COMMIT="$SOURCE_COMMIT" \
     DORY_SKIP_AGENT_INJECT=1 \
     DORY_SKIP_TOOLBOX_INJECT=1 \
     DORY_REQUIRE_BUNDLE_ASSETS="${DORY_REQUIRE_BUNDLE_ASSETS:-1}" \
@@ -1335,10 +1372,22 @@ for requested in $RELEASE_VARIANTS; do
     DORY_HOST_CLI_ARCHES="$HOST_CLI_ARCHES" \
     DORY_BUNDLE_NATIVE_ARCH="$NATIVE_GUEST_ARCH" \
     DORY_DESKTOP_BUNDLE_MODE=all \
+    DORY_RELEASE_SOURCE_COMMIT="$SOURCE_COMMIT" \
     DORY_SKIP_AGENT_INJECT=1 \
     DORY_SKIP_TOOLBOX_INJECT=1 \
     DORY_REQUIRE_BUNDLE_ASSETS="${DORY_REQUIRE_BUNDLE_ASSETS:-1}" \
       scripts/bundle-engine.sh "$DESKTOP_APP"
+    if [ -n "$GUEST_TOOLS_PACKAGE" ]; then
+      guest_tools_resources="$DESKTOP_APP/Contents/Resources/DoryMacGuestTools"
+      mkdir -p "$guest_tools_resources"
+      cp -p "$GUEST_TOOLS_PACKAGE" "$guest_tools_resources/"
+      cp -p "$GUEST_TOOLS_PACKAGE_MANIFEST" "$guest_tools_resources/"
+      cmp -s "$GUEST_TOOLS_PACKAGE" "$guest_tools_resources/$(basename "$GUEST_TOOLS_PACKAGE")" \
+        || release_error "Desktop Guest Tools package copy differs from the notarized artifact"
+      cmp -s "$GUEST_TOOLS_PACKAGE_MANIFEST" \
+        "$guest_tools_resources/$(basename "$GUEST_TOOLS_PACKAGE_MANIFEST")" \
+        || release_error "Desktop Guest Tools manifest copy differs from the release artifact"
+    fi
     scripts/sign-sparkle-for-distribution.sh "$DESKTOP_APP" "$SIGN_IDENTITY"
     sign_app "$DESKTOP_APP"
     verify_full_bundle "$DESKTOP_APP"
@@ -1350,10 +1399,6 @@ for requested in $RELEASE_VARIANTS; do
   fi
 done
 fi
-
-# Guest Tools are a separately signed macOS distribution, but their provenance is bound to the
-# same source commit and release build as the host application artifacts above.
-package_macos_guest_tools
 
 # Keep the historic cask/download filenames as aliases for the public primary artifact. During the
 # Apple-Silicon-first phase that is arm64; a future universal release can take precedence unchanged.

@@ -34,7 +34,7 @@ lifecycle, snapshot, or monotonic-timing mismatch.
 Build a four-file, atomically published firmware bundle:
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   /usr/bin/python3 scripts/build-dory-armvirt-firmware.py \
   --output /absolute/new/output/dory-armvirt-firmware
 ```
@@ -62,7 +62,7 @@ Hypervisor.framework smoke runner. SwiftPM does not apply executable
 entitlements, so the development runner is deliberately signed before launch:
 
 ```sh
-export DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 swift build \
   --package-path Packages/ContainerizationEngine \
   --product dory-armvirt-uefi-smoke

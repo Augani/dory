@@ -43,19 +43,35 @@ select_xcode() {
     echo "test: $mode requires macOS" >&2
     exit 1
   }
-  if [ -z "${DEVELOPER_DIR:-}" ]; then
-    local app developer
-    for app in /Applications/Xcode-26.6.0-Release.Candidate.app \
-               /Applications/Xcode.app /Applications/Xcode-*.app \
-               "$HOME"/Applications/Xcode*.app; do
-      developer="$app/Contents/Developer"
-      if [ -x "$developer/usr/bin/xcodebuild" ]; then
-        export DEVELOPER_DIR="$developer"
-        break
-      fi
-    done
+  local active app developer version
+  active="${DEVELOPER_DIR:-$(xcode-select -p 2>/dev/null || true)}"
+  if [ -n "$active" ] && [ -x "$active/usr/bin/xcodebuild" ]; then
+    version="$(DEVELOPER_DIR="$active" xcodebuild -version 2>/dev/null || true)"
+    case "$version" in
+      $'Xcode 27.0\nBuild version 27A266a'|$'Xcode 26.6\nBuild version 17F113')
+        export DEVELOPER_DIR="$active"
+        return 0
+        ;;
+    esac
   fi
-  require xcodebuild
+  if [ -n "${DEVELOPER_DIR:-}" ]; then
+    echo "test: unsupported selected Xcode at $DEVELOPER_DIR; use final Xcode 27.0 or 26.6" >&2
+    exit 1
+  fi
+  for app in /Applications/Xcode.app /Applications/Xcode-*.app \
+             "$HOME"/Applications/Xcode*.app; do
+    developer="$app/Contents/Developer"
+    [ -x "$developer/usr/bin/xcodebuild" ] || continue
+    version="$(DEVELOPER_DIR="$developer" xcodebuild -version 2>/dev/null || true)"
+    case "$version" in
+      $'Xcode 27.0\nBuild version 27A266a'|$'Xcode 26.6\nBuild version 17F113')
+        export DEVELOPER_DIR="$developer"
+        return 0
+        ;;
+    esac
+  done
+  echo "test: final Xcode 27.0 (27A266a) or 26.6 (17F113) is required" >&2
+  exit 1
 }
 
 clean_test_products() {

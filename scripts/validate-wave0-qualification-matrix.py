@@ -241,9 +241,9 @@ def validate(
                 fail("macOS cell must bind the selected arm64 26.6.2/25G83 IPSW")
         else:
             fail(f"cell {cell['id']} has invalid guest family")
-    # The release closeout deliberately narrows the public candidate to exactly one cell.
-    # Preserve the broader review fixture contract below so historical proposal records remain
-    # readable, but do not let it expand the public release matrix.
+    # Historical server-only matrices remain readable. A broader desktop candidate matrix still
+    # carries releaseQualified=false and cannot itself widen DoryReleaseSupportPolicy; every
+    # additional family/ISA and the Mac restore input must be explicit before review.
     release_cell_ids = set(cells)
     if release_cell_ids == {"linux-arm64-ubuntu-24.04.4"}:
         cell = cells["linux-arm64-ubuntu-24.04.4"]

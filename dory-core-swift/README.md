@@ -16,11 +16,11 @@ Package tests and diagnostic boots do not establish release support for a guest 
 
 ```sh
 ../scripts/build-dory-ffi-xcframework.sh
-DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift build
-DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift build --product doryd
-DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift build --product dorydctl
-DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift build --product dory-vmm
-DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build --product doryd
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build --product dorydctl
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build --product dory-vmm
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
 The build script produces `artifacts/DoryFFI.xcframework` plus generated UniFFI Swift bindings under

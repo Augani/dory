@@ -12,9 +12,9 @@
   "firmwareABI": "dory.edk2.pc@1",
   "host": {
     "architecture": "arm64",
-    "macOSSDK": "26.5",
-    "xcodeBuild": "17F109",
-    "xcodeVersion": "26.6"
+    "macOSSDK": "27.0",
+    "xcodeBuild": "27A266a",
+    "xcodeVersion": "27.0"
   },
   "iasl": {
     "executable": "/opt/homebrew/bin/iasl",
@@ -42,5 +42,5 @@
   },
   "schemaVersion": 1,
   "sourceDateEpochEnvironment": "SOURCE_DATE_EPOCH",
-  "xcodeDeveloperDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer"
+  "xcodeDeveloperDirectory": "/Applications/Xcode.app/Contents/Developer"
 }

@@ -64,13 +64,27 @@ output_fingerprint() {
 }
 
 if ! xcrun --find xcodebuild >/dev/null 2>&1; then
-  for candidate in /Applications/Xcode*.app/Contents/Developer; do
+  for candidate in /Applications/Xcode.app/Contents/Developer \
+                   /Applications/Xcode-*.app/Contents/Developer; do
     if [[ -x "$candidate/usr/bin/xcodebuild" ]]; then
-      export DEVELOPER_DIR="$candidate"
-      break
+      candidate_version="$(DEVELOPER_DIR="$candidate" xcodebuild -version 2>/dev/null || true)"
+      case "$candidate_version" in
+        $'Xcode 27.0\nBuild version 27A266a'|$'Xcode 26.6\nBuild version 17F113')
+          export DEVELOPER_DIR="$candidate"
+          break
+          ;;
+      esac
     fi
   done
 fi
+selected_xcode_version="$(xcodebuild -version 2>/dev/null || true)"
+case "$selected_xcode_version" in
+  $'Xcode 27.0\nBuild version 27A266a'|$'Xcode 26.6\nBuild version 17F113') ;;
+  *)
+    echo "error: select final Xcode 27.0 (27A266a) or final Xcode 26.6 (17F113), not an RC" >&2
+    exit 69
+    ;;
+esac
 SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 CLANG="$(xcrun --find clang)"
 CLANGXX="$(xcrun --find clang++)"
