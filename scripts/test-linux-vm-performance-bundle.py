@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
 import importlib.util
 import json
 import pathlib
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 sys.dont_write_bytecode = True
@@ -73,6 +75,198 @@ class LinuxVMPerformanceBundleTests(unittest.TestCase):
         self.assertTrue(result.release_qualified)
         self.assertEqual(len(result.budget_results), 1)
         self.assertTrue(result.budget_results[0].passed)
+        self.assertEqual(result.verification_receipt()["schemaVersion"], 1)
+
+    def test_accelerated_receipt_requires_semantic_verifier_schema(self) -> None:
+        result = MODULE.verify_bundle(FIXTURE_BUNDLE, TEST_PUBLIC_KEY)
+        accelerated_cell = dataclasses.replace(
+            result.support_cell, selected_graphics_quality="accelerated"
+        )
+        accelerated = dataclasses.replace(result, support_cell=accelerated_cell)
+        self.assertEqual(accelerated.verification_receipt()["schemaVersion"], 2)
+
+    def test_accelerated_release_requires_replayed_pixel_and_opengl_proof(self) -> None:
+        evidence = copy.deepcopy(self.evidence)
+        graphics = evidence["launch"]["graphics"]
+        graphics["selectedQuality"] = "accelerated"
+        graphics["accelerationEvidence"] = (
+            "evidence/graphics-acceleration/gpu-display-evidence.json"
+        )
+        challenge_path = "evidence/graphics-acceleration/campaign-challenge.json"
+        entries = dict(self.inventory_entries)
+        for path in (
+            graphics["accelerationEvidence"],
+            "evidence/opengl-strategy/comparison.json",
+        ):
+            entries[path] = MODULE.InventoryEntry(path, 1, "a" * 64)
+        operation = evidence["launch"]["operationID"]
+        candidate = evidence["candidate"]["componentCandidateInventorySHA256"]
+        challenge = {
+            "schemaVersion": 1,
+            "kind": "dev.dory.gpu-campaign-challenge",
+            "candidateID": candidate,
+            "operationID": operation,
+            "machineID": "machine-1",
+            "nonce": "0123456789abcdef0123456789abcdef",
+        }
+        challenge_raw = MODULE._STRUCTURAL.canonical_json(challenge)
+        entries[challenge_path] = MODULE.InventoryEntry(
+            challenge_path, len(challenge_raw), hashlib.sha256(challenge_raw).hexdigest()
+        )
+        pixel = {
+            "status": "evidence-verified",
+            "operationID": operation,
+            "machineID": "machine-1",
+            "probeNonce": challenge["nonce"],
+            "gpuDisplayedPixelEvidenceSHA256": "a" * 64,
+            "probe": "gl",
+        }
+        strategy = {
+            "status": "PASS",
+            "selectedPath": "virgl2-angle",
+            "runs": {
+                path: {
+                    "candidateID": candidate,
+                    "machineID": "machine-1",
+                    "guestArchitecture": evidence["guest"]["architecture"],
+                }
+                for path in ("zink-venus", "virgl2-angle")
+            },
+        }
+        collection = {"operationID": operation, "visualEvidenceSHA256": "a" * 64}
+        plan = {"expectedProbeNonce": challenge["nonce"]}
+        sidecars = {
+            "virgl2-angle.collection.json": collection,
+            "virgl2-angle.plan.json": plan,
+        }
+        bundle = MODULE.BundleRoot(FIXTURE_BUNDLE)
+
+        with mock.patch.object(bundle, "read_regular", return_value=challenge_raw) as challenge_read, \
+                mock.patch.object(MODULE.PIXEL_VERIFIER, "verify", return_value=pixel) as pixel_verify, \
+                mock.patch.object(MODULE.OPENGL_VERIFIER, "verify", return_value=strategy), \
+                mock.patch.object(MODULE.OPENGL_VERIFIER, "direct_json", side_effect=lambda _root, name: sidecars[name]):
+            MODULE.verify_accelerated_desktop_release_evidence(bundle, evidence, entries)
+            challenge_read.assert_called_with(
+                challenge_path,
+                "displayed-pixel campaign challenge",
+                maximum_bytes=4096,
+                expected_bytes=len(challenge_raw),
+                expected_sha256=hashlib.sha256(challenge_raw).hexdigest(),
+            )
+            pixel_verify.assert_called_with(
+                bundle.path / "evidence/graphics-acceleration", challenge["nonce"]
+            )
+
+            for field, replacement, error in (
+                ("candidateID", "b" * 64, "another component candidate"),
+                ("operationID", "another-operation", "another VM launch"),
+                ("nonce", "short", "128-bit lowercase hex"),
+            ):
+                stale_challenge = dict(challenge, **{field: replacement})
+                with mock.patch.object(
+                    bundle, "read_regular",
+                    return_value=MODULE._STRUCTURAL.canonical_json(stale_challenge),
+                ):
+                    with self.assertRaisesRegex(ValueError, error):
+                        MODULE.verify_accelerated_desktop_release_evidence(
+                            bundle, evidence, entries
+                        )
+
+            stale_nonce_pixel = dict(pixel, probeNonce="b" * 32)
+            with mock.patch.object(
+                MODULE.PIXEL_VERIFIER, "verify", return_value=stale_nonce_pixel
+            ):
+                with self.assertRaisesRegex(ValueError, "signed campaign challenge"):
+                    MODULE.verify_accelerated_desktop_release_evidence(
+                        bundle, evidence, entries
+                    )
+
+            wrong_machine_pixel = dict(pixel, machineID="machine-2")
+            with mock.patch.object(
+                MODULE.PIXEL_VERIFIER, "verify", return_value=wrong_machine_pixel
+            ):
+                with self.assertRaisesRegex(ValueError, "signed campaign challenge"):
+                    MODULE.verify_accelerated_desktop_release_evidence(
+                        bundle, evidence, entries
+                    )
+
+            stale_pixel = dict(pixel, operationID="another-operation")
+            with mock.patch.object(
+                MODULE.PIXEL_VERIFIER, "verify", return_value=stale_pixel
+            ):
+                with self.assertRaisesRegex(ValueError, "another VM launch"):
+                    MODULE.verify_accelerated_desktop_release_evidence(
+                        bundle, evidence, entries
+                    )
+
+            wrong_candidate = copy.deepcopy(strategy)
+            wrong_candidate["runs"]["zink-venus"]["candidateID"] = "b" * 64
+            with mock.patch.object(
+                MODULE.OPENGL_VERIFIER, "verify", return_value=wrong_candidate
+            ):
+                with self.assertRaisesRegex(ValueError, "another component candidate"):
+                    MODULE.verify_accelerated_desktop_release_evidence(
+                        bundle, evidence, entries
+                    )
+
+            wrong_architecture = copy.deepcopy(strategy)
+            wrong_architecture["runs"]["virgl2-angle"]["guestArchitecture"] = "x86_64"
+            with mock.patch.object(
+                MODULE.OPENGL_VERIFIER, "verify", return_value=wrong_architecture
+            ):
+                with self.assertRaisesRegex(ValueError, "another guest architecture"):
+                    MODULE.verify_accelerated_desktop_release_evidence(
+                        bundle, evidence, entries
+                    )
+
+            wrong_probe = dict(pixel, probe="vulkan-application")
+            with mock.patch.object(
+                MODULE.PIXEL_VERIFIER, "verify", return_value=wrong_probe
+            ):
+                with self.assertRaisesRegex(ValueError, "selected OpenGL path"):
+                    MODULE.verify_accelerated_desktop_release_evidence(
+                        bundle, evidence, entries
+                    )
+
+            with mock.patch.object(
+                MODULE.OPENGL_VERIFIER, "direct_json",
+                side_effect=lambda _root, name: (
+                    {"operationID": "another-operation"}
+                    if name.endswith(".collection.json") else plan
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "differs from the displayed-pixel"):
+                    MODULE.verify_accelerated_desktop_release_evidence(
+                        bundle, evidence, entries
+                    )
+
+            for mismatched_sidecars in (
+                {**sidecars, "virgl2-angle.plan.json": {"expectedProbeNonce": "b" * 32}},
+                {**sidecars, "virgl2-angle.collection.json": {
+                    **collection, "visualEvidenceSHA256": "b" * 64
+                }},
+            ):
+                with mock.patch.object(
+                    MODULE.OPENGL_VERIFIER, "direct_json",
+                    side_effect=lambda _root, name: mismatched_sidecars[name],
+                ):
+                    with self.assertRaisesRegex(ValueError, "another displayed-pixel"):
+                        MODULE.verify_accelerated_desktop_release_evidence(
+                            bundle, evidence, entries
+                        )
+
+        missing_comparison = dict(entries)
+        del missing_comparison["evidence/opengl-strategy/comparison.json"]
+        with self.assertRaisesRegex(ValueError, "OpenGL strategy comparison"):
+            MODULE.verify_accelerated_desktop_release_evidence(
+                bundle, evidence, missing_comparison
+            )
+        missing_challenge = dict(entries)
+        del missing_challenge[challenge_path]
+        with self.assertRaisesRegex(ValueError, "campaign challenge"):
+            MODULE.verify_accelerated_desktop_release_evidence(
+                bundle, evidence, missing_challenge
+            )
 
     def test_release_verification_has_no_unsigned_mode(self) -> None:
         with self.assertRaisesRegex(ValueError, "public key"):

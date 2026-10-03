@@ -36,6 +36,8 @@ GENERIC_RECEIPT_NAME = "renderer-bootstrap-qualification.json"
 GENERIC_SIGNATURE_NAME = "renderer-bootstrap-qualification.json.sig"
 PC_VIRGL2_RECEIPT_NAME = "renderer-bootstrap-qualification-pc-x86_64-virgl2.json"
 PC_VIRGL2_SIGNATURE_NAME = "renderer-bootstrap-qualification-pc-x86_64-virgl2.json.sig"
+PC_VENUS_RECEIPT_NAME = "renderer-bootstrap-qualification-pc-x86_64-venus.json"
+PC_VENUS_SIGNATURE_NAME = "renderer-bootstrap-qualification-pc-x86_64-venus.json.sig"
 MAX_VALIDITY_SECONDS = 548 * 24 * 60 * 60
 RUNNER_REQUIREMENT = (
     'anchor apple generic and identifier "com.pythonxi.Dory.HVRunner" '
@@ -125,7 +127,11 @@ def verify_kernel_architecture(data: bytes, profile: str) -> None:
             machine = int.from_bytes(data[18:20], "little")
         elif data[56:60] == b"ARM\x64":
             machine = 183
-    expected = {"managed-linux-6.12.106": 183, "dory-pc-x86_64-virgl2": 62}
+    expected = {
+        "managed-linux-6.12.106": 183,
+        "dory-pc-x86_64-virgl2": 62,
+        "dory-pc-x86_64-venus": 62,
+    }
     if profile not in expected or machine != expected[profile]:
         fail("guest kernel architecture does not match renderer qualification profile")
 
@@ -362,6 +368,27 @@ def verify(arguments: argparse.Namespace) -> None:
             "candidateInventorySHA256": digest(inventory_data),
         }
         expected_capsets = [(2, None)]
+    elif arguments.profile == "dory-pc-x86_64-venus":
+        receipt_name = PC_VENUS_RECEIPT_NAME
+        signature_name = PC_VENUS_SIGNATURE_NAME
+        expected_guest_mesa = lowercase_sha256(
+            arguments.guest_mesa_sha256, "PC guest Mesa SHA-256"
+        )
+        if expected_guest_mesa == GUEST_MESA_SHA256:
+            fail("PC renderer qualification must bind the non-ARM guest Mesa runtime")
+        expected_scalars = {
+            "kind": KIND,
+            "schemaVersion": 1,
+            "bootstrapProtocolVersion": 3,
+            "capabilityReceiptProtocolVersion": 4,
+            "producerFenceContract": 4,
+            "sourceTuple": SOURCE_TUPLE_WIRE,
+            "tupleDefinitionSHA256": DEFINITION_SHA256,
+            "guestMesaSHA256": expected_guest_mesa,
+            "featureBits": PRODUCTION_FEATURE_BITS,
+            "candidateInventorySHA256": digest(inventory_data),
+        }
+        expected_capsets = [(2, None), (4, 0)]
     else:
         fail(f"unsupported renderer qualification profile: {arguments.profile}")
 
@@ -464,6 +491,7 @@ def parser() -> argparse.ArgumentParser:
             "stock-linux-6.13-runtime-verified",
             "managed-linux-6.12.106",
             "dory-pc-x86_64-virgl2",
+            "dory-pc-x86_64-venus",
         ],
         default="stock-linux-6.13-runtime-verified",
     )

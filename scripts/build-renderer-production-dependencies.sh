@@ -47,8 +47,10 @@ for command in ditto git install install_name_tool lipo make meson ninja nm otoo
     exit 1
   }
 done
-[ -n "${DEVELOPER_DIR:-}" ] && [ -d "$DEVELOPER_DIR" ] || {
-  echo "build-renderer-production-dependencies: set DEVELOPER_DIR to the reviewed full Xcode" >&2
+DEVELOPER_DIR="${DEVELOPER_DIR:-$(xcode-select -p 2>/dev/null || true)}"
+export DEVELOPER_DIR
+[ -x "$DEVELOPER_DIR/usr/bin/xcodebuild" ] || {
+  echo "build-renderer-production-dependencies: select a full Xcode or set DEVELOPER_DIR" >&2
   exit 1
 }
 REAL_XCODEBUILD="$(command -v xcodebuild)"

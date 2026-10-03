@@ -241,6 +241,7 @@ PY
 
 SIGNATURE_SOURCE="${DORY_RENDERER_QUALIFICATION_SIGNATURE:-}"
 PC_SIGNATURE_SOURCE="${DORY_RENDERER_PC_QUALIFICATION_SIGNATURE:-}"
+PC_VENUS_SIGNATURE_SOURCE="${DORY_RENDERER_PC_VENUS_QUALIFICATION_SIGNATURE:-}"
 SIGNER="${DORY_RENDERER_QUALIFICATION_SIGNER:-}"
 if [ -n "$SIGNATURE_SOURCE" ] && [ -n "$SIGNER" ]; then
   echo "error: choose either an external qualification signature or signer, not both" >&2
@@ -250,13 +251,22 @@ if [ -n "$PC_SIGNATURE_SOURCE" ] && [ -n "$SIGNER" ]; then
   echo "error: choose either an external PC qualification signature or signer, not both" >&2
   exit 1
 fi
+if [ -n "$PC_VENUS_SIGNATURE_SOURCE" ] && [ -n "$SIGNER" ]; then
+  echo "error: choose either an external PC Venus qualification signature or signer, not both" >&2
+  exit 1
+fi
 if [ "$QUALIFICATION_MODE" = release ] && [ -z "$SIGNATURE_SOURCE" ] && [ -z "$SIGNER" ]; then
   echo "error: release qualification requires an external detached-signature source" >&2
   exit 1
 fi
 if [ "$QUALIFICATION_MODE" = release ] && [ "$PC_QUALIFICATION_ENABLED" = 1 ] \
     && [ -z "$PC_SIGNATURE_SOURCE" ] && [ -z "$SIGNER" ]; then
-  echo "error: release PC qualification requires an external detached-signature source" >&2
+  echo "error: release PC VirGL2 qualification requires an external detached-signature source" >&2
+  exit 1
+fi
+if [ "$QUALIFICATION_MODE" = release ] && [ "$PC_QUALIFICATION_ENABLED" = 1 ] \
+    && [ -z "$PC_VENUS_SIGNATURE_SOURCE" ] && [ -z "$SIGNER" ]; then
+  echo "error: release PC Venus qualification requires an external detached-signature source" >&2
   exit 1
 fi
 
@@ -301,7 +311,11 @@ STAGED_RECEIPT="$QUALIFICATION_SCRATCH/renderer-bootstrap-qualification.json"
 STAGED_SIGNATURE="$QUALIFICATION_SCRATCH/renderer-bootstrap-qualification.json.sig"
 STAGED_PC_RECEIPT="$QUALIFICATION_SCRATCH/renderer-bootstrap-qualification-pc-x86_64-virgl2.json"
 STAGED_PC_SIGNATURE="$QUALIFICATION_SCRATCH/renderer-bootstrap-qualification-pc-x86_64-virgl2.json.sig"
-rm -f "$STAGED_RECEIPT" "$STAGED_SIGNATURE" "$STAGED_PC_RECEIPT" "$STAGED_PC_SIGNATURE"
+STAGED_PC_VENUS_RECEIPT="$QUALIFICATION_SCRATCH/renderer-bootstrap-qualification-pc-x86_64-venus.json"
+STAGED_PC_VENUS_SIGNATURE="$QUALIFICATION_SCRATCH/renderer-bootstrap-qualification-pc-x86_64-venus.json.sig"
+rm -f "$STAGED_RECEIPT" "$STAGED_SIGNATURE" \
+  "$STAGED_PC_RECEIPT" "$STAGED_PC_SIGNATURE" \
+  "$STAGED_PC_VENUS_RECEIPT" "$STAGED_PC_VENUS_SIGNATURE"
 "$RUNNER_APP/Contents/MacOS/dory-hv" renderer-qualify \
   --producer-fence-contract stock-linux-6.13-runtime-verified \
   --inventory "$RUNNER_APP/Contents/Resources/renderer-production-inventory.json" \
@@ -322,7 +336,19 @@ if [ "$PC_QUALIFICATION_ENABLED" = 1 ]; then
     --expires-at "$EXPIRES_AT" \
     --output "$STAGED_PC_RECEIPT"
   [ -f "$STAGED_PC_RECEIPT" ] && [ ! -L "$STAGED_PC_RECEIPT" ] || {
-    echo "error: live PC renderer qualification did not emit a direct receipt" >&2
+    echo "error: live PC VirGL2 renderer qualification did not emit a direct receipt" >&2
+    exit 1
+  }
+  "$RUNNER_APP/Contents/MacOS/dory-hv" renderer-qualify \
+    --producer-fence-contract dory-pc-x86_64-venus \
+    --inventory "$RUNNER_APP/Contents/Resources/renderer-production-inventory.json" \
+    --managed-kernel-sha256 "$PC_MANAGED_KERNEL_SHA256" \
+    --guest-mesa-sha256 "$PC_GUEST_MESA_SHA256" \
+    --issued-at "$ISSUED_AT" \
+    --expires-at "$EXPIRES_AT" \
+    --output "$STAGED_PC_VENUS_RECEIPT"
+  [ -f "$STAGED_PC_VENUS_RECEIPT" ] && [ ! -L "$STAGED_PC_VENUS_RECEIPT" ] || {
+    echo "error: live PC Venus renderer qualification did not emit a direct receipt" >&2
     exit 1
   }
 fi
@@ -335,6 +361,7 @@ if [ -n "$SIGNER" ]; then
   "$SIGNER" --receipt "$STAGED_RECEIPT" --output "$STAGED_SIGNATURE"
   if [ "$PC_QUALIFICATION_ENABLED" = 1 ]; then
     "$SIGNER" --receipt "$STAGED_PC_RECEIPT" --output "$STAGED_PC_SIGNATURE"
+    "$SIGNER" --receipt "$STAGED_PC_VENUS_RECEIPT" --output "$STAGED_PC_VENUS_SIGNATURE"
   fi
 else
   if [ -n "$SIGNATURE_SOURCE" ]; then
@@ -351,6 +378,13 @@ else
     }
     install -m0644 "$PC_SIGNATURE_SOURCE" "$STAGED_PC_SIGNATURE"
   fi
+  if [ "$PC_QUALIFICATION_ENABLED" = 1 ] && [ -n "$PC_VENUS_SIGNATURE_SOURCE" ]; then
+    [ -f "$PC_VENUS_SIGNATURE_SOURCE" ] && [ ! -L "$PC_VENUS_SIGNATURE_SOURCE" ] || {
+      echo "error: detached PC Venus renderer qualification signature is unavailable" >&2
+      exit 1
+    }
+    install -m0644 "$PC_VENUS_SIGNATURE_SOURCE" "$STAGED_PC_VENUS_SIGNATURE"
+  fi
 fi
 
 RUNNER_RESOURCES="$RUNNER_APP/Contents/Resources"
@@ -359,8 +393,11 @@ install -m0644 "$STAGED_RECEIPT" \
 if [ "$PC_QUALIFICATION_ENABLED" = 1 ]; then
   install -m0644 "$STAGED_PC_RECEIPT" \
     "$RUNNER_RESOURCES/renderer-bootstrap-qualification-pc-x86_64-virgl2.json"
+  install -m0644 "$STAGED_PC_VENUS_RECEIPT" \
+    "$RUNNER_RESOURCES/renderer-bootstrap-qualification-pc-x86_64-venus.json"
 else
   rm -f "$RUNNER_RESOURCES/renderer-bootstrap-qualification-pc-x86_64-virgl2.json"
+  rm -f "$RUNNER_RESOURCES/renderer-bootstrap-qualification-pc-x86_64-venus.json"
 fi
 if [ -f "$STAGED_SIGNATURE" ] && [ ! -L "$STAGED_SIGNATURE" ]; then
   install -m0644 "$STAGED_SIGNATURE" \
@@ -374,6 +411,13 @@ if [ "$PC_QUALIFICATION_ENABLED" = 1 ] \
     "$RUNNER_RESOURCES/renderer-bootstrap-qualification-pc-x86_64-virgl2.json.sig"
 else
   rm -f "$RUNNER_RESOURCES/renderer-bootstrap-qualification-pc-x86_64-virgl2.json.sig"
+fi
+if [ "$PC_QUALIFICATION_ENABLED" = 1 ] \
+    && [ -f "$STAGED_PC_VENUS_SIGNATURE" ] && [ ! -L "$STAGED_PC_VENUS_SIGNATURE" ]; then
+  install -m0644 "$STAGED_PC_VENUS_SIGNATURE" \
+    "$RUNNER_RESOURCES/renderer-bootstrap-qualification-pc-x86_64-venus.json.sig"
+else
+  rm -f "$RUNNER_RESOURCES/renderer-bootstrap-qualification-pc-x86_64-venus.json.sig"
 fi
 
 RELEASE_ARGUMENTS=()

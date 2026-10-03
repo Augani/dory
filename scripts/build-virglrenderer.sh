@@ -59,8 +59,10 @@ for command in ar git install lipo meson ninja nm otool pkg-config python3 ranli
     exit 1
   }
 done
-[ -n "${DEVELOPER_DIR:-}" ] && [ -d "$DEVELOPER_DIR" ] || {
-  echo "build-virglrenderer: set DEVELOPER_DIR to the reviewed full Xcode" >&2
+DEVELOPER_DIR="${DEVELOPER_DIR:-$(xcode-select -p 2>/dev/null || true)}"
+export DEVELOPER_DIR
+[ -x "$DEVELOPER_DIR/usr/bin/xcodebuild" ] || {
+  echo "build-virglrenderer: select a full Xcode or set DEVELOPER_DIR" >&2
   exit 1
 }
 python3 "$VERIFIER" --definition "$DEFINITION" verify-definition --repo-root "$ROOT"

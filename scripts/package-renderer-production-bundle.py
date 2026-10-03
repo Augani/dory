@@ -41,6 +41,12 @@ PC_QUALIFICATION_RELATIVE_PATH = (
 PC_QUALIFICATION_SIGNATURE_RELATIVE_PATH = (
     "Resources/renderer-bootstrap-qualification-pc-x86_64-virgl2.json.sig"
 )
+PC_VENUS_QUALIFICATION_RELATIVE_PATH = (
+    "Resources/renderer-bootstrap-qualification-pc-x86_64-venus.json"
+)
+PC_VENUS_QUALIFICATION_SIGNATURE_RELATIVE_PATH = (
+    "Resources/renderer-bootstrap-qualification-pc-x86_64-venus.json.sig"
+)
 STATIC_ARCHIVES = (
     "lib/libvirglrenderer.a", "lib/libepoxy.a", "lib/libMoltenVK.a",
 )
@@ -217,6 +223,18 @@ def pc_qualification_path(contents: pathlib.Path) -> pathlib.Path:
 def pc_qualification_signature_path(contents: pathlib.Path) -> pathlib.Path:
     return contents.joinpath(
         *pathlib.PurePosixPath(PC_QUALIFICATION_SIGNATURE_RELATIVE_PATH).parts
+    )
+
+
+def pc_venus_qualification_path(contents: pathlib.Path) -> pathlib.Path:
+    return contents.joinpath(
+        *pathlib.PurePosixPath(PC_VENUS_QUALIFICATION_RELATIVE_PATH).parts
+    )
+
+
+def pc_venus_qualification_signature_path(contents: pathlib.Path) -> pathlib.Path:
+    return contents.joinpath(
+        *pathlib.PurePosixPath(PC_VENUS_QUALIFICATION_SIGNATURE_RELATIVE_PATH).parts
     )
 
 
@@ -935,7 +953,14 @@ def verify_qualification_evidence(
     allow_unsealed_staging: bool,
     pc_managed_kernel: pathlib.Path | None = None,
     pc_guest_mesa: pathlib.Path | None = None,
-) -> tuple[str, str | None, str | None, str | None]:
+) -> tuple[
+    str,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+]:
     definition_path = direct_regular_file(
         repo_root / "Config/DoryRendererProductionTuple.json", "renderer tuple definition"
     )
@@ -953,9 +978,19 @@ def verify_qualification_evidence(
     pc_paths_exist = os.path.lexists(pc_qualification_path(contents)) or os.path.lexists(
         pc_qualification_signature_path(contents)
     )
+    pc_venus_paths_exist = os.path.lexists(
+        pc_venus_qualification_path(contents)
+    ) or os.path.lexists(pc_venus_qualification_signature_path(contents))
     pc_receipt_digest: str | None = None
     pc_signature_digest: str | None = None
-    if pc_managed_kernel is not None or pc_guest_mesa is not None or pc_paths_exist:
+    pc_venus_receipt_digest: str | None = None
+    pc_venus_signature_digest: str | None = None
+    if (
+        pc_managed_kernel is not None
+        or pc_guest_mesa is not None
+        or pc_paths_exist
+        or pc_venus_paths_exist
+    ):
         if pc_managed_kernel is None or pc_guest_mesa is None:
             fail("PC renderer qualification evidence requires exact kernel and Mesa artifacts")
         verify_pc_linux_kernel(repo_root, pc_managed_kernel)
@@ -970,6 +1005,19 @@ def verify_qualification_evidence(
             require_release_signature=require_release_signature,
             allow_unsealed_staging=allow_unsealed_staging,
             guest_mesa_sha256=pc_guest_mesa_digest,
+        )
+        pc_venus_receipt_digest, pc_venus_signature_digest = (
+            verify_profile_qualification_evidence(
+                repo_root,
+                contents,
+                pc_managed_kernel,
+                profile="dory-pc-x86_64-venus",
+                receipt_path=pc_venus_qualification_path(contents),
+                signature_path=pc_venus_qualification_signature_path(contents),
+                require_release_signature=require_release_signature,
+                allow_unsealed_staging=allow_unsealed_staging,
+                guest_mesa_sha256=pc_guest_mesa_digest,
+            )
         )
 
     profile = (
@@ -991,7 +1039,14 @@ def verify_qualification_evidence(
             "--profile", profile, "--root", os.fspath(contents),
             "--inventory", os.fspath(evidence_inventory),
         ], "verify renderer qualification evidence inventory", capture=False)
-    return receipt_digest, signature_digest, pc_receipt_digest, pc_signature_digest
+    return (
+        receipt_digest,
+        signature_digest,
+        pc_receipt_digest,
+        pc_signature_digest,
+        pc_venus_receipt_digest,
+        pc_venus_signature_digest,
+    )
 
 
 def unlink_phase_file(path: pathlib.Path, label: str) -> None:
@@ -1055,6 +1110,14 @@ def prune(arguments: argparse.Namespace) -> None:
             pc_qualification_signature_path(contents),
             "stale PC renderer bootstrap qualification signature",
         )
+        unlink_phase_file(
+            pc_venus_qualification_path(contents),
+            "stale PC Venus renderer bootstrap qualification receipt",
+        )
+        unlink_phase_file(
+            pc_venus_qualification_signature_path(contents),
+            "stale PC Venus renderer bootstrap qualification signature",
+        )
         icd = resources / "vulkan/icd.d/MoltenVK_icd.json"
         unlink_phase_file(icd, "stale MoltenVK ICD")
         remove_empty_directory(icd.parent, "empty Vulkan ICD directory")
@@ -1103,6 +1166,14 @@ def package(arguments: argparse.Namespace, repo_root: pathlib.Path) -> None:
         pc_qualification_signature_path(contents),
         "stale PC renderer bootstrap qualification signature",
     )
+    unlink_phase_file(
+        pc_venus_qualification_path(contents),
+        "stale PC Venus renderer bootstrap qualification receipt",
+    )
+    unlink_phase_file(
+        pc_venus_qualification_signature_path(contents),
+        "stale PC Venus renderer bootstrap qualification signature",
+    )
     reject_legacy_bundle_artifacts(contents)
     inventory_digest = create_bundle_inventory(repo_root, contents)
     reject_legacy_bundle_artifacts(contents)
@@ -1127,8 +1198,14 @@ def seal_evidence(arguments: argparse.Namespace, repo_root: pathlib.Path) -> Non
     )
     reject_legacy_bundle_artifacts(contents)
     inventory_digest = verify_bundle_inventory(repo_root, contents)
-    receipt_digest, signature_digest, pc_receipt_digest, pc_signature_digest = (
-        verify_qualification_evidence(
+    (
+        receipt_digest,
+        signature_digest,
+        pc_receipt_digest,
+        pc_signature_digest,
+        pc_venus_receipt_digest,
+        pc_venus_signature_digest,
+    ) = verify_qualification_evidence(
             repo_root,
             contents,
             arguments.managed_kernel,
@@ -1136,7 +1213,6 @@ def seal_evidence(arguments: argparse.Namespace, repo_root: pathlib.Path) -> Non
             allow_unsealed_staging=True,
             pc_managed_kernel=arguments.pc_managed_kernel,
             pc_guest_mesa=arguments.pc_guest_mesa,
-        )
     )
     print(f"renderer.bundle={runner}")
     print(f"renderer.worker.cdhash={cdhash}")
@@ -1151,6 +1227,12 @@ def seal_evidence(arguments: argparse.Namespace, repo_root: pathlib.Path) -> Non
         print(
             "renderer.qualification.pcVirGL2.releaseSignature.sha256="
             f"{pc_signature_digest if pc_signature_digest is not None else 'absent-preview'}"
+        )
+    if pc_venus_receipt_digest is not None:
+        print(f"renderer.qualification.pcVenus.sha256={pc_venus_receipt_digest}")
+        print(
+            "renderer.qualification.pcVenus.releaseSignature.sha256="
+            f"{pc_venus_signature_digest if pc_venus_signature_digest is not None else 'absent-preview'}"
         )
     print("renderer.qualification=sealed-candidate-evidence")
 
@@ -1169,8 +1251,14 @@ def verify(arguments: argparse.Namespace, repo_root: pathlib.Path) -> None:
     )
     reject_legacy_bundle_artifacts(contents)
     inventory_digest = verify_bundle_inventory(repo_root, contents)
-    receipt_digest, signature_digest, pc_receipt_digest, pc_signature_digest = (
-        verify_qualification_evidence(
+    (
+        receipt_digest,
+        signature_digest,
+        pc_receipt_digest,
+        pc_signature_digest,
+        pc_venus_receipt_digest,
+        pc_venus_signature_digest,
+    ) = verify_qualification_evidence(
             repo_root,
             contents,
             arguments.managed_kernel,
@@ -1178,7 +1266,6 @@ def verify(arguments: argparse.Namespace, repo_root: pathlib.Path) -> None:
             allow_unsealed_staging=False,
             pc_managed_kernel=arguments.pc_managed_kernel,
             pc_guest_mesa=arguments.pc_guest_mesa,
-        )
     )
     verify_signature(runner, label="DoryHVRunner.app", identifier=RUNNER_IDENTIFIER,
                      expected_team=arguments.expected_team,
@@ -1206,6 +1293,18 @@ def verify(arguments: argparse.Namespace, repo_root: pathlib.Path) -> None:
         "renderer.qualification.releaseSignature.sha256="
         f"{signature_digest if signature_digest is not None else 'absent-preview'}"
     )
+    if pc_receipt_digest is not None:
+        print(f"renderer.qualification.pcVirGL2.sha256={pc_receipt_digest}")
+        print(
+            "renderer.qualification.pcVirGL2.releaseSignature.sha256="
+            f"{pc_signature_digest if pc_signature_digest is not None else 'absent-preview'}"
+        )
+    if pc_venus_receipt_digest is not None:
+        print(f"renderer.qualification.pcVenus.sha256={pc_venus_receipt_digest}")
+        print(
+            "renderer.qualification.pcVenus.releaseSignature.sha256="
+            f"{pc_venus_signature_digest if pc_venus_signature_digest is not None else 'absent-preview'}"
+        )
     print("renderer.signatureGraph=verified-dual-metal")
 
 

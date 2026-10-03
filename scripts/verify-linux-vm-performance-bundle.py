@@ -42,6 +42,26 @@ if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - installation def
 _STRUCTURAL = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_STRUCTURAL)
 
+
+def load_graphics_verifier(name: str, filename: str) -> Any:
+    spec = importlib.util.spec_from_file_location(
+        name, REPOSITORY_ROOT / "guest-probes" / filename
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"graphics verifier {filename} could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+PIXEL_VERIFIER = load_graphics_verifier(
+    "dory_release_displayed_pixel_verifier", "verify-displayed-pixel.py"
+)
+OPENGL_VERIFIER = load_graphics_verifier(
+    "dory_release_opengl_strategy_verifier", "verify-opengl-strategy.py"
+)
+
 EvidenceError = _STRUCTURAL.EvidenceError
 fail = _STRUCTURAL.fail
 require = _STRUCTURAL.require
@@ -294,7 +314,11 @@ class BundleResult:
             },
             "kind": "dev.dory.linux-vm-performance-verification-receipt",
             "releaseQualified": self.release_qualified,
-            "schemaVersion": 1,
+            # v2 is required for accelerated cells: a legacy v1 receipt was issued before
+            # semantic image and controlled OpenGL comparison became mandatory release gates.
+            "schemaVersion": (
+                2 if self.support_cell.selected_graphics_quality == "accelerated" else 1
+            ),
             "signaturePublicKeyID": self.public_key_id,
             "supportCell": {
                 "backend": self.support_cell.backend,
@@ -1518,6 +1542,132 @@ def validate_matrix_cell_descriptor(
     )
 
 
+def verify_accelerated_desktop_release_evidence(
+    bundle: BundleRoot,
+    evidence: dict[str, Any],
+    entries: dict[str, InventoryEntry],
+) -> None:
+    """Require semantic pixels and a controlled GL selection before release admission.
+
+    The bundle inventory/signature are authenticated before this is called. A digest of an
+    arbitrary acceleration JSON is not evidence that a guest-rendered pixel reached Dory.app.
+    """
+    graphics = evidence["launch"]["graphics"]
+    if graphics["selectedQuality"] != "accelerated":
+        return
+    pixel_path = "evidence/graphics-acceleration/gpu-display-evidence.json"
+    challenge_path = "evidence/graphics-acceleration/campaign-challenge.json"
+    comparison_path = "evidence/opengl-strategy/comparison.json"
+    require(
+        graphics["accelerationEvidence"] == pixel_path,
+        "accelerated release must bind the canonical displayed-pixel evidence path",
+    )
+    require_inventory_reference(entries, pixel_path, "displayed-pixel evidence")
+    require_inventory_reference(entries, challenge_path, "displayed-pixel campaign challenge")
+    require_inventory_reference(entries, comparison_path, "OpenGL strategy comparison")
+    challenge_entry = entries[challenge_path]
+    challenge_raw = bundle.read_regular(
+        challenge_path,
+        "displayed-pixel campaign challenge",
+        maximum_bytes=4096,
+        expected_bytes=challenge_entry.byte_count,
+        expected_sha256=challenge_entry.sha256,
+    )
+    assert challenge_raw is not None
+    challenge = decode_canonical_object(
+        challenge_raw, "displayed-pixel campaign challenge", 4096
+    )
+    exact_object(
+        challenge,
+        {"schemaVersion", "kind", "candidateID", "operationID", "machineID", "nonce"},
+        "displayed-pixel campaign challenge",
+    )
+    require(
+        challenge["schemaVersion"] == 1
+        and type(challenge["schemaVersion"]) is int
+        and challenge["kind"] == "dev.dory.gpu-campaign-challenge",
+        "displayed-pixel campaign challenge schema identity is invalid",
+    )
+    require(
+        challenge["candidateID"]
+        == evidence["candidate"]["componentCandidateInventorySHA256"],
+        "displayed-pixel campaign challenge belongs to another component candidate",
+    )
+    require(
+        challenge["operationID"] == evidence["launch"]["operationID"],
+        "displayed-pixel campaign challenge belongs to another VM launch operation",
+    )
+    canonical_string(challenge["machineID"], "displayed-pixel challenge machineID", 128)
+    nonce = canonical_string(challenge["nonce"], "displayed-pixel challenge nonce", 256)
+    require(
+        len(nonce) == 32 and all(character in "0123456789abcdef" for character in nonce),
+        "displayed-pixel challenge nonce must be 128-bit lowercase hex",
+    )
+    try:
+        pixel = PIXEL_VERIFIER.verify(
+            bundle.path / "evidence/graphics-acceleration", nonce
+        )
+    except (ValueError, OSError) as error:
+        fail(f"accelerated release displayed-pixel proof failed: {error}")
+    require(
+        pixel.get("status") == "evidence-verified"
+        and pixel.get("operationID") == evidence["launch"]["operationID"],
+        "displayed-pixel proof belongs to another VM launch operation",
+    )
+    require(
+        pixel.get("machineID") == challenge["machineID"]
+        and pixel.get("probeNonce") == nonce,
+        "displayed-pixel proof differs from the signed campaign challenge",
+    )
+    require(
+        pixel.get("gpuDisplayedPixelEvidenceSHA256") == entries[pixel_path].sha256,
+        "displayed-pixel replay differs from the authenticated evidence payload",
+    )
+    try:
+        strategy = OPENGL_VERIFIER.verify(bundle.path / "evidence/opengl-strategy")
+    except (ValueError, OSError) as error:
+        fail(f"accelerated release OpenGL comparison failed: {error}")
+    require(
+        strategy.get("status") == "PASS",
+        "accelerated release lacks a passing OpenGL strategy comparison",
+    )
+    candidate_id = evidence["candidate"]["componentCandidateInventorySHA256"]
+    require(
+        all(run["candidateID"] == candidate_id for run in strategy["runs"].values()),
+        "OpenGL comparison belongs to another component candidate",
+    )
+    require(
+        all(
+            run["guestArchitecture"] == evidence["guest"]["architecture"]
+            for run in strategy["runs"].values()
+        ),
+        "OpenGL comparison belongs to another guest architecture",
+    )
+    selected = strategy["selectedPath"]
+    selected_run = strategy["runs"][selected]
+    require(
+        pixel.get("probe")
+        == ("vulkan-application" if selected == "zink-venus" else "gl"),
+        "displayed-pixel proof does not exercise the selected OpenGL path",
+    )
+    selected_collection = OPENGL_VERIFIER.direct_json(
+        bundle.path / "evidence/opengl-strategy", f"{selected}.collection.json"
+    )
+    selected_plan = OPENGL_VERIFIER.direct_json(
+        bundle.path / "evidence/opengl-strategy", f"{selected}.plan.json"
+    )
+    require(
+        selected_run["machineID"] == pixel["machineID"]
+        and selected_collection["operationID"] == evidence["launch"]["operationID"],
+        "selected OpenGL run differs from the displayed-pixel VM launch",
+    )
+    require(
+        selected_plan.get("expectedProbeNonce") == nonce
+        and selected_collection.get("visualEvidenceSHA256") == entries[pixel_path].sha256,
+        "selected OpenGL run uses another displayed-pixel challenge or capture",
+    )
+
+
 def verify_bundle(
     bundle_path: pathlib.Path,
     public_key_base64: str,
@@ -1627,6 +1777,8 @@ def verify_bundle(
             evidence,
             entries,
         )
+        if evidence["qualificationMode"] == "release" and evidence["verdict"] == "qualified":
+            verify_accelerated_desktop_release_evidence(bundle, evidence, entries)
 
         observations = validate_observations(
             retained[evidence["observations"]],
