@@ -22,11 +22,16 @@ import tempfile
 EXPECTED_BUNDLE_IDENTIFIER = "com.pythonxi.Dory.GuestTools"
 EXPECTED_TEAM_IDENTIFIER = "864H636QW4"
 SOURCE_FILES = (
+    "GuestTools/DoryGuestTools/DoryGuestFilePublication.swift",
+    "GuestTools/DoryGuestTools/DoryGuestIntegrationClient.swift",
     "GuestTools/DoryGuestTools/DoryGuestMetalProbe.swift",
     "GuestTools/DoryGuestTools/DoryGuestMetalProbeTransport.swift",
     "GuestTools/DoryGuestTools/DoryGuestToolsApp.swift",
     "GuestTools/DoryGuestTools/DoryGuestTools.entitlements",
     "GuestTools/METAL_PROBE.md",
+    "GuestTools/Packaging/com.pythonxi.Dory.GuestTools.agent.plist",
+    "GuestTools/Packaging/dory-guest-tools-maintenance.sh",
+    "dory-core-swift/Sources/DoryMacGuestIntegrationWire/DoryMacGuestIntegrationWire.swift",
 )
 
 
@@ -188,7 +193,7 @@ def main() -> int:
         bundle_entries, bundle_sha256 = inventory_tree(app)
         source_entries, source_sha256 = source_inventory(arguments.source_root.resolve(strict=True))
         document = {
-            "schema": "dory.macos-guest-tools-manifest@1",
+            "schema": "dory.macos-guest-tools-manifest@2",
             "candidateID": arguments.candidate_id,
             "sourceCommit": arguments.source_commit,
             "bundle": {
@@ -199,7 +204,18 @@ def main() -> int:
                 "entries": bundle_entries,
             },
             "source": {"treeSHA256": source_sha256, "entries": source_entries},
-            "capabilities": [{"id": "metal-probe", "version": 1}],
+            "capabilities": [
+                {"id": "clipboard-image-read", "version": 2},
+                {"id": "clipboard-image-write", "version": 2},
+                {"id": "clipboard-text-read", "version": 2},
+                {"id": "clipboard-text-write", "version": 2},
+                {"id": "file-pull", "version": 2},
+                {"id": "file-push", "version": 2},
+                {"id": "guest-time", "version": 2},
+                {"id": "health", "version": 2},
+                {"id": "metal-probe", "version": 2},
+                {"id": "open-url", "version": 2},
+            ],
             "signing": signing(app, arguments.allow_unsigned_development),
         }
         atomic_write(output, (json.dumps(document, indent=2, sort_keys=True) + "\n").encode())

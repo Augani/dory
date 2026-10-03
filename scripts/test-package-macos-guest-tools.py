@@ -39,13 +39,26 @@ class GuestToolsPackageTests(unittest.TestCase):
 case \"$*\" in *--verify*) exit 0;; esac
 printf '%s\\n' 'Authority=Developer ID Application: Dory' 'TeamIdentifier=864H636QW4' 'CodeDirectory=v=20400 flags=0x10000(runtime)' >&2
 """)
-        self.write_tool("productbuild", """#!/bin/sh
+        self.write_tool("pkgbuild", """#!/bin/sh
 for value in \"$@\"; do output=\"$value\"; done
 printf 'signed package' > \"$output\"
 """)
         self.write_tool("pkgutil", """#!/bin/sh
+case "$1" in
+  --payload-files)
+    printf '%s\\n' './Applications/DoryGuestTools.app/Contents/MacOS/DoryGuestTools' './Library/LaunchAgents/com.pythonxi.Dory.GuestTools.agent.plist' './Library/Application Support/Dory/GuestTools/dory-guest-tools-maintenance'
+    exit 0 ;;
+esac
 printf '%s\\n' 'Developer ID Installer: Dory (864H636QW4)'
 """)
+        self.write_tool("xcrun", """#!/bin/sh
+case "$1 $2" in
+  'notarytool submit') printf '%s\\n' '{"id":"123e4567-e89b-12d3-a456-426614174000","status":"Accepted"}' ;;
+  'stapler staple'|'stapler validate') exit 0 ;;
+  *) exit 64 ;;
+esac
+""")
+        self.write_tool("spctl", "#!/bin/sh\nexit 0\n")
         self.output = self.root / "DoryGuestTools-1.0.0.pkg"
         self.manifest = self.root / "DoryGuestTools-1.0.0.pkg.json"
 
@@ -60,6 +73,7 @@ printf '%s\\n' 'Developer ID Installer: Dory (864H636QW4)'
                 sys.executable, str(PACKAGER), "--app", str(self.app),
                 "--candidate-id", "macos-dev-1", "--source-commit", "a" * 40,
                 "--installer-signing-identity", "Developer ID Installer: Dory (864H636QW4)",
+                "--notary-profile", "dory-test-notary",
                 "--output", str(self.output), "--manifest-output", str(self.manifest),
             ],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
@@ -70,7 +84,10 @@ printf '%s\\n' 'Developer ID Installer: Dory (864H636QW4)'
         completed = self.invoke()
         self.assertEqual(completed.returncode, 0, completed.stderr)
         document = json.loads(self.manifest.read_text())
-        self.assertEqual(document["schema"], "dory.macos-guest-tools-package@1")
+        self.assertEqual(document["schema"], "dory.macos-guest-tools-package@3")
+        self.assertEqual(document["loginAgent"]["label"], "com.pythonxi.Dory.GuestTools.agent")
+        self.assertEqual(document["package"]["installedAppPath"], "/Applications/DoryGuestTools.app")
+        self.assertEqual(document["notarization"]["status"], "stapled")
         self.assertEqual(document["candidateID"], "macos-dev-1")
         self.assertEqual(document["sourceCommit"], "a" * 40)
         self.assertEqual(document["bundleManifest"]["candidateID"], "macos-dev-1")
@@ -88,6 +105,28 @@ printf '%s\\n' 'Developer ID Installer: Dory (864H636QW4)'
         completed = self.invoke()
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("expected Dory Developer ID Installer team", completed.stderr)
+        self.assertFalse(self.output.exists())
+        self.assertFalse(self.manifest.exists())
+
+    def test_package_without_lifecycle_helper_is_rejected(self) -> None:
+        self.write_tool("pkgutil", """#!/bin/sh
+case "$1" in
+  --payload-files) printf '%s\\n' './Applications/DoryGuestTools.app/Contents/MacOS/DoryGuestTools' './Library/LaunchAgents/com.pythonxi.Dory.GuestTools.agent.plist'; exit 0 ;;
+esac
+printf '%s\\n' 'Developer ID Installer: Dory (864H636QW4)'
+""")
+        completed = self.invoke()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("maintenance helper", completed.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_unaccepted_notarization_is_rejected_before_publication(self) -> None:
+        self.write_tool("xcrun", """#!/bin/sh
+printf '%s\\n' '{"id":"123e4567-e89b-12d3-a456-426614174000","status":"Invalid"}'
+""")
+        completed = self.invoke()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("notarization was not accepted", completed.stderr)
         self.assertFalse(self.output.exists())
         self.assertFalse(self.manifest.exists())
 

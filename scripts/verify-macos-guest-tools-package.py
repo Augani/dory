@@ -10,12 +10,25 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import uuid
 from typing import Any
 
 
 EXPECTED_TEAM = "864H636QW4"
-PACKAGE_SCHEMA = "dory.macos-guest-tools-package@1"
-BUNDLE_SCHEMA = "dory.macos-guest-tools-manifest@1"
+PACKAGE_SCHEMA = "dory.macos-guest-tools-package@3"
+BUNDLE_SCHEMA = "dory.macos-guest-tools-manifest@2"
+BUNDLE_CAPABILITIES = [
+    {"id": "clipboard-image-read", "version": 2},
+    {"id": "clipboard-image-write", "version": 2},
+    {"id": "clipboard-text-read", "version": 2},
+    {"id": "clipboard-text-write", "version": 2},
+    {"id": "file-pull", "version": 2},
+    {"id": "file-push", "version": 2},
+    {"id": "guest-time", "version": 2},
+    {"id": "health", "version": 2},
+    {"id": "metal-probe", "version": 2},
+    {"id": "open-url", "version": 2},
+]
 LABEL = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 MODE = re.compile(r"^[0-7]{4}$")
@@ -150,7 +163,7 @@ def verify_bundle(value: object, candidate: str, commit: str) -> bytes:
         == source_inventory_digest(source["entries"]),
         "embedded source tree digest differs from its inventory",
     )
-    require(bundle["capabilities"] == [{"id": "metal-probe", "version": 1}], "embedded capabilities are invalid")
+    require(bundle["capabilities"] == BUNDLE_CAPABILITIES, "embedded capabilities are invalid")
     signing = exact_keys(bundle["signing"], {"classification", "teamIdentifier", "authority", "hardenedRuntime"}, "embedded signing")
     require(signing["classification"] == "developer-id-signed", "embedded bundle is not release signed")
     require(signing["teamIdentifier"] == EXPECTED_TEAM, "embedded bundle signing team is invalid")
@@ -170,12 +183,42 @@ def verify_installer(package: Path) -> None:
         "Developer ID Installer:" in details and f"({EXPECTED_TEAM})" in details,
         "installer package is not signed by the expected Dory Developer ID Installer team",
     )
+    listing = subprocess.run(
+        ["pkgutil", "--payload-files", str(package)],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    require(listing.returncode == 0, "installer payload inventory failed")
+    paths = {line.removeprefix("./") for line in listing.stdout.splitlines()}
+    require({
+        "Applications/DoryGuestTools.app/Contents/MacOS/DoryGuestTools",
+        "Library/LaunchAgents/com.pythonxi.Dory.GuestTools.agent.plist",
+        "Library/Application Support/Dory/GuestTools/dory-guest-tools-maintenance",
+    }.issubset(paths), "installer is missing its guest app, login agent or maintenance helper")
+
+
+def verify_stapled_notarization(package: Path, value: object) -> None:
+    notarization = exact_keys(value, {"status", "submissionID"}, "notarization")
+    require(notarization["status"] == "stapled", "guest-tools package is not stapled")
+    try:
+        canonical_id = str(uuid.UUID(notarization["submissionID"]))
+    except (TypeError, ValueError, AttributeError) as error:
+        raise VerificationError("notarization submission ID is invalid") from error
+    require(canonical_id == notarization["submissionID"], "notarization submission ID is not canonical")
+    for arguments, label_name in (
+        (["xcrun", "stapler", "validate", str(package)], "stapled ticket"),
+        (["spctl", "--assess", "--type", "install", str(package)], "installer Gatekeeper assessment"),
+    ):
+        completed = subprocess.run(
+            arguments, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(completed.returncode == 0, f"{label_name} verification failed")
 
 
 def verify(package: Path, manifest_path: Path, candidate: str | None, commit: str | None) -> None:
     manifest, _ = load_object(manifest_path, "guest-tools package manifest")
     document = exact_keys(manifest, {
-        "schema", "candidateID", "sourceCommit", "bundleManifestSHA256", "bundleManifest", "package",
+        "schema", "candidateID", "sourceCommit", "bundleManifestSHA256", "bundleManifest",
+        "package", "notarization", "loginAgent",
     }, "guest-tools package manifest")
     require(document["schema"] == PACKAGE_SCHEMA, "guest-tools package manifest schema is invalid")
     observed_candidate = label(document["candidateID"], "candidate ID")
@@ -188,16 +231,23 @@ def verify(package: Path, manifest_path: Path, candidate: str | None, commit: st
     embedded = verify_bundle(document["bundleManifest"], observed_candidate, observed_commit)
     require(digest(document["bundleManifestSHA256"], "bundle manifest digest") == sha256(embedded), "embedded bundle manifest digest is invalid")
     package_info = exact_keys(document["package"], {
-        "filename", "sha256", "byteCount", "installLocation", "installerTeamIdentifier",
+        "filename", "sha256", "byteCount", "installLocation", "installedAppPath",
+        "installerTeamIdentifier",
     }, "guest-tools package binding")
     require(package_info["filename"] == package.name and package.suffix == ".pkg", "package filename is invalid")
     expected_digest = digest(package_info["sha256"], "package digest")
     expected_bytes = positive(package_info["byteCount"], "package byte count")
-    require(package_info["installLocation"] == "/Applications", "package install location is invalid")
+    require(package_info["installLocation"] == "/", "package install location is invalid")
+    require(package_info["installedAppPath"] == "/Applications/DoryGuestTools.app", "installed app path is invalid")
     require(package_info["installerTeamIdentifier"] == EXPECTED_TEAM, "package installer team is invalid")
+    agent = exact_keys(document["loginAgent"], {"path", "label", "sha256"}, "login agent")
+    require(agent["path"] == "/Library/LaunchAgents/com.pythonxi.Dory.GuestTools.agent.plist", "login agent path is invalid")
+    require(agent["label"] == "com.pythonxi.Dory.GuestTools.agent", "login agent label is invalid")
+    digest(agent["sha256"], "login agent digest")
     payload = direct_regular(package, "guest-tools package")
     require(len(payload) == expected_bytes and sha256(payload) == expected_digest, "guest-tools package bytes differ from its manifest")
     verify_installer(package)
+    verify_stapled_notarization(package, document["notarization"])
 
 
 def main() -> int:

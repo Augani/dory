@@ -40,17 +40,33 @@ class GuestToolsPackageVerifierTests(unittest.TestCase):
 case \"$*\" in *--verify*) exit 0;; esac
 printf '%s\\n' 'Authority=Developer ID Application: Dory' 'TeamIdentifier=864H636QW4' 'CodeDirectory=v=20400 flags=0x10000(runtime)' >&2
 """)
-        self.write_tool("productbuild", """#!/bin/sh
+        self.write_tool("pkgbuild", """#!/bin/sh
 for value in \"$@\"; do output=\"$value\"; done
 printf 'signed package' > \"$output\"
 """)
-        self.write_tool("pkgutil", "#!/bin/sh\nprintf '%s\\n' 'Developer ID Installer: Dory (864H636QW4)'\n")
+        self.write_tool("pkgutil", """#!/bin/sh
+case "$1" in
+  --payload-files)
+    printf '%s\\n' './Applications/DoryGuestTools.app/Contents/MacOS/DoryGuestTools' './Library/LaunchAgents/com.pythonxi.Dory.GuestTools.agent.plist' './Library/Application Support/Dory/GuestTools/dory-guest-tools-maintenance'
+    exit 0 ;;
+esac
+printf '%s\\n' 'Developer ID Installer: Dory (864H636QW4)'
+""")
+        self.write_tool("xcrun", """#!/bin/sh
+case "$1 $2" in
+  'notarytool submit') printf '%s\\n' '{"id":"123e4567-e89b-12d3-a456-426614174000","status":"Accepted"}' ;;
+  'stapler staple'|'stapler validate') exit 0 ;;
+  *) exit 64 ;;
+esac
+""")
+        self.write_tool("spctl", "#!/bin/sh\nexit 0\n")
         self.package = self.root / "DoryGuestTools.pkg"
         self.manifest = self.root / "DoryGuestTools.pkg.json"
         self.environment = {**os.environ, "PATH": str(self.tools) + os.pathsep + os.environ["PATH"]}
         built = subprocess.run([
             sys.executable, str(PACKAGER), "--app", str(self.app), "--candidate-id", "macos-dev-1",
             "--source-commit", "a" * 40, "--installer-signing-identity", "Developer ID Installer: Dory (864H636QW4)",
+            "--notary-profile", "dory-test-notary",
             "--output", str(self.package), "--manifest-output", str(self.manifest),
         ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, env=self.environment)
         self.assertEqual(built.returncode, 0, built.stderr)
@@ -70,6 +86,28 @@ printf 'signed package' > \"$output\"
         completed = self.invoke()
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
+    def test_older_bundle_manifest_requires_a_separate_rollback_route(self) -> None:
+        document = json.loads(self.manifest.read_text(encoding="utf-8"))
+        bundle = document["bundleManifest"]
+        bundle["schema"] = "dory.macos-guest-tools-manifest@1"
+        bundle["capabilities"] = bundle["capabilities"][:-1]
+        embedded = (json.dumps(bundle, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        document["bundleManifestSHA256"] = hashlib.sha256(embedded).hexdigest()
+        self.manifest.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        completed = self.invoke()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("bundle manifest schema is invalid", completed.stderr)
+
+    def test_bundle_manifest_schema_cannot_misstate_url_capability(self) -> None:
+        document = json.loads(self.manifest.read_text(encoding="utf-8"))
+        document["bundleManifest"]["schema"] = "dory.macos-guest-tools-manifest@1"
+        embedded = (json.dumps(document["bundleManifest"], indent=2, sort_keys=True) + "\n").encode("utf-8")
+        document["bundleManifestSHA256"] = hashlib.sha256(embedded).hexdigest()
+        self.manifest.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        completed = self.invoke()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("bundle manifest schema is invalid", completed.stderr)
+
     def test_package_tampering_is_rejected(self) -> None:
         self.package.write_bytes(b"tampered")
         completed = self.invoke()
@@ -81,6 +119,23 @@ printf 'signed package' > \"$output\"
         completed = self.invoke()
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("expected Dory Developer ID Installer team", completed.stderr)
+
+    def test_package_without_lifecycle_helper_is_rejected(self) -> None:
+        self.write_tool("pkgutil", """#!/bin/sh
+case "$1" in
+  --payload-files) printf '%s\\n' './Applications/DoryGuestTools.app/Contents/MacOS/DoryGuestTools' './Library/LaunchAgents/com.pythonxi.Dory.GuestTools.agent.plist'; exit 0 ;;
+esac
+printf '%s\\n' 'Developer ID Installer: Dory (864H636QW4)'
+""")
+        completed = self.invoke()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("maintenance helper", completed.stderr)
+
+    def test_missing_stapled_ticket_is_rejected(self) -> None:
+        self.write_tool("xcrun", "#!/bin/sh\nexit 65\n")
+        completed = self.invoke()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("stapled ticket verification failed", completed.stderr)
 
     def test_recomputed_manifest_rejects_a_malformed_inventory(self) -> None:
         document = json.loads(self.manifest.read_text(encoding="utf-8"))

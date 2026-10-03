@@ -14,16 +14,24 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
+import re
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_GENERATOR = ROOT / "scripts" / "generate-macos-guest-tools-manifest.py"
 EXPECTED_INSTALLER_TEAM = "864H636QW4"
-PACKAGE_SCHEMA = "dory.macos-guest-tools-package@1"
+PACKAGE_SCHEMA = "dory.macos-guest-tools-package@3"
+LOGIN_AGENT = ROOT / "GuestTools/Packaging/com.pythonxi.Dory.GuestTools.agent.plist"
+LOGIN_AGENT_PATH = "/Library/LaunchAgents/com.pythonxi.Dory.GuestTools.agent.plist"
+MAINTENANCE_HELPER = ROOT / "GuestTools/Packaging/dory-guest-tools-maintenance.sh"
+MAINTENANCE_HELPER_PATH = "/Library/Application Support/Dory/GuestTools/dory-guest-tools-maintenance"
 
 
 class PackageError(ValueError):
@@ -108,12 +116,50 @@ def verify_installer_signature(package: Path) -> None:
         )
 
 
+def verify_payload_paths(package: Path) -> None:
+    listing = command(["pkgutil", "--payload-files", str(package)], "installer payload inventory")
+    paths = {line.removeprefix("./") for line in listing.splitlines()}
+    required = {
+        "Applications/DoryGuestTools.app/Contents/MacOS/DoryGuestTools",
+        "Library/LaunchAgents/com.pythonxi.Dory.GuestTools.agent.plist",
+        "Library/Application Support/Dory/GuestTools/dory-guest-tools-maintenance",
+    }
+    if not required.issubset(paths):
+        raise PackageError("installer does not contain the guest app, login agent and maintenance helper")
+
+
+def notarize_and_staple(package: Path, keychain_profile: str) -> str:
+    completed = subprocess.run(
+        [
+            "xcrun", "notarytool", "submit", str(package),
+            "--keychain-profile", keychain_profile,
+            "--wait", "--timeout", "30m", "--output-format", "json",
+        ],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        timeout=31 * 60,
+    )
+    if completed.returncode != 0:
+        raise PackageError(f"notarization submission failed: {completed.stderr.strip()}")
+    try:
+        result = json.loads(completed.stdout)
+        submission_id = str(uuid.UUID(result["id"]))
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
+        raise PackageError("notarytool did not return a valid submission ID") from error
+    if result.get("status") != "Accepted":
+        raise PackageError(f"notarization was not accepted: {result.get('status', 'unknown')}")
+    command(["xcrun", "stapler", "staple", str(package)], "installer ticket stapling")
+    command(["xcrun", "stapler", "validate", str(package)], "stapled ticket validation")
+    command(["spctl", "--assess", "--type", "install", str(package)], "installer Gatekeeper assessment")
+    return submission_id
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", required=True, type=Path)
     parser.add_argument("--candidate-id", required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--installer-signing-identity", required=True)
+    parser.add_argument("--notary-profile", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--manifest-output", required=True, type=Path)
     parser.add_argument("--source-root", type=Path, default=ROOT)
@@ -123,6 +169,7 @@ def main() -> int:
         candidate = candidate_label(arguments.candidate_id, "candidate ID")
         commit = source_commit(arguments.source_commit)
         identity = bounded_text(arguments.installer_signing_identity, "installer signing identity")
+        notary_profile = candidate_label(arguments.notary_profile, "notary keychain profile")
         if arguments.app.name != "DoryGuestTools.app" or arguments.app.is_symlink() or not arguments.app.is_dir():
             raise PackageError("app must be a direct DoryGuestTools.app bundle")
         app = arguments.app.resolve(strict=True)
@@ -135,6 +182,29 @@ def main() -> int:
         if app in output.parents or app in manifest_output.parents:
             raise PackageError("package outputs must remain outside the guest-tools app bundle")
         direct_regular(MANIFEST_GENERATOR, "guest-tools manifest generator")
+        login_agent = direct_regular(LOGIN_AGENT, "guest-tools login agent")
+        agent_bytes = login_agent.read_bytes()
+        maintenance_helper = direct_regular(MAINTENANCE_HELPER, "guest-tools maintenance helper")
+        helper_source = maintenance_helper.read_text(encoding="utf-8")
+        helper_agent_digest = re.search(r"^AGENT_SHA256=([0-9a-f]{64})$", helper_source, re.MULTILINE)
+        if helper_agent_digest is None or helper_agent_digest.group(1) != hashlib.sha256(agent_bytes).hexdigest():
+            raise PackageError("guest-tools maintenance helper does not bind the current login agent")
+        try:
+            agent = plistlib.loads(agent_bytes)
+        except (ValueError, TypeError) as error:
+            raise PackageError("guest-tools login agent is not a valid property list") from error
+        if agent != {
+            "Label": "com.pythonxi.Dory.GuestTools.agent",
+            "ProgramArguments": [
+                "/Applications/DoryGuestTools.app/Contents/MacOS/DoryGuestTools",
+                "--integration-agent",
+            ],
+            "LimitLoadToSessionType": "Aqua",
+            "RunAtLoad": True,
+            "KeepAlive": {"SuccessfulExit": False},
+            "ThrottleInterval": 15,
+        }:
+            raise PackageError("guest-tools login agent has an unexpected authority or launch contract")
 
         with tempfile.TemporaryDirectory(prefix=".dory-guest-tools-package-", dir=output.parent) as temporary:
             staging = Path(temporary)
@@ -154,13 +224,30 @@ def main() -> int:
                 raise PackageError("guest-tools bundle manifest does not bind this candidate and source commit")
 
             staged_package = staging / output.name
+            payload_root = staging / "payload"
+            applications = payload_root / "Applications"
+            applications.mkdir(parents=True)
+            shutil.copytree(app, applications / app.name, symlinks=True)
+            launch_agents = payload_root / "Library/LaunchAgents"
+            launch_agents.mkdir(parents=True)
+            shutil.copy2(login_agent, launch_agents / login_agent.name)
+            maintenance_directory = payload_root / MAINTENANCE_HELPER_PATH.lstrip("/")
+            maintenance_directory.parent.mkdir(parents=True)
+            shutil.copy2(maintenance_helper, maintenance_directory)
+            maintenance_directory.chmod(0o755)
             command([
-                "productbuild", "--component", str(app), "/Applications", "--sign", identity,
+                "pkgbuild", "--root", str(payload_root), "--install-location", "/",
+                "--identifier", "com.pythonxi.Dory.GuestTools.pkg",
+                "--version", bundle["bundle"]["version"],
+                "--ownership", "recommended", "--sign", identity,
                 str(staged_package),
             ], "signed guest-tools package build")
             direct_regular(staged_package, "signed guest-tools package")
             if staged_package.stat().st_size == 0:
                 raise PackageError("signed guest-tools package is empty")
+            verify_installer_signature(staged_package)
+            verify_payload_paths(staged_package)
+            submission_id = notarize_and_staple(staged_package, notary_profile)
             verify_installer_signature(staged_package)
             package_bytes = staged_package.stat().st_size
             package_digest = sha256(staged_package)
@@ -170,12 +257,22 @@ def main() -> int:
                 "sourceCommit": commit,
                 "bundleManifestSHA256": hashlib.sha256(manifest_bytes).hexdigest(),
                 "bundleManifest": bundle,
+                "notarization": {
+                    "status": "stapled",
+                    "submissionID": submission_id,
+                },
                 "package": {
                     "filename": output.name,
                     "sha256": package_digest,
                     "byteCount": package_bytes,
-                    "installLocation": "/Applications",
+                    "installLocation": "/",
+                    "installedAppPath": "/Applications/DoryGuestTools.app",
                     "installerTeamIdentifier": EXPECTED_INSTALLER_TEAM,
+                },
+                "loginAgent": {
+                    "path": LOGIN_AGENT_PATH,
+                    "label": agent["Label"],
+                    "sha256": hashlib.sha256(agent_bytes).hexdigest(),
                 },
             }
             staged_manifest = staging / manifest_output.name
@@ -184,7 +281,7 @@ def main() -> int:
             )
             os.replace(staged_manifest, manifest_output)
             os.replace(staged_package, output)
-    except (PackageError, OSError) as error:
+    except (PackageError, OSError, subprocess.TimeoutExpired) as error:
         parser.error(str(error))
     return 0
 
