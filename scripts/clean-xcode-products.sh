@@ -5,6 +5,8 @@ set -euo pipefail
 
 strip_test_products=0
 remove_app_products=0
+selected_app=""
+explicit_root=0
 root="$HOME/Library/Developer/Xcode/DerivedData"
 lsregister="${DORY_LSREGISTER_BIN:-/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister}"
 
@@ -20,10 +22,16 @@ while [ "$#" -gt 0 ]; do
       ;;
     --root)
       root="${2:?--root requires a path}"
+      explicit_root=1
+      shift 2
+      ;;
+    --selected-app)
+      [ -z "$selected_app" ] || { echo "clean-xcode-products: duplicate selected app" >&2; exit 2; }
+      selected_app="${2:?--selected-app requires an absolute app path}"
       shift 2
       ;;
     *)
-      echo "usage: scripts/clean-xcode-products.sh [--strip-test-products] [--remove-app-products] [--root PATH]" >&2
+      echo "usage: scripts/clean-xcode-products.sh [--strip-test-products] [--remove-app-products] [--root PATH | --selected-app PATH]" >&2
       exit 2
       ;;
   esac
@@ -83,6 +91,10 @@ clear_xattrs() {
 
 remove_product_bundle() {
   local app="$1"
+  if [ -n "$selected_app" ] && [ "$app" = "$selected_app" ]; then
+    find "$app" -depth -delete
+    return
+  fi
   case "$app" in
     "$root"/*/Build/Products/*/Dory.app|"$root"/*/Build/Products/*/DoryUITests-Runner.app)
       find "$app" -depth -delete
@@ -123,18 +135,16 @@ purge_registered_test_runners() {
   done < <(registered_test_runners | sort -u)
 }
 
-purge_registered_test_runners
-
-[ -d "$root" ] || exit 0
-
 strip_test_payloads() {
   local app="$1" runner
   [ "$strip_test_products" -eq 1 ] || return 0
   [ -d "$app" ] || return 0
-  runner="$(dirname "$app")/DoryUITests-Runner.app"
-  unregister_launchservices "$runner"
-  clear_xattrs "$runner"
-  rm -rf "$runner"
+  if [ -z "$selected_app" ]; then
+    runner="$(dirname "$app")/DoryUITests-Runner.app"
+    unregister_launchservices "$runner"
+    clear_xattrs "$runner"
+    rm -rf "$runner"
+  fi
   rm -rf "$app/Contents/PlugIns/DoryTests.xctest"
   rm -rf "$app/Contents/Frameworks/XCTest.framework" \
          "$app/Contents/Frameworks/XCTestCore.framework" \
@@ -146,6 +156,51 @@ strip_test_payloads() {
          "$app/Contents/Frameworks/libXCTestBundleInject.dylib" \
          "$app/Contents/Frameworks/libXCTestSwiftSupport.dylib"
 }
+
+if [ -n "$selected_app" ]; then
+  [ "$explicit_root" -eq 0 ] || { echo "clean-xcode-products: --root and --selected-app are mutually exclusive" >&2; exit 2; }
+  # Explicit app ownership never grants authority over sibling UI runners or global registrations.
+  # Normalize the system /tmp alias, but reject app/ancestor symlinks and broad installed paths.
+  selected_app="$(python3 - "$selected_app" <<'PYSELECTED'
+from pathlib import Path
+import sys
+try:
+    app = Path(sys.argv[1])
+    if not app.is_absolute() or app.name != "Dory.app" or ".." in app.parts or any(c in str(app) for c in "\n\r\0"):
+        raise ValueError("expected an absolute, non-traversing Dory.app product path")
+    for path in (app, *app.parents):
+        if path.is_symlink() and str(path) not in ("/tmp", "/var"):
+            raise ValueError("selected product path contains a symlink")
+    app = app.resolve()
+    home = Path.home().resolve()
+    broad = {Path("/"), Path("/Users"), home, home / "Desktop", home / "Documents", home / "Downloads", home / "Library"}
+    protected = (Path("/Applications"), Path("/System"), Path("/Library"), Path("/usr"), Path("/bin"), Path("/sbin"), Path("/etc"), Path("/private/etc"))
+    folded_app = Path(str(app).casefold())
+    if Path(str(app.parent).casefold()) in {Path(str(path).casefold()) for path in broad} or any(folded_app.is_relative_to(Path(str(path).casefold())) for path in protected) or any(p.casefold().endswith((".app", ".xpc")) for p in app.parent.parts):
+        raise ValueError("unsafe selected build product directory")
+    if app.exists() and not app.is_dir():
+        raise ValueError("selected app is not a directory")
+    # Internal aliases may remain (framework Versions/Current), but may not escape ownership.
+    if app.is_dir():
+        for path in app.rglob("*"):
+            if path.is_symlink() and not path.resolve().is_relative_to(app):
+                raise ValueError("selected bundle contains an escaping symlink")
+    print(app)
+except (OSError, ValueError, RuntimeError) as error:
+    print(f"clean-xcode-products: refusing selected app: {error}", file=sys.stderr)
+    sys.exit(2)
+PYSELECTED
+)" || exit 2
+  [ -d "$selected_app" ] || exit 0
+  clear_xattrs "$selected_app"
+  unregister_launchservices "$selected_app"
+  strip_test_payloads "$selected_app"
+  [ "$remove_app_products" -eq 0 ] || remove_product_bundle "$selected_app"
+  exit 0
+fi
+
+purge_registered_test_runners
+[ -d "$root" ] || exit 0
 
 while IFS= read -r -d '' app; do
   clear_xattrs "$app"

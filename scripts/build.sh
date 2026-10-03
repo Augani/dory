@@ -27,7 +27,7 @@ Useful environment controls:
   DORY_REQUIRE_CORE_ASSETS=0|1    Require a bootable bundled Docker Core (defaults to 1 for Release)
   DORY_VM_QUALIFICATION_BOOTSTRAP=0|1
                                   Enable the explicitly non-release VM qualification path
-                                  (defaults to 1 for Debug and 0 for Release)
+                                  (defaults to 0 in all configurations)
   DORY_PC_FIRMWARE_BUNDLE=PATH    Use an already-built verified DoryPC firmware bundle
   DORY_ALLOW_MISSING_GVPROXY=1    Permit an intentionally incomplete development bundle
   DORY_BUNDLE_RENDERER=0|1        Disable or require the production renderer tuple
@@ -39,6 +39,9 @@ EOF
 
 for argument in "$@"; do
   case "$argument" in
+    CODE_SIGNING_ALLOWED=*|DORY_VM_QUALIFICATION_BOOTSTRAP=*)
+      echo "error: use DORY_XCODE_CODE_SIGNING_ALLOWED / DORY_VM_QUALIFICATION_BOOTSTRAP environment controls, not duplicate forwarded settings: $argument" >&2
+      exit 64 ;;
     -h|--help) usage; exit 0 ;;
     # These are both Xcode build settings and inputs to the post-build verifier below. Preserve
     # an explicit command-line assignment in this process so both stages validate the same build.
@@ -94,31 +97,32 @@ if [ "$BUNDLE_SIGN_IDENTITY" != - ] && [ "$BUNDLE_EXPECTED_TEAM" = - ]; then
   echo "error: DORY_BUNDLE_SIGN_IDENTITY requires DORY_BUNDLE_EXPECTED_TEAM" >&2
   exit 64
 fi
-# Replacing or re-signing the same DerivedData bundle while its app, daemon, or helpers are
-# executing can leave macOS provenance locks behind and corrupt the bundle's CodeResources.
-# Fail before deleting any product so the caller can stop that runtime cleanly first.
-running_product_pattern="$HOME/Library/Developer/Xcode/DerivedData/Dory-.*/Build/Products/$XCODE_CONFIGURATION/Dory\.app/Contents/"
-if pgrep -f "$running_product_pattern" >/dev/null 2>&1; then
-  echo "error: a $XCODE_CONFIGURATION Dory build product is running; quit Dory and unload its development daemon before rebuilding" >&2
-  pgrep -alf "$running_product_pattern" >&2 || true
-  exit 1
-fi
-
 # shellcheck source=gvproxy-payload.sh
 source scripts/gvproxy-payload.sh
 # shellcheck source=host-cli-payload.sh
 source scripts/host-cli-payload.sh
 
 find_xcode() {
-  local dev app found
+  local dev app found version
   for app in /Applications/Xcode.app /Applications/Xcode-*.app \
              "$HOME"/Applications/Xcode*.app "$HOME"/Downloads/Xcode*.app; do
     dev="$app/Contents/Developer"
-    [ -x "$dev/usr/bin/xcodebuild" ] && { printf '%s' "$dev"; return 0; }
+    [ -x "$dev/usr/bin/xcodebuild" ] || continue
+    version="$(DEVELOPER_DIR="$dev" xcodebuild -version 2>/dev/null || true)"
+    case "$version" in
+      $'Xcode 27.0\nBuild version 27A266a'|$'Xcode 26.6\nBuild version 17F113')
+        printf '%s' "$dev"; return 0 ;;
+    esac
   done
-  found="$(mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'" 2>/dev/null | head -1)"
-  [ -n "$found" ] && [ -x "$found/Contents/Developer/usr/bin/xcodebuild" ] \
-    && { printf '%s' "$found/Contents/Developer"; return 0; }
+  while IFS= read -r found; do
+    dev="$found/Contents/Developer"
+    [ -x "$dev/usr/bin/xcodebuild" ] || continue
+    version="$(DEVELOPER_DIR="$dev" xcodebuild -version 2>/dev/null || true)"
+    case "$version" in
+      $'Xcode 27.0\nBuild version 27A266a'|$'Xcode 26.6\nBuild version 17F113')
+        printf '%s' "$dev"; return 0 ;;
+    esac
+  done < <(mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'" 2>/dev/null)
   return 1
 }
 
@@ -141,11 +145,24 @@ if [ -z "${DEVELOPER_DIR:-}" ]; then
     fi
   fi
 fi
+DEVELOPER_DIR="${DEVELOPER_DIR:-$(xcode-select -p)}"
+export DEVELOPER_DIR
 
-# Pin the Swift toolchain. The dory-core-swift test target fails to type-check on Swift 6.4
-# (Xcode 26 GM) because of array-literal-of-implicit-member expressions in DoryX86IRTests.swift.
-# The receipts were produced with Swift 6.3.3 (Xcode 26.6 RC). Fail loudly on an unsupported
-# compiler so a clean checkout never silently produces a broken test build.
+# Keep development builds on the verified final toolchains. A discovered or explicitly selected
+# release-candidate Xcode must not silently become the source of a new build receipt.
+xcode_build="$(DEVELOPER_DIR="$DEVELOPER_DIR" xcodebuild -version 2>/dev/null)"
+case "$xcode_build" in
+  $'Xcode 27.0\nBuild version 27A266a'|$'Xcode 26.6\nBuild version 17F113') ;;
+  *)
+    echo "error: unsupported Xcode build at $DEVELOPER_DIR: ${xcode_build:-unknown}" >&2
+    echo "error: select final Xcode 27.0 (27A266a) or the pinned final Xcode 26.6 (17F113)." >&2
+    exit 64
+    ;;
+esac
+
+# Pin the Swift language-toolchain range. Earlier test sources exposed Swift 6.4
+# type-checking issues; retain an explicit guard while building with the selected
+# full Xcode 27.0 / Swift 6.4 toolchain.
 if [ -z "${DORY_SKIP_SWIFT_VERSION_CHECK:-}" ]; then
   # Stable Xcode releases have not consistently exposed Swift at Developer/usr/bin/swift.
   # Resolve it through the selected developer directory so this check examines the same
@@ -155,11 +172,11 @@ if [ -z "${DORY_SKIP_SWIFT_VERSION_CHECK:-}" ]; then
     | sed -nE 's/.*Apple Swift version ([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p' \
     | head -1)"
   case "$swift_version" in
-    6.3|6.3.*) ;;  # Xcode 26.6 RC — receipts pass here
-    6.4|6.4.*) ;;  # Xcode 26 GM — test target fixed for this compiler in this commit
+    6.3|6.3.*) ;;  # Retained support for reviewed Swift 6.3 toolchains
+    6.4|6.4.*) ;;  # Selected Xcode 27.0 toolchain
     *)
       echo "error: unsupported Swift version '${swift_version:-unknown}'. " >&2
-      echo "error: Dory requires Swift 6.3.x or 6.4.x (Xcode 26.6 RC or Xcode 26 GM)." >&2
+      echo "error: Dory requires Swift 6.3.x or 6.4.x (selected Xcode 27.0 uses Swift 6.4)." >&2
       echo "error: Set DEVELOPER_DIR to a supported Xcode or DORY_SKIP_SWIFT_VERSION_CHECK=1 to bypass." >&2
       exit 64
       ;;
@@ -177,17 +194,6 @@ scripts/build-dory-ffi-xcframework.sh --if-needed || exit 1
 SOURCE_BINDING_WORK="$(mktemp -d "${TMPDIR:-/tmp}/dory-build-source.XXXXXX")" || exit 1
 trap 'rm -rf "$SOURCE_BINDING_WORK"' EXIT
 SOURCE_BINDING_INPUT="$SOURCE_BINDING_WORK/development-source-binding.json"
-python3 scripts/write-development-source-binding.py create \
-  --source-root "$ROOT" --output "$SOURCE_BINDING_INPUT" || exit 1
-
-LOG=/tmp/dory_build.log
-
-# The post-build bundling below injects helpers and guest assets that are not Xcode target outputs.
-# Remove that modified product before rebuilding so Xcode's script sandbox never has to delete it.
-for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
-  [ -d "$app" ] || continue
-  rm -rf "$app"
-done
 
 XCODE_CODE_SIGNING_ALLOWED="${DORY_XCODE_CODE_SIGNING_ALLOWED:-NO}"
 case "$XCODE_CODE_SIGNING_ALLOWED" in
@@ -195,14 +201,138 @@ case "$XCODE_CODE_SIGNING_ALLOWED" in
   *) echo "error: DORY_XCODE_CODE_SIGNING_ALLOWED must be 'YES' or 'NO'" >&2; exit 64 ;;
 esac
 
+# Resolve the exact product from the same invocation that will build it. A DerivedData glob
+# cannot express -derivedDataPath, BUILD_DIR, or configuration overrides and must never be an
+# authority to delete, assemble, or sign another checkout's app.
+XCODE_BUILD_ARGUMENTS=(-project Dory.xcodeproj -scheme Dory -destination 'platform=macOS'
+  -configuration "$XCODE_CONFIGURATION"
+  CODE_SIGNING_ALLOWED="$XCODE_CODE_SIGNING_ALLOWED"
+  DORY_VM_QUALIFICATION_BOOTSTRAP="$VM_QUALIFICATION_BOOTSTRAP")
+for argument in "$@"; do
+  case "$argument" in
+    build|clean|test|test-without-building|build-for-testing|archive|install|analyze|\
+    -showBuildSettings|-json|-showBuildSettingsForIndex|-list|-version|-help|\
+    -exportArchive|-exportNotarizedApp|-importLocalizations|-exportLocalizations|\
+    -downloadAllPlatforms|-downloadPlatform|-importPlatform|-downloadComponent|\
+    -runFirstLaunch|-license)
+      echo "error: build.sh accepts build options/settings, not action or query overrides: $argument" >&2
+      exit 64 ;;
+  esac
+done
+
+resolve_xcode_app_product() {
+  local settings="$SOURCE_BINDING_WORK/xcode-build-settings.json"
+  xcodebuild "${XCODE_BUILD_ARGUMENTS[@]}" "$@" -showBuildSettings -json > "$settings" || return 1
+  python3 - "$settings" "$ROOT" "$XCODE_CONFIGURATION" <<'PYPRODUCT'
+import json
+from pathlib import Path
+import sys
+
+def fail(message):
+    raise ValueError(message)
+
+def absolute_path(value, label):
+    if not isinstance(value, str) or not value or any(c in value for c in "\n\r\0"):
+        fail(f"invalid {label}")
+    path = Path(value)
+    if not path.is_absolute() or ".." in path.parts:
+        fail(f"{label} must be an absolute, non-traversing path")
+    return path
+
+try:
+    root = Path(sys.argv[2]).resolve()
+    records = json.loads(Path(sys.argv[1]).read_text())
+    if not isinstance(records, list):
+        fail("Xcode build settings are not a target list")
+    matches = [record for record in records if isinstance(record, dict) and record.get("target") == "Dory"]
+    if len(matches) != 1:
+        fail("expected exactly one Dory target in Xcode build settings")
+    settings = matches[0]["buildSettings"]
+    if settings.get("CONFIGURATION") != sys.argv[3]:
+        fail("configuration override disagrees with DORY_XCODE_CONFIGURATION")
+    if absolute_path(settings.get("PROJECT_FILE_PATH"), "project path").resolve() != root / "Dory.xcodeproj":
+        fail("resolved product belongs to a different project")
+    for key, expected in (
+        ("PRODUCT_BUNDLE_IDENTIFIER", "com.pythonxi.Dory"),
+        ("PRODUCT_TYPE", "com.apple.product-type.application"),
+        ("FULL_PRODUCT_NAME", "Dory.app"),
+        ("WRAPPER_NAME", "Dory.app"),
+    ):
+        if settings.get(key) != expected:
+            fail(f"unexpected Dory product setting {key}")
+    build_path = absolute_path(settings.get("BUILD_DIR"), "build directory")
+    build = build_path.resolve()
+    target = absolute_path(settings.get("TARGET_BUILD_DIR"), "target build directory")
+    app = target / "Dory.app"
+    if app.is_symlink() or target.is_symlink():
+        fail("resolved app or target build directory is a symlink")
+    target = target.resolve()
+    home = Path.home().resolve()
+    prohibited = {Path("/"), Path("/Users"), home, home / "Desktop", home / "Documents", home / "Downloads", home / "Library", root}
+    protected = (Path("/Applications"), Path("/System"), Path("/Library"), Path("/usr"), Path("/bin"), Path("/sbin"), Path("/etc"), Path("/private/etc"))
+    # APFS commonly preserves spelling while resolving case-insensitive aliases. Compare
+    # ownership stop lines conservatively so /applications and an enclosing .APP cannot evade them.
+    folded_build = Path(str(build).casefold())
+    folded_target = Path(str(target).casefold())
+    folded_prohibited = {Path(str(path).casefold()) for path in prohibited}
+    if folded_build in folded_prohibited or folded_target in folded_prohibited or any(folded_target.is_relative_to(Path(str(path).casefold())) for path in protected) or any(p.casefold().endswith((".app", ".xpc")) for p in target.parts):
+        fail("unsafe build product directory")
+    if target == build or not target.is_relative_to(build):
+        fail("target product directory must be strictly inside its Xcode BUILD_DIR")
+    # Reject redirection below the build root, while accepting macOS's /tmp -> /private/tmp alias.
+    for current in (app, *app.parents):
+        if current.is_symlink() and str(current) not in ("/tmp", "/var"):
+            fail("symlink in target build directory")
+    app = target / "Dory.app"
+    if app.exists() and not app.is_dir():
+        fail("existing product is not an app directory")
+    print(app)
+except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
+    print(f"error: cannot safely resolve Dory app product: {error}", file=sys.stderr)
+    sys.exit(64)
+PYPRODUCT
+}
+
+SELECTED_APP_PRODUCT="$(resolve_xcode_app_product "$@")" || exit 1
+readonly SELECTED_APP_PRODUCT
+# Escape regex metacharacters: a sibling product or path containing brackets must neither block
+# this candidate nor evade the guard. Only processes executing inside this exact bundle count.
+running_product_pattern="$(python3 - "$SELECTED_APP_PRODUCT" <<'PYPROCESS'
+import re
+import sys
+canonical = sys.argv[1] + "/Contents/"
+paths = [canonical]
+# pgrep observes the spelling used to launch a process, not its filesystem realpath. Only the
+# two system-owned aliases accepted by product validation may identify this same exact bundle.
+for resolved, alias in (("/private/tmp/", "/tmp/"), ("/private/var/", "/var/")):
+    if canonical.casefold().startswith(resolved):
+        paths.append(alias + canonical[len(resolved):])
+print("(" + "|".join(re.escape(path) for path in paths) + ")")
+PYPROCESS
+)" || exit 1
+require_selected_product_stopped() {
+  if pgrep -if "$running_product_pattern" >/dev/null 2>&1; then
+    echo "error: selected Dory product is running; quit its app and unload its development daemon before rebuilding: $SELECTED_APP_PRODUCT" >&2
+    pgrep -ialf "$running_product_pattern" >&2 || true
+    return 1
+  fi
+}
+require_selected_product_stopped || exit 1
+echo "note: selected Xcode app product: $SELECTED_APP_PRODUCT" >&2
+
+python3 scripts/write-development-source-binding.py create \
+  --source-root "$ROOT" --output "$SOURCE_BINDING_INPUT" || exit 1
+
+LOG=/tmp/dory_build.log
+
+# The post-build bundling below injects helpers and guest assets that are not Xcode target outputs.
+# Remove that modified product before rebuilding so Xcode's script sandbox never has to delete it.
+scripts/clean-xcode-products.sh --selected-app "$SELECTED_APP_PRODUCT" --remove-app-products || exit 1
+
 # Pass CODE_SIGNING_ALLOWED exactly once. Supplying a contradictory default before caller build
 # settings lets an enclosing target observe signing while dependent XPC products are still emitted
 # ad hoc, which breaks the runner's pinned peer requirements during renderer qualification.
-xcodebuild -project Dory.xcodeproj -scheme Dory -destination 'platform=macOS' \
-  -configuration "$XCODE_CONFIGURATION" build \
-  CODE_SIGNING_ALLOWED="$XCODE_CODE_SIGNING_ALLOWED" \
-  DORY_VM_QUALIFICATION_BOOTSTRAP="$VM_QUALIFICATION_BOOTSTRAP" \
-  "$@" > "$LOG" 2>&1
+xcodebuild "${XCODE_BUILD_ARGUMENTS[@]}" "$@" build > "$LOG" 2>&1
 xcodebuild_status=$?
 status=$xcodebuild_status
 
@@ -213,7 +343,10 @@ sed -i '' 's/objectVersion = 110;/objectVersion = 77;/' Dory.xcodeproj/project.p
 # macOS 27 can stamp DerivedData app products with provenance metadata that leaves debug
 # bundles launchable-looking but stuck before main/dyld. Clear it and strip transient XCTest
 # payloads from normal debug app builds.
-scripts/clean-xcode-products.sh --strip-test-products
+require_selected_product_stopped || exit 1
+if ! scripts/clean-xcode-products.sh --selected-app "$SELECTED_APP_PRODUCT" --strip-test-products; then
+  [ "$status" -ne 0 ] || status=1
+fi
 
 fetch_url() {
   local url="$1" out="$2"
@@ -281,10 +414,12 @@ policies = {
     },
     "DoryVMM.app": {
         "com.apple.security.device.audio-input": True,
+        "com.apple.security.device.camera": True,
         "com.apple.security.virtualization": True,
     },
     "flat dory-vmm": {
         "com.apple.security.device.audio-input": True,
+        "com.apple.security.device.camera": True,
         "com.apple.security.virtualization": True,
     },
 }
@@ -421,7 +556,7 @@ write_debug_bundle_capabilities() {
       *) distros="$DESKTOP_BUNDLE_MODE" ;;
     esac
   fi
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+  for app in "$SELECTED_APP_PRODUCT"; do
     [ -f "$app/Contents/Info.plist" ] || continue
     /usr/libexec/PlistBuddy -c 'Delete :DoryIncludesDesktopLinux' "$app/Contents/Info.plist" >/dev/null 2>&1 || true
     /usr/libexec/PlistBuddy -c 'Delete :DoryBundledComponents' "$app/Contents/Info.plist" >/dev/null 2>&1 || true
@@ -482,7 +617,7 @@ bundle_debug_hv_helper() {
     return 1
   fi
 
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+  for app in "$SELECTED_APP_PRODUCT"; do
     [ -d "$app" ] || continue
     mkdir -p "$app/Contents/Helpers"
     mkdir -p "$app/Contents/Resources"
@@ -615,7 +750,7 @@ verify_debug_renderer_packaging() {
       }
     renderer_pc_args=(--pc-managed-kernel "$pc_kernel" --pc-guest-mesa "$pc_mesa")
   fi
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+  for app in "$SELECTED_APP_PRODUCT"; do
     [ -d "$app" ] || continue
     runner_app="$app/Contents/Helpers/DoryHVRunner.app"
     [ -d "$runner_app" ] && [ ! -L "$runner_app" ] \
@@ -667,7 +802,7 @@ bundle_doryd_swiftpm_helpers() {
   entitlements="dory-core-swift/Sources/dory-vmm/dory-vmm.entitlements"
   [ -f "$entitlements" ] || { echo "error: dory-vmm entitlements are missing" >&2; return 1; }
 
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+  for app in "$SELECTED_APP_PRODUCT"; do
     [ -d "$app" ] || continue
     mkdir -p "$app/Contents/Helpers"
     for product in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy; do
@@ -709,7 +844,7 @@ bundle_debug_transfer_helper() {
     rm -rf "$work"
     return 1
   fi
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+  for app in "$SELECTED_APP_PRODUCT"; do
     [ -d "$app" ] || continue
     mkdir -p "$app/Contents/Resources"
     install -m0644 "$work/dory-transfer-helper-image-arm64.tar" "$app/Contents/Resources/"
@@ -720,7 +855,7 @@ bundle_debug_transfer_helper() {
 
 bundle_dory_pc_firmware() {
   local app
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+  for app in "$SELECTED_APP_PRODUCT"; do
     [ -d "$app" ] || continue
     DORY_VM_QUALIFICATION_BOOTSTRAP="$VM_QUALIFICATION_BOOTSTRAP" \
       /usr/bin/python3 scripts/build-dory-armvirt-firmware.py --platform pc \
@@ -899,7 +1034,7 @@ bundle_host_cli_helpers() {
   docker_buildx="$(first_existing_cli "${DORY_DOCKER_BUILDX:-}" /Applications/Dory.app/Contents/Helpers/docker-buildx "$HOME/.docker/cli-plugins/docker-buildx" "$HOME/.dory/bin/docker-buildx" /opt/homebrew/lib/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx || download_docker_buildx || true)"
   docker_compose="$(first_existing_cli "${DORY_DOCKER_COMPOSE:-}" /Applications/Dory.app/Contents/Helpers/docker-compose "$HOME/.docker/cli-plugins/docker-compose" "$HOME/.dory/bin/docker-compose" /opt/homebrew/bin/docker-compose /usr/local/bin/docker-compose "$(command -v docker-compose 2>/dev/null || true)" || download_docker_compose || true)"
   kubectl="$(first_existing_cli "${DORY_KUBECTL:-}" /Applications/Dory.app/Contents/Helpers/kubectl "$HOME/.dory/bin/kubectl" /opt/homebrew/bin/kubectl /usr/local/bin/kubectl "$(command -v kubectl 2>/dev/null || true)" || download_kubectl || true)"
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+  for app in "$SELECTED_APP_PRODUCT"; do
     [ -d "$app" ] || continue
     copy_host_cli_helper "$app" docker "$docker"
     copy_host_cli_helper "$app" docker-credential-osxkeychain "$docker_credential"
@@ -922,7 +1057,7 @@ bundle_host_cli_helpers() {
 verify_installable_app_bundle() {
   local app found helper
   found=0
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+  for app in "$SELECTED_APP_PRODUCT"; do
     [ -d "$app" ] || continue
     found=1
     [ -x "$app/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" ] \
@@ -956,7 +1091,7 @@ verify_installable_app_bundle() {
 
 write_development_source_binding() {
   local app binding
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+  for app in "$SELECTED_APP_PRODUCT"; do
     [ -d "$app" ] || continue
     binding="$app/Contents/Resources/development-source-binding.json"
     python3 scripts/write-development-source-binding.py verify \
@@ -1212,7 +1347,7 @@ verify_doryd_renderer_release_identity() {
 
 sign_debug_apps() {
   local app helper framework extension
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+  for app in "$SELECTED_APP_PRODUCT"; do
     [ -d "$app" ] || continue
     xattr -cr "$app" 2>/dev/null || true
     seal_unqualified_runner_graph "$app" || return 1
