@@ -34,7 +34,8 @@ QUALIFICATION_COMPONENT = "linux-desktop"
 QUALIFICATION_PATH = "virtual-machine-qualification.json"
 QUALIFICATION_SIGNATURE_PATH = "virtual-machine-qualification.json.sig"
 PERFORMANCE_RECEIPT_KIND = "dev.dory.linux-vm-performance-verification-receipt"
-PERFORMANCE_RECEIPT_SCHEMA = 1
+PERFORMANCE_SOFTWARE_RECEIPT_SCHEMA = 1
+PERFORMANCE_ACCELERATED_RECEIPT_SCHEMA = 2
 PERFORMANCE_RECEIPT_SUFFIX = ".linux-vm-performance-verification.json"
 PERFORMANCE_RECEIPT_SIGNATURE_SUFFIX = PERFORMANCE_RECEIPT_SUFFIX + ".sig"
 INVENTORY_KIND = "dev.dory.component-candidate-inventory"
@@ -76,6 +77,7 @@ EXPECTED_RUNNER_ENTITLEMENTS = {
 }
 EXPECTED_VMM_ENTITLEMENTS = {
     "com.apple.security.device.audio-input": True,
+    "com.apple.security.device.camera": True,
     "com.apple.security.virtualization": True,
 }
 # The filesystem worker deliberately carries no ambient sandbox grants. Its authority is the
@@ -446,7 +448,15 @@ def source_commit(repo: pathlib.Path, explicit: str | None) -> str:
     return value
 
 
-def recipe_digest(repo: pathlib.Path) -> str:
+def recipe_digest(repo: pathlib.Path, *, fixture: bool = False) -> str:
+    if fixture:
+        # Synthetic assembly explicitly skips guest provenance verification. Bind its builder
+        # in a separate digest domain rather than requiring removed guest production recipes
+        # or presenting an unverified fixture as a verified recipe tuple.
+        return hashlib.sha256(
+            b"dev.dory.unverified-component-fixture-recipe\0"
+            + regular_file(repo / "scripts/build-components.py", "fixture builder").read_bytes()
+        ).hexdigest()
     inputs = [
         repo / "scripts/build-components.py",
         repo / "guest/kernel/build.sh",
@@ -768,7 +778,11 @@ def load_performance_verification_receipt(
         fail("catalog public key must be a 32-byte Ed25519 key")
     expected_key_id = hashlib.sha256(public_key).hexdigest()
     if receipt["kind"] != PERFORMANCE_RECEIPT_KIND \
-            or receipt["schemaVersion"] != PERFORMANCE_RECEIPT_SCHEMA:
+            or type(receipt["schemaVersion"]) is not int \
+            or receipt["schemaVersion"] not in {
+                PERFORMANCE_SOFTWARE_RECEIPT_SCHEMA,
+                PERFORMANCE_ACCELERATED_RECEIPT_SCHEMA,
+            }:
         fail("Linux VM performance verification receipt kind or schema is unsupported")
     if receipt["releaseQualified"] is not True:
         fail("Linux VM performance verification receipt is not release-qualified")
@@ -822,6 +836,13 @@ def load_performance_verification_receipt(
             fail(f"performance support-cell {field} is unsupported")
     if support["requestedGraphicsQuality"] != support["selectedGraphicsQuality"]:
         fail("release-qualified performance receipt contains a graphics fallback")
+    expected_schema = (
+        PERFORMANCE_ACCELERATED_RECEIPT_SCHEMA
+        if support["selectedGraphicsQuality"] == "accelerated"
+        else PERFORMANCE_SOFTWARE_RECEIPT_SCHEMA
+    )
+    if receipt["schemaVersion"] != expected_schema:
+        fail("performance receipt schema does not prove its graphics quality")
     return receipt
 
 
@@ -1403,7 +1424,9 @@ def core_binding(
                 expected_entitlements=EXPECTED_VMM_ENTITLEMENTS,
                 requires_hv_workers=False,
                 allow_test_signatures=allow_test_signatures,
-                required_usage_descriptions=("NSMicrophoneUsageDescription",),
+                required_usage_descriptions=(
+                    "NSCameraUsageDescription", "NSMicrophoneUsageDescription",
+                ),
             )
         helpers.append(record)
     application = {
@@ -1550,7 +1573,7 @@ def build_candidate_inventory(args: argparse.Namespace, repo: pathlib.Path) -> N
             "assetBaseURL": asset_base_url,
             "sourceCommit": source_commit(repo, args.source_commit),
             "builder": nonempty_string(args.builder_identity, "builder identity"),
-            "recipeDigest": recipe_digest(repo),
+            "recipeDigest": recipe_digest(repo, fixture=args.skip_source_verification),
             "core": core,
             "mediaBindings": sorted(
                 media_bindings,

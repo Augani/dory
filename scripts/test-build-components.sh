@@ -5,6 +5,46 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/dory-components-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+# Maintainer-owned local coverage is optional in the public checkout.
+if [ -f "$ROOT/scripts/test-build-product-ownership.py" ]; then
+  python3 "$ROOT/scripts/test-build-product-ownership.py"
+fi
+
+# Fixture assembly must remain runnable without the retired guest producers, while verified
+# assembly still requires every production recipe and uses a distinct digest domain.
+python3 - "$ROOT" "$TMP" <<'PYRECIPES'
+import importlib.util
+import pathlib
+import sys
+
+repo, temporary = map(pathlib.Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("component_recipe_tests", repo / "scripts/build-components.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+root = temporary / "recipe-source"
+(root / "scripts").mkdir(parents=True)
+(root / "scripts/build-components.py").write_text("fixture builder")
+fixture = module.recipe_digest(root, fixture=True)
+try:
+    module.recipe_digest(root)
+except SystemExit as error:
+    assert "component build recipe is missing" in str(error), error
+else:
+    raise AssertionError("verified recipe tuple accepted a missing guest producer")
+for relative in ("guest/kernel/build.sh", "guest/initfs/build.sh", "guest/desktop/build.sh"):
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(relative)
+verified = module.recipe_digest(root)
+assert verified != fixture
+assert module.recipe_digest(root, fixture=True) == fixture
+(root / "guest/kernel/build.sh").write_text("changed production recipe")
+assert module.recipe_digest(root) != verified
+(root / "scripts/build-components.py").write_text("changed fixture builder")
+assert module.recipe_digest(root, fixture=True) != fixture
+print("component recipe identity tests passed")
+PYRECIPES
+
 if [ -d /Applications/Xcode.app/Contents/Developer ]; then
   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi
@@ -291,6 +331,7 @@ cat > "$CORE_APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>9.8.7</string>
 <key>CFBundleVersion</key><string>42</string>
+<key>NSCameraUsageDescription</key><string>Dory test camera selection.</string>
 </dict></plist>
 PLIST
 cat > "$OUTER_ENTITLEMENTS" <<'PLIST'
@@ -388,6 +429,7 @@ cat > "$VMM_APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleExecutable</key><string>dory-vmm</string>
 <key>CFBundleIdentifier</key><string>dory-vmm</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>NSCameraUsageDescription</key><string>Dory test camera usage.</string>
 <key>NSMicrophoneUsageDescription</key><string>Dory test microphone usage.</string>
 </dict></plist>
 PLIST
@@ -396,6 +438,7 @@ cat > "$VMM_ENTITLEMENTS" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>com.apple.security.device.audio-input</key><true/>
+<key>com.apple.security.device.camera</key><true/>
 <key>com.apple.security.virtualization</key><true/>
 </dict></plist>
 PLIST
@@ -643,6 +686,21 @@ grep -Fq 'nested runner is missing NSCameraUsageDescription' \
   "$RUNNER_APP/Contents/Info.plist"
 sign_test_bundle "$RUNNER_ENTITLEMENTS" "$RUNNER_APP" com.pythonxi.Dory.HVRunner
 
+/usr/libexec/PlistBuddy -c 'Delete :NSCameraUsageDescription' \
+  "$VMM_APP/Contents/Info.plist"
+sign_test_bundle "$VMM_ENTITLEMENTS" "$VMM_APP" dory-vmm
+if assemble >"$TMP/missing-vmm-camera-usage.out" 2>&1; then
+  echo "component packaging accepted a VMM without camera privacy disclosure" >&2
+  exit 1
+fi
+grep -Fq 'nested VMM is missing NSCameraUsageDescription' \
+  "$TMP/missing-vmm-camera-usage.out" \
+  || { cat "$TMP/missing-vmm-camera-usage.out" >&2; echo "component packaging rejected the VMM privacy graph for the wrong reason" >&2; exit 1; }
+/usr/libexec/PlistBuddy -c \
+  'Add :NSCameraUsageDescription string Dory test camera usage.' \
+  "$VMM_APP/Contents/Info.plist"
+sign_test_bundle "$VMM_ENTITLEMENTS" "$VMM_APP" dory-vmm
+
 # Every host executable in the shipped graph must actually contain Apple-silicon code.
 xcrun clang -arch x86_64 -mmacosx-version-min=14.0 \
   "$TMP/fixture-main.c" -o "$TMP/fixture-main-x86_64"
@@ -817,6 +875,7 @@ assert vmm["signedBundle"]["teamIdentifier"] == "-"
 assert vmm["signedBundle"]["hardenedRuntime"] is False
 assert vmm["signedBundle"]["entitlements"] == {
     "com.apple.security.device.audio-input": True,
+    "com.apple.security.device.camera": True,
     "com.apple.security.virtualization": True,
 }
 assert "com.apple.security.cs.disable-library-validation" not in vmm["signedBundle"]["entitlements"]
@@ -1235,7 +1294,7 @@ receipt = {
     },
     "kind": "dev.dory.linux-vm-performance-verification-receipt",
     "releaseQualified": True,
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "signaturePublicKeyID": hashlib.sha256(
         base64.b64decode(public_key, validate=True)
     ).hexdigest(),
@@ -1322,6 +1381,37 @@ finalize() {
     --catalog-public-key "$PUBLIC_KEY" \
     --allow-test-signatures
 }
+
+# A valid signature on the old receipt format cannot qualify accelerated graphics: v1 did
+# not require replay of the displayed pixels or the controlled OpenGL comparison.
+cp "$PERFORMANCE_RECEIPT" "$TMP/performance-receipt.v2"
+cp "$PERFORMANCE_RECEIPT_SIGNATURE" "$TMP/performance-receipt.v2.sig"
+python3 - "$PERFORMANCE_RECEIPT" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+receipt = json.loads(path.read_text(encoding="utf-8"))
+receipt["schemaVersion"] = 1
+path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+sign_file "$PERFORMANCE_RECEIPT" "$PERFORMANCE_RECEIPT_SIGNATURE"
+write_qualification "$TMP/legacy-performance-receipt.json" none
+sign_file "$TMP/legacy-performance-receipt.json" \
+  "$TMP/legacy-performance-receipt.json.sig"
+if finalize "$CANDIDATE" "$TMP/legacy-performance-receipt-final" \
+    "$TMP/legacy-performance-receipt.json" \
+    "$TMP/legacy-performance-receipt.json.sig" "$SBOM" \
+    >"$TMP/legacy-performance-receipt.out" 2>&1; then
+  echo "component packaging accepted a legacy accelerated performance receipt" >&2
+  exit 1
+fi
+grep -Fq 'performance receipt schema does not prove its graphics quality' \
+  "$TMP/legacy-performance-receipt.out" \
+  || { cat "$TMP/legacy-performance-receipt.out" >&2; echo "component packaging rejected the legacy receipt for the wrong reason" >&2; exit 1; }
+cp "$TMP/performance-receipt.v2" "$PERFORMANCE_RECEIPT"
+cp "$TMP/performance-receipt.v2.sig" "$PERFORMANCE_RECEIPT_SIGNATURE"
 
 # A correctly signed performance campaign for a different Dory.app graph is not release evidence
 # for this candidate, even when its qualification manifest is regenerated around that receipt.
