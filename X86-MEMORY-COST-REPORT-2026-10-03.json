@@ -1,0 +1,247 @@
+{
+  "kind": "dev.dory.local-x86-memory-cost-report",
+  "date": "2026-10-03",
+  "sourceCommit": "92050555203d22b38f26712e0dadaa982fc3f513",
+  "releaseQualified": false,
+  "host": "Apple Silicon / macOS 27.2 / final Xcode 27.0 (27A266a); development cell, outside frozen release matrix",
+  "frozenExecution": {
+    "cpu": "compat-v1",
+    "processors": 1,
+    "memoryMiB": 1024,
+    "clock": "deterministic",
+    "tier1Emission": true,
+    "rawTargetPrediction": "none",
+    "writePolicy": "checked-callbacks"
+  },
+  "leaseOptimization": {
+    "before": {
+      "status": "failed",
+      "receipt": "pvh-default-before.json",
+      "reason": "instruction-budget",
+      "elapsedSeconds": 87.237361125,
+      "retiredInstructions": 120000000,
+      "runID": "6a778014-9c73-4ad6-91fd-69cf14f699b0",
+      "runnerSHA256": "bd45fe20e517606dfd1ce3fe8f645a919a777ef81b8612137bcaaa58bbdd1e76",
+      "releaseQualified": false
+    },
+    "after": {
+      "status": "failed",
+      "receipt": "pvh-default-after-lease.json",
+      "reason": "instruction-budget",
+      "elapsedSeconds": 80.679436,
+      "retiredInstructions": 120000000,
+      "runID": "542b5034-beca-48bd-895a-479d8fb743f0",
+      "runnerSHA256": "d40da79953791442b65af3044e86fbc618fe4dc65ad30cacb1a6966f3b3a36d7",
+      "releaseQualified": false
+    },
+    "elapsedReductionPercent": 7.5173355090410565,
+    "equal": {
+      "state": true,
+      "executionStatistics": true,
+      "retiredInstructions": true,
+      "guestClock": true,
+      "timerInterruptState": true
+    },
+    "jitCumulativeCountersEqual": true
+  },
+  "capabilityCacheInitialOverlappingPair": {
+    "before": {
+      "status": "failed",
+      "receipt": "pvh-default-before-capability-cache.json",
+      "reason": "instruction-budget",
+      "elapsedSeconds": 84.084002708,
+      "retiredInstructions": 120000000,
+      "runID": "644b898c-3aab-4c15-8565-1505bb4b2cd4",
+      "runnerSHA256": "d40da79953791442b65af3044e86fbc618fe4dc65ad30cacb1a6966f3b3a36d7",
+      "releaseQualified": false
+    },
+    "after": {
+      "status": "failed",
+      "receipt": "pvh-default-after-capability-cache.json",
+      "reason": "instruction-budget",
+      "elapsedSeconds": 86.959943375,
+      "retiredInstructions": 120000000,
+      "runID": "10be0f4e-4f1c-4e69-afce-81fbda125832",
+      "runnerSHA256": "c8cf090d20508204cc2dc6ff4d9d81c15614c350664a35e2038419131d48e448",
+      "releaseQualified": false
+    },
+    "elapsedReductionPercent": -3.420318460560612,
+    "equal": {
+      "state": true,
+      "executionStatistics": true,
+      "retiredInstructions": true,
+      "guestClock": true,
+      "timerInterruptState": true
+    },
+    "jitCumulativeCountersEqual": true
+  },
+  "capabilityCacheSequentialRepeats": {
+    "order": [
+      "after",
+      "before",
+      "after-repeat"
+    ],
+    "runs": [
+      {
+        "status": "failed",
+        "receipt": "pvh-capability-serial-after.json",
+        "reason": "instruction-budget",
+        "elapsedSeconds": 80.052223333,
+        "retiredInstructions": 120000000,
+        "runID": "f9b17b5b-000f-4c9a-b1a8-7af56ad8f21d",
+        "runnerSHA256": "c8cf090d20508204cc2dc6ff4d9d81c15614c350664a35e2038419131d48e448",
+        "releaseQualified": false
+      },
+      {
+        "status": "failed",
+        "receipt": "pvh-capability-serial-before.json",
+        "reason": "instruction-budget",
+        "elapsedSeconds": 83.912652916,
+        "retiredInstructions": 120000000,
+        "runID": "59174ceb-388b-4e9b-a88b-1aff1217c046",
+        "runnerSHA256": "d40da79953791442b65af3044e86fbc618fe4dc65ad30cacb1a6966f3b3a36d7",
+        "releaseQualified": false
+      },
+      {
+        "status": "failed",
+        "receipt": "pvh-capability-serial-after-repeat.json",
+        "reason": "instruction-budget",
+        "elapsedSeconds": 79.420332667,
+        "retiredInstructions": 120000000,
+        "runID": "6f9739f4-6e32-47ee-b42d-2c277ab10b6e",
+        "runnerSHA256": "c8cf090d20508204cc2dc6ff4d9d81c15614c350664a35e2038419131d48e448",
+        "releaseQualified": false
+      }
+    ],
+    "comparison": {
+      "before": {
+        "status": "failed",
+        "receipt": "pvh-capability-serial-before.json",
+        "reason": "instruction-budget",
+        "elapsedSeconds": 83.912652916,
+        "retiredInstructions": 120000000,
+        "runID": "59174ceb-388b-4e9b-a88b-1aff1217c046",
+        "runnerSHA256": "d40da79953791442b65af3044e86fbc618fe4dc65ad30cacb1a6966f3b3a36d7",
+        "releaseQualified": false
+      },
+      "after": {
+        "status": "failed",
+        "receipt": "pvh-capability-serial-after.json",
+        "reason": "instruction-budget",
+        "elapsedSeconds": 80.052223333,
+        "retiredInstructions": 120000000,
+        "runID": "f9b17b5b-000f-4c9a-b1a8-7af56ad8f21d",
+        "runnerSHA256": "c8cf090d20508204cc2dc6ff4d9d81c15614c350664a35e2038419131d48e448",
+        "releaseQualified": false
+      },
+      "elapsedReductionPercent": 4.600533350869562,
+      "equal": {
+        "state": true,
+        "executionStatistics": false,
+        "retiredInstructions": true,
+        "guestClock": true,
+        "timerInterruptState": true
+      },
+      "jitCumulativeCountersEqual": false
+    },
+    "repeatComparison": {
+      "before": {
+        "status": "failed",
+        "receipt": "pvh-capability-serial-before.json",
+        "reason": "instruction-budget",
+        "elapsedSeconds": 83.912652916,
+        "retiredInstructions": 120000000,
+        "runID": "59174ceb-388b-4e9b-a88b-1aff1217c046",
+        "runnerSHA256": "d40da79953791442b65af3044e86fbc618fe4dc65ad30cacb1a6966f3b3a36d7",
+        "releaseQualified": false
+      },
+      "after": {
+        "status": "failed",
+        "receipt": "pvh-capability-serial-after-repeat.json",
+        "reason": "instruction-budget",
+        "elapsedSeconds": 79.420332667,
+        "retiredInstructions": 120000000,
+        "runID": "6f9739f4-6e32-47ee-b42d-2c277ab10b6e",
+        "runnerSHA256": "c8cf090d20508204cc2dc6ff4d9d81c15614c350664a35e2038419131d48e448",
+        "releaseQualified": false
+      },
+      "elapsedReductionPercent": 5.35356718312433,
+      "equal": {
+        "state": false,
+        "executionStatistics": false,
+        "retiredInstructions": true,
+        "guestClock": true,
+        "timerInterruptState": true
+      },
+      "jitCumulativeCountersEqual": false
+    },
+    "scope": "No other checks owned by this task overlapped. User app/daemon and unrelated tasks remained active. Fresh UUIDs differ between invocations; native/interpreter attribution differs by small counts and repeated stop states differ, so these are engineering timings, not instruction-for-instruction equivalence or qualification."
+  },
+  "currentFullUserspaceRetake": {
+    "status": "passed",
+    "receipt": "pvh-full-current.json",
+    "reason": "userspace-workloads-powered-off",
+    "elapsedSeconds": 573.503447375,
+    "retiredInstructions": 741714348,
+    "runID": "80f3fd8f-00cd-4b33-b22c-5934750dd908",
+    "runnerSHA256": "d77e4579d5d471febe395a4d4d04777d2dcff71a9b2a2f08f71760d8cd4cd44d",
+    "releaseQualified": false
+  },
+  "rankedCostEvidence": [
+    {
+      "rank": 1,
+      "cost": "Checked scalar writes and memory lease bookkeeping",
+      "evidence": "Two independent samples contain checked-write, physical page-tracking, protocol conformance and normalized lease frames. Inclusive stack counts overlap and are not CPU shares.",
+      "completed": "Reuse the already normalized one-range array, then cache immutable tracking capability. Live tracked-page rejection, route resolution, generation checks and locks stay in place."
+    },
+    {
+      "rank": 2,
+      "cost": "Very short native blocks with repeated dispatch and generation validation",
+      "nativeInstructions": 736933670,
+      "nativeBlocks": 237344188,
+      "instructionsPerNativeBlock": 3.104915592034636,
+      "nativeDispatcherEntries": 237220427,
+      "codeGenerationChecks": 242174455,
+      "translationCacheHits": 139051021,
+      "translationCacheMisses": 65378169,
+      "translationCacheHitRate": 0.6801916154928755
+    },
+    {
+      "rank": 3,
+      "cost": "Owner/worker cutovers in the bounded boot harness",
+      "runCalls": 741569,
+      "threadCPUNanoseconds": {
+        "clockAdvancementNanoseconds": 5706244181,
+        "coordinatorWaitNanoseconds": 58831380832,
+        "idleWaitNanoseconds": 86792,
+        "interruptDeliveryNanoseconds": 42229587,
+        "processorEventNanoseconds": 11424799200,
+        "processorExecutionNanoseconds": 488546684440,
+        "totalNanoseconds": 526397930404
+      },
+      "scope": "CPU categories overlap. The roughly 58.83s coordinator wait is diagnostic evidence, not a disjoint share or a measured app/daemon RPC cost."
+    }
+  ],
+  "nextThreeOptimizations": [
+    "Replace scalar checked-store byte-array construction with an atomic scalar tracked-write API; retain live page-table rejection, byte order, widths, fault preflight and cross-page fallback. Compare allocations and pinned full userspace/IO results.",
+    "Reduce repeated dispatch/generation validation only within a proven bounded execution lease. Keep raw host-target predictors disabled; cover SMC, DMA, remapping, alias revocation and pending-work boundaries before comparing guest throughput.",
+    "Measure bounded owner/worker batching while preserving pending-work deadlines and deterministic clock/interrupt checkpoints. Separate harness cutovers from real daemon RPC timings; do not infer a desktop speedup from the runner alone."
+  ],
+  "verification": {
+    "executionSwiftTests": 2179,
+    "executionXCTestRegistrations": 4,
+    "executionXCTestOptInSkips": 1,
+    "coordinatorThreadSanitizerTests": 13,
+    "harnessTestsAfterDiagnostics": 37,
+    "nativeMacXCTestRegistrations": 232,
+    "nativeMacOwnedGuestSkips": 1,
+    "nativeMacSwiftTests": 23,
+    "originalUnchangedCloneTest": "passed 277.553s after natural storage-capacity change",
+    "appBuildForTesting": "passed signing disabled; app not launched"
+  },
+  "limits": [
+    "Every default120M/120s slice still stops at instruction-budget before userspace.",
+    "Complete userspace retake uses1B/900s and overlaps an isolated IO guest; elapsed time is not a controlled comparison.",
+    "No admitted accelerated desktop, native Mac physical campaign or release cell is established."
+  ]
+}

@@ -303,6 +303,8 @@ Primary reference: [Intel architecture manuals](https://www.intel.com/content/ww
 
 **Acceptance:** a ranked cost report explains where time goes and identifies the next three optimizations. No architecture change is justified solely by a microbenchmark or an old plan sentence.
 
+**Local progress, 2026-10-03:** the [memory cost report](X86-MEMORY-COST-REPORT-2026-10-03.md) records two measured bookkeeping fixes, current execution/concurrency tests, a fresh complete userspace receipt, ranked costs and the next three bounded optimizations. Every default-budget slice still ends before userspace. This development report does not complete practical desktop budgets, app/daemon RPC attribution or a release cell.
+
 ### 2.6 P2-06 — Complete guest memory, translation and code invalidation
 
 **Source:** DoryX86MmapMemory, DoryX86Paging, DoryJITRuntimeC, generated memory accesses, PC DMA and GPU mapping adapters.
