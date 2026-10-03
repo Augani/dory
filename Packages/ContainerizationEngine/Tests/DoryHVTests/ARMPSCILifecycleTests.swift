@@ -290,7 +290,7 @@ import Testing
         liveMachine.withLock { $0 = machine }
         defer { liveMachine.withLock { $0 = nil } }
         try machine.loadBootPayload()
-        let mailbox: UInt64 = 0x4020_0000
+        let mailbox = Self.mailboxAddress
         try machine.memory.write(UInt64(stopAfterFinalStart ? 1 : 0), at: mailbox + 48)
         let reason = try machine.run()
         // Read only after Machine.run has joined every secondary, avoiding host/guest races.
@@ -319,6 +319,10 @@ import Testing
       #expect(observations[3] == 0)
     }
 
+    private static var mailboxAddress: UInt64 {
+      DoryARMVirtV1ABI.ramBase + (2 << 20)
+    }
+
     private static func restartGuest() -> Data {
       // Legacy ARM64 Image header: branch over 64 bytes; image_size=0 selects text_offset
       // 0x80000. All instructions below are position-relative or use the RAM mailbox.
@@ -329,9 +333,14 @@ import Testing
       // The secondary dirties SCTLR.WXN and CNTV_CTL before CPU_OFF and verifies both
       // were reset on re-entry. Returning from CPU_OFF, lost starts, stale tuples, and
       // execution at the wrong entry all fail or hit the host watchdog.
+      // The single MOVZ below requires an aligned 32-bit address. Bind the guest and
+      // host mailbox to the board ABI, rather than the retired 0x40000000 RAM layout.
+      let mailbox = mailboxAddress
+      precondition(mailbox & 0xFFFF == 0 && mailbox >> 32 == 0)
+      let moveMailbox = UInt32(0xD2A0_0014) | UInt32(mailbox >> 16) << 5
       let instructions: [UInt32] = [
         // start:
-        0xD2A80414,  // mov x20, #0x40200000
+        moveMailbox,  // mov x20, #mailbox (MOVZ with LSL #16)
         0x100007B5,  // adr x21, secondary_one
         0x100007D6,  // adr x22, secondary_two
         0xD2800037,  // mov x23, #1
@@ -393,7 +402,7 @@ import Testing
         0xD4000003,  // smc #0
         0x14000001,  // b fail
         // fail:
-        0xD2A80414,  // mov x20, #0x40200000
+        moveMailbox,  // mov x20, #mailbox (MOVZ with LSL #16)
         0xD28175A9,  // mov x9, #0xbad
         0xF9001689,  // str x9, [x20, #40]
         0x17FFFFF9,  // b power_off
@@ -403,7 +412,7 @@ import Testing
         // secondary_two:
         0xD280004A,  // mov x10, #2
         // secondary:
-        0xD2A80414,  // mov x20, #0x40200000
+        moveMailbox,  // mov x20, #mailbox (MOVZ with LSL #16)
         0xD5381009,  // mrs x9, SCTLR_EL1
         0x379FFEE9,  // tbnz x9, #19, fail
         0xD53BE329,  // mrs x9, CNTV_CTL_EL0
