@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import DoryVZMacCore
 
 final class DoryVZMacMachineManifestTests: XCTestCase {
@@ -112,6 +113,76 @@ final class DoryVZMacMachineManifestTests: XCTestCase {
         XCTAssertEqual(recovered.resources.dataDisks.map(\.byteCount), [newBytes])
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: root.appendingPathComponent("data-disk-1-resize.json").path
+        ))
+    }
+
+    func testResizeRecoveryRejectsDanglingSymlinkAndOversizeJournal() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "dory-vzmac-unsafe-resize-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("system-disk-resize.json")
+        let original = try manifest()
+        XCTAssertEqual(symlink(root.appendingPathComponent("absent").path, url.path), 0)
+        XCTAssertThrowsError(try DoryVZMacMachineBundle.recoverPendingSystemDiskResize(
+            at: root, manifest: original
+        ))
+        XCTAssertEqual(unlink(url.path), 0)
+        try Data(repeating: 0x20, count: DoryVZMacMetadataFile.maximumBytes + 1).write(to: url)
+        XCTAssertThrowsError(try DoryVZMacMachineBundle.recoverPendingSystemDiskResize(
+            at: root, manifest: original
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testResizeRecoveryBeforeTruncationRetiresJournalWithoutChangingManifest() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "dory-vzmac-early-resize-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldBytes = 64 * DoryVZMacResourcePlan.gibibyte
+        let newBytes = 96 * DoryVZMacResourcePlan.gibibyte
+        let disk = root.appendingPathComponent(DoryVZMacMachineBundle.diskName)
+        XCTAssertTrue(FileManager.default.createFile(atPath: disk.path, contents: Data()))
+        let handle = try FileHandle(forWritingTo: disk)
+        try handle.truncate(atOffset: oldBytes)
+        try handle.close()
+        let original = try manifest(resources: try resourcePlan(diskBytes: oldBytes))
+        let journalURL = root.appendingPathComponent("system-disk-resize.json")
+        try DoryVZMacMetadataFile.write(
+            Data("{\"previousBytes\":\(oldBytes),\"requestedBytes\":\(newBytes)}".utf8), to: journalURL
+        )
+        XCTAssertEqual(try DoryVZMacMachineBundle.recoverPendingSystemDiskResize(
+            at: root, manifest: original
+        ), original)
+        XCTAssertNil(try DoryVZMacMetadataFile.readIfPresent(from: journalURL))
+    }
+
+    func testResizeRecoveryPreservesJournalWhenBackingCapacityIsInconsistent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "dory-vzmac-inconsistent-resize-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldBytes = 64 * DoryVZMacResourcePlan.gibibyte
+        let newBytes = 96 * DoryVZMacResourcePlan.gibibyte
+        let disk = root.appendingPathComponent(DoryVZMacMachineBundle.diskName)
+        XCTAssertTrue(FileManager.default.createFile(atPath: disk.path, contents: Data()))
+        let handle = try FileHandle(forWritingTo: disk)
+        try handle.truncate(atOffset: oldBytes + 512)
+        try handle.close()
+        let original = try manifest(resources: try resourcePlan(diskBytes: oldBytes))
+        let journalURL = root.appendingPathComponent("system-disk-resize.json")
+        let bytes = Data("{\"previousBytes\":\(oldBytes),\"requestedBytes\":\(newBytes)}".utf8)
+        try DoryVZMacMetadataFile.write(bytes, to: journalURL)
+        XCTAssertThrowsError(try DoryVZMacMachineBundle.recoverPendingSystemDiskResize(
+            at: root, manifest: original
+        ))
+        XCTAssertEqual(try DoryVZMacMetadataFile.read(from: journalURL), bytes)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(DoryVZMacMachineBundle.manifestName).path
         ))
     }
 

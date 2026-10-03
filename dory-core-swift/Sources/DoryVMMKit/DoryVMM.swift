@@ -1,6 +1,7 @@
 import Darwin
 import DoryCore
 import DoryOperations
+import DoryVZMacCore
 import DorydKit
 import Foundation
 @preconcurrency import Virtualization
@@ -2293,6 +2294,9 @@ public final class DoryVZMachine: @unchecked Sendable {
     private let configuration: VZVirtualMachineConfiguration
     private let virtualMachine: VZVirtualMachine
     private let stopObserver: DoryVZMachineStopObserver
+    // Accessed only on the VZ queue. Clear after a durable consume, not after resume: a
+    // later pause/resume uses current in-memory RAM, while disk replay remains forbidden.
+    private var restoredStateAwaitingConsumption: URL?
 
     public init(configuration: VZVirtualMachineConfiguration, label: String) {
         self.queue = DispatchQueue(label: "dev.dory.dory-vmm.\(label)")
@@ -2349,6 +2353,15 @@ public final class DoryVZMachine: @unchecked Sendable {
                 box.complete(.failure(DoryVZMachineError.validation(
                     "virtual machine is not paused"
                 )))
+                return
+            }
+            do {
+                if let stateURL = restoredStateAwaitingConsumption {
+                    try DoryVZSavedStateConsumption.consume(stateURL: stateURL)
+                    restoredStateAwaitingConsumption = nil
+                }
+            } catch {
+                box.complete(.failure(error))
                 return
             }
             virtualMachine.resume { box.complete($0) }
@@ -2419,6 +2432,7 @@ public final class DoryVZMachine: @unchecked Sendable {
         queue.async { [self] in
             do {
                 try configuration.validateSaveRestoreSupport()
+                try DoryVZSavedStateConsumption.requireUnconsumed(stateURL: url)
             } catch {
                 box.complete(.failure(error))
                 return
@@ -2431,7 +2445,10 @@ public final class DoryVZMachine: @unchecked Sendable {
             }
             virtualMachine.restoreMachineStateFrom(url: url) { error in
                 if let error { box.complete(.failure(error)) }
-                else { box.complete(.success(())) }
+                else {
+                    self.restoredStateAwaitingConsumption = url
+                    box.complete(.success(()))
+                }
             }
         }
         try box.wait()
@@ -2901,6 +2918,11 @@ private final class DoryVMMControlServer: @unchecked Sendable {
     }
 
     private func handle(request: VmmControlRequest) throws -> HandledControlResponse {
+        guard request.qualificationFault == nil else {
+            return HandledControlResponse(response: VmmControlResponse(
+                ok: false, message: "qualification faults are unavailable on this runtime"
+            ))
+        }
         switch request.command {
         case "authenticateRuntime":
             guard request.targetMB == nil,

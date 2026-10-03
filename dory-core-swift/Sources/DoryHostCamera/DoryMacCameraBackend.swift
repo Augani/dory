@@ -10,6 +10,9 @@ public enum DoryMacCameraError: Error, Sendable, CustomStringConvertible {
     case permissionRestricted
     case permissionTimedOut
     case unavailable
+    case selectedDeviceUnavailable
+    case deviceInUse
+    case leaseFailed
     case inputCreationFailed(String)
     case cannotAttachInput
     case cannotAttachOutput
@@ -27,6 +30,12 @@ public enum DoryMacCameraError: Error, Sendable, CustomStringConvertible {
             "Mac camera permission was not resolved in time. Try again and answer the macOS permission prompt, or disable Camera for this desktop."
         case .unavailable:
             "No usable Mac camera is available. Connect or enable a camera, or disable Camera for this desktop."
+        case .selectedDeviceUnavailable:
+            "The camera selected for this desktop is no longer available. Reconnect that camera or choose a different one; Dory will not switch to another camera automatically."
+        case .deviceInUse:
+            "The selected Mac camera is already shared with another Dory desktop. Stop that camera stream or desktop before trying again."
+        case .leaseFailed:
+            "Dory could not reserve the selected Mac camera safely. Check the camera lease directory and retry."
         case .inputCreationFailed(let detail):
             "The selected Mac camera could not be opened: \(detail)"
         case .cannotAttachInput:
@@ -73,6 +82,9 @@ public final class DoryMacCameraBackend: NSObject,
     private let imageContext = CIContext(options: [.cacheIntermediates: false])
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
     private let log: @Sendable (String) -> Void
+    private let authorizationStatus: @Sendable () -> AVAuthorizationStatus
+    public let selectedDeviceUniqueID: String?
+    private var cameraLease: DoryMacCameraLease?
     private var latestJPEG: Data?
     private var generation: UInt64 = 0
     private var deliveredGeneration: UInt64 = 0
@@ -87,9 +99,85 @@ public final class DoryMacCameraBackend: NSObject,
     private var loggedEncodingFailure = false
     private var stopped = false
 
-    public init(log: @escaping @Sendable (String) -> Void) {
+    public convenience init(
+        selectedDeviceUniqueID: String? = nil,
+        log: @escaping @Sendable (String) -> Void
+    ) {
+        self.init(
+            selectedDeviceUniqueID: selectedDeviceUniqueID,
+            log: log,
+            authorizationStatus: { AVCaptureDevice.authorizationStatus(for: .video) }
+        )
+    }
+
+    init(
+        selectedDeviceUniqueID: String?,
+        log: @escaping @Sendable (String) -> Void,
+        authorizationStatus: @escaping @Sendable () -> AVAuthorizationStatus
+    ) {
+        self.selectedDeviceUniqueID = selectedDeviceUniqueID
         self.log = log
+        self.authorizationStatus = authorizationStatus
         super.init()
+    }
+
+    /// Only physical built-in, external, and Continuity cameras are candidates. A guest camera
+    /// extension or another virtual source must not be recursively captured by the host.
+    public static func availableCaptureDevices() -> [DoryMacCameraIdentity] {
+        eligibleDevices().map {
+            DoryMacCameraIdentity(
+                localizedName: $0.localizedName,
+                modelID: $0.modelID,
+                uniqueID: $0.uniqueID
+            )
+        }
+    }
+
+    private static func eligibleDevices() -> [AVCaptureDevice] {
+        AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera],
+            mediaType: .video,
+            position: .unspecified
+        ).devices
+    }
+
+    /// Reserve an explicitly granted camera for the complete VM lifetime, before any guest can
+    /// request a frame. No TCC prompt or capture session is started by this reservation.
+    public func reserveSelectedDevice() throws {
+        guard let selectedDeviceUniqueID,
+              !selectedDeviceUniqueID.isEmpty,
+              selectedDeviceUniqueID.utf8.count <= 512,
+              selectedDeviceUniqueID.utf8.allSatisfy({ $0 >= 0x20 && $0 != 0x7f }) else {
+            throw DoryMacCameraError.selectedDeviceUnavailable
+        }
+        preparationLock.lock()
+        defer { preparationLock.unlock() }
+        try reserve(deviceUniqueID: selectedDeviceUniqueID)
+    }
+
+    private func reserve(deviceUniqueID: String) throws {
+        condition.lock()
+        let alreadyReserved = cameraLease != nil
+        let mayReserve = !stopped
+        condition.unlock()
+        guard mayReserve else { throw DoryMacCameraError.startFailed }
+        if alreadyReserved { return }
+        let lease: DoryMacCameraLease
+        do {
+            lease = try DoryMacCameraLease(deviceUniqueID: deviceUniqueID)
+        } catch DoryMacCameraLeaseError.deviceBusy {
+            throw DoryMacCameraError.deviceInUse
+        } catch {
+            throw DoryMacCameraError.leaseFailed
+        }
+        condition.lock()
+        guard !stopped else {
+            condition.unlock()
+            lease.release()
+            throw DoryMacCameraError.startFailed
+        }
+        cameraLease = lease
+        condition.unlock()
     }
 
     @discardableResult
@@ -101,6 +189,9 @@ public final class DoryMacCameraBackend: NSObject,
         condition.lock()
         if let cameraIdentity {
             condition.unlock()
+            // TCC grants are mutable. A prepared capture graph is not authority to keep
+            // streaming after the user revokes this helper's camera permission.
+            try requireCurrentAuthorization()
             return cameraIdentity
         }
         let mayPrepare = !stopped
@@ -108,9 +199,19 @@ public final class DoryMacCameraBackend: NSObject,
         guard mayPrepare else { throw DoryMacCameraError.startFailed }
 
         try Self.requireAuthorization(timeout: permissionTimeout)
-        guard let device = AVCaptureDevice.default(for: .video) else {
-            throw DoryMacCameraError.unavailable
+        let device: AVCaptureDevice
+        if let selectedDeviceUniqueID {
+            guard let selected = Self.eligibleDevices().first(where: {
+                $0.uniqueID == selectedDeviceUniqueID
+            }) else { throw DoryMacCameraError.selectedDeviceUnavailable }
+            device = selected
+        } else {
+            guard let selected = AVCaptureDevice.default(for: .video) else {
+                throw DoryMacCameraError.unavailable
+            }
+            device = selected
         }
+        try reserve(deviceUniqueID: device.uniqueID)
         let input: AVCaptureDeviceInput
         do {
             input = try AVCaptureDeviceInput(device: device)
@@ -181,6 +282,7 @@ public final class DoryMacCameraBackend: NSObject,
             throw DoryMacCameraError.unsupportedDimensions(width, height)
         }
         _ = try prepareAndAuthorize()
+        try requireCurrentAuthorization()
 
         // Register demand before startRunning(). Some cameras emit their first buffers while that
         // blocking call is still returning; the delegate must not discard those cold-start frames.
@@ -204,22 +306,33 @@ public final class DoryMacCameraBackend: NSObject,
         }
 
         let deadline = Date().addingTimeInterval(max(0.001, min(timeout, 15)))
-        condition.lock()
-        defer {
-            condition.unlock()
-            finishWaitingForFrame()
-        }
-        while !stopped, captureRunning, generation == deliveredGeneration {
-            guard condition.wait(until: deadline) else {
-                throw DoryMacCameraError.frameTimedOut
+        defer { finishWaitingForFrame() }
+        while true {
+            // TCC can be revoked without another AVFoundation callback. Poll the grant at a
+            // bounded interval even if the camera stops delivering samples after revocation.
+            try requireCurrentAuthorization()
+            condition.lock()
+            let jpeg: Data?
+            let running = !stopped && captureRunning
+            if running, generation != deliveredGeneration {
+                deliveredGeneration = generation
+                jpeg = latestJPEG
+            } else {
+                jpeg = nil
+                if running {
+                    _ = condition.wait(
+                        until: min(deadline, Date().addingTimeInterval(0.25))
+                    )
+                }
             }
+            condition.unlock()
+            if let jpeg {
+                // Never return a JPEG obtained under a grant that was revoked while waiting.
+                try requireCurrentAuthorization()
+                return jpeg
+            }
+            guard running, Date() < deadline else { throw DoryMacCameraError.frameTimedOut }
         }
-        guard !stopped, captureRunning,
-              generation != deliveredGeneration, let latestJPEG else {
-            throw DoryMacCameraError.frameTimedOut
-        }
-        deliveredGeneration = generation
-        return latestJPEG
     }
 
     public func stop() {
@@ -229,6 +342,8 @@ public final class DoryMacCameraBackend: NSObject,
             return
         }
         stopped = true
+        let lease = cameraLease
+        cameraLease = nil
         prepared = false
         cameraIdentity = nil
         captureRunning = false
@@ -240,7 +355,27 @@ public final class DoryMacCameraBackend: NSObject,
         sessionQueue.sync {
             if session.isRunning { session.stopRunning() }
         }
+        lease?.release()
         log("Dory camera: host capture stopped")
+    }
+
+    /// A live permission check for previously prepared sessions. The first authorization prompt
+    /// remains in `requireAuthorization`; once a session exists, a missing grant is revocation,
+    /// not permission to prompt again from a guest frame request.
+    func requireCurrentAuthorization() throws {
+        let error: DoryMacCameraError
+        switch authorizationStatus() {
+        case .authorized:
+            return
+        case .denied, .notDetermined:
+            error = .permissionDenied
+        case .restricted:
+            error = .permissionRestricted
+        @unknown default:
+            error = .permissionRestricted
+        }
+        stop()
+        throw error
     }
 
     public func captureOutput(

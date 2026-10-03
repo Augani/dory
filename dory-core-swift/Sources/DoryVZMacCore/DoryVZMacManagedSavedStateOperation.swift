@@ -7,25 +7,34 @@ public enum DoryVZMacManagedRuntimeState: Sendable, Equatable {
     case other
 }
 
+@MainActor
 public struct DoryVZMacManagedSavedStateHooks {
-    public var runtimeState: () -> DoryVZMacManagedRuntimeState
-    public var updateInstallationState: (DoryVZMacMachineInstallationState) throws -> Void
-    public var pause: () async throws -> Void
-    public var resume: () async throws -> Void
-    public var save: (URL) async throws -> Void
-    public var restore: (URL) async throws -> Void
-    public var secureSavedState: (URL) throws -> Void
-    public var removeSavedState: (URL) -> Void
+    public var runtimeState: @MainActor () -> DoryVZMacManagedRuntimeState
+    public var updateInstallationState: @MainActor (DoryVZMacMachineInstallationState) throws -> Void
+    public var pause: @MainActor () async throws -> Void
+    public var resume: @MainActor () async throws -> Void
+    public var save: @MainActor (URL) async throws -> Void
+    public var restore: @MainActor (URL) async throws -> Void
+    public var secureSavedState: @MainActor (URL) throws -> Void
+    public var removeSavedState: @MainActor (URL) throws -> Void
+    public var isSavedStateConsumed: @MainActor (URL) throws -> Bool
+    public var consumeSavedState: @MainActor (URL) throws -> Void
 
     public init(
-        runtimeState: @escaping () -> DoryVZMacManagedRuntimeState,
-        updateInstallationState: @escaping (DoryVZMacMachineInstallationState) throws -> Void,
-        pause: @escaping () async throws -> Void,
-        resume: @escaping () async throws -> Void,
-        save: @escaping (URL) async throws -> Void,
-        restore: @escaping (URL) async throws -> Void,
-        secureSavedState: @escaping (URL) throws -> Void,
-        removeSavedState: @escaping (URL) -> Void
+        runtimeState: @escaping @MainActor () -> DoryVZMacManagedRuntimeState,
+        updateInstallationState: @escaping @MainActor (DoryVZMacMachineInstallationState) throws -> Void,
+        pause: @escaping @MainActor () async throws -> Void,
+        resume: @escaping @MainActor () async throws -> Void,
+        save: @escaping @MainActor (URL) async throws -> Void,
+        restore: @escaping @MainActor (URL) async throws -> Void,
+        secureSavedState: @escaping @MainActor (URL) throws -> Void,
+        removeSavedState: @escaping @MainActor (URL) throws -> Void,
+        isSavedStateConsumed: @escaping @MainActor (URL) throws -> Bool = {
+            try DoryVZSavedStateConsumption.isConsumed(stateURL: $0)
+        },
+        consumeSavedState: @escaping @MainActor (URL) throws -> Void = {
+            try DoryVZSavedStateConsumption.consume(stateURL: $0)
+        }
     ) {
         self.runtimeState = runtimeState
         self.updateInstallationState = updateInstallationState
@@ -35,6 +44,8 @@ public struct DoryVZMacManagedSavedStateHooks {
         self.restore = restore
         self.secureSavedState = secureSavedState
         self.removeSavedState = removeSavedState
+        self.isSavedStateConsumed = isSavedStateConsumed
+        self.consumeSavedState = consumeSavedState
     }
 }
 
@@ -44,16 +55,28 @@ enum DoryVZMacManagedSavedStateOperation {
         to stateURL: URL,
         hooks: DoryVZMacManagedSavedStateHooks
     ) async throws {
+        try Task.checkCancellation()
         try hooks.updateInstallationState(.suspending)
         do {
             try await hooks.pause()
+            try Task.checkCancellation()
             try await hooks.save(stateURL)
             try hooks.secureSavedState(stateURL)
+            try Task.checkCancellation()
             try hooks.updateInstallationState(.suspended)
         } catch {
-            hooks.removeSavedState(stateURL)
+            let suspensionError = error
+            do {
+                // Even a failed save or metadata commit may leave complete RAM on disk.
+                // Retire it durably before the live guest is allowed to advance its disks.
+                try hooks.removeSavedState(stateURL)
+            } catch {
+                throw DoryVZMacSavedStateError.invalidVirtualMachineState(
+                    "suspension failed (\(suspensionError)); saved RAM retirement failed (\(error)); cold recovery required"
+                )
+            }
             await recoverSuspendFailure(hooks: hooks)
-            throw error
+            throw suspensionError
         }
     }
 
@@ -61,25 +84,50 @@ enum DoryVZMacManagedSavedStateOperation {
         from stateURL: URL,
         hooks: DoryVZMacManagedSavedStateHooks
     ) async throws {
+        try Task.checkCancellation()
+        guard hooks.runtimeState() == .stopped else {
+            throw DoryVZMacSavedStateError.invalidVirtualMachineState("restore requires a stopped VM")
+        }
+        guard try !hooks.isSavedStateConsumed(stateURL) else {
+            throw DoryVZMacSavedStateError.alreadyConsumed
+        }
         try hooks.secureSavedState(stateURL)
-        try hooks.updateInstallationState(.restoring)
+        var resumeInvoked = false
         do {
+            try hooks.updateInstallationState(.restoring)
+            try Task.checkCancellation()
             try await hooks.restore(stateURL)
-            try await hooks.resume()
-            do {
-                try hooks.updateInstallationState(.stopped)
-            } catch {
+            guard hooks.runtimeState() == .paused else {
                 throw DoryVZMacSavedStateError.invalidVirtualMachineState(
-                    "VZMac restored and is already running, but the suspended manifest could not be cleared: \(error)"
+                    "Apple restore did not leave the VM paused"
+                )
+            }
+            try Task.checkCancellation()
+            try hooks.consumeSavedState(stateURL)
+            // Both the deny-only marker and cold-boot manifest precede the first resume.
+            // Once execution is attempted, a paused/stopped callback is not proof that the
+            // guest never advanced its disks; do not turn this RAM image back into a snapshot.
+            try hooks.updateInstallationState(.stopped)
+            try Task.checkCancellation()
+            resumeInvoked = true
+            try await hooks.resume()
+            guard hooks.runtimeState() == .running else {
+                throw DoryVZMacSavedStateError.invalidVirtualMachineState(
+                    "Apple resume did not leave the VM running"
                 )
             }
         } catch {
             if hooks.runtimeState() == .running {
                 throw DoryVZMacSavedStateError.invalidVirtualMachineState(
-                    "VZMac restore reached a running guest before metadata commit failed: \(error)"
+                    "VZMac restore reached an already running guest; its saved state must not replay: \(error)"
                 )
             }
-            try? hooks.updateInstallationState(.suspended)
+            // Only a stopped VM, before any resume attempt and with a provably absent fence,
+            // can roll back to resumable. A paused restored VM remains an interrupted restore.
+            if !resumeInvoked, hooks.runtimeState() == .stopped,
+               (try? hooks.isSavedStateConsumed(stateURL)) == false {
+                try? hooks.updateInstallationState(.suspended)
+            }
             throw error
         }
     }

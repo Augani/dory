@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import XCTest
 @testable import DoryVZMacCore
 
@@ -50,6 +51,14 @@ final class DoryVZMacSavedStateTests: XCTestCase {
         XCTAssertThrowsError(
             try DoryVZMacSavedStateArtifact.load(from: artifactRoot, for: bundle)
         )
+
+        try Data("saved-state-a".utf8).write(to: stateURL)
+        XCTAssertNoThrow(try DoryVZMacSavedStateArtifact.load(from: artifactRoot, for: bundle))
+        XCTAssertEqual(chmod(stateURL.path, 0o600), 0)
+        try DoryVZSavedStateConsumption.consume(stateURL: stateURL)
+        XCTAssertThrowsError(try DoryVZMacSavedStateArtifact.load(from: artifactRoot, for: bundle)) {
+            XCTAssertEqual($0 as? DoryVZMacSavedStateError, .alreadyConsumed)
+        }
     }
 
     func testReceiptRejectsUnknownSchemaAndEmptyState() throws {

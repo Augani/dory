@@ -5,6 +5,37 @@ import Foundation
 import XCTest
 
 final class DoryVZMacCameraSessionTests: XCTestCase {
+    func testHostRevocationInterruptsBlockedGuestStart() throws {
+        var sockets = [Int32](repeating: -1, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        let revocationDescriptor = dup(sockets[0])
+        XCTAssertGreaterThanOrEqual(revocationDescriptor, 0)
+        let completed = expectation(description: "revoked camera session exited")
+        let session = DoryVZMacCameraSession(
+            ownedDescriptor: sockets[0],
+            frameProvider: { _, _, _ in
+                XCTFail("revoked camera session must not start capture")
+                return Data()
+            }
+        )
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { completed.fulfill() }
+            do {
+                try session.run()
+                XCTFail("revoked camera session unexpectedly completed")
+            } catch {
+                // A shutdown stream must fail the pending framed read.
+            }
+        }
+
+        // The bridge keeps a duplicate of the stream socket. shutdown affects every duplicate
+        // and wakes the blocked framing read; closing just one descriptor would not.
+        XCTAssertEqual(shutdown(revocationDescriptor, SHUT_RDWR), 0)
+        wait(for: [completed], timeout: 2)
+        close(revocationDescriptor)
+        close(sockets[1])
+    }
+
     func testGuestStartReceivesFrameAndStopEndsSession() throws {
         var sockets = [Int32](repeating: -1, count: 2)
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)

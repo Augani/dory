@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 public enum DoryVZMacInstallPhase: String, Codable, Sendable, Equatable {
@@ -12,10 +11,13 @@ public enum DoryVZMacInstallJournalError: Error, Sendable, Equatable,
     CustomStringConvertible
 {
     case invalid(String)
+    case failureRecording(installation: String, metadata: String)
 
     public var description: String {
         switch self {
         case .invalid(let detail): "invalid VZMac install journal: \(detail)"
+        case .failureRecording(let installation, let metadata):
+            "VZMac installation failed: \(installation); failure metadata requires recovery: \(metadata)"
         }
     }
 }
@@ -59,6 +61,7 @@ public struct DoryVZMacInstallJournal: Codable, Sendable, Equatable {
 
     public func validate() throws {
         guard schema == Self.schema,
+              operationID != UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
               ISO8601DateFormatter().date(from: startedAt) != nil,
               ISO8601DateFormatter().date(from: updatedAt) != nil,
               progress.isFinite,
@@ -106,27 +109,20 @@ public struct DoryVZMacInstallJournal: Codable, Sendable, Equatable {
         try validate()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(self).write(to: url, options: [.atomic])
+        try DoryVZMacMetadataFile.write(
+            encoder.encode(self), to: url, maximumBytes: Self.maximumJournalBytes
+        )
     }
 
     public static func load(from url: URL) throws -> Self {
-        var status = stat()
-        guard lstat(url.path, &status) == 0,
-              (status.st_mode & S_IFMT) == S_IFREG,
-              status.st_size > 0,
-              UInt64(status.st_size) <= UInt64(maximumJournalBytes) else {
-            throw DoryVZMacInstallJournalError.invalid(
-                "journal is not a bounded direct regular file"
-            )
-        }
         let journal: Self
         do {
             journal = try JSONDecoder().decode(
                 Self.self,
-                from: Data(contentsOf: url, options: [.mappedIfSafe])
+                from: DoryVZMacMetadataFile.read(from: url, maximumBytes: maximumJournalBytes)
             )
         } catch {
-            throw DoryVZMacInstallJournalError.invalid("journal JSON cannot be decoded")
+            throw DoryVZMacInstallJournalError.invalid("journal cannot be safely read or decoded")
         }
         try journal.validate()
         return journal

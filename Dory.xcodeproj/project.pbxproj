@@ -38,6 +38,7 @@
 		D0F100000000000000000001 /* DoryCameraExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = D0F200000000000000000002 /* DoryCameraExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D0F100000000000000000002 /* DoryMacGuestCameraExtensionCore in Frameworks */ = {isa = PBXBuildFile; productRef = D0F700000000000000000001 /* DoryMacGuestCameraExtensionCore */; };
 		D0F100000000000000000003 /* DoryMacGuestCamera in Frameworks */ = {isa = PBXBuildFile; productRef = D0F700000000000000000002 /* DoryMacGuestCamera */; };
+		D0F100000000000000000004 /* DoryMacGuestIntegrationWire in Frameworks */ = {isa = PBXBuildFile; productRef = D0F700000000000000000003 /* DoryMacGuestIntegrationWire */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -317,6 +318,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D0F100000000000000000003 /* DoryMacGuestCamera in Frameworks */,
+				D0F100000000000000000004 /* DoryMacGuestIntegrationWire in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -540,6 +542,7 @@
 			name = DoryGuestTools;
 			packageProductDependencies = (
 				D0F700000000000000000002 /* DoryMacGuestCamera */,
+				D0F700000000000000000003 /* DoryMacGuestIntegrationWire */,
 			);
 			productName = DoryGuestTools;
 			productReference = D0F200000000000000000001 /* DoryGuestTools.app */;
@@ -1076,6 +1079,7 @@
 		3E705D0C2FE37C7B0094B33C /* Debug configuration for PBXProject "Dory" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1140,6 +1144,7 @@
 		3E705D0D2FE37C7B0094B33C /* Release configuration for PBXProject "Dory" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1218,6 +1223,7 @@
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Dory connects to its local Linux VM so your container ports are reachable at localhost.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Dory lists host cameras so you can choose one for a desktop machine; capture happens only in its authorized VM helper.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Dory shares your Mac microphone with Linux desktop machines when you use audio input.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1260,6 +1266,7 @@
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Dory connects to its local Linux VM so your container ports are reachable at localhost.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Dory lists host cameras so you can choose one for a desktop machine; capture happens only in its authorized VM helper.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Dory shares your Mac microphone with Linux desktop machines when you use audio input.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1763,6 +1770,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
 			productName = DoryMacGuestCamera;
+		};
+		D0F700000000000000000003 /* DoryMacGuestIntegrationWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
+			productName = DoryMacGuestIntegrationWire;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

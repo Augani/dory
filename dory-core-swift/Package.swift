@@ -49,6 +49,7 @@ let package = Package(
     .library(name: "DoryVZMacCameraBridge", targets: ["DoryVZMacCameraBridge"]),
     .library(name: "DoryVZMacCore", targets: ["DoryVZMacCore"]),
     .library(name: "DoryMacGuestCamera", targets: ["DoryMacGuestCamera"]),
+    .library(name: "DoryMacGuestIntegrationWire", targets: ["DoryMacGuestIntegrationWire"]),
     .library(name: "DoryMacGuestCameraExtensionCore", targets: ["DoryMacGuestCameraExtensionCore"]),
     .library(name: "DoryNativeHVArm64", targets: ["DoryNativeHVArm64"]),
     .library(name: "DoryPhase0AQualification", targets: ["DoryPhase0AQualification"]),
@@ -90,6 +91,10 @@ let package = Package(
     .executable(
       name: "dory-vzmac-qualification",
       targets: ["dory-vzmac-qualification"]
+    ),
+    .executable(
+      name: "dory-vzmac-window-capture",
+      targets: ["dory-vzmac-window-capture"]
     ),
     .executable(
       name: "dory-macos-camera-extension-service",
@@ -219,7 +224,7 @@ let package = Package(
     ),
     .target(
       name: "DoryVZMacCore",
-      dependencies: ["DoryHostCamera", "DoryVZMacCameraBridge"],
+      dependencies: ["DoryHostCamera", "DoryVZMacCameraBridge", "DoryMacGuestIntegrationWire"],
       linkerSettings: [
         .linkedFramework("IOKit"),
         .linkedFramework("Virtualization"),
@@ -228,6 +233,14 @@ let package = Package(
     .target(
       name: "DoryMacGuestCamera",
       dependencies: ["DoryCameraBridgeContracts"]
+    ),
+    .target(
+      name: "DoryMacGuestIntegrationWire",
+      dependencies: []
+    ),
+    .testTarget(
+      name: "DoryMacGuestIntegrationWireTests",
+      dependencies: ["DoryMacGuestIntegrationWire"]
     ),
     .target(
       name: "DoryMacGuestCameraExtensionCore",
@@ -286,6 +299,7 @@ let package = Package(
       name: "DorydKit",
       dependencies: [
         "DoryCore",
+        "DoryMacGuestIntegrationWire",
         "DoryOperations",
         "DoryRendererWorkerWireContracts",
         "DoryVMDisplayWireContracts",
@@ -303,10 +317,14 @@ let package = Package(
     ),
     .target(
       name: "DoryVMMKit",
-      dependencies: ["DoryCore", "DorydKit", "DoryOperations", "DoryVZMacCore"],
+      dependencies: [
+        "DoryCore", "DorydKit", "DoryMacGuestIntegrationWire", "DoryOperations",
+        "DoryVZMacCore", "DoryVMDisplayWireContracts",
+      ],
       linkerSettings: [
         .linkedFramework("AppKit"),
         .linkedFramework("AVFoundation"),
+        .linkedFramework("ImageIO"),
         .linkedFramework("Virtualization"),
       ]
     ),
@@ -402,6 +420,14 @@ let package = Package(
       ]
     ),
     .executableTarget(
+      name: "dory-vzmac-window-capture",
+      dependencies: ["DoryVZMacCore"],
+      linkerSettings: [
+        .linkedFramework("AppKit"),
+        .linkedFramework("ScreenCaptureKit"),
+      ]
+    ),
+    .executableTarget(
       name: "dory-macos-camera-extension-service",
       dependencies: ["DoryMacGuestCameraExtensionCore"],
       linkerSettings: [.linkedFramework("CoreMediaIO")]
@@ -475,7 +501,7 @@ let package = Package(
     ),
     .testTarget(
       name: "DoryMachinePCLinuxBootRunnerTests",
-      dependencies: ["dory-pc-linux-boot-runner", "DoryVirtio"]
+      dependencies: ["dory-pc-linux-boot-runner", "DoryMachinePC", "DoryVirtio"]
     ),
     .testTarget(
       name: "DoryCoreTests",
@@ -558,7 +584,7 @@ let package = Package(
     ),
     .testTarget(
       name: "DoryVZMacCoreTests",
-      dependencies: ["DoryVZMacCore"]
+      dependencies: ["DoryVZMacCore", "DoryMacGuestIntegrationWire"]
     ),
     .testTarget(
       name: "DoryVZMacCompatibilityTests",

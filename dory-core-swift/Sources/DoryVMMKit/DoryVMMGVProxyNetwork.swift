@@ -73,13 +73,12 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
         sourcePreservingLAN: Bool = false,
         resolvedPortForwards: Set<PublishedPortForward> = []
     ) throws {
+        try Self.validateAttachmentPolicy(
+            networkAttachment, sourcePreservingLAN: sourcePreservingLAN,
+            resolvedPortForwards: resolvedPortForwards
+        )
         guard FileManager.default.isExecutableFile(atPath: gvproxyPath) else {
             throw DoryVZMachineError.missingFile(gvproxyPath)
-        }
-        guard networkAttachment == .sharedNAT || networkAttachment == .isolated else {
-            throw DoryVZMachineError.validation(
-                "gvproxy implements only shared-NAT and host-only network attachments"
-            )
         }
         effectiveMTU = try Self.resolveEffectiveMTU(networkInterface)
         try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
@@ -187,6 +186,45 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
             for path in [localSocketPath, datapathSocketPath, apiSocketPath, shutdownSocketPath] + [lanDatapathSocketPath].compactMap({ $0 }) { unlink(path) }
             throw error
         }
+    }
+
+    /// Recheck the resolved policy at the actual network owner before touching sockets or
+    /// spawning the helper. Host-only mode must never acquire a LAN datapath or wildcard bind.
+    static func validateAttachmentPolicy(
+        _ attachment: DoryVirtualMachineNetworkAttachmentMode,
+        sourcePreservingLAN: Bool,
+        resolvedPortForwards: Set<PublishedPortForward>
+    ) throws {
+        guard attachment == .sharedNAT || attachment == .isolated else {
+            throw DoryVZMachineError.validation(
+                "gvproxy implements only shared-NAT and host-only network attachments"
+            )
+        }
+        if attachment == .isolated {
+            guard !sourcePreservingLAN,
+                  resolvedPortForwards.allSatisfy({ isLoopbackBinding($0.localHost) }) else {
+                throw DoryVZMachineError.validation(
+                    "host-only networking cannot expose LAN datapaths or non-loopback forwards"
+                )
+            }
+        }
+    }
+
+    private static func isLoopbackBinding(_ host: String) -> Bool {
+        // Darwin accepts a scope suffix in inet_pton(AF_INET6); resolved listeners must use
+        // an unscoped literal so interface selectors cannot bypass this closed binding policy.
+        guard !host.utf8.contains(0), !host.contains("%") else { return false }
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            let literal = String(host.dropFirst().dropLast())
+            var address = in6_addr()
+            guard literal.withCString({ inet_pton(AF_INET6, $0, &address) }) == 1 else { return false }
+            return withUnsafeBytes(of: address) { bytes in
+                bytes.prefix(15).allSatisfy({ $0 == 0 }) && bytes[15] == 1
+            }
+        }
+        var address = in_addr()
+        guard host.withCString({ inet_pton(AF_INET, $0, &address) }) == 1 else { return false }
+        return UInt32(bigEndian: address.s_addr) >> 24 == 127
     }
 
     deinit {

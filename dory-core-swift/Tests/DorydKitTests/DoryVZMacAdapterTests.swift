@@ -5,6 +5,74 @@ import Foundation
 import XCTest
 
 final class DoryVZMacAdapterTests: XCTestCase {
+    @MainActor
+    func testInstallStopUsesCancellationEvenForIntermediateVMStoppedNotifications() async throws {
+        let lifecycle = DoryVZMacDesktopInstallLifecycle()
+        try await lifecycle.installThenStart {
+            for state: DoryVZMacAdapterState in [.installing, .stopped, .failed, .running] {
+                XCTAssertEqual(lifecycle.stopAction(state: state), .cancelInstall)
+            }
+        } start: {
+            XCTAssertEqual(lifecycle.stopAction(state: .starting), .waitForTransition)
+            XCTAssertEqual(lifecycle.stopAction(state: .running), .requestGuestShutdown)
+        }
+        XCTAssertEqual(lifecycle.stopAction(state: .stopped), .finish)
+    }
+
+    @MainActor
+    func testEarlyDaemonTerminationCancelsPreparedInstallAndWaitsForStartTransitions() {
+        let lifecycle = DoryVZMacDesktopInstallLifecycle()
+        XCTAssertEqual(lifecycle.stopAction(state: .prepared), .cancelInstall)
+        for state: DoryVZMacAdapterState in [.installing, .starting, .restoring, .pausing, .suspending] {
+            XCTAssertEqual(lifecycle.stopAction(state: state), .waitForTransition)
+        }
+        XCTAssertEqual(lifecycle.stopAction(state: .running), .requestGuestShutdown)
+        XCTAssertEqual(lifecycle.stopAction(state: .installFailed), .finish)
+    }
+    func testInstallerOwnsStopAndFailureUntilItsCallbackCompletes() {
+        XCTAssertFalse(DoryVZMacAdapter.acceptsDelegateStop(state: .installing, transitionInProgress: true))
+        XCTAssertTrue(DoryVZMacAdapter.acceptsDelegateStop(state: .installing, transitionInProgress: false))
+        for state: DoryVZMacAdapterState in [.running, .starting, .paused, .stopping, .stopped, .failed] {
+            XCTAssertTrue(DoryVZMacAdapter.acceptsDelegateStop(state: state, transitionInProgress: true))
+        }
+    }
+
+    @MainActor
+    func testCancelledInstallerSuccessCannotStartFirstBoot() async {
+        let lifecycle = DoryVZMacDesktopInstallLifecycle()
+        let holder = InstallLifecycleTaskHolder()
+        var starts = 0
+        let task = Task { @MainActor in
+            try await lifecycle.installThenStart {
+                XCTAssertTrue(lifecycle.isInstallingRestore)
+                holder.task?.cancel()
+                // Model an Apple install callback that returns success despite cancellation.
+            } start: { starts += 1 }
+        }
+        holder.task = task
+        do { try await task.value; XCTFail("expected cancellation before first boot") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(starts, 0)
+        XCTAssertFalse(lifecycle.isInstallingRestore)
+        XCTAssertTrue(lifecycle.shouldFinishStoppedObservation(operation: .install))
+        holder.task = nil
+    }
+
+    @MainActor
+    func testPrecancelledInstallLifecycleDoesNotCallInstaller() async {
+        let lifecycle = DoryVZMacDesktopInstallLifecycle()
+        var installs = 0
+        var starts = 0
+        let task = Task { @MainActor in
+            try await lifecycle.installThenStart { installs += 1 } start: { starts += 1 }
+        }
+        task.cancel()
+        do { try await task.value; XCTFail("expected pre-start cancellation") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(installs, 0)
+        XCTAssertEqual(starts, 0)
+        XCTAssertFalse(lifecycle.isInstallingRestore)
+    }
     func testProjectsEveryDurableMachineStateTruthfully() {
         let cases: [(DoryVZMacMachineInstallationState, DoryVZMacAdapterState)] = [
             (.prepared, .prepared),
@@ -43,21 +111,32 @@ final class DoryVZMacAdapterTests: XCTestCase {
 
     func testFailedRestoreReportsAlreadyRunningRuntimeState() {
         XCTAssertEqual(
-            DoryVZMacAdapter.stateAfterFailedRestore(runtimeState: .running),
+            DoryVZMacAdapter.stateAfterFailedRestore(runtimeState: .running, installationState: .stopped),
             .running
         )
         XCTAssertEqual(
-            DoryVZMacAdapter.stateAfterFailedRestore(runtimeState: .paused),
+            DoryVZMacAdapter.stateAfterFailedRestore(runtimeState: .paused, installationState: .stopped),
             .paused
         )
         XCTAssertEqual(
-            DoryVZMacAdapter.stateAfterFailedRestore(runtimeState: .stopped),
+            DoryVZMacAdapter.stateAfterFailedRestore(runtimeState: .stopped, installationState: .suspended),
             .suspended
         )
         XCTAssertEqual(
-            DoryVZMacAdapter.stateAfterFailedRestore(runtimeState: .other),
+            DoryVZMacAdapter.stateAfterFailedRestore(runtimeState: .other, installationState: .restoring),
             .failed
         )
+    }
+
+    func testFailedRestoreCannotAdvertiseSuspendedOrResumableBeforeCommit() {
+        XCTAssertEqual(DoryVZMacAdapter.stateAfterFailedRestore(
+            runtimeState: .stopped, installationState: .restoring), .failed)
+        XCTAssertEqual(DoryVZMacAdapter.stateAfterFailedRestore(
+            runtimeState: .stopped, installationState: .stopped), .failed)
+        XCTAssertEqual(DoryVZMacAdapter.stateAfterFailedRestore(
+            runtimeState: .paused, installationState: .restoring), .failed)
+        XCTAssertEqual(DoryVZMacAdapter.stateAfterFailedRestore(
+            runtimeState: .paused, installationState: .suspended), .failed)
     }
 
     func testConfigurationStandardizesAllLocalArtifactPaths() {
@@ -192,4 +271,9 @@ final class DoryVZMacAdapterTests: XCTestCase {
         XCTAssertTrue(lifecycle.shouldFinishStoppedObservation(operation: .run))
         XCTAssertTrue(lifecycle.shouldFinishStoppedObservation(operation: .resume))
     }
+}
+
+@MainActor
+private final class InstallLifecycleTaskHolder {
+    var task: Task<Void, Error>?
 }

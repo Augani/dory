@@ -113,6 +113,71 @@ final class DoryVZMacSharedDirectoryTests: XCTestCase {
         XCTAssertFalse(report.hasClipboard)
     }
 
+    func testDirectionalTextUsesGuestToolsWithoutSPICEAndBindsSavedState() throws {
+        let configuration = VZVirtualMachineConfiguration()
+        let hostToGuest = DoryVZMacDevicePolicy(
+            clipboardEnabled: true,
+            spiceClipboardEnabled: false,
+            clipboardTextReadEnabled: false,
+            clipboardTextWriteEnabled: true,
+            cameraBridgeEnabled: false
+        )
+        try DoryVZMacConfigurationBuilder.applyDevicePolicy(
+            to: configuration,
+            macAddress: "02:00:5e:10:20:30",
+            sharedDirectories: [],
+            devicePolicy: hostToGuest
+        )
+        let report = DoryVZMacConfigurationBuilder.inspectEffectiveDevices(configuration)
+        XCTAssertFalse(report.spiceClipboardEnabled)
+        XCTAssertEqual(report.consoleDeviceCount, 0)
+        let guestToHost = DoryVZMacDevicePolicy(
+            clipboardEnabled: true,
+            spiceClipboardEnabled: false,
+            clipboardTextReadEnabled: true,
+            clipboardTextWriteEnabled: false,
+            cameraBridgeEnabled: false
+        )
+        XCTAssertNotEqual(
+            try DoryVZMacConfigurationBuilder.fingerprint(devicePolicy: hostToGuest),
+            try DoryVZMacConfigurationBuilder.fingerprint(devicePolicy: guestToHost)
+        )
+        let imageOnly = DoryVZMacDevicePolicy(
+            clipboardEnabled: true,
+            spiceClipboardEnabled: false,
+            clipboardTextReadEnabled: false,
+            clipboardTextWriteEnabled: false,
+            clipboardImageReadEnabled: true,
+            clipboardImageWriteEnabled: false,
+            cameraBridgeEnabled: false
+        )
+        XCTAssertNotEqual(
+            try DoryVZMacConfigurationBuilder.fingerprint(devicePolicy: hostToGuest),
+            try DoryVZMacConfigurationBuilder.fingerprint(devicePolicy: imageOnly)
+        )
+        let oppositeImageDirection = DoryVZMacDevicePolicy(
+            clipboardEnabled: true,
+            spiceClipboardEnabled: false,
+            clipboardTextReadEnabled: false,
+            clipboardTextWriteEnabled: false,
+            clipboardImageReadEnabled: false,
+            clipboardImageWriteEnabled: true,
+            cameraBridgeEnabled: false
+        )
+        XCTAssertNotEqual(
+            try DoryVZMacConfigurationBuilder.fingerprint(devicePolicy: imageOnly),
+            try DoryVZMacConfigurationBuilder.fingerprint(devicePolicy: oppositeImageDirection)
+        )
+        XCTAssertThrowsError(try DoryVZMacConfigurationBuilder.fingerprint(
+            devicePolicy: DoryVZMacDevicePolicy(
+                clipboardEnabled: false,
+                clipboardTextWriteEnabled: true
+            )
+        )) { error in
+            XCTAssertEqual(error as? DoryVZMacConfigurationError, .invalidClipboardPolicy)
+        }
+    }
+
     func testHostOnlyPolicyRejectsAnyAttachmentOtherThanGVProxy() {
         let configuration = VZVirtualMachineConfiguration()
         let policy = DoryVZMacDevicePolicy(network: .isolated)
@@ -184,6 +249,24 @@ final class DoryVZMacSharedDirectoryTests: XCTestCase {
         let decoded = try JSONDecoder().decode(DoryVZMacDevicePolicy.self, from: data)
 
         XCTAssertTrue(decoded.cameraBridgeEnabled)
+    }
+
+    func testHostCameraSelectionChangesSavedStateCompatibility() throws {
+        let policy = DoryVZMacDevicePolicy(cameraBridgeEnabled: true)
+        let first = try DoryVZMacConfigurationBuilder.fingerprint(
+            devicePolicy: policy, cameraDeviceUniqueID: "host-camera-a"
+        )
+        let second = try DoryVZMacConfigurationBuilder.fingerprint(
+            devicePolicy: policy, cameraDeviceUniqueID: "host-camera-b"
+        )
+        XCTAssertNotEqual(first, second)
+        XCTAssertNotEqual(first, try DoryVZMacConfigurationBuilder.fingerprint(
+            devicePolicy: policy
+        ))
+        XCTAssertThrowsError(try DoryVZMacConfigurationBuilder.fingerprint(
+            devicePolicy: DoryVZMacDevicePolicy(cameraBridgeEnabled: false),
+            cameraDeviceUniqueID: "host-camera-a"
+        ))
     }
 
     private func makeTemporaryDirectory() throws -> URL {

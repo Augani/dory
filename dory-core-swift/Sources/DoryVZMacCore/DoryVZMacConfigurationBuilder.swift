@@ -1,4 +1,5 @@
 import DoryHostCamera
+import DoryMacGuestIntegrationWire
 import DoryVZMacCameraBridge
 import CryptoKit
 import Darwin
@@ -10,7 +11,11 @@ public enum DoryVZMacConfigurationError: Error, Sendable, Equatable, CustomStrin
     case missingHostOnlyNetworkAttachment
     case cameraSocketUnavailable
     case metalProbeSocketUnavailable
+    case guestIntegrationSocketUnavailable
     case integrationDisabled(String)
+    case invalidClipboardPolicy
+    case invalidCameraSelection
+    case machineBundleChangedBeforeRuntimeAdmission
 
     public var description: String {
         switch self {
@@ -22,8 +27,16 @@ public enum DoryVZMacConfigurationError: Error, Sendable, Equatable, CustomStrin
             "VZMac did not expose the configured VirtIO socket device"
         case .metalProbeSocketUnavailable:
             "VZMac did not expose the VirtIO socket device required for Metal probe collection"
+        case .guestIntegrationSocketUnavailable:
+            "VZMac did not expose the VirtIO socket device required for Guest Tools integration"
         case .integrationDisabled(let name):
             "VZMac \(name) integration is disabled by the effective device policy"
+        case .invalidClipboardPolicy:
+            "VZMac clipboard transport and directional grants disagree"
+        case .invalidCameraSelection:
+            "VZMac camera selection is invalid or the camera bridge is disabled"
+        case .machineBundleChangedBeforeRuntimeAdmission:
+            "VZMac machine bundle changed before runtime admission; reopen its current state"
         }
     }
 }
@@ -48,6 +61,11 @@ public struct DoryVZMacDevicePolicy: Codable, Sendable, Equatable {
     public var network: DoryVZMacNetworkPolicy
     public var audio: DoryVZMacAudioPolicy
     public var clipboardEnabled: Bool
+    public var spiceClipboardEnabled: Bool
+    public var clipboardTextReadEnabled: Bool
+    public var clipboardTextWriteEnabled: Bool
+    public var clipboardImageReadEnabled: Bool
+    public var clipboardImageWriteEnabled: Bool
     public var directorySharingEnabled: Bool
     public var cameraBridgeEnabled: Bool
 
@@ -55,6 +73,11 @@ public struct DoryVZMacDevicePolicy: Codable, Sendable, Equatable {
         case network
         case audio
         case clipboardEnabled
+        case spiceClipboardEnabled
+        case clipboardTextReadEnabled
+        case clipboardTextWriteEnabled
+        case clipboardImageReadEnabled
+        case clipboardImageWriteEnabled
         case directorySharingEnabled
         case cameraBridgeEnabled
     }
@@ -63,12 +86,22 @@ public struct DoryVZMacDevicePolicy: Codable, Sendable, Equatable {
         network: DoryVZMacNetworkPolicy = .sharedNAT,
         audio: DoryVZMacAudioPolicy = DoryVZMacAudioPolicy(),
         clipboardEnabled: Bool = true,
+        spiceClipboardEnabled: Bool? = nil,
+        clipboardTextReadEnabled: Bool? = nil,
+        clipboardTextWriteEnabled: Bool? = nil,
+        clipboardImageReadEnabled: Bool? = nil,
+        clipboardImageWriteEnabled: Bool? = nil,
         directorySharingEnabled: Bool = true,
         cameraBridgeEnabled: Bool = true
     ) {
         self.network = network
         self.audio = audio
         self.clipboardEnabled = clipboardEnabled
+        self.spiceClipboardEnabled = spiceClipboardEnabled ?? clipboardEnabled
+        self.clipboardTextReadEnabled = clipboardTextReadEnabled ?? clipboardEnabled
+        self.clipboardTextWriteEnabled = clipboardTextWriteEnabled ?? clipboardEnabled
+        self.clipboardImageReadEnabled = clipboardImageReadEnabled ?? self.spiceClipboardEnabled
+        self.clipboardImageWriteEnabled = clipboardImageWriteEnabled ?? self.spiceClipboardEnabled
         self.directorySharingEnabled = directorySharingEnabled
         self.cameraBridgeEnabled = cameraBridgeEnabled
     }
@@ -78,6 +111,21 @@ public struct DoryVZMacDevicePolicy: Codable, Sendable, Equatable {
         network = try container.decode(DoryVZMacNetworkPolicy.self, forKey: .network)
         audio = try container.decode(DoryVZMacAudioPolicy.self, forKey: .audio)
         clipboardEnabled = try container.decode(Bool.self, forKey: .clipboardEnabled)
+        spiceClipboardEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .spiceClipboardEnabled
+        ) ?? clipboardEnabled
+        clipboardTextReadEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .clipboardTextReadEnabled
+        ) ?? clipboardEnabled
+        clipboardTextWriteEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .clipboardTextWriteEnabled
+        ) ?? clipboardEnabled
+        clipboardImageReadEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .clipboardImageReadEnabled
+        ) ?? spiceClipboardEnabled
+        clipboardImageWriteEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .clipboardImageWriteEnabled
+        ) ?? spiceClipboardEnabled
         directorySharingEnabled = try container.decode(Bool.self, forKey: .directorySharingEnabled)
         cameraBridgeEnabled = try container.decodeIfPresent(Bool.self, forKey: .cameraBridgeEnabled) ?? true
     }
@@ -122,6 +170,7 @@ public enum DoryVZMacConfigurationBuilder {
         sharedDirectories: [DoryVZMacSharedDirectory] = [],
         usbMassStorage: DoryVZMacUSBMassStorage? = nil,
         devicePolicy: DoryVZMacDevicePolicy = .legacyDefault,
+        cameraDeviceUniqueID: String? = nil,
         displays: [DoryVZMacDisplay]? = nil,
         dataDisks: [DoryVZMacDataDisk] = []
     ) throws -> String {
@@ -210,6 +259,12 @@ public enum DoryVZMacConfigurationBuilder {
             let dataDisks: [DataDisk]
         }
         try validatePolicy(devicePolicy, sharedDirectories: sharedDirectories)
+        if let cameraDeviceUniqueID,
+            !devicePolicy.cameraBridgeEnabled || cameraDeviceUniqueID.isEmpty
+                || cameraDeviceUniqueID.utf8.count > 512
+                || !cameraDeviceUniqueID.utf8.allSatisfy({ $0 >= 0x20 && $0 != 0x7f }) {
+            throw DoryVZMacConfigurationError.invalidCameraSelection
+        }
         let mappedShares = sharedDirectories
             .sorted { $0.name < $1.name }
             .map {
@@ -310,7 +365,28 @@ public enum DoryVZMacConfigurationBuilder {
                 sharedDirectories: mappedShares
             ))
         }
-        return SHA256.hash(data: encoded)
+        // Preserve historical fingerprints for configurations that still use the same SPICE
+        // device. The separately granted text-only channel is a new effective configuration:
+        // different directions must not reuse one another's saved-state compatibility digest.
+        var fingerprintInput = encoded
+        if devicePolicy.clipboardEnabled && !devicePolicy.spiceClipboardEnabled {
+            fingerprintInput.append(0)
+            fingerprintInput.append(contentsOf: Data(
+                "dory.vzmac-tools-clipboard@1:read=\(devicePolicy.clipboardTextReadEnabled):write=\(devicePolicy.clipboardTextWriteEnabled)".utf8
+            ))
+            if devicePolicy.clipboardImageReadEnabled || devicePolicy.clipboardImageWriteEnabled {
+                fingerprintInput.append(contentsOf: Data(
+                    ":imageRead=\(devicePolicy.clipboardImageReadEnabled):imageWrite=\(devicePolicy.clipboardImageWriteEnabled)".utf8
+                ))
+            }
+        }
+        if let cameraDeviceUniqueID {
+            fingerprintInput.append(0)
+            fingerprintInput.append(contentsOf: Data(
+                "dory.vzmac-host-camera@1:\(cameraDeviceUniqueID)".utf8
+            ))
+        }
+        return SHA256.hash(data: fingerprintInput)
             .map { String(format: "%02x", $0) }
             .joined()
     }
@@ -466,7 +542,7 @@ public enum DoryVZMacConfigurationBuilder {
             fileSystem.share = VZMultipleDirectoryShare(directories: directories)
             configuration.directorySharingDevices = [fileSystem]
         }
-        if devicePolicy.clipboardEnabled {
+        if devicePolicy.spiceClipboardEnabled {
             let spiceAttachment = VZSpiceAgentPortAttachment()
             spiceAttachment.sharesClipboard = true
             let spicePort = VZVirtioConsolePortConfiguration()
@@ -531,6 +607,18 @@ public enum DoryVZMacConfigurationBuilder {
         _ devicePolicy: DoryVZMacDevicePolicy,
         sharedDirectories: [DoryVZMacSharedDirectory]
     ) throws {
+        let anyClipboardDirection = devicePolicy.spiceClipboardEnabled
+            || devicePolicy.clipboardTextReadEnabled
+            || devicePolicy.clipboardTextWriteEnabled
+            || devicePolicy.clipboardImageReadEnabled
+            || devicePolicy.clipboardImageWriteEnabled
+        guard devicePolicy.clipboardEnabled == anyClipboardDirection,
+            !devicePolicy.spiceClipboardEnabled
+                || (devicePolicy.clipboardTextReadEnabled
+                    && devicePolicy.clipboardTextWriteEnabled
+                    && devicePolicy.clipboardImageReadEnabled
+                    && devicePolicy.clipboardImageWriteEnabled)
+        else { throw DoryVZMacConfigurationError.invalidClipboardPolicy }
         // §4.3: The admission rejection is removed. When shares are provided via
         // --share, directory sharing is auto-enabled (see applyDevicePolicy). The
         // directorySharingEnabled flag now only controls whether the sharing device
@@ -538,28 +626,69 @@ public enum DoryVZMacConfigurationBuilder {
     }
 }
 
+/// Lease acquisition is the runtime admission boundary, not the caller's earlier bundle
+/// read. Never silently adopt a successor manifest: its state/resources may no longer match
+/// the caller's authorized launch, and a stale stopped value must not bypass suspended RAM.
+struct DoryVZMacRuntimeAdmission {
+    let bundle: DoryVZMacMachineBundle
+    let lease: DoryVZMacMachineLease
+    let claim: DoryVZMacRuntimeLeaseClaim
+
+    static func acquire(
+        for requested: DoryVZMacMachineBundle,
+        holding existingLease: DoryVZMacMachineLease? = nil,
+        loadBundle: (URL) throws -> DoryVZMacMachineBundle = {
+            try DoryVZMacMachineBundle.load(from: $0)
+        }
+    ) throws -> Self {
+        let lease = try existingLease ?? DoryVZMacMachineLease(rootURL: requested.rootURL)
+        defer { withExtendedLifetime(lease) {} }
+        guard lease.ownsRoot(requested.rootURL) else {
+            throw DoryVZMacConfigurationError.machineBundleChangedBeforeRuntimeAdmission
+        }
+        let claim = try lease.claimRuntime()
+        defer { withExtendedLifetime(claim) {} }
+        let current = try loadBundle(requested.rootURL)
+        guard lease.ownsRoot(requested.rootURL),
+              current.rootURL.standardizedFileURL == requested.rootURL.standardizedFileURL,
+              current.manifest == requested.manifest else {
+            throw DoryVZMacConfigurationError.machineBundleChangedBeforeRuntimeAdmission
+        }
+        return Self(bundle: current, lease: lease, claim: claim)
+    }
+}
+
 @MainActor
 public final class DoryVZMacRuntime {
     public private(set) var bundle: DoryVZMacMachineBundle
     private let machineLease: DoryVZMacMachineLease
+    private let runtimeLeaseClaim: DoryVZMacRuntimeLeaseClaim
     public let configuration: VZVirtualMachineConfiguration
     public let virtualMachine: VZVirtualMachine
     public let cameraBridge: DoryVZMacCameraBridge?
     public let metalProbeCollector: DoryVZMacMetalProbeCollector?
+    public let guestIntegrationService: DoryVZMacGuestIntegrationService
     public let configurationSHA256: String
 
     public init(
-        bundle: DoryVZMacMachineBundle,
+        bundle requestedBundle: DoryVZMacMachineBundle,
+        holdingMachineLease existingMachineLease: DoryVZMacMachineLease? = nil,
         sharedDirectories: [DoryVZMacSharedDirectory] = [],
         usbMassStorage: DoryVZMacUSBMassStorage? = nil,
         devicePolicy: DoryVZMacDevicePolicy = .legacyDefault,
         networkAttachment: VZNetworkDeviceAttachment? = nil,
+        cameraDeviceUniqueID: String? = nil,
         camera: DoryMacCameraBackend? = nil,
         metalProbeCollector: DoryVZMacMetalProbeCollector? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws {
+        let admission = try DoryVZMacRuntimeAdmission.acquire(
+            for: requestedBundle, holding: existingMachineLease
+        )
+        let bundle = admission.bundle
         self.bundle = bundle
-        machineLease = try DoryVZMacMachineLease(rootURL: bundle.rootURL)
+        machineLease = admission.lease
+        runtimeLeaseClaim = admission.claim
         let configuration = try DoryVZMacConfigurationBuilder.makeConfiguration(
             for: bundle,
             sharedDirectories: sharedDirectories,
@@ -572,6 +701,7 @@ public final class DoryVZMacRuntime {
             sharedDirectories: sharedDirectories,
             usbMassStorage: usbMassStorage,
             devicePolicy: devicePolicy,
+            cameraDeviceUniqueID: cameraDeviceUniqueID,
             displays: bundle.manifest.resources.displays,
             dataDisks: bundle.manifest.resources.dataDisks
         )
@@ -583,9 +713,32 @@ public final class DoryVZMacRuntime {
             try metalProbeCollector.install(on: socket)
         }
         self.metalProbeCollector = metalProbeCollector
+        guard let guestSocket = virtualMachine.socketDevices.first as? VZVirtioSocketDevice else {
+            throw DoryVZMacConfigurationError.guestIntegrationSocketUnavailable
+        }
+        let guestIntegrationService = try DoryVZMacGuestIntegrationService(
+            machineID: bundle.manifest.machineIdentifierSHA256,
+            allowClipboardTextRead: devicePolicy.clipboardTextReadEnabled,
+            allowClipboardTextWrite: devicePolicy.clipboardTextWriteEnabled,
+            allowClipboardImageRead: devicePolicy.clipboardImageReadEnabled,
+            allowClipboardImageWrite: devicePolicy.clipboardImageWriteEnabled,
+            log: log
+        )
+        try guestIntegrationService.install(on: guestSocket)
+        self.guestIntegrationService = guestIntegrationService
         if devicePolicy.cameraBridgeEnabled {
+            let backend = camera ?? DoryMacCameraBackend(
+                selectedDeviceUniqueID: cameraDeviceUniqueID,
+                log: log
+            )
+            if let cameraDeviceUniqueID {
+                guard backend.selectedDeviceUniqueID == cameraDeviceUniqueID else {
+                    throw DoryVZMacConfigurationError.invalidCameraSelection
+                }
+                try backend.reserveSelectedDevice()
+            }
             let bridge = DoryVZMacCameraBridge(
-                camera: camera ?? DoryMacCameraBackend(log: log),
+                camera: backend,
                 log: log
             )
             guard let socket = virtualMachine.socketDevices.first as? VZVirtioSocketDevice else {
@@ -603,6 +756,15 @@ public final class DoryVZMacRuntime {
         operationID: UUID,
         progress: @escaping @MainActor @Sendable (Double) -> Void = { _ in }
     ) async throws {
+        try Task.checkCancellation()
+        if [.installing, .installFailed].contains(bundle.manifest.installationState) {
+            bundle = try DoryVZMacRecovery.recoverInterruptedOperation(in: bundle, holding: machineLease)
+            if bundle.manifest.installationState == .stopped {
+                progress(1)
+                return
+            }
+        }
+        try Task.checkCancellation()
         guard bundle.manifest.installationState == .prepared
                 || bundle.manifest.installationState == .installFailed else {
             throw DoryVZMacMachineBundleError.invalidBundle(
@@ -620,9 +782,10 @@ public final class DoryVZMacRuntime {
             machineIdentifierSHA256: bundle.manifest.machineIdentifierSHA256,
             error: nil
         )
-        try journal.write(to: bundle.installJournalURL)
+        bundle = try DoryVZMacRecovery.beginInstallation(journal, in: bundle, holding: machineLease)
         do {
             try await bundle.validateRestoreImage(at: restoreImageURL)
+            try Task.checkCancellation()
             bundle = try bundle.updatingInstallationState(.installing)
             journal = journal.updating(phase: .installing, progress: 0)
             try journal.write(to: bundle.installJournalURL)
@@ -630,10 +793,27 @@ public final class DoryVZMacRuntime {
                 virtualMachine: virtualMachine,
                 restoringFromImageAt: restoreImageURL
             )
+            let session = DoryVZMacInstallSession {
+                installer.install(completionHandler: $0)
+            } cancel: {
+                installer.progress.cancel()
+            }
             let progressMonitor = Task { @MainActor in
                 var lastWrittenPercent = -1
                 while !Task.isCancelled {
+                    if session.isFinished { return }
+                    if !session.isInstalling {
+                        // The monitor may be scheduled before the actor enters session.run().
+                        try? await Task.sleep(for: .milliseconds(20))
+                        continue
+                    }
                     let fraction = installer.progress.fractionCompleted
+                    guard fraction.isFinite, (0...1).contains(fraction) else {
+                        session.cancel(error: DoryVZMacInstallJournalError.invalid(
+                            "Apple installer reported invalid progress"
+                        ))
+                        return
+                    }
                     progress(fraction)
                     let percent = Int(fraction * 100)
                     if percent != lastWrittenPercent {
@@ -642,22 +822,21 @@ public final class DoryVZMacRuntime {
                             phase: .installing,
                             progress: fraction
                         )
-                        try? update.write(to: bundle.installJournalURL)
+                        do {
+                            try update.write(to: bundle.installJournalURL)
+                        } catch {
+                            session.cancel(error: error)
+                            return
+                        }
                     }
                     try? await Task.sleep(for: .seconds(1))
                 }
             }
             defer { progressMonitor.cancel() }
-            try await installer.install()
-            progress(1)
-            bundle = try bundle.updatingInstallationState(.stopped)
-            journal = journal.updating(phase: .completed, progress: 1)
-            try journal.write(to: bundle.installJournalURL)
+            try await session.run()
         } catch {
-            if bundle.manifest.installationState == .installing {
-                bundle = try bundle.updatingInstallationState(.installFailed)
-            }
-            let detail = String(String(describing: error).prefix(
+            let installationError = error
+            let detail = String(String(describing: installationError).prefix(
                 DoryVZMacInstallJournal.maximumErrorUTF8Bytes / 4
             ))
             journal = journal.updating(
@@ -665,9 +844,20 @@ public final class DoryVZMacRuntime {
                 progress: lastObservedInstallProgress(from: bundle.installJournalURL),
                 error: detail.isEmpty ? "unknown VZMac installation failure" : detail
             )
-            try? journal.write(to: bundle.installJournalURL)
-            throw error
+            do {
+                bundle = try DoryVZMacRecovery.commitInstallationOutcome(journal, in: bundle, holding: machineLease)
+            } catch {
+                throw DoryVZMacInstallJournalError.failureRecording(
+                    installation: String(describing: installationError), metadata: String(describing: error)
+                )
+            }
+            throw installationError
         }
+        // Keep completion publication outside the installer-failure catch. If its flush
+        // fails, retain successful-install evidence and let recovery finish the commit.
+        journal = journal.updating(phase: .completed, progress: 1)
+        bundle = try DoryVZMacRecovery.commitInstallationOutcome(journal, in: bundle, holding: machineLease)
+        progress(1)
     }
 
     public func start() async throws {
@@ -685,6 +875,7 @@ public final class DoryVZMacRuntime {
                 "VZMac must be running before suspension"
             )
         }
+        try Task.checkCancellation()
         do {
             try configuration.validateSaveRestoreSupport()
         } catch {
@@ -698,7 +889,19 @@ public final class DoryVZMacRuntime {
     }
 
     private func suspendToBundleArtifact() async throws {
-        guard !FileManager.default.fileExists(atPath: bundle.suspendedStateURL.path) else {
+        let artifactEntryURL = bundle.rootURL.appendingPathComponent(
+            DoryVZMacMachineBundle.suspendedStateDirectoryName, isDirectory: false
+        )
+        if try DoryVZMacMetadataFile.entryExists(at: artifactEntryURL),
+           bundle.manifest.installationState == .stopped {
+            // A prior successful restore may have crashed during wrapper cleanup. Retire
+            // only consumed/incomplete, known-format artifacts; a valid unconsumed snapshot
+            // or unknown files still block suspension instead of being silently overwritten.
+            try DoryVZMacSavedStateArtifact.retireConsumedArtifact(
+                at: bundle.suspendedStateURL, barrierFileURL: bundle.manifestURL
+            )
+        }
+        guard try !DoryVZMacMetadataFile.entryExists(at: artifactEntryURL) else {
             throw DoryVZMacSavedStateError.destinationExists(bundle.suspendedStateURL.path)
         }
         bundle = try bundle.updatingInstallationState(.suspending)
@@ -706,16 +909,17 @@ public final class DoryVZMacRuntime {
             ".\(DoryVZMacMachineBundle.suspendedStateDirectoryName).creating-\(UUID().uuidString)",
             isDirectory: true
         )
-        var committedArtifact = false
         do {
             try await virtualMachine.pause()
+            try Task.checkCancellation()
             try FileManager.default.createDirectory(
                 at: staging,
-                withIntermediateDirectories: false
+                withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]
             )
             let stateURL = staging.appendingPathComponent(DoryVZMacSavedStateArtifact.stateName)
             try await virtualMachine.saveMachineStateTo(url: stateURL)
             try secureManagedSavedStateFile(stateURL)
+            try Task.checkCancellation()
             let receipt = try makeSavedStateReceipt(
                 stateURL: stateURL,
                 bundle: bundle,
@@ -723,20 +927,33 @@ public final class DoryVZMacRuntime {
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            try encoder.encode(receipt).write(
-                to: staging.appendingPathComponent(DoryVZMacSavedStateArtifact.receiptName),
-                options: [.atomic]
+            try DoryVZMacMetadataFile.write(
+                encoder.encode(receipt),
+                to: staging.appendingPathComponent(DoryVZMacSavedStateArtifact.receiptName)
             )
-            try FileManager.default.moveItem(at: staging, to: bundle.suspendedStateURL)
-            committedArtifact = true
+            try Task.checkCancellation()
+            try DoryVZMacBundlePublication.publish(
+                staging: staging, to: bundle.suspendedStateURL,
+                relativeFiles: [DoryVZMacSavedStateArtifact.stateName, DoryVZMacSavedStateArtifact.receiptName],
+                barrierFile: DoryVZMacSavedStateArtifact.receiptName
+            )
             bundle = try bundle.updatingInstallationState(.suspended)
         } catch {
-            try? FileManager.default.removeItem(at: staging)
-            if committedArtifact {
-                try? FileManager.default.removeItem(at: bundle.suspendedStateURL)
+            let suspensionError = error
+            do {
+                // A late publication error may have renamed RAM even though publish did not
+                // return. Retire both owned locations before allowing the original live RAM
+                // to advance disks; failure leaves the VM paused and the manifest interrupted.
+                try DoryVZMacSavedStateRetirement.retireFailedSuspension(
+                    staging: staging, published: bundle.suspendedStateURL, barrierFileURL: bundle.manifestURL
+                )
+            } catch {
+                throw DoryVZMacSavedStateError.invalidVirtualMachineState(
+                    "suspension failed (\(suspensionError)); RAM retirement failed (\(error)); cold recovery is required"
+                )
             }
             await recoverStandaloneSuspendFailure()
-            throw error
+            throw suspensionError
         }
     }
 
@@ -782,23 +999,15 @@ public final class DoryVZMacRuntime {
             stateURL = artifact.stateURL
             bundleArtifactRootURL = artifact.rootURL
         }
+        try await DoryVZMacManagedSavedStateOperation.restore(
+            from: stateURL,
+            hooks: managedSavedStateHooks()
+        )
         if let bundleArtifactRootURL {
-            bundle = try bundle.updatingInstallationState(.restoring)
-            do {
-                try await virtualMachine.restoreMachineStateFrom(url: stateURL)
-                try await virtualMachine.resume()
-                try FileManager.default.removeItem(at: bundleArtifactRootURL)
-                bundle = try bundle.updatingInstallationState(.stopped)
-            } catch {
-                if virtualMachine.state != .running {
-                    bundle = (try? bundle.updatingInstallationState(.suspended)) ?? bundle
-                }
-                throw error
-            }
-        } else {
-            try await DoryVZMacManagedSavedStateOperation.restore(
-                from: stateURL,
-                hooks: managedSavedStateHooks()
+            // Cleanup is after execution and is not the consumption fence. If interrupted,
+            // the retained marker still rejects replay; never revert the stopped manifest.
+            try DoryVZMacSavedStateArtifact.retireConsumedArtifact(
+                at: bundleArtifactRootURL, barrierFileURL: bundle.manifestURL
             )
         }
     }
@@ -839,7 +1048,13 @@ public final class DoryVZMacRuntime {
             save: { [weak self] url in try await self?.virtualMachine.saveMachineStateTo(url: url) },
             restore: { [weak self] url in try await self?.virtualMachine.restoreMachineStateFrom(url: url) },
             secureSavedState: { [weak self] url in try self?.secureManagedSavedStateFile(url) },
-            removeSavedState: { url in try? FileManager.default.removeItem(at: url) }
+            removeSavedState: { url in
+                if try DoryVZMacMetadataFile.entryExists(at: url) {
+                    try DoryVZMacMetadataFile.remove(at: url)
+                }
+            },
+            isSavedStateConsumed: { try DoryVZSavedStateConsumption.isConsumed(stateURL: $0) },
+            consumeSavedState: { try DoryVZSavedStateConsumption.consume(stateURL: $0) }
         )
     }
 
@@ -847,12 +1062,55 @@ public final class DoryVZMacRuntime {
         try virtualMachine.requestStop()
     }
 
+    public func openURLInGuest(_ url: URL) async throws {
+        try await guestIntegrationService.openURL(url)
+    }
+
+    public func sendFileToGuest(at url: URL) async throws {
+        try await guestIntegrationService.sendFileToGuest(at: url)
+    }
+
+    public func fileOfferedByGuest() async throws -> DoryMacGuestIntegrationWire.FilePullOffer {
+        try await guestIntegrationService.fileOfferedByGuest()
+    }
+
+    public func receiveFileFromGuest(
+        _ offer: DoryMacGuestIntegrationWire.FilePullOffer, to destination: URL
+    ) async throws {
+        try await guestIntegrationService.receiveFileFromGuest(offer, to: destination)
+    }
+
+    public func readClipboardTextFromGuest() async throws -> String {
+        try await guestIntegrationService.readClipboardText()
+    }
+
+    public func writeClipboardTextToGuest(_ text: String) async throws {
+        try await guestIntegrationService.writeClipboardText(text)
+    }
+
+    public func readClipboardPNGFromGuest() async throws -> Data {
+        try await guestIntegrationService.readClipboardPNG()
+    }
+
+    public func writeClipboardPNGToGuest(_ png: Data) async throws {
+        try await guestIntegrationService.writeClipboardPNG(png)
+    }
+
     public func pause() async throws {
         try await virtualMachine.pause()
     }
 
     public func resume() async throws {
+        try Self.validateResumeInstallationState(bundle.manifest.installationState)
         try await virtualMachine.resume()
+    }
+
+    nonisolated static func validateResumeInstallationState(_ state: DoryVZMacMachineInstallationState) throws {
+        guard state == .stopped else {
+            throw DoryVZMacSavedStateError.invalidVirtualMachineState(
+                "cannot resume a VZMac VM with an uncommitted \(state.rawValue) manifest"
+            )
+        }
     }
 
     private func secureManagedSavedStateFile(_ url: URL) throws {
@@ -862,9 +1120,7 @@ public final class DoryVZMacRuntime {
             throw DoryVZMacSavedStateError.filesystem("fchmod saved state", errno)
         }
         try validateManagedSavedStateDescriptor(descriptor, requirePrivateMode: true)
-        guard fsync(descriptor) == 0 else {
-            throw DoryVZMacSavedStateError.filesystem("fsync saved state", errno)
-        }
+        try DoryVZMacMetadataFile.synchronizeFileDescriptor(descriptor)
     }
 
     private func openManagedSavedStateFile(
@@ -909,6 +1165,7 @@ public final class DoryVZMacRuntime {
     }
 
     deinit {
+        guestIntegrationService.remove()
         cameraBridge?.remove()
     }
 }

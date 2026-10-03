@@ -36,7 +36,8 @@ public struct DoryVZMacPortableFile: Codable, Sendable, Equatable {
     }
 
     public func validate() throws {
-        guard Self.allowedRelativePaths.contains(relativePath) else {
+        guard Self.allowedRelativePaths.contains(relativePath)
+                || Self.dataDiskRelativePaths.contains(relativePath) else {
             throw DoryVZMacPortableBundleError.invalidBundle(
                 "unexpected artifact path \(relativePath)"
             )
@@ -61,10 +62,16 @@ public struct DoryVZMacPortableFile: Codable, Sendable, Equatable {
         DoryVZMacMachineBundle.hardwareModelName,
         DoryVZMacMachineBundle.machineIdentifierName,
     ]
+
+    fileprivate static let dataDiskRelativePaths: [String] =
+        (1...DoryVZMacResourcePlan.maximumDataDiskCount).map {
+            "\(DoryVZMacMachineBundle.dataDisksDirectoryName)/\(String(format: "data-%02d.img", $0))"
+        }
 }
 
 public struct DoryVZMacPortableManifest: Codable, Sendable, Equatable {
-    public static let schema = "dory.vzmac-portable@1"
+    public static let schema = "dory.vzmac-portable@2"
+    public static let legacySchema = "dory.vzmac-portable@1"
 
     public let schema: String
     public let createdAt: String
@@ -95,7 +102,7 @@ public struct DoryVZMacPortableManifest: Codable, Sendable, Equatable {
     }
 
     public func validate() throws {
-        guard schema == Self.schema else {
+        guard schema == Self.schema || schema == Self.legacySchema else {
             throw DoryVZMacPortableBundleError.invalidBundle("unsupported receipt schema")
         }
         guard ISO8601DateFormatter().date(from: createdAt) != nil else {
@@ -123,11 +130,43 @@ public struct DoryVZMacPortableManifest: Codable, Sendable, Equatable {
         }
         for file in files { try file.validate() }
         let paths = files.map(\.relativePath)
-        guard Set(paths) == DoryVZMacPortableFile.allowedRelativePaths,
-              paths.count == DoryVZMacPortableFile.allowedRelativePaths.count else {
+        let dataPaths = Set(paths).subtracting(DoryVZMacPortableFile.allowedRelativePaths)
+        guard Set(paths).isSuperset(of: DoryVZMacPortableFile.allowedRelativePaths),
+              Set(paths).count == paths.count,
+              dataPaths == Set(DoryVZMacPortableFile.dataDiskRelativePaths.prefix(dataPaths.count)),
+              schema != Self.legacySchema || dataPaths.isEmpty else {
             throw DoryVZMacPortableBundleError.invalidBundle(
                 "portable artifact set is incomplete or duplicated"
             )
+        }
+    }
+
+    // The portable receipt is not allowed to drop a disk, add an unrelated disk, or
+    // reinterpret a legacy export as one with data disks. Both formats bind the exact
+    // artifact set to the embedded machine's resource plan before any restore allocation.
+    func validateArtifacts(for machine: DoryVZMacMachineManifest) throws {
+        try validate()
+        try machine.validate()
+        guard machine.installationState == .stopped,
+              sourceMachineIdentifierSHA256 == machine.machineIdentifierSHA256,
+              Set(files.map(\.relativePath))
+                == Set(DoryVZMacMachineBundle.artifactPaths(for: machine.resources)) else {
+            throw DoryVZMacPortableBundleError.invalidBundle(
+                "machine state, identity or managed disk set differs from the portability receipt"
+            )
+        }
+        let diskSizes = Dictionary(uniqueKeysWithValues:
+            [(DoryVZMacMachineBundle.diskName, machine.resources.diskBytes)]
+                + machine.resources.dataDisks.map {
+                    ("\(DoryVZMacMachineBundle.dataDisksDirectoryName)/\($0.fileName)", $0.byteCount)
+                }
+        )
+        for file in files {
+            if let expected = diskSizes[file.relativePath], file.bytes != expected {
+                throw DoryVZMacPortableBundleError.invalidBundle(
+                    "disk capacity differs from the embedded machine resource plan"
+                )
+            }
         }
     }
 }
@@ -151,25 +190,29 @@ public struct DoryVZMacPortableBundle: Sendable {
         }
         let lease = try DoryVZMacMachineLease(rootURL: source.rootURL)
         defer { withExtendedLifetime(lease) {} }
+        let source = try DoryVZMacMachineBundle.load(from: source.rootURL)
+        guard source.manifest.installationState == .stopped else {
+            throw DoryVZMacPortableBundleError.sourceMustBeStopped
+        }
         let parent = destination.deletingLastPathComponent()
         try requireDirectDirectory(parent, label: "export parent")
         let staging = parent.appendingPathComponent(
             ".\(destination.lastPathComponent).exporting-\(UUID().uuidString)",
             isDirectory: true
         )
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(
+            at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]
+        )
         var committed = false
         defer {
             if !committed { try? FileManager.default.removeItem(at: staging) }
         }
 
+        let relativePaths = DoryVZMacMachineBundle.artifactPaths(for: source.manifest.resources).sorted()
+        try copyArtifacts(from: source.rootURL, to: staging, relativePaths: relativePaths)
         var files = [DoryVZMacPortableFile]()
-        for relativePath in DoryVZMacPortableFile.allowedRelativePaths.sorted() {
-            let sourceURL = source.rootURL.appendingPathComponent(relativePath)
-            try requireDirectRegularFile(sourceURL, label: relativePath)
+        for relativePath in relativePaths {
             let destinationURL = staging.appendingPathComponent(relativePath)
-            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
-            try requireDirectRegularFile(destinationURL, label: relativePath)
             files.append(try receipt(for: destinationURL, relativePath: relativePath))
         }
         let manifest = DoryVZMacPortableManifest(
@@ -177,13 +220,15 @@ public struct DoryVZMacPortableBundle: Sendable {
             sourceMachineIdentifierSHA256: source.manifest.machineIdentifierSHA256,
             files: files
         )
-        try manifest.validate()
-        try encode(manifest).write(
-            to: staging.appendingPathComponent(Self.receiptName),
-            options: [.atomic]
+        try manifest.validateArtifacts(for: source.manifest)
+        try DoryVZMacMetadataFile.write(
+            encode(manifest), to: staging.appendingPathComponent(Self.receiptName)
         )
         _ = try load(from: staging)
-        try FileManager.default.moveItem(at: staging, to: destination)
+        try DoryVZMacBundlePublication.publish(
+            staging: staging, to: destination, relativeFiles: relativePaths + [Self.receiptName],
+            barrierFile: Self.receiptName
+        )
         committed = true
         return try load(from: destination)
     }
@@ -200,12 +245,37 @@ public struct DoryVZMacPortableBundle: Sendable {
         do {
             manifest = try JSONDecoder().decode(
                 DoryVZMacPortableManifest.self,
-                from: Data(contentsOf: receiptURL, options: [.mappedIfSafe])
+                from: DoryVZMacMetadataFile.read(
+                    from: receiptURL, maximumBytes: Self.maximumReceiptBytes
+                )
             )
         } catch {
             throw DoryVZMacPortableBundleError.invalidBundle("receipt JSON cannot be decoded")
         }
         try manifest.validate()
+        let machineManifest = try JSONDecoder().decode(
+            DoryVZMacMachineManifest.self,
+            from: DoryVZMacMetadataFile.read(
+                from: rootURL.appendingPathComponent(DoryVZMacMachineBundle.manifestName),
+                maximumBytes: DoryVZMacMachineBundle.maximumManifestBytes
+            )
+        )
+        try manifest.validateArtifacts(for: machineManifest)
+        if !machineManifest.resources.dataDisks.isEmpty {
+            try requireDirectDirectory(
+                rootURL.appendingPathComponent(DoryVZMacMachineBundle.dataDisksDirectoryName),
+                label: "portable managed data disks"
+            )
+        }
+        guard try !DoryVZMacMetadataFile.entryExists(
+            at: rootURL.appendingPathComponent(
+                DoryVZMacMachineBundle.suspendedStateDirectoryName, isDirectory: false
+            )
+        ) else {
+            throw DoryVZMacPortableBundleError.invalidBundle(
+                "framework live state is forbidden in a portable bundle"
+            )
+        }
         for file in manifest.files {
             let url = rootURL.appendingPathComponent(file.relativePath)
             try requireDirectRegularFile(url, label: file.relativePath)
@@ -222,16 +292,11 @@ public struct DoryVZMacPortableBundle: Sendable {
                 "machine state or identity differs from the portability receipt"
             )
         }
-        guard !FileManager.default.fileExists(atPath: machine.suspendedStateURL.path) else {
-            throw DoryVZMacPortableBundleError.invalidBundle(
-                "framework live state is forbidden in a portable bundle"
-            )
-        }
         return Self(rootURL: rootURL, manifest: manifest)
     }
 
     public func restore(to destination: URL) throws -> DoryVZMacMachineBundle {
-        _ = try Self.load(from: rootURL)
+        let validated = try Self.load(from: rootURL)
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             throw DoryVZMacPortableBundleError.destinationExists(destination.path)
         }
@@ -241,25 +306,62 @@ public struct DoryVZMacPortableBundle: Sendable {
             ".\(destination.lastPathComponent).importing-\(UUID().uuidString)",
             isDirectory: true
         )
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(
+            at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]
+        )
         var committed = false
         defer {
             if !committed { try? FileManager.default.removeItem(at: staging) }
         }
-        for file in manifest.files {
-            let sourceURL = rootURL.appendingPathComponent(file.relativePath)
+        let relativePaths = validated.manifest.files.map(\.relativePath)
+        try Self.copyArtifacts(from: rootURL, to: staging, relativePaths: relativePaths)
+        for file in validated.manifest.files {
             let destinationURL = staging.appendingPathComponent(file.relativePath)
-            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
-            try requireDirectRegularFile(destinationURL, label: file.relativePath)
             guard try fileBytes(destinationURL) == file.bytes,
                   try sha256(destinationURL) == file.sha256 else {
                 throw DoryVZMacPortableBundleError.artifactMismatch(file.relativePath)
             }
         }
         _ = try DoryVZMacMachineBundle.load(from: staging)
-        try FileManager.default.moveItem(at: staging, to: destination)
+        try DoryVZMacBundlePublication.publish(
+            staging: staging, to: destination, relativeFiles: relativePaths
+        )
         committed = true
         return try DoryVZMacMachineBundle.load(from: destination)
+    }
+
+    static func copyArtifacts(from source: URL, to staging: URL, relativePaths: [String]) throws {
+        // Paths come from the resource plan or a validated portable receipt. Validate the
+        // complete bounded set before creating anything, including its data-directory root.
+        guard Set(relativePaths).count == relativePaths.count,
+              relativePaths.count <= 5 + DoryVZMacResourcePlan.maximumDataDiskCount else {
+            throw DoryVZMacPortableBundleError.invalidBundle("invalid copy artifact set")
+        }
+        for path in relativePaths {
+            guard DoryVZMacPortableFile.allowedRelativePaths.contains(path)
+                    || DoryVZMacPortableFile.dataDiskRelativePaths.contains(path) else {
+                throw DoryVZMacPortableBundleError.invalidBundle("unexpected copy artifact path")
+            }
+        }
+        try requireDirectDirectory(source, label: "copy source root")
+        try requireDirectDirectory(staging, label: "copy staging root")
+        if relativePaths.contains(where: { $0.contains("/") }) {
+            try requireDirectDirectory(
+                source.appendingPathComponent(DoryVZMacMachineBundle.dataDisksDirectoryName),
+                label: "managed data disks"
+            )
+            try FileManager.default.createDirectory(
+                at: staging.appendingPathComponent(DoryVZMacMachineBundle.dataDisksDirectoryName),
+                withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]
+            )
+        }
+        for path in relativePaths {
+            let sourceURL = source.appendingPathComponent(path)
+            let destinationURL = staging.appendingPathComponent(path)
+            try requireDirectRegularFile(sourceURL, label: path)
+            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            try requireDirectRegularFile(destinationURL, label: path)
+        }
     }
 }
 

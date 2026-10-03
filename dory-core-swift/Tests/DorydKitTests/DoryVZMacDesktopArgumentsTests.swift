@@ -4,6 +4,7 @@ import DoryOperations
 import Foundation
 import XCTest
 @testable import DoryVMMKit
+import DoryVZMacCore
 
 final class DoryVZMacDesktopArgumentsTests: XCTestCase {
     func testParsesInstallWithExplicitMachineAndRestoreImage() throws {
@@ -53,6 +54,109 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
         XCTAssertTrue(arguments.usbDiskReadOnly)
         XCTAssertEqual(arguments.devicePolicy, .legacyDefault)
         XCTAssertFalse(arguments.hasManagedLifecycleContract)
+        XCTAssertNil(arguments.metalProbeChallengeURL)
+        XCTAssertNil(arguments.metalProbeResultURL)
+    }
+
+    func testParsesDirectionalTextClipboardWithoutSPICE() throws {
+        let arguments = try parseDoryVZMacDesktopArguments([
+            "run", "--machine", "/tmp/test.dorymac",
+            "--clipboard", "true",
+            "--spice-clipboard", "false",
+            "--clipboard-text-read", "false",
+            "--clipboard-text-write", "true",
+        ])
+        XCTAssertTrue(arguments.devicePolicy.clipboardEnabled)
+        XCTAssertFalse(arguments.devicePolicy.spiceClipboardEnabled)
+        XCTAssertFalse(arguments.devicePolicy.clipboardTextReadEnabled)
+        XCTAssertTrue(arguments.devicePolicy.clipboardTextWriteEnabled)
+        XCTAssertFalse(arguments.devicePolicy.clipboardImageReadEnabled)
+        XCTAssertFalse(arguments.devicePolicy.clipboardImageWriteEnabled)
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
+            "run", "--machine", "/tmp/test.dorymac",
+            "--clipboard", "false", "--clipboard-text-write", "true",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DoryVZMacDesktopArgumentError, .invalidClipboardPolicy
+            )
+        }
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
+            "run", "--machine", "/tmp/test.dorymac",
+            "--clipboard", "true", "--spice-clipboard", "false",
+            "--clipboard-text-read", "false", "--clipboard-text-write", "false",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DoryVZMacDesktopArgumentError, .invalidClipboardPolicy
+            )
+        }
+    }
+
+    func testParsesDirectionalImageClipboardWithoutSPICE() throws {
+        let arguments = try parseDoryVZMacDesktopArguments([
+            "run", "--machine", "/tmp/test.dorymac",
+            "--clipboard", "true",
+            "--spice-clipboard", "false",
+            "--clipboard-text-read", "false",
+            "--clipboard-text-write", "false",
+            "--clipboard-image-read", "true",
+            "--clipboard-image-write", "false",
+        ])
+        XCTAssertTrue(arguments.devicePolicy.clipboardEnabled)
+        XCTAssertFalse(arguments.devicePolicy.spiceClipboardEnabled)
+        XCTAssertFalse(arguments.devicePolicy.clipboardTextReadEnabled)
+        XCTAssertFalse(arguments.devicePolicy.clipboardTextWriteEnabled)
+        XCTAssertTrue(arguments.devicePolicy.clipboardImageReadEnabled)
+        XCTAssertFalse(arguments.devicePolicy.clipboardImageWriteEnabled)
+    }
+
+    func testMetalProbeRequiresPairedAbsolutePathsAndRunningGuest() throws {
+        let base = ["run", "--machine", "/tmp/test.dorymac"]
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments(
+            base + ["--metal-probe-challenge", "/tmp/challenge.json"]
+        )) { error in
+            XCTAssertEqual(error as? DoryVZMacDesktopArgumentError, .incompleteMetalProbeContract)
+        }
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments(
+            base + ["--metal-probe-challenge", "challenge.json", "--metal-probe-result", "/tmp/result.json"]
+        )) { error in
+            XCTAssertEqual(error as? DoryVZMacDesktopArgumentError, .pathMustBeAbsolute("--metal-probe-challenge"))
+        }
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
+            "install", "--machine", "/tmp/test.dorymac", "--ipsw", "/tmp/restore.ipsw",
+            "--metal-probe-challenge", "/tmp/challenge.json",
+            "--metal-probe-result", "/tmp/result.json",
+        ])) { error in
+            XCTAssertEqual(error as? DoryVZMacDesktopArgumentError, .metalProbeRequiresRunningGuest)
+        }
+    }
+
+    func testParsesExplicitMetalProbeCollectionForProductWindow() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "dory-vzmac-probe-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let challengeURL = directory.appendingPathComponent("challenge.json")
+        let resultURL = directory.appendingPathComponent("result.json")
+        let challenge = try DoryVZMacMetalProbeChallenge(
+            issuedAt: ISO8601DateFormatter().string(from: Date()),
+            candidateID: "candidate-1",
+            machineID: String(repeating: "a", count: 64),
+            operationID: "operation-1",
+            nonce: "nonce-1",
+            guestToolsManifestSHA256: String(repeating: "b", count: 64),
+            guestToolsBundleIdentifier: "com.pythonxi.Dory.GuestTools",
+            guestToolsVersion: "1.0",
+            guestToolsBuild: "1"
+        )
+        try JSONEncoder().encode(challenge).write(to: challengeURL)
+        let arguments = try parseDoryVZMacDesktopArguments([
+            "run", "--machine", "/tmp/test.dorymac",
+            "--metal-probe-challenge", challengeURL.path,
+            "--metal-probe-result", resultURL.path,
+        ])
+        XCTAssertEqual(arguments.metalProbeChallengeURL, challengeURL)
+        XCTAssertEqual(arguments.metalProbeResultURL, resultURL)
     }
 
     func testParsesCompleteManagedLifecycleContract() throws {
@@ -118,6 +222,36 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
         XCTAssertEqual(arguments.gvproxyPath, "/tmp/gvproxy")
         XCTAssertEqual(arguments.portForwards, portForwards)
 
+        let challengeURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "dory-vzmac-wrong-operation-\(UUID().uuidString).json"
+        )
+        defer { try? FileManager.default.removeItem(at: challengeURL) }
+        let wrongOperation = try DoryVZMacMetalProbeChallenge(
+            issuedAt: ISO8601DateFormatter().string(from: Date()),
+            candidateID: "candidate-1",
+            machineID: String(repeating: "a", count: 64),
+            operationID: "another-operation",
+            nonce: "nonce-1",
+            guestToolsManifestSHA256: String(repeating: "b", count: 64),
+            guestToolsBundleIdentifier: "com.pythonxi.Dory.GuestTools",
+            guestToolsVersion: "1.0",
+            guestToolsBuild: "1"
+        )
+        try JSONEncoder().encode(wrongOperation).write(to: challengeURL)
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
+            "run", "--machine", "/tmp/test.dorymac",
+            "--machine-id", "mac-work",
+            "--operation-id", "d1ec76d2-a4a0-42dc-a725-643167a06f52",
+            "--state-dir", "/tmp/machines/mac-work",
+            "--control-sock", "/tmp/runtime/c.sock",
+            "--handoff-sock", "/tmp/runtime/h.sock",
+            "--runtime-reconnect-fd", String(target),
+            "--metal-probe-challenge", challengeURL.path,
+            "--metal-probe-result", "/tmp/guest-metal-result.json",
+        ])) { error in
+            XCTAssertEqual(error as? DoryVZMacDesktopArgumentError, .metalProbeOperationMismatch)
+        }
+
         XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
             "run",
             "--machine", "/tmp/test.dorymac",
@@ -131,8 +265,31 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
         ])) { error in
             XCTAssertEqual(
                 error as? DoryVZMacDesktopArgumentError,
-                .managedCameraUnsupported
+                .managedCameraGrantRequired
             )
+        }
+
+        let selectedCamera = "host-camera-123"
+        let grantedCamera = try identity.cameraGrantProof(deviceUniqueID: selectedCamera)
+        let cameraArguments = [
+            "run", "--machine", "/tmp/test.dorymac",
+            "--machine-id", "mac-work",
+            "--operation-id", "d1ec76d2-a4a0-42dc-a725-643167a06f52",
+            "--state-dir", "/tmp/machines/mac-work",
+            "--control-sock", "/tmp/runtime/c.sock",
+            "--handoff-sock", "/tmp/runtime/h.sock",
+            "--runtime-reconnect-fd", String(target),
+            "--camera", "true",
+            "--camera-device-id", selectedCamera,
+            "--camera-grant", grantedCamera,
+        ]
+        let admittedCamera = try parseDoryVZMacDesktopArguments(cameraArguments)
+        XCTAssertTrue(admittedCamera.devicePolicy.cameraBridgeEnabled)
+        XCTAssertEqual(admittedCamera.cameraDeviceUniqueID, selectedCamera)
+        var substitutedCamera = cameraArguments
+        substitutedCamera[substitutedCamera.count - 3] = "another-camera"
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments(substitutedCamera)) { error in
+            XCTAssertEqual(error as? DoryVZMacDesktopArgumentError, .invalidCameraGrant)
         }
     }
 

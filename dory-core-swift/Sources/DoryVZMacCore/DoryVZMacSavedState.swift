@@ -12,6 +12,7 @@ public enum DoryVZMacSavedStateError: Error, Sendable, Equatable, CustomStringCo
     case hostOperatingSystemVersionMismatch(saved: String, current: String)
     case hostBuildMismatch(saved: String, current: String)
     case machineIdentityMismatch
+    case alreadyConsumed
     case filesystem(String, Int32)
 
     public var description: String {
@@ -26,6 +27,8 @@ public enum DoryVZMacSavedStateError: Error, Sendable, Equatable, CustomStringCo
         case let .hostBuildMismatch(saved, current):
             "VZMac saved state requires macOS build \(saved); this host is running \(current). Discard the saved state and cold boot."
         case .machineIdentityMismatch: "VZMac saved state does not match this machine identity"
+        case .alreadyConsumed:
+            "saved state was consumed before guest resume and cannot be replayed; discard it and cold boot"
         case .filesystem(let operation, let code): "\(operation) failed with errno \(code)"
         }
     }
@@ -117,6 +120,7 @@ public struct DoryVZMacSavedStateArtifact: Sendable {
         try requireSavedStateDirectory(rootURL)
         let stateURL = rootURL.appendingPathComponent(Self.stateName)
         let receiptURL = rootURL.appendingPathComponent(Self.receiptName)
+        try DoryVZSavedStateConsumption.requireUnconsumed(stateURL: stateURL)
         try requireSavedStateRegularFile(stateURL, label: Self.stateName)
         try requireSavedStateRegularFile(receiptURL, label: Self.receiptName)
         let receiptAttributes = try FileManager.default.attributesOfItem(atPath: receiptURL.path)
@@ -129,7 +133,7 @@ public struct DoryVZMacSavedStateArtifact: Sendable {
         do {
             receipt = try JSONDecoder().decode(
                 DoryVZMacSavedStateReceipt.self,
-                from: Data(contentsOf: receiptURL, options: [.mappedIfSafe])
+                from: DoryVZMacMetadataFile.read(from: receiptURL, maximumBytes: Self.maximumReceiptBytes)
             )
         } catch {
             throw DoryVZMacSavedStateError.invalidArtifact("receipt JSON cannot be decoded")
@@ -156,7 +160,20 @@ public struct DoryVZMacSavedStateArtifact: Sendable {
               ) == receipt.stateSHA256 else {
             throw DoryVZMacSavedStateError.invalidArtifact("state size or SHA-256 differs")
         }
+        try DoryVZSavedStateConsumption.requireUnconsumed(stateURL: stateURL)
         return Self(rootURL: rootURL, receipt: receipt)
+    }
+
+    static func retireConsumedArtifact(
+        at rootURL: URL,
+        barrierFileURL: URL? = nil,
+        afterReceiptRetirement: @escaping () throws -> Void = {}
+    ) throws {
+        var io = DoryVZMacSavedStateRetirement.IO()
+        io.checkpoint = { if $0 == .receiptInvalidationDurable { try afterReceiptRetirement() } }
+        try DoryVZMacSavedStateRetirement.retire(
+            at: rootURL, policy: .consumedOnly, barrierFileURL: barrierFileURL, io: io
+        )
     }
 
     /// VZ machine-state blobs are tied to both the physical machine and the exact

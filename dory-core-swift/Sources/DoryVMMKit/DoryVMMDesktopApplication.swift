@@ -120,6 +120,10 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         self.window.center()
         super.init()
         self.window.delegate = self
+        clipboard?.observeLocalDisplayFocus { [weak window, weak machineView] in
+            guard let window, let machineView else { return false }
+            return NSApp.isActive && window.isKeyWindow && window.firstResponder === machineView
+        }
         installViewMenu()
         machineView.onMacShortcut = { [weak clipboard] event in
             clipboard?.handleMacShortcut(event) ?? false

@@ -44,9 +44,29 @@ public struct DoryDesktopClipboardTransport: Sendable {
 /// channel; AppKit access stays on the main thread and blocking work stays on one private queue.
 public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
     public typealias ShortcutSender = @MainActor @Sendable (_ linuxKeyCode: UInt16) -> Void
+    private struct Authority: Equatable, Sendable {
+        let run: UUID
+        let focus: UUID
+    }
+    private final class TransportAction: @unchecked Sendable {
+        private let lock = NSLock()
+        private var completed = false
+        private let completion: @Sendable () -> Void
+        init(completion: @escaping @Sendable () -> Void) { self.completion = completion }
+        func complete() {
+            let first = lock.withLock {
+                guard !completed else { return false }
+                completed = true
+                return true
+            }
+            if first { completion() }
+        }
+        deinit { complete() }
+    }
 
     private let policy: DoryVMClipboardPolicy
     private let transport: DoryDesktopClipboardTransport
+    private let focusLease: DoryDesktopClipboardFocusLease
     private let sendShortcut: ShortcutSender
     private let pasteboard: NSPasteboard
     private let startupRetryDelay: TimeInterval
@@ -54,21 +74,39 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
     private let pollInterval: TimeInterval
     private let queue = DispatchQueue(label: "dev.dory.desktop-clipboard", qos: .userInitiated)
     private let log: @Sendable (String) -> Void
+    private let lifecycleLock = NSLock()
+    private var runGeneration: UUID?
+    private var queuedPasteActions = 0
+    private static let maximumQueuedPasteActions = 8
+    // This quota survives focus and run changes: a blocked old RPC must not allow repeated
+    // revoke/reacquire cycles to accumulate unbounded closures behind it.
+    private var queuedTransportActions = 0
+    private static let maximumQueuedTransportActions = 12
     private var observations = [NSObjectProtocol]()
+    private var workspaceObservations = [NSObjectProtocol]()
     private var pollTimer: Timer?
     private var guestReady = false
+    private var capabilityProbeInFlight = false
+    private var guestReadInFlight = false
+    private var hostWriteInFlight = false
     private var lastPushedHostChangeCount = -1
     private var lastPublishedGuestPayload: DoryDesktopClipboardPayload?
+    private var localFocusProvider: (@MainActor @Sendable () -> Bool)?
+    private var localFocusLeaseID: UUID?
+    private var observedFocusGeneration: UUID?
+    private var guestReadinessRequested = false
 
     public convenience init(
         policy: DoryDesktopClipboardPolicy,
         transport: DoryDesktopClipboardTransport,
+        focusLease: DoryDesktopClipboardFocusLease = .init(),
         sendShortcut: @escaping ShortcutSender,
         log: @escaping @Sendable (String) -> Void
     ) {
         self.init(
             policy: policy.virtualMachinePolicy,
             transport: transport,
+            focusLease: focusLease,
             sendShortcut: sendShortcut,
             pasteboard: .general,
             startupRetryDelay: 1,
@@ -81,12 +119,14 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
     public convenience init(
         policy: DoryVMClipboardPolicy,
         transport: DoryDesktopClipboardTransport,
+        focusLease: DoryDesktopClipboardFocusLease = .init(),
         sendShortcut: @escaping ShortcutSender,
         log: @escaping @Sendable (String) -> Void
     ) {
         self.init(
             policy: policy,
             transport: transport,
+            focusLease: focusLease,
             sendShortcut: sendShortcut,
             pasteboard: .general,
             startupRetryDelay: 1,
@@ -99,6 +139,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
     convenience init(
         policy: DoryDesktopClipboardPolicy,
         transport: DoryDesktopClipboardTransport,
+        focusLease: DoryDesktopClipboardFocusLease = .init(),
         sendShortcut: @escaping ShortcutSender,
         pasteboard: NSPasteboard,
         startupRetryDelay: TimeInterval,
@@ -109,6 +150,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         self.init(
             policy: policy.virtualMachinePolicy,
             transport: transport,
+            focusLease: focusLease,
             sendShortcut: sendShortcut,
             pasteboard: pasteboard,
             startupRetryDelay: startupRetryDelay,
@@ -121,6 +163,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
     init(
         policy: DoryVMClipboardPolicy,
         transport: DoryDesktopClipboardTransport,
+        focusLease: DoryDesktopClipboardFocusLease = .init(),
         sendShortcut: @escaping ShortcutSender,
         pasteboard: NSPasteboard,
         startupRetryDelay: TimeInterval,
@@ -130,6 +173,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
     ) {
         self.policy = policy
         self.transport = transport
+        self.focusLease = focusLease
         self.sendShortcut = sendShortcut
         self.pasteboard = pasteboard
         self.startupRetryDelay = startupRetryDelay
@@ -138,34 +182,121 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         self.log = log
     }
 
+    /// Local windows use their actual VM view's first-responder state. Relay-owned desktops leave
+    /// this unset: only authenticated focus commands may renew their supplied lease.
+    @MainActor
+    public func observeLocalDisplayFocus(_ provider: @escaping @MainActor @Sendable () -> Bool) {
+        localFocusProvider = provider
+        synchronizeFocus()
+    }
+
+    @MainActor
+    private func synchronizeFocus() {
+        if let localFocusProvider {
+            if localFocusProvider() {
+                let leaseID = localFocusLeaseID ?? UUID()
+                localFocusLeaseID = leaseID
+                focusLease.update(leaseID: leaseID, active: true)
+            } else {
+                localFocusLeaseID = nil
+                focusLease.invalidate()
+            }
+        }
+        let generation = focusLease.currentGeneration
+        guard generation != observedFocusGeneration else { return }
+        observedFocusGeneration = generation
+        lifecycleLock.withLock { queuedPasteActions = 0 }
+        capabilityProbeInFlight = false
+        guestReadInFlight = false
+        hostWriteInFlight = false
+        lastPublishedGuestPayload = nil
+        lastPushedHostChangeCount = -1
+    }
+
     @MainActor
     public func start() {
         guard policy.text != .off || policy.image != .off else { return }
+        let generation = lifecycleLock.withLock { () -> UUID? in
+            guard runGeneration == nil else { return nil }
+            let generation = UUID()
+            runGeneration = generation
+            queuedPasteActions = 0
+            return generation
+        }
+        guard let generation else { return }
+        guestReady = false
+        capabilityProbeInFlight = false
+        guestReadInFlight = false
+        hostWriteInFlight = false
+        lastPublishedGuestPayload = nil
         lastPushedHostChangeCount = pasteboard.changeCount
         observations.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: NSApplication.shared,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pushHostClipboardIfChanged(force: false) }
+            Task { @MainActor in
+                guard let self, self.permitsRun(generation) else { return }
+                self.synchronizeFocus()
+                self.pushHostClipboardIfChanged(force: false)
+            }
         })
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                     NSWindow.willCloseNotification, NSWindow.didMiniaturizeNotification] {
+            observations.append(NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.permitsRun(generation),
+                          self.localFocusProvider != nil else { return }
+                    self.synchronizeFocus()
+                }
+            })
+        }
+        workspaceObservations.append(NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: nil
+        ) { [focusLease] _ in focusLease.invalidate() })
+        for (name, awake) in [(NSWorkspace.willSleepNotification, false),
+                              (NSWorkspace.didWakeNotification, true)] {
+            workspaceObservations.append(NSWorkspace.shared.notificationCenter.addObserver(
+                forName: name, object: nil, queue: nil
+            ) { [focusLease] _ in focusLease.setHostAwake(awake) })
+        }
         observations.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification,
             object: NSApplication.shared,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pullGuestClipboard() }
+            Task { @MainActor in
+                guard let self, self.permitsRun(generation) else { return }
+                if self.localFocusProvider != nil {
+                    self.localFocusLeaseID = nil
+                    self.focusLease.invalidate()
+                    self.synchronizeFocus()
+                }
+            }
         })
         pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) {
             [weak self] _ in
-            MainActor.assumeIsolated { self?.pollClipboard() }
+            Task { @MainActor in
+                guard let self, self.permitsRun(generation) else { return }
+                self.pollClipboard()
+            }
         }
     }
 
     @MainActor
     public func markGuestReady() {
-        guard policy.text != .off || policy.image != .off else { return }
-        queue.async { [weak self] in
+        guestReadinessRequested = true
+        synchronizeFocus()
+        probeGuestAvailabilityIfAllowed()
+    }
+
+    @MainActor
+    private func probeGuestAvailabilityIfAllowed() {
+        guard guestReadinessRequested, !guestReady,
+              let generation = currentAuthority, !capabilityProbeInFlight else { return }
+        capabilityProbeInFlight = scheduleTransport(generation: generation) { [weak self] _, action in
             guard let self else { return }
             let available: Bool
             do {
@@ -174,21 +305,21 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
                 available = false
                 self.log("clipboard capability probe failed: \(error)")
             }
-            DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.guestReady = available
-                    if available {
-                        // The agent commonly becomes ready a few seconds before GDM creates the
-                        // user's Wayland/X11 clipboard. Keep retrying the initial transfer so a
-                        // Mac clipboard copied before boot is not silently dropped.
-                        self.pushHostClipboardIfChanged(
-                            force: true,
-                            startupRetriesRemaining: self.startupRetryLimit
-                        )
-                    } else {
-                        self.log("clipboard integration is unavailable until guest tools are updated")
-                    }
+            Task { @MainActor [weak self] in
+                defer { action.complete() }
+                guard let self, self.permits(generation) else { return }
+                self.capabilityProbeInFlight = false
+                self.guestReady = available
+                if available {
+                    // The agent commonly becomes ready a few seconds before GDM creates the
+                    // user's Wayland/X11 clipboard. Keep retrying the initial transfer so a
+                    // Mac clipboard copied before boot is not silently dropped.
+                    self.pushHostClipboardIfChanged(
+                        force: true,
+                        startupRetriesRemaining: self.startupRetryLimit
+                    )
+                } else {
+                    self.log("clipboard integration is unavailable until guest tools are updated")
                 }
             }
         }
@@ -196,28 +327,45 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
 
     @MainActor
     public func stop() {
+        lifecycleLock.withLock {
+            runGeneration = nil
+            queuedPasteActions = 0
+        }
+        // No work is admitted once the run is nil. Reset the sleep latch so a stopped instance
+        // can be started after wake even if it removed its observers before didWake arrived.
+        focusLease.setHostAwake(true)
+        localFocusLeaseID = nil
+        observedFocusGeneration = nil
+        guestReadinessRequested = false
         guestReady = false
+        capabilityProbeInFlight = false
+        guestReadInFlight = false
+        hostWriteInFlight = false
         pollTimer?.invalidate()
         pollTimer = nil
         for observation in observations {
             NotificationCenter.default.removeObserver(observation)
         }
         observations.removeAll()
+        for observation in workspaceObservations {
+            NSWorkspace.shared.notificationCenter.removeObserver(observation)
+        }
+        workspaceObservations.removeAll()
     }
 
     @MainActor
     private func pollClipboard() {
+        synchronizeFocus()
+        probeGuestAvailabilityIfAllowed()
         pushHostClipboardIfChanged(force: false)
-        guard guestReady, policy.text.allowsGuestToHost || policy.image.allowsGuestToHost else {
-            return
-        }
-        queue.async { [weak self] in self?.readGuestClipboardAndPublishToHost() }
+        scheduleGuestReadIfAllowed()
     }
 
     /// Returns true when a macOS Command+C/X/V gesture was translated to its Linux Ctrl shortcut.
     @MainActor
     public func handleMacShortcut(_ event: NSEvent) -> Bool {
-        guard event.modifierFlags.contains(.command),
+        synchronizeFocus()
+        guard let generation = currentAuthority, event.modifierFlags.contains(.command),
               let character = event.charactersIgnoringModifiers?.lowercased() else {
             return false
         }
@@ -237,19 +385,30 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
                 sendShortcut(47)
                 return true
             }
-            queue.async { [weak self] in
+            let changeCount = pasteboard.changeCount
+            guard reservePasteAction(generation) else {
+                log("clipboard paste queue exhausted (limit \(Self.maximumQueuedPasteActions))")
+                return true
+            }
+            let scheduled = scheduleTransport(generation: generation) { [weak self] _, action in
                 guard let self else { return }
-                let didWrite = self.writeGuestClipboard(payload)
-                DispatchQueue.main.async { [weak self] in
-                    MainActor.assumeIsolated {
-                        guard let self else { return }
-                        if didWrite {
-                            self.lastPushedHostChangeCount = self.pasteboard.changeCount
-                            self.lastPublishedGuestPayload = payload
-                        }
-                        self.sendShortcut(47)
+                let didWrite = self.writeGuestClipboard(payload, generation: generation)
+                Task { @MainActor [weak self] in
+                    defer { action.complete() }
+                    guard let self else { return }
+                    self.synchronizeFocus()
+                    guard self.permits(generation) else { return }
+                    self.releasePasteAction(generation)
+                    if didWrite, self.pasteboard.changeCount == changeCount {
+                        self.lastPushedHostChangeCount = changeCount
+                        self.lastPublishedGuestPayload = payload
                     }
+                    self.sendShortcut(47)
                 }
+            }
+            if !scheduled {
+                releasePasteAction(generation)
+                log("clipboard transport queue exhausted (limit \(Self.maximumQueuedTransportActions))")
             }
             return true
         default:
@@ -259,11 +418,17 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
 
     @MainActor
     private func scheduleGuestReadIfAllowed() {
-        guard guestReady, policy.text.allowsGuestToHost || policy.image.allowsGuestToHost else {
+        synchronizeFocus()
+        guard guestReady, !guestReadInFlight, let generation = currentAuthority,
+              policy.text.allowsGuestToHost || policy.image.allowsGuestToHost else {
             return
         }
-        queue.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.readGuestClipboardAndPublishToHost()
+        let hostChangeCount = pasteboard.changeCount
+        guestReadInFlight = scheduleTransport(generation: generation, after: 0.15) { [weak self] _, action in
+            guard let self else { return }
+            self.readGuestClipboardAndPublishToHost(
+                generation: generation, hostChangeCount: hostChangeCount, action: action
+            )
         }
     }
 
@@ -272,32 +437,36 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         force: Bool,
         startupRetriesRemaining: Int = 0
     ) {
-        guard guestReady else { return }
+        synchronizeFocus()
+        guard guestReady, !hostWriteInFlight, let generation = currentAuthority else { return }
         let changeCount = pasteboard.changeCount
         guard force || changeCount != lastPushedHostChangeCount,
               let payload = Self.readHostClipboard(from: pasteboard),
               allowsHostToGuest(payload) else { return }
-        queue.async { [weak self] in
+        hostWriteInFlight = scheduleTransport(generation: generation) { [weak self] _, action in
             guard let self else { return }
-            let didWrite = self.writeGuestClipboard(payload)
-            DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    if didWrite, self.pasteboard.changeCount == changeCount {
-                        self.lastPushedHostChangeCount = changeCount
-                        self.lastPublishedGuestPayload = payload
-                    } else if !didWrite,
-                              self.guestReady,
-                              startupRetriesRemaining > 0 {
-                        DispatchQueue.main.asyncAfter(
-                            deadline: .now() + self.startupRetryDelay
-                        ) { [weak self] in
-                            MainActor.assumeIsolated {
-                                self?.pushHostClipboardIfChanged(
-                                    force: true,
-                                    startupRetriesRemaining: startupRetriesRemaining - 1
-                                )
-                            }
+            let didWrite = self.writeGuestClipboard(payload, generation: generation)
+            Task { @MainActor [weak self] in
+                defer { action.complete() }
+                guard let self else { return }
+                self.synchronizeFocus()
+                guard self.permits(generation) else { return }
+                self.hostWriteInFlight = false
+                if didWrite, self.pasteboard.changeCount == changeCount {
+                    self.lastPushedHostChangeCount = changeCount
+                    self.lastPublishedGuestPayload = payload
+                } else if !didWrite,
+                          self.guestReady,
+                          startupRetriesRemaining > 0 {
+                    DispatchQueue.main.asyncAfter(
+                        deadline: .now() + self.startupRetryDelay
+                    ) { [weak self] in
+                        Task { @MainActor in
+                            guard let self, self.permits(generation) else { return }
+                            self.pushHostClipboardIfChanged(
+                                force: true,
+                                startupRetriesRemaining: startupRetriesRemaining - 1
+                            )
                         }
                     }
                 }
@@ -305,15 +474,75 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         }
     }
 
-    @MainActor
-    private func pullGuestClipboard() {
-        guard guestReady, policy.text.allowsGuestToHost || policy.image.allowsGuestToHost else {
-            return
-        }
-        queue.async { [weak self] in self?.readGuestClipboardAndPublishToHost() }
+    private var currentAuthority: Authority? {
+        guard let focus = focusLease.currentGeneration,
+              let run = lifecycleLock.withLock({ runGeneration }) else { return nil }
+        return Authority(run: run, focus: focus)
     }
 
-    private func writeGuestClipboard(_ payload: DoryDesktopClipboardPayload) -> Bool {
+    private func permitsRun(_ generation: UUID) -> Bool {
+        lifecycleLock.withLock { runGeneration == generation }
+    }
+
+    private func permits(_ generation: Authority) -> Bool {
+        currentAuthority == generation
+    }
+
+    private func scheduleTransport(
+        generation: Authority, after delay: TimeInterval = 0,
+        _ work: @escaping @Sendable (DoryDesktopClipboardCoordinator, TransportAction) -> Void
+    ) -> Bool {
+        guard permits(generation) else { return false }
+        let admitted = lifecycleLock.withLock {
+            guard runGeneration == generation.run,
+                  queuedTransportActions < Self.maximumQueuedTransportActions else { return false }
+            queuedTransportActions += 1
+            return true
+        }
+        guard admitted else { return false }
+        let action = TransportAction { [weak self] in
+            guard let self else { return }
+            self.lifecycleLock.withLock {
+                precondition(self.queuedTransportActions > 0)
+                self.queuedTransportActions -= 1
+            }
+        }
+        queue.asyncAfter(deadline: .now() + max(0, delay)) { [weak self] in
+            guard let self, self.permits(generation) else {
+                action.complete()
+                return
+            }
+            work(self, action)
+        }
+        return true
+    }
+
+    private func reservePasteAction(_ generation: Authority) -> Bool {
+        guard focusLease.currentGeneration == generation.focus else { return false }
+        return lifecycleLock.withLock {
+            guard runGeneration == generation.run,
+                  queuedPasteActions < Self.maximumQueuedPasteActions else { return false }
+            queuedPasteActions += 1
+            return true
+        }
+    }
+
+    private func releasePasteAction(_ generation: Authority) {
+        guard focusLease.currentGeneration == generation.focus else { return }
+        lifecycleLock.withLock {
+            guard runGeneration == generation.run else { return }
+            precondition(queuedPasteActions > 0)
+            queuedPasteActions -= 1
+        }
+    }
+
+    private func writeGuestClipboard(
+        _ payload: DoryDesktopClipboardPayload, generation: Authority
+    ) -> Bool {
+        // Already-submitted guest RPCs cannot be recalled by this transport. Revocation prevents
+        // queued RPC admission and all later host publication/shortcut effects, without blocking
+        // the MainActor on a guest that has stopped answering.
+        guard permits(generation) else { return false }
         do {
             try transport.set(payload.mimeType, payload.data)
             return true
@@ -323,21 +552,28 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         }
     }
 
-    private func readGuestClipboardAndPublishToHost() {
-        guard let payload = readGuestClipboard() else { return }
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                guard payload != self.lastPublishedGuestPayload else { return }
-                Self.writeHostClipboard(payload, to: self.pasteboard)
-                self.lastPushedHostChangeCount = self.pasteboard.changeCount
-                self.lastPublishedGuestPayload = payload
-            }
+    private func readGuestClipboardAndPublishToHost(
+        generation: Authority, hostChangeCount: Int, action: TransportAction
+    ) {
+        guard permits(generation) else { return }
+        let payload = readGuestClipboard(generation: generation)
+        Task { @MainActor [weak self] in
+            defer { action.complete() }
+            guard let self else { return }
+            self.synchronizeFocus()
+            guard self.permits(generation) else { return }
+            self.guestReadInFlight = false
+            guard let payload, self.pasteboard.changeCount == hostChangeCount else { return }
+            guard payload != self.lastPublishedGuestPayload else { return }
+            Self.writeHostClipboard(payload, to: self.pasteboard)
+            self.lastPushedHostChangeCount = self.pasteboard.changeCount
+            self.lastPublishedGuestPayload = payload
         }
     }
 
-    private func readGuestClipboard() -> DoryDesktopClipboardPayload? {
+    private func readGuestClipboard(generation: Authority) -> DoryDesktopClipboardPayload? {
         for mimeType in ["image/png", "text/plain;charset=utf-8", "text/plain"] {
+            guard permits(generation) else { return nil }
             guard direction(for: mimeType).allowsGuestToHost else { continue }
             do {
                 let data = try transport.get(mimeType)

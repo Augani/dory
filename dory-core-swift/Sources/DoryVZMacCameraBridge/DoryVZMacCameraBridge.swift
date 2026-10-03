@@ -30,6 +30,9 @@ public final class DoryVZMacCameraBridge: NSObject,
     private var socketDevice: VZVirtioSocketDevice?
     private var listener: VZVirtioSocketListener?
     private var activeConnection = false
+    /// A duplicate of the active stream's socket. Removal shuts this down before camera memory
+    /// or a replacement VM can be used, even while the guest is parked in a blocking read.
+    private var activeRevocationDescriptor: Int32?
 
     public init(
         camera: DoryMacCameraBackend,
@@ -62,6 +65,9 @@ public final class DoryVZMacCameraBridge: NSObject,
         let device = socketDevice
         socketDevice = nil
         listener = nil
+        if let activeRevocationDescriptor {
+            _ = shutdown(activeRevocationDescriptor, SHUT_RDWR)
+        }
         lock.unlock()
         device?.removeSocketListener(forPort: DoryCameraBridgeV1.vsockPort)
         camera.stop()
@@ -78,7 +84,13 @@ public final class DoryVZMacCameraBridge: NSObject,
             lock.unlock()
             return false
         }
+        let revocationDescriptor = dup(connection.fileDescriptor)
+        guard revocationDescriptor >= 0 else {
+            lock.unlock()
+            return false
+        }
         activeConnection = true
+        activeRevocationDescriptor = revocationDescriptor
         lock.unlock()
 
         let connectionBox = ConnectionBox(connection)
@@ -86,8 +98,11 @@ public final class DoryVZMacCameraBridge: NSObject,
             defer {
                 connectionBox.connection.close()
                 lock.lock()
+                let revocationDescriptor = activeRevocationDescriptor
+                activeRevocationDescriptor = nil
                 activeConnection = false
                 lock.unlock()
+                if let revocationDescriptor { close(revocationDescriptor) }
                 log("Dory VZMac camera: guest stream stopped")
             }
             do {
