@@ -888,6 +888,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let physicalMemories: [DoryPCPhysicalMemoryBus]
   let qualificationDMAMemory: DoryPCDMAGuestMemory
   private let deviceDMAMemory: DoryPCDMAGuestMemory
+  private let hostReceiveDevices: [DoryPCVirtioNetworkPCIDevice]
   public let ioBus: DoryPCPortIOBus
   public let serial: DoryPCUART16550
   public let ps2Keyboard: DoryPCPS2KeyboardController
@@ -1311,6 +1312,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     )
     powerController = DoryPCPowerController(onPendingWork: requestPendingWorkForAllProcessors)
     let intxRouter = DoryPCPCIINTxRouter(ioAPIC: ioAPIC)
+    // Tracked device DMA currently admits only a sole worker. Keep SMP transports on their
+    // existing direct contract until an unlocked all-owner DMA rendezvous is implemented.
+    hostReceiveDevices = processorCount == 1
+      ? pciFunctions.compactMap { $0 as? DoryPCVirtioNetworkPCIDevice } : []
+    for network in hostReceiveDevices {
+      network.connectHostReceiveWakeSink { requestPendingWorkForProcessor(0) }
+    }
     for function in pciFunctions {
       try pciExpress.attach(function)
       if let barDevice = function as? any DoryPCPCIBARMemoryDevice {
@@ -2956,6 +2964,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       let startedCPU = instrumentationEnabled ? dory_thread_cpu_time_nanoseconds() : 0
       _ = servicePendingTranslationInvalidation(forProcessor: processor, observer: observer)
       applyProcessorEvents(forProcessor: processor)
+      if processor == 0 {
+        for network in hostReceiveDevices { network.servicePendingHostReceive() }
+      }
       _ = reconcilePendingPageTableWritesFromWorker(processor: processor, observer: observer)
       if tripleFault == nil,
         let stop = try deliverPendingInterrupt(

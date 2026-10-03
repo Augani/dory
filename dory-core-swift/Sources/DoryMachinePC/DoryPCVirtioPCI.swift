@@ -1194,6 +1194,9 @@ public final class DoryPCVirtioNetworkPCIDevice: DoryPCPCIFunction, DoryPCPCIMSI
 {
   public let pciFunction: DoryPCVirtioPCIFunction
   public let networkDevice: DoryVirtioNetworkDevice
+  private let hostReceiveLock = NSLock()
+  private var hostReceiveWakeSink: (@Sendable () -> Void)?
+  private var hostReceivePending = false
 
   public var pciAddress: DoryPCPCIAddress { pciFunction.pciAddress }
   public var configurationFunction: DoryPCPCIConfigurationFunction {
@@ -1238,9 +1241,40 @@ public final class DoryPCVirtioNetworkPCIDevice: DoryPCPCIFunction, DoryPCPCIMSI
       _ = transport.deviceState.markDeviceNeedsReset()
       transport.updateDeviceConfiguration(networkDevice.configuration)
     }
-    networkDevice.connectReceiveReadySink { [weak transport = pciFunction.transport] in
-      transport?.processQueue(DoryVirtioNetworkDevice.receiveQueue)
+    networkDevice.connectReceiveReadySink { [weak self] in
+      self?.receiveReadyFromHost()
     }
+  }
+
+  /// The machine installs this while quiescent. A backend callback may hold its notification
+  /// lock: publish a leaf wake only, without touching guest memory or waiting for the vCPU.
+  func connectHostReceiveWakeSink(_ sink: @escaping @Sendable () -> Void) {
+    hostReceiveLock.withLock { hostReceiveWakeSink = sink }
+  }
+
+  private func receiveReadyFromHost() {
+    let wake: (@Sendable () -> Void)? = hostReceiveLock.withLock {
+      guard let sink = hostReceiveWakeSink else { return nil }
+      hostReceivePending = true
+      return sink
+    }
+    if let wake {
+      wake()
+    } else {
+      // Standalone transports retain their existing direct processing contract.
+      transport.processQueue(DoryVirtioNetworkDevice.receiveQueue)
+    }
+  }
+
+  /// Called at the owning worker boundary. Clear before processing so ingress racing the drain
+  /// publishes another wake; never hold the leaf lock across queue, DMA or backend operations.
+  func servicePendingHostReceive() {
+    let pending = hostReceiveLock.withLock {
+      let pending = hostReceivePending
+      hostReceivePending = false
+      return pending
+    }
+    if pending { transport.processQueue(DoryVirtioNetworkDevice.receiveQueue) }
   }
 
   public func connectGuestMemory(_ memory: any DoryVirtioGuestMemory) {
