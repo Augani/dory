@@ -176,6 +176,18 @@ final class DoryVMMKitTests: XCTestCase {
     }
 
     @MainActor
+    private final class ClipboardDisplayFocus {
+        var isFocused = true
+    }
+
+    private func focusedClipboardLease() -> DoryDesktopClipboardFocusLease {
+        DoryDesktopClipboardFocusLease(
+            consoleIsActive: { true },
+            clock: { DispatchTime.now().uptimeNanoseconds }
+        )
+    }
+
+    @MainActor
     func testClipboardRetriesInitialHostPushUntilDesktopSessionIsReady() async throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
@@ -194,6 +206,7 @@ final class DoryVMMKitTests: XCTestCase {
                     }
                 }
             ),
+            focusLease: focusedClipboardLease(),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -201,6 +214,7 @@ final class DoryVMMKitTests: XCTestCase {
             log: { _ in }
         )
 
+        coordinator.observeLocalDisplayFocus { true }
         coordinator.start()
         coordinator.markGuestReady()
         defer { coordinator.stop() }
@@ -214,7 +228,7 @@ final class DoryVMMKitTests: XCTestCase {
     }
 
     @MainActor
-    func testClipboardPullsGuestValueWhenDesktopResignsFocus() async throws {
+    func testClipboardPullsGuestValueOnlyWhileDesktopOwnsFocus() async throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
         pasteboard.clearContents()
@@ -235,13 +249,17 @@ final class DoryVMMKitTests: XCTestCase {
                 },
                 set: { _, _ in }
             ),
+            focusLease: focusedClipboardLease(),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
             startupRetryLimit: 1,
+            pollInterval: 0.01,
             log: { _ in }
         )
 
+        let focus = ClipboardDisplayFocus()
+        coordinator.observeLocalDisplayFocus { focus.isFocused }
         coordinator.start()
         coordinator.markGuestReady()
         defer { coordinator.stop() }
@@ -252,7 +270,7 @@ final class DoryVMMKitTests: XCTestCase {
         }
         try await Task.sleep(for: .milliseconds(20))
         NotificationCenter.default.post(
-            name: NSApplication.didResignActiveNotification,
+            name: NSApplication.didBecomeActiveNotification,
             object: NSApplication.shared
         )
 
@@ -262,6 +280,20 @@ final class DoryVMMKitTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(pasteboard.string(forType: .string), "guest clipboard after copy")
+
+        focus.isFocused = false
+        NotificationCenter.default.post(
+            name: NSApplication.didResignActiveNotification,
+            object: NSApplication.shared
+        )
+        // Allow already-admitted work to unwind before checking that polling starts no new read.
+        try await Task.sleep(for: .milliseconds(30))
+        let readsAfterFocusLoss = recorder.clipboardReadCount
+        pasteboard.clearContents()
+        pasteboard.setString("new host copy after focus loss", forType: .string)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(recorder.clipboardReadCount, readsAfterFocusLoss)
+        XCTAssertEqual(pasteboard.string(forType: .string), "new host copy after focus loss")
     }
 
     @MainActor
@@ -289,6 +321,7 @@ final class DoryVMMKitTests: XCTestCase {
                 },
                 set: { _, _ in }
             ),
+            focusLease: focusedClipboardLease(),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -296,6 +329,7 @@ final class DoryVMMKitTests: XCTestCase {
             log: { _ in }
         )
 
+        coordinator.observeLocalDisplayFocus { true }
         coordinator.start()
         coordinator.markGuestReady()
         defer { coordinator.stop() }
@@ -307,7 +341,7 @@ final class DoryVMMKitTests: XCTestCase {
         let pullDeadline = ContinuousClock.now + .seconds(2)
         while recorder.clipboardReadCount == 0, ContinuousClock.now < pullDeadline {
             NotificationCenter.default.post(
-                name: NSApplication.didResignActiveNotification,
+                name: NSApplication.didBecomeActiveNotification,
                 object: NSApplication.shared
             )
             try await Task.sleep(for: .milliseconds(10))
@@ -339,6 +373,7 @@ final class DoryVMMKitTests: XCTestCase {
                     _ = recorder.record(data)
                 }
             ),
+            focusLease: focusedClipboardLease(),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -347,6 +382,7 @@ final class DoryVMMKitTests: XCTestCase {
             log: { _ in }
         )
 
+        coordinator.observeLocalDisplayFocus { true }
         coordinator.start()
         coordinator.markGuestReady()
         defer { coordinator.stop() }
@@ -388,6 +424,7 @@ final class DoryVMMKitTests: XCTestCase {
                 },
                 set: { _, _ in }
             ),
+            focusLease: focusedClipboardLease(),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -396,6 +433,7 @@ final class DoryVMMKitTests: XCTestCase {
             log: { _ in }
         )
 
+        coordinator.observeLocalDisplayFocus { true }
         coordinator.start()
         coordinator.markGuestReady()
         defer { coordinator.stop() }
@@ -427,6 +465,7 @@ final class DoryVMMKitTests: XCTestCase {
                     _ = recorder.record(data)
                 }
             ),
+            focusLease: focusedClipboardLease(),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -435,6 +474,7 @@ final class DoryVMMKitTests: XCTestCase {
             log: { _ in }
         )
 
+        coordinator.observeLocalDisplayFocus { true }
         coordinator.start()
         coordinator.markGuestReady()
         defer { coordinator.stop() }
@@ -464,6 +504,7 @@ final class DoryVMMKitTests: XCTestCase {
                 },
                 set: { _, _ in }
             ),
+            focusLease: focusedClipboardLease(),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -472,6 +513,7 @@ final class DoryVMMKitTests: XCTestCase {
             log: { _ in }
         )
 
+        coordinator.observeLocalDisplayFocus { true }
         coordinator.start()
         coordinator.markGuestReady()
         defer { coordinator.stop() }
@@ -504,6 +546,7 @@ final class DoryVMMKitTests: XCTestCase {
                 },
                 set: { _, data in _ = recorder.record(data) }
             ),
+            focusLease: focusedClipboardLease(),
             sendShortcut: { _ in },
             pasteboard: pasteboard,
             startupRetryDelay: 0.01,
@@ -512,6 +555,7 @@ final class DoryVMMKitTests: XCTestCase {
             log: { _ in }
         )
 
+        coordinator.observeLocalDisplayFocus { true }
         coordinator.start()
         coordinator.markGuestReady()
         defer { coordinator.stop() }
