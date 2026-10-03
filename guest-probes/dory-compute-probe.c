@@ -76,27 +76,41 @@ static int contains_ignoring_case(const char *text, const char *needle)
     return 0;
 }
 
-static uint32_t find_memory_type(VkPhysicalDevice device, uint32_t allowed,
-                                 VkMemoryPropertyFlags required)
+static uint32_t find_host_visible_memory_type(VkPhysicalDevice device, uint32_t allowed,
+                                              VkBool32 require_noncoherent,
+                                              VkBool32 *coherent)
 {
     VkPhysicalDeviceMemoryProperties properties = {0};
     vkGetPhysicalDeviceMemoryProperties(device, &properties);
+    uint32_t fallback = UINT32_MAX;
     for (uint32_t index = 0; index < properties.memoryTypeCount; index++) {
-        if ((allowed & (1u << index)) != 0 &&
-            (properties.memoryTypes[index].propertyFlags & required) == required)
+        VkMemoryPropertyFlags flags = properties.memoryTypes[index].propertyFlags;
+        if ((allowed & (1u << index)) == 0 ||
+            (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0)
+            continue;
+        if (!require_noncoherent &&
+            (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0) {
+            *coherent = VK_TRUE;
             return index;
+        }
+        if ((flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0 &&
+            fallback == UINT32_MAX)
+            fallback = index;
     }
-    return UINT32_MAX;
+    *coherent = VK_FALSE;
+    return fallback;
 }
 
 struct host_buffer {
     VkBuffer buffer;
     VkDeviceMemory memory;
     void *mapping;
+    VkBool32 coherent;
 };
 
 static int create_host_buffer(VkPhysicalDevice physical_device, VkDevice device,
-                              VkDeviceSize size, struct host_buffer *result)
+                              VkDeviceSize size, VkBool32 require_noncoherent,
+                              struct host_buffer *result)
 {
     *result = (struct host_buffer){0};
     VkBufferCreateInfo create = {
@@ -110,11 +124,13 @@ static int create_host_buffer(VkPhysicalDevice physical_device, VkDevice device,
         return fail("vkCreateBuffer failed", status);
     VkMemoryRequirements requirements = {0};
     vkGetBufferMemoryRequirements(device, result->buffer, &requirements);
-    uint32_t memory_type = find_memory_type(
+    uint32_t memory_type = find_host_visible_memory_type(
         physical_device, requirements.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        require_noncoherent, &result->coherent);
     if (memory_type == UINT32_MAX)
-        return fail("no coherent host-visible Vulkan memory type", VK_SUCCESS);
+        return fail(require_noncoherent
+                        ? "no noncoherent host-visible Vulkan memory type"
+                        : "no host-visible Vulkan memory type", VK_SUCCESS);
     VkMemoryAllocateInfo allocate = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = requirements.size,
@@ -126,8 +142,28 @@ static int create_host_buffer(VkPhysicalDevice physical_device, VkDevice device,
     status = vkBindBufferMemory(device, result->buffer, result->memory, 0);
     if (status != VK_SUCCESS)
         return fail("vkBindBufferMemory failed", status);
-    status = vkMapMemory(device, result->memory, 0, size, 0, &result->mapping);
+    // Map the whole allocation so VK_WHOLE_SIZE covers the noncoherent atom-aligned tail.
+    status = vkMapMemory(device, result->memory, 0, VK_WHOLE_SIZE, 0, &result->mapping);
     return status == VK_SUCCESS ? 0 : fail("vkMapMemory failed", status);
+}
+
+static int synchronize_host_buffer(VkDevice device, const struct host_buffer *buffer,
+                                   VkBool32 device_wrote)
+{
+    if (buffer->coherent)
+        return 0;
+    VkMappedMemoryRange range = {
+        .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+        .memory = buffer->memory,
+        .offset = 0,
+        .size = VK_WHOLE_SIZE,
+    };
+    VkResult status = device_wrote
+        ? vkInvalidateMappedMemoryRanges(device, 1, &range)
+        : vkFlushMappedMemoryRanges(device, 1, &range);
+    return status == VK_SUCCESS ? 0 : fail(
+        device_wrote ? "vkInvalidateMappedMemoryRanges failed"
+                     : "vkFlushMappedMemoryRanges failed", status);
 }
 
 static void destroy_host_buffer(VkDevice device, struct host_buffer *buffer)
@@ -182,13 +218,16 @@ int main(int argc, char **argv)
 {
     const char *nonce = "dory-compute-default";
     const char *shader_path = "dory-compute-reduce.spv";
+    VkBool32 require_noncoherent = VK_FALSE;
     for (int index = 1; index < argc; index++) {
         if (strncmp(argv[index], "--nonce=", 8) == 0 && argv[index][8])
             nonce = argv[index] + 8;
         else if (strncmp(argv[index], "--shader=", 9) == 0 && argv[index][9])
             shader_path = argv[index] + 9;
+        else if (strcmp(argv[index], "--memory=noncoherent") == 0)
+            require_noncoherent = VK_TRUE;
         else {
-            fprintf(stderr, "usage: %s [--nonce=VALUE] [--shader=PATH]\n", argv[0]);
+            fprintf(stderr, "usage: %s [--nonce=VALUE] [--shader=PATH] [--memory=noncoherent]\n", argv[0]);
             return 64;
         }
     }
@@ -303,8 +342,10 @@ int main(int argc, char **argv)
     vkGetDeviceQueue(device, queue_family, 0, &queue);
 
     const VkDeviceSize buffer_size = DORY_VALUE_COUNT * sizeof(uint32_t);
-    if (create_host_buffer(physical_device, device, buffer_size, &buffers[0]) != 0 ||
-        create_host_buffer(physical_device, device, buffer_size, &buffers[1]) != 0)
+    if (create_host_buffer(physical_device, device, buffer_size,
+                           require_noncoherent, &buffers[0]) != 0 ||
+        create_host_buffer(physical_device, device, buffer_size,
+                           require_noncoherent, &buffers[1]) != 0)
         goto cleanup;
 
     uint64_t nonce_hash = fnv1a(nonce, strlen(nonce), UINT64_C(14695981039346656037));
@@ -317,6 +358,9 @@ int main(int argc, char **argv)
         expected += value;
     }
     memset(buffers[1].mapping, 0, (size_t)buffer_size);
+    if (synchronize_host_buffer(device, &buffers[0], VK_FALSE) != 0 ||
+        synchronize_host_buffer(device, &buffers[1], VK_FALSE) != 0)
+        goto cleanup;
 
     VkDescriptorSetLayoutBinding bindings[2] = {
         {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -463,6 +507,14 @@ int main(int argc, char **argv)
         exit_code = fail("vkBeginCommandBuffer failed", status);
         goto cleanup;
     }
+    VkMemoryBarrier host_to_compute = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+    };
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                         1, &host_to_compute, 0, NULL, 0, NULL);
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     uint32_t counts[3] = {DORY_VALUE_COUNT, DORY_VALUE_COUNT / 256u,
                           DORY_VALUE_COUNT / (256u * 256u)};
@@ -485,6 +537,14 @@ int main(int argc, char **argv)
                                  1, &barrier, 0, NULL, 0, NULL);
         }
     }
+    VkMemoryBarrier compute_to_host = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+    };
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_HOST_BIT, 0,
+                         1, &compute_to_host, 0, NULL, 0, NULL);
     status = vkEndCommandBuffer(command);
     if (status != VK_SUCCESS) {
         exit_code = fail("vkEndCommandBuffer failed", status);
@@ -511,6 +571,8 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
+    if (synchronize_host_buffer(device, &buffers[1], VK_TRUE) != 0)
+        goto cleanup;
     uint32_t actual = ((uint32_t *)buffers[1].mapping)[0];
     if (actual != expected) {
         fprintf(stderr, "dory-compute-probe: reduction mismatch: expected=%u actual=%u\n",
@@ -533,6 +595,9 @@ int main(int argc, char **argv)
     printf(",\"timings\":{\"gpuMilliseconds\":%.3f,\"totalMilliseconds\":%.3f},",
            (gpu_finished - gpu_started) / 1000000.0,
            (finished - started) / 1000000.0);
+    printf("\"memoryCoherency\":{\"input\":\"%s\",\"output\":\"%s\"},",
+           buffers[0].coherent ? "coherent" : "noncoherent",
+           buffers[1].coherent ? "coherent" : "noncoherent");
     printf("\"elementCount\":%u,\"reduction\":%u}\n", DORY_VALUE_COUNT, actual);
     exit_code = 0;
 

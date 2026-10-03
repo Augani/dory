@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #define VK_USE_PLATFORM_WAYLAND_KHR
 #define VK_USE_PLATFORM_XCB_KHR
 
@@ -11,6 +12,8 @@
 #include <xcb/xcb.h>
 #include <unistd.h>
 #include <vulkan/vulkan.h>
+
+#include "dory-visual-challenge.h"
 #include <time.h>
 
 enum wsi_mode {
@@ -25,6 +28,8 @@ struct probe_options {
     uint32_t height;
     VkPresentModeKHR present_mode;
     const char *nonce;
+    const char *ready_file;
+    uint32_t hold_milliseconds;
 };
 
 struct native_surface {
@@ -82,6 +87,45 @@ static void print_json_string(const char *value)
         }
     }
     putchar('"');
+}
+
+static void record_visual_challenge(VkCommandBuffer command_buffer,
+                                    const char *nonce, uint32_t frame_marker,
+                                    VkExtent2D extent)
+{
+    const uint32_t cell_size = dory_visual_cell_size(extent.width, extent.height);
+    const uint32_t origin_x = 24;
+    const uint32_t origin_y = 24;
+    const uint64_t challenge_hash = dory_visual_challenge_hash(nonce, frame_marker);
+    if (DORY_VISUAL_CHALLENGE_COLUMNS * cell_size + origin_x > extent.width ||
+        DORY_VISUAL_CHALLENGE_ROWS * cell_size + origin_y > extent.height)
+        return;
+    for (uint32_t row = 0; row < DORY_VISUAL_CHALLENGE_ROWS; row++) {
+        for (uint32_t column = 0; column < DORY_VISUAL_CHALLENGE_COLUMNS; column++) {
+            const struct dory_visual_color color = dory_visual_cell_color(
+                column, row, challenge_hash, (uint16_t)frame_marker);
+            VkClearAttachment attachment = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .colorAttachment = 0,
+                .clearValue = {.color = {.float32 = {
+                    color.red / 255.0f, color.green / 255.0f,
+                    color.blue / 255.0f, color.alpha / 255.0f,
+                }}},
+            };
+            VkClearRect rectangle = {
+                .rect = {
+                    .offset = {
+                        (int32_t)(origin_x + column * cell_size),
+                        (int32_t)(origin_y + row * cell_size),
+                    },
+                    .extent = {cell_size, cell_size},
+                },
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            };
+            vkCmdClearAttachments(command_buffer, 1, &attachment, 1, &rectangle);
+        }
+    }
 }
 
 static const char *version_string(uint32_t version, char buffer[32])
@@ -261,8 +305,17 @@ static VkSurfaceFormatKHR choose_surface_format(const VkSurfaceFormatKHR *format
         selected.format = VK_FORMAT_B8G8R8A8_SRGB;
         return selected;
     }
-    if (count > 0)
-        return formats[0];
+    const VkFormat preferred[] = {
+        VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
+        VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB,
+    };
+    for (size_t preference = 0; preference < sizeof(preferred) / sizeof(preferred[0]);
+         preference++) {
+        for (uint32_t index = 0; index < count; index++) {
+            if (formats[index].format == preferred[preference])
+                return formats[index];
+        }
+    }
     VkSurfaceFormatKHR unavailable = {.format = VK_FORMAT_UNDEFINED};
     return unavailable;
 }
@@ -290,7 +343,8 @@ static VkFormat choose_color_atlas_format(VkPhysicalDevice device)
         VK_FORMAT_R8G8B8A8_UNORM,
     };
     const VkFormatFeatureFlags required =
-        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
     for (uint32_t i = 0; i < sizeof(choices) / sizeof(choices[0]); i++) {
         VkFormatProperties properties = {0};
         vkGetPhysicalDeviceFormatProperties(device, choices[i], &properties);
@@ -303,6 +357,493 @@ static VkFormat choose_color_atlas_format(VkPhysicalDevice device)
 static const char *color_atlas_format_name(VkFormat format)
 {
     return format == VK_FORMAT_B8G8R8A8_UNORM ? "bgra8-unorm" : "rgba8-unorm";
+}
+
+static uint32_t find_memory_type(VkPhysicalDevice physical_device,
+                                 uint32_t supported_bits,
+                                 VkMemoryPropertyFlags required)
+{
+    VkPhysicalDeviceMemoryProperties properties = {0};
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &properties);
+    for (uint32_t index = 0; index < properties.memoryTypeCount; index++) {
+        if ((supported_bits & (1u << index)) != 0 &&
+            (properties.memoryTypes[index].propertyFlags & required) == required)
+            return index;
+    }
+    return UINT32_MAX;
+}
+
+/* Render an actual graphics attachment even when there is no WSI surface. The readback is
+ * retained as bytes, so the host verifier can replay the nonce-bound image oracle rather than
+ * trusting a metadata-only result hash or this process's local success flag. */
+static int render_offscreen_challenge(
+    VkPhysicalDevice physical_device, VkDevice device, VkQueue queue,
+    uint32_t queue_family, VkFormat format, const char *nonce,
+    PFN_vkQueueSubmit2 queue_submit2,
+    PFN_vkCmdPipelineBarrier2 cmd_pipeline_barrier2,
+    PFN_vkCmdBeginRendering cmd_begin_rendering,
+    PFN_vkCmdEndRendering cmd_end_rendering,
+    uint8_t visual_readback_rgb[DORY_VISUAL_CHALLENGE_COLUMNS *
+                                DORY_VISUAL_CHALLENGE_ROWS * 3],
+    uint8_t background_rgba[4], VkBool32 *readback_coherent)
+{
+    const VkExtent2D extent = {320, 240};
+    const VkDeviceSize image_bytes = (VkDeviceSize)extent.width * extent.height * 4;
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory image_memory = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory buffer_memory = VK_NULL_HANDLE;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkResult result = VK_ERROR_INITIALIZATION_FAILED;
+    const char *failure = "offscreen Vulkan challenge failed";
+    void *mapped = NULL;
+    int pixel_match = 1;
+
+    VkImageCreateInfo image_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = format,
+        .extent = {extent.width, extent.height, 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                 VK_IMAGE_USAGE_SAMPLED_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    result = vkCreateImage(device, &image_info, NULL, &image);
+    if (result != VK_SUCCESS) goto cleanup;
+    VkMemoryRequirements image_requirements = {0};
+    vkGetImageMemoryRequirements(device, image, &image_requirements);
+    uint32_t image_type = find_memory_type(
+        physical_device, image_requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (image_type == UINT32_MAX)
+        image_type = find_memory_type(
+            physical_device, image_requirements.memoryTypeBits, 0);
+    if (image_type == UINT32_MAX) {
+        result = VK_ERROR_FEATURE_NOT_PRESENT;
+        goto cleanup;
+    }
+    VkMemoryAllocateInfo image_allocation = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = image_requirements.size,
+        .memoryTypeIndex = image_type,
+    };
+    result = vkAllocateMemory(device, &image_allocation, NULL, &image_memory);
+    if (result != VK_SUCCESS) goto cleanup;
+    result = vkBindImageMemory(device, image, image_memory, 0);
+    if (result != VK_SUCCESS) goto cleanup;
+    VkImageViewCreateInfo view_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = format,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1,
+            .layerCount = 1,
+        },
+    };
+    result = vkCreateImageView(device, &view_info, NULL, &view);
+    if (result != VK_SUCCESS) goto cleanup;
+
+    VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = image_bytes,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    result = vkCreateBuffer(device, &buffer_info, NULL, &buffer);
+    if (result != VK_SUCCESS) goto cleanup;
+    VkMemoryRequirements buffer_requirements = {0};
+    vkGetBufferMemoryRequirements(device, buffer, &buffer_requirements);
+    uint32_t buffer_type = find_memory_type(
+        physical_device, buffer_requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (buffer_type == UINT32_MAX)
+        buffer_type = find_memory_type(
+            physical_device, buffer_requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    if (buffer_type == UINT32_MAX) {
+        result = VK_ERROR_FEATURE_NOT_PRESENT;
+        goto cleanup;
+    }
+    VkPhysicalDeviceMemoryProperties memory_properties = {0};
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+    *readback_coherent = (memory_properties.memoryTypes[buffer_type].propertyFlags &
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    VkMemoryAllocateInfo buffer_allocation = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = buffer_requirements.size,
+        .memoryTypeIndex = buffer_type,
+    };
+    result = vkAllocateMemory(device, &buffer_allocation, NULL, &buffer_memory);
+    if (result != VK_SUCCESS) goto cleanup;
+    result = vkBindBufferMemory(device, buffer, buffer_memory, 0);
+    if (result != VK_SUCCESS) goto cleanup;
+
+    VkCommandPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .queueFamilyIndex = queue_family,
+    };
+    result = vkCreateCommandPool(device, &pool_info, NULL, &pool);
+    if (result != VK_SUCCESS) goto cleanup;
+    VkCommandBufferAllocateInfo command_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    result = vkAllocateCommandBuffers(device, &command_info, &command);
+    if (result != VK_SUCCESS) goto cleanup;
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    result = vkBeginCommandBuffer(command, &begin_info);
+    if (result != VK_SUCCESS) goto cleanup;
+    VkImageMemoryBarrier2 to_attachment = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+        .srcAccessMask = VK_ACCESS_2_NONE,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresourceRange = view_info.subresourceRange,
+    };
+    VkDependencyInfo dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &to_attachment,
+    };
+    cmd_pipeline_barrier2(command, &dependency);
+    VkRenderingAttachmentInfo attachment = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = view,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = {.color = {{8.0f / 255.0f, 24.0f / 255.0f,
+                                 48.0f / 255.0f, 1.0f}}},
+    };
+    VkRenderingInfo rendering = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea = {.extent = extent},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &attachment,
+    };
+    cmd_begin_rendering(command, &rendering);
+    record_visual_challenge(command, nonce, 1, extent);
+    cmd_end_rendering(command);
+    VkImageMemoryBarrier2 to_readback = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresourceRange = view_info.subresourceRange,
+    };
+    dependency.pImageMemoryBarriers = &to_readback;
+    cmd_pipeline_barrier2(command, &dependency);
+    VkBufferImageCopy copy = {
+        .imageSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .layerCount = 1,
+        },
+        .imageExtent = {extent.width, extent.height, 1},
+    };
+    vkCmdCopyImageToBuffer(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           buffer, 1, &copy);
+    VkBufferMemoryBarrier2 to_host = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+        .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = buffer,
+        .size = VK_WHOLE_SIZE,
+    };
+    VkDependencyInfo host_dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &to_host,
+    };
+    cmd_pipeline_barrier2(command, &host_dependency);
+    result = vkEndCommandBuffer(command);
+    if (result != VK_SUCCESS) goto cleanup;
+    VkFenceCreateInfo fence_info = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    result = vkCreateFence(device, &fence_info, NULL, &fence);
+    if (result != VK_SUCCESS) goto cleanup;
+    VkCommandBufferSubmitInfo command_submit = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer = command,
+        .deviceMask = 1,
+    };
+    VkSubmitInfo2 submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos = &command_submit,
+    };
+    result = queue_submit2(queue, 1, &submit, fence);
+    if (result != VK_SUCCESS) goto cleanup;
+    result = vkWaitForFences(device, 1, &fence, VK_TRUE, 5000000000ULL);
+    if (result != VK_SUCCESS) {
+        int failure_code = fail("offscreen Vulkan challenge fence did not complete", result);
+        (void)fflush(NULL);
+        _Exit(failure_code);
+    }
+    result = vkMapMemory(device, buffer_memory, 0, buffer_requirements.size, 0, &mapped);
+    if (result != VK_SUCCESS) goto cleanup;
+    if (!*readback_coherent) {
+        VkMappedMemoryRange range = {
+            .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+            .memory = buffer_memory,
+            .size = VK_WHOLE_SIZE,
+        };
+        result = vkInvalidateMappedMemoryRanges(device, 1, &range);
+        if (result != VK_SUCCESS) goto cleanup;
+    }
+    const uint8_t *pixels = mapped;
+    const int bgra = format == VK_FORMAT_B8G8R8A8_UNORM;
+    background_rgba[0] = bgra ? pixels[2] : pixels[0];
+    background_rgba[1] = pixels[1];
+    background_rgba[2] = bgra ? pixels[0] : pixels[2];
+    background_rgba[3] = pixels[3];
+    const uint8_t expected_background[4] = {8, 24, 48, 255};
+    for (uint32_t channel = 0; channel < 4; channel++) {
+        int difference = (int)background_rgba[channel] - expected_background[channel];
+        if (difference < -2 || difference > 2) pixel_match = 0;
+    }
+    const uint32_t cell_size = dory_visual_cell_size(extent.width, extent.height);
+    const uint64_t challenge_hash = dory_visual_challenge_hash(nonce, 1);
+    for (uint32_t row = 0; row < DORY_VISUAL_CHALLENGE_ROWS; row++) {
+        for (uint32_t column = 0; column < DORY_VISUAL_CHALLENGE_COLUMNS; column++) {
+            const uint32_t x = 24 + column * cell_size + cell_size / 2;
+            const uint32_t y = 24 + row * cell_size + cell_size / 2;
+            const uint8_t *sample = pixels + ((VkDeviceSize)y * extent.width + x) * 4;
+            const size_t output =
+                ((size_t)row * DORY_VISUAL_CHALLENGE_COLUMNS + column) * 3;
+            visual_readback_rgb[output] = bgra ? sample[2] : sample[0];
+            visual_readback_rgb[output + 1] = sample[1];
+            visual_readback_rgb[output + 2] = bgra ? sample[0] : sample[2];
+            const struct dory_visual_color color = dory_visual_cell_color(
+                column, row, challenge_hash, 1);
+            const uint8_t expected_rgb[3] = {color.red, color.green, color.blue};
+            for (uint32_t channel = 0; channel < 3; channel++) {
+                int difference = (int)visual_readback_rgb[output + channel]
+                    - expected_rgb[channel];
+                if (difference < -2 || difference > 2) pixel_match = 0;
+            }
+            if (sample[3] < 253) pixel_match = 0;
+        }
+    }
+    if (!pixel_match) {
+        failure = "offscreen Vulkan challenge readback differs from rendered pixels";
+        result = VK_SUCCESS;
+    }
+
+cleanup:
+    if (mapped) vkUnmapMemory(device, buffer_memory);
+    if (fence) vkDestroyFence(device, fence, NULL);
+    if (pool) vkDestroyCommandPool(device, pool, NULL);
+    if (buffer) vkDestroyBuffer(device, buffer, NULL);
+    if (buffer_memory) vkFreeMemory(device, buffer_memory, NULL);
+    if (view) vkDestroyImageView(device, view, NULL);
+    if (image) vkDestroyImage(device, image, NULL);
+    if (image_memory) vkFreeMemory(device, image_memory, NULL);
+    return result == VK_SUCCESS && pixel_match ? 0 : fail(failure, result);
+}
+
+struct presented_readback {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    VkDeviceSize allocation_size;
+    VkBool32 coherent;
+};
+
+static void destroy_presented_readback(VkDevice device, struct presented_readback *readback)
+{
+    if (readback->buffer) vkDestroyBuffer(device, readback->buffer, NULL);
+    if (readback->memory) vkFreeMemory(device, readback->memory, NULL);
+    memset(readback, 0, sizeof(*readback));
+}
+
+static int create_presented_readback(VkPhysicalDevice physical_device,
+                                     VkDevice device,
+                                     struct presented_readback *readback)
+{
+    const VkDeviceSize byte_count =
+        (1 + DORY_VISUAL_CHALLENGE_COLUMNS * DORY_VISUAL_CHALLENGE_ROWS) * 4;
+    VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = byte_count,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkResult result = vkCreateBuffer(device, &buffer_info, NULL, &readback->buffer);
+    if (result != VK_SUCCESS)
+        return fail("presented-frame readback buffer creation failed", result);
+    VkMemoryRequirements requirements = {0};
+    vkGetBufferMemoryRequirements(device, readback->buffer, &requirements);
+    uint32_t memory_type = find_memory_type(
+        physical_device, requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (memory_type == UINT32_MAX)
+        memory_type = find_memory_type(
+            physical_device, requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    if (memory_type == UINT32_MAX) {
+        destroy_presented_readback(device, readback);
+        return fail("presented-frame readback has no host-visible memory", VK_SUCCESS);
+    }
+    VkPhysicalDeviceMemoryProperties properties = {0};
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &properties);
+    readback->coherent = (properties.memoryTypes[memory_type].propertyFlags &
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    readback->allocation_size = requirements.size;
+    VkMemoryAllocateInfo allocation = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = requirements.size,
+        .memoryTypeIndex = memory_type,
+    };
+    result = vkAllocateMemory(device, &allocation, NULL, &readback->memory);
+    if (result == VK_SUCCESS)
+        result = vkBindBufferMemory(device, readback->buffer, readback->memory, 0);
+    if (result != VK_SUCCESS) {
+        destroy_presented_readback(device, readback);
+        return fail("presented-frame readback memory setup failed", result);
+    }
+    return 0;
+}
+
+static void record_presented_readback(
+    VkCommandBuffer command, VkImage image, VkExtent2D extent,
+    VkImageSubresourceRange image_range, VkBuffer buffer,
+    PFN_vkCmdPipelineBarrier2 cmd_pipeline_barrier2)
+{
+    VkImageMemoryBarrier2 to_copy = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresourceRange = image_range,
+    };
+    VkDependencyInfo copy_dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &to_copy,
+    };
+    cmd_pipeline_barrier2(command, &copy_dependency);
+    VkBufferImageCopy regions[
+        1 + DORY_VISUAL_CHALLENGE_COLUMNS * DORY_VISUAL_CHALLENGE_ROWS] = {0};
+    const uint32_t cell_size = dory_visual_cell_size(extent.width, extent.height);
+    for (size_t index = 0; index < sizeof(regions) / sizeof(regions[0]); index++) {
+        regions[index].bufferOffset = (VkDeviceSize)index * 4;
+        regions[index].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        regions[index].imageSubresource.layerCount = 1;
+        regions[index].imageExtent.width = 1;
+        regions[index].imageExtent.height = 1;
+        regions[index].imageExtent.depth = 1;
+        if (index > 0) {
+            const uint32_t cell = (uint32_t)index - 1;
+            const uint32_t column = cell % DORY_VISUAL_CHALLENGE_COLUMNS;
+            const uint32_t row = cell / DORY_VISUAL_CHALLENGE_COLUMNS;
+            regions[index].imageOffset.x =
+                (int32_t)(24 + column * cell_size + cell_size / 2);
+            regions[index].imageOffset.y =
+                (int32_t)(24 + row * cell_size + cell_size / 2);
+        }
+    }
+    vkCmdCopyImageToBuffer(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           buffer, (uint32_t)(sizeof(regions) / sizeof(regions[0])),
+                           regions);
+    VkBufferMemoryBarrier2 to_host = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+        .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = buffer,
+        .size = VK_WHOLE_SIZE,
+    };
+    VkDependencyInfo host_dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &to_host,
+    };
+    cmd_pipeline_barrier2(command, &host_dependency);
+}
+
+static int decode_presented_readback(
+    VkDevice device, const struct presented_readback *readback, VkFormat format,
+    uint8_t visual_readback_rgb[DORY_VISUAL_CHALLENGE_COLUMNS *
+                                DORY_VISUAL_CHALLENGE_ROWS * 3],
+    uint8_t background_rgba[4])
+{
+    void *mapped = NULL;
+    VkResult result = vkMapMemory(
+        device, readback->memory, 0, readback->allocation_size, 0, &mapped);
+    if (result != VK_SUCCESS)
+        return fail("presented-frame readback mapping failed", result);
+    if (!readback->coherent) {
+        VkMappedMemoryRange range = {
+            .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+            .memory = readback->memory,
+            .size = VK_WHOLE_SIZE,
+        };
+        result = vkInvalidateMappedMemoryRanges(device, 1, &range);
+    }
+    if (result == VK_SUCCESS) {
+        const uint8_t *pixels = mapped;
+        const int bgra = format == VK_FORMAT_B8G8R8A8_UNORM ||
+                         format == VK_FORMAT_B8G8R8A8_SRGB;
+        background_rgba[0] = bgra ? pixels[2] : pixels[0];
+        background_rgba[1] = pixels[1];
+        background_rgba[2] = bgra ? pixels[0] : pixels[2];
+        background_rgba[3] = pixels[3];
+        for (size_t cell = 0;
+             cell < DORY_VISUAL_CHALLENGE_COLUMNS * DORY_VISUAL_CHALLENGE_ROWS;
+             cell++) {
+            const uint8_t *sample = pixels + (cell + 1) * 4;
+            visual_readback_rgb[cell * 3] = bgra ? sample[2] : sample[0];
+            visual_readback_rgb[cell * 3 + 1] = sample[1];
+            visual_readback_rgb[cell * 3 + 2] = bgra ? sample[0] : sample[2];
+            if (sample[3] < 253) {
+                result = VK_ERROR_FORMAT_NOT_SUPPORTED;
+                break;
+            }
+        }
+    }
+    vkUnmapMemory(device, readback->memory);
+    return result == VK_SUCCESS ? 0 : fail("presented-frame readback is invalid", result);
 }
 
 static VkCompositeAlphaFlagBitsKHR choose_composite_alpha(VkCompositeAlphaFlagsKHR supported)
@@ -357,11 +898,13 @@ static int parse_options(int argc, char **argv, struct probe_options *options)
         .height = 64,
         .present_mode = VK_PRESENT_MODE_FIFO_KHR,
         .nonce = "dory-vulkan-default",
+        .hold_milliseconds = 2000,
     };
     int extent_seen = 0;
     int mode_seen = 0;
     int present_mode_seen = 0;
     int nonce_seen = 0;
+    int hold_seen = 0;
     for (int index = 1; index < argc; index++) {
         if (strcmp(argv[index], "--wsi=xcb") == 0 && !mode_seen) {
             options->mode = WSI_XCB;
@@ -393,18 +936,41 @@ static int parse_options(int argc, char **argv, struct probe_options *options)
                    argv[index][8] != '\0' && !nonce_seen) {
             options->nonce = argv[index] + 8;
             nonce_seen = 1;
+        } else if (strncmp(argv[index], "--hold-ms=", 10) == 0 && !hold_seen) {
+            if (dory_visual_parse_hold_milliseconds(
+                    argv[index] + 10, &options->hold_milliseconds) != 0)
+                goto invalid;
+            hold_seen = 1;
+        } else if (strncmp(argv[index], "--ready-file=", 13) == 0 &&
+                   argv[index][13] != '\0' && !options->ready_file) {
+            options->ready_file = argv[index] + 13;
         } else {
             goto invalid;
         }
     }
-    if ((extent_seen || present_mode_seen) && options->mode == WSI_NONE)
+    if ((extent_seen || present_mode_seen || hold_seen || options->ready_file) &&
+        options->mode == WSI_NONE)
         goto invalid;
+    if (options->mode != WSI_NONE) {
+        if (!extent_seen) {
+            options->width = 960;
+            options->height = 600;
+        }
+        const uint32_t cell_size = dory_visual_cell_size(
+            options->width, options->height);
+        if (24u + DORY_VISUAL_CHALLENGE_COLUMNS * cell_size > options->width ||
+            24u + DORY_VISUAL_CHALLENGE_ROWS * cell_size > options->height) {
+            fprintf(stderr, "dory-vulkan-probe: extent cannot contain the visual challenge\n");
+            return 64;
+        }
+    }
     return 0;
 
 invalid:
     fprintf(stderr,
             "usage: %s [--wsi=xcb|wayland|auto] [--extent=WIDTHxHEIGHT] "
-            "[--present-mode=fifo|mailbox] [--nonce=VALUE]\n",
+            "[--present-mode=fifo|mailbox] [--nonce=VALUE] "
+            "[--hold-ms=0..30000] [--ready-file=/absolute/path]\n",
             argv[0]);
     return 64;
 }
@@ -564,7 +1130,7 @@ int main(int argc, char **argv)
         VkFormat candidate_atlas_format = choose_color_atlas_format(devices[i]);
         if (candidate_atlas_format == VK_FORMAT_UNDEFINED) {
             fprintf(stderr,
-                    "dory-vulkan-probe: Venus lacks a sampled/copy-destination BGRA8/RGBA8 atlas format\n");
+                "dory-vulkan-probe: Venus lacks a sampled/renderable/readback BGRA8/RGBA8 format\n");
             continue;
         }
 
@@ -633,17 +1199,72 @@ int main(int argc, char **argv)
         return fail("no Vulkan 1.3 hardware Venus device satisfies the contract", VK_SUCCESS);
     }
 
-    /* Enable only the capabilities this probe consumes. Query structs contain every supported
-     * optional bit and must not be reused as device-create requests. */
+    /* Query Zink prerequisites, then request only individually supported optional bits.
+     * Missing optional capabilities must not break the baseline rendering probe: the
+     * strategy comparison rejects their absence separately. Query structs must never be
+     * reused wholesale as device-create requests. */
+    const int has_extended_dynamic_state = has_device_extension(
+        physical_device, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
+    const int has_robustness2 = has_device_extension(
+        physical_device, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+    VkPhysicalDeviceVulkan12Features queried_features12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+    };
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT queried_dynamic_state = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT,
+        .pNext = &queried_features12,
+    };
+    VkPhysicalDeviceRobustness2FeaturesEXT queried_robustness2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
+    };
+    void *queried_chain = &queried_features12;
+    if (has_extended_dynamic_state)
+        queried_chain = &queried_dynamic_state;
+    if (has_robustness2) {
+        queried_robustness2.pNext = queried_chain;
+        queried_chain = &queried_robustness2;
+    }
+    VkPhysicalDeviceFeatures2 queried_strategy_features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = queried_chain,
+    };
+    vkGetPhysicalDeviceFeatures2(physical_device, &queried_strategy_features);
+    int enable_timeline = queried_features12.timelineSemaphore == VK_TRUE;
+    int enable_dynamic_state = has_extended_dynamic_state &&
+        queried_dynamic_state.extendedDynamicState == VK_TRUE;
+    int enable_robustness2 = has_robustness2 &&
+        queried_robustness2.robustBufferAccess2 == VK_TRUE;
+
     VkPhysicalDeviceVulkan13Features enabled_features13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
         .dynamicRendering = VK_TRUE,
         .synchronization2 = VK_TRUE,
         .maintenance4 = VK_TRUE,
     };
+    VkPhysicalDeviceVulkan12Features enabled_features12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .pNext = &enabled_features13,
+        .timelineSemaphore = enable_timeline ? VK_TRUE : VK_FALSE,
+    };
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT enabled_dynamic_state = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT,
+        .pNext = &enabled_features12,
+        .extendedDynamicState = enable_dynamic_state ? VK_TRUE : VK_FALSE,
+    };
+    VkPhysicalDeviceRobustness2FeaturesEXT enabled_robustness2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
+        .robustBufferAccess2 = enable_robustness2 ? VK_TRUE : VK_FALSE,
+    };
+    void *enabled_chain = &enabled_features12;
+    if (enable_dynamic_state)
+        enabled_chain = &enabled_dynamic_state;
+    if (enable_robustness2) {
+        enabled_robustness2.pNext = enabled_chain;
+        enabled_chain = &enabled_robustness2;
+    }
     VkPhysicalDeviceFeatures2 enabled_features = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-        .pNext = &enabled_features13,
+        .pNext = enabled_chain,
         .features = {.robustBufferAccess = VK_TRUE},
     };
     const float queue_priority = 1.0f;
@@ -653,21 +1274,40 @@ int main(int argc, char **argv)
         .queueCount = 1,
         .pQueuePriorities = &queue_priority,
     };
-    const char *device_extensions[] = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    const char *device_extensions[4] = {
         VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     };
+    uint32_t device_extension_count = 2;
+    if (enable_dynamic_state)
+        device_extensions[device_extension_count++] = VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME;
+    if (enable_robustness2)
+        device_extensions[device_extension_count++] = VK_EXT_ROBUSTNESS_2_EXTENSION_NAME;
     VkDeviceCreateInfo device_create = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &enabled_features,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &queue_create,
-        .enabledExtensionCount =
-            (uint32_t)(sizeof(device_extensions) / sizeof(device_extensions[0])),
+        .enabledExtensionCount = device_extension_count,
         .ppEnabledExtensionNames = device_extensions,
     };
     VkDevice device = VK_NULL_HANDLE;
+    int strategy_feature_fallback = 0;
     result = vkCreateDevice(physical_device, &device_create, NULL, &device);
+    if (result != VK_SUCCESS && (enable_timeline || enable_dynamic_state ||
+                                  enable_robustness2)) {
+        fprintf(stderr,
+                "dory-vulkan-probe: optional strategy feature negotiation failed (%d); "
+                "retrying baseline device\n", result);
+        strategy_feature_fallback = 1;
+        enable_timeline = 0;
+        enable_dynamic_state = 0;
+        enable_robustness2 = 0;
+        enabled_features12.timelineSemaphore = VK_FALSE;
+        enabled_features.pNext = &enabled_features12;
+        device_create.enabledExtensionCount = 2;
+        result = vkCreateDevice(physical_device, &device_create, NULL, &device);
+    }
     if (result != VK_SUCCESS) {
         if (surface)
             vkDestroySurfaceKHR(instance, surface, NULL);
@@ -685,9 +1325,11 @@ int main(int argc, char **argv)
         VkSurfaceCapabilitiesKHR capabilities = {0};
         result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
             physical_device, surface, &capabilities);
+        const VkImageUsageFlags required_usage =
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         if (result != VK_SUCCESS ||
-            (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) == 0) {
-            exit_code = fail("surface lacks color-attachment capabilities", result);
+            (capabilities.supportedUsageFlags & required_usage) != required_usage) {
+            exit_code = fail("surface lacks color-attachment/readback capabilities", result);
             goto cleanup;
         }
         uint32_t format_count = 0;
@@ -770,7 +1412,7 @@ int main(int argc, char **argv)
             .imageColorSpace = surface_format.colorSpace,
             .imageExtent = swapchain_extent,
             .imageArrayLayers = 1,
-            .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+            .imageUsage = required_usage,
             .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .preTransform = capabilities.currentTransform,
             .compositeAlpha = composite_alpha,
@@ -846,6 +1488,11 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
+    uint8_t presented_readback_rgb[
+        DORY_VISUAL_CHALLENGE_COLUMNS * DORY_VISUAL_CHALLENGE_ROWS * 3] = {0};
+    uint8_t presented_background_rgba[4] = {0};
+    VkBool32 presented_readback_coherent = VK_FALSE;
+
     if (surface) {
         VkSemaphoreCreateInfo present_semaphore_create = {
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -857,6 +1504,7 @@ int main(int argc, char **argv)
         };
         VkFence present_fence = VK_NULL_HANDLE;
         VkImageView present_view = VK_NULL_HANDLE;
+        struct presented_readback readback = {0};
 
         result = vkCreateSemaphore(device, &present_semaphore_create, NULL, &image_available);
         if (result == VK_SUCCESS)
@@ -911,6 +1559,16 @@ int main(int argc, char **argv)
             vkDestroyCommandPool(device, command_pool, NULL);
             goto cleanup;
         }
+        if (create_presented_readback(physical_device, device, &readback) != 0) {
+            exit_code = 1;
+            vkDestroyImageView(device, present_view, NULL);
+            vkDestroyFence(device, present_fence, NULL);
+            vkDestroySemaphore(device, render_complete, NULL);
+            vkDestroySemaphore(device, image_available, NULL);
+            vkDestroyCommandPool(device, command_pool, NULL);
+            goto cleanup;
+        }
+        presented_readback_coherent = readback.coherent;
 
         VkCommandBufferBeginInfo present_command_begin = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -954,15 +1612,20 @@ int main(int argc, char **argv)
                 .pColorAttachments = &color_attachment,
             };
             cmd_begin_rendering(command_buffer, &rendering);
+            record_visual_challenge(command_buffer, options.nonce, 1, swapchain_extent);
             cmd_end_rendering(command_buffer);
+
+            record_presented_readback(
+                command_buffer, swapchain_images[image_index], swapchain_extent,
+                view_create.subresourceRange, readback.buffer, cmd_pipeline_barrier2);
 
             VkImageMemoryBarrier2 to_present = {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
                 .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
                 .dstAccessMask = VK_ACCESS_2_NONE,
-                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -979,6 +1642,7 @@ int main(int argc, char **argv)
         }
         if (result != VK_SUCCESS) {
             exit_code = fail("swapchain render command recording failed", result);
+            destroy_presented_readback(device, &readback);
             vkDestroyImageView(device, present_view, NULL);
             vkDestroyFence(device, present_fence, NULL);
             vkDestroySemaphore(device, render_complete, NULL);
@@ -1000,7 +1664,7 @@ int main(int argc, char **argv)
         VkSemaphoreSubmitInfo render_complete_signal = {
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
             .semaphore = render_complete,
-            .stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
         };
         VkSubmitInfo2 present_submit = {
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
@@ -1021,6 +1685,19 @@ int main(int argc, char **argv)
             (void)fflush(NULL);
             _Exit(failure);
         }
+        if (decode_presented_readback(
+                device, &readback, surface_format.format,
+                presented_readback_rgb, presented_background_rgba) != 0) {
+            exit_code = 1;
+            destroy_presented_readback(device, &readback);
+            vkDestroyImageView(device, present_view, NULL);
+            vkDestroyFence(device, present_fence, NULL);
+            vkDestroySemaphore(device, render_complete, NULL);
+            vkDestroySemaphore(device, image_available, NULL);
+            vkDestroyCommandPool(device, command_pool, NULL);
+            goto cleanup;
+        }
+        destroy_presented_readback(device, &readback);
 
         VkPresentInfoKHR present = {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -1055,6 +1732,23 @@ int main(int argc, char **argv)
         result = vkResetCommandPool(device, command_pool, 0);
         if (result != VK_SUCCESS) {
             exit_code = fail("could not reset the presentation command pool", result);
+            vkDestroyCommandPool(device, command_pool, NULL);
+            goto cleanup;
+        }
+    }
+    if (surface) {
+        if (dory_visual_hold_milliseconds(50) != 0) {
+            exit_code = fail("could not settle presented frame", VK_SUCCESS);
+            vkDestroyCommandPool(device, command_pool, NULL);
+            goto cleanup;
+        }
+        if (dory_visual_publish_presented(options.ready_file, options.nonce, 1) != 0) {
+            exit_code = fail("could not publish presented-frame marker", VK_SUCCESS);
+            vkDestroyCommandPool(device, command_pool, NULL);
+            goto cleanup;
+        }
+        if (dory_visual_hold_milliseconds(options.hold_milliseconds) != 0) {
+            exit_code = fail("could not hold presented frame", VK_SUCCESS);
             vkDestroyCommandPool(device, command_pool, NULL);
             goto cleanup;
         }
@@ -1189,6 +1883,19 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
+    uint8_t offscreen_readback_rgb[
+        DORY_VISUAL_CHALLENGE_COLUMNS * DORY_VISUAL_CHALLENGE_ROWS * 3] = {0};
+    uint8_t offscreen_background_rgba[4] = {0};
+    VkBool32 offscreen_readback_coherent = VK_FALSE;
+    exit_code = render_offscreen_challenge(
+        physical_device, device, queue, queue_family, color_atlas_format,
+        options.nonce, queue_submit2, cmd_pipeline_barrier2,
+        cmd_begin_rendering, cmd_end_rendering,
+        offscreen_readback_rgb, offscreen_background_rgba,
+        &offscreen_readback_coherent);
+    if (exit_code != 0)
+        goto cleanup;
+
     char loader_buffer[32];
     char device_buffer[32];
     uint64_t result_hash = fnv1a(
@@ -1210,17 +1917,71 @@ int main(int argc, char **argv)
         selected_properties.properties.apiVersion, device_buffer));
     fputs(",\"loaderApiVersion\":", stdout);
     print_json_string(version_string(loader_version, loader_buffer));
-    fputs(",\"extensionsUsed\":[\"VK_KHR_swapchain\","
-          "\"VK_KHR_external_semaphore_fd\"],", stdout);
+    fputs(",\"extensionsUsed\":[", stdout);
+    if (enable_dynamic_state)
+        fputs("\"VK_EXT_extended_dynamic_state\",", stdout);
+    if (enable_robustness2)
+        fputs("\"VK_EXT_robustness2\",", stdout);
+    fputs("\"VK_KHR_external_semaphore_fd\",\"VK_KHR_swapchain\"],", stdout);
+    fputs("\"featuresUsed\":[\"dynamicRendering\",", stdout);
+    if (enable_dynamic_state)
+        fputs("\"extendedDynamicState\",", stdout);
+    fputs("\"maintenance4\",\"robustBufferAccess\",", stdout);
+    if (enable_robustness2)
+        fputs("\"robustBufferAccess2\",", stdout);
+    fputs("\"synchronization2\"", stdout);
+    if (enable_timeline)
+        fputs(",\"timelineSemaphore\"", stdout);
+    fputs("],", stdout);
+    printf("\"strategyFeatureFallback\":%s,",
+           strategy_feature_fallback ? "true" : "false");
     printf("\"resultHash\":\"fnv1a64:%016" PRIx64 "\",", result_hash);
     printf("\"frameCount\":%u,\"nonce\":", surface ? 1u : 0u);
     print_json_string(options.nonce);
+    if (surface) {
+    printf(",\"visualChallenge\":{\"kind\":\"dev.dory.visual-challenge\","
+               "\"version\":1,\"encoding\":\"fnv1a64-frame16-grid12x10\","
+               "\"frameMarker\":1,\"payloadHash\":\"fnv1a64:%016" PRIx64 "\"}",
+               dory_visual_challenge_hash(options.nonce, 1));
+        printf(",\"presentedHoldMilliseconds\":%u", options.hold_milliseconds);
+        if (options.ready_file) {
+            fputs(",\"presentedReadyFile\":", stdout);
+            print_json_string(options.ready_file);
+        }
+    }
     printf(",\"timings\":{\"totalMilliseconds\":%.3f},",
            (finished - started) / 1000000.0);
     fputs("\"wsi\":", stdout);
     print_json_string(!surface ? "none" : (native.mode == WSI_XCB ? "xcb" : "wayland"));
     printf(",\"surfaceFormat\":");
     print_json_string(!surface ? "none" : surface_format_name(surface_format.format));
+    if (surface) {
+        fputs(",\"presentedReadbackEncoding\":\"rgb8-cell-centers-top-left-grid12x10@1\"",
+              stdout);
+        fputs(",\"presentedReadbackRGBHex\":\"", stdout);
+        for (size_t index = 0; index < sizeof(presented_readback_rgb); index++)
+            printf("%02x", presented_readback_rgb[index]);
+        putchar('"');
+        printf(",\"presentedBackgroundRGBAHex\":\"%02x%02x%02x%02x\"",
+               presented_background_rgba[0], presented_background_rgba[1],
+               presented_background_rgba[2], presented_background_rgba[3]);
+        fputs(",\"presentedReadbackMemoryCoherency\":", stdout);
+        print_json_string(presented_readback_coherent ? "coherent" : "noncoherent");
+    }
+    printf(",\"colorAtlasFormat\":");
+    print_json_string(color_atlas_format_name(color_atlas_format));
+    fputs(",\"offscreenExtent\":{\"width\":320,\"height\":240}", stdout);
+    fputs(",\"offscreenReadbackEncoding\":\"rgb8-cell-centers-top-left-grid12x10@1\"",
+          stdout);
+    fputs(",\"offscreenReadbackRGBHex\":\"", stdout);
+    for (size_t index = 0; index < sizeof(offscreen_readback_rgb); index++)
+        printf("%02x", offscreen_readback_rgb[index]);
+    putchar('"');
+    printf(",\"offscreenBackgroundRGBAHex\":\"%02x%02x%02x%02x\"",
+           offscreen_background_rgba[0], offscreen_background_rgba[1],
+           offscreen_background_rgba[2], offscreen_background_rgba[3]);
+    fputs(",\"offscreenReadbackMemoryCoherency\":", stdout);
+    print_json_string(offscreen_readback_coherent ? "coherent" : "noncoherent");
     printf(",\"presentMode\":");
     print_json_string(options.present_mode == VK_PRESENT_MODE_MAILBOX_KHR
         ? "mailbox" : "fifo");

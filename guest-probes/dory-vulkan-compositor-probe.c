@@ -20,6 +20,8 @@
 #include <drm_fourcc.h>
 #include <drm_mode.h>
 
+#include "dory-visual-challenge.h"
+
 /* libdrm's drmModeConnection enum is a userspace wrapper around this stable UAPI value. */
 #define DORY_DRM_MODE_CONNECTED 1u
 
@@ -139,6 +141,45 @@ static void print_json_string(const char *value)
         }
     }
     putchar('"');
+}
+
+static void record_visual_challenge(VkCommandBuffer command_buffer,
+                                    const char *nonce, uint32_t frame_marker,
+                                    const struct probe_extent *extent)
+{
+    const uint32_t cell_size = dory_visual_cell_size(extent->width, extent->height);
+    const uint32_t origin_x = 24;
+    const uint32_t origin_y = 24;
+    const uint64_t challenge_hash = dory_visual_challenge_hash(nonce, frame_marker);
+    if (DORY_VISUAL_CHALLENGE_COLUMNS * cell_size + origin_x > extent->width ||
+        DORY_VISUAL_CHALLENGE_ROWS * cell_size + origin_y > extent->height)
+        return;
+    for (uint32_t row = 0; row < DORY_VISUAL_CHALLENGE_ROWS; row++) {
+        for (uint32_t column = 0; column < DORY_VISUAL_CHALLENGE_COLUMNS; column++) {
+            const struct dory_visual_color color = dory_visual_cell_color(
+                column, row, challenge_hash, (uint16_t)frame_marker);
+            VkClearAttachment attachment = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .colorAttachment = 0,
+                .clearValue = {.color = {.float32 = {
+                    color.red / 255.0f, color.green / 255.0f,
+                    color.blue / 255.0f, color.alpha / 255.0f,
+                }}},
+            };
+            VkClearRect rectangle = {
+                .rect = {
+                    .offset = {
+                        (int32_t)(origin_x + column * cell_size),
+                        (int32_t)(origin_y + row * cell_size),
+                    },
+                    .extent = {cell_size, cell_size},
+                },
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            };
+            vkCmdClearAttachments(command_buffer, 1, &attachment, 1, &rectangle);
+        }
+    }
 }
 
 static void report_phase(const char *phase)
@@ -490,6 +531,21 @@ static uint32_t find_memory_type_with_flags(VkPhysicalDevice physical_device,
     return UINT32_MAX;
 }
 
+static uint32_t find_noncoherent_host_visible_memory_type(
+    VkPhysicalDevice physical_device, uint32_t permitted)
+{
+    VkPhysicalDeviceMemoryProperties properties = {0};
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &properties);
+    for (uint32_t i = 0; i < properties.memoryTypeCount; i++) {
+        VkMemoryPropertyFlags flags = properties.memoryTypes[i].propertyFlags;
+        if ((permitted & (1u << i)) != 0 &&
+            (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0 &&
+            (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0)
+            return i;
+    }
+    return UINT32_MAX;
+}
+
 static int create_exported_image(VkPhysicalDevice physical_device, VkDevice device,
                                  const struct compositor_format *format,
                                  VkImageUsageFlags usage,
@@ -768,7 +824,12 @@ static int render_and_copy_to_scanout(VkPhysicalDevice physical_device,
                                       uint32_t queue_family,
                                       VkImage scanout_image,
                                       const struct compositor_format *format,
-                                      const struct probe_extent *extent)
+                                      const struct probe_extent *extent,
+                                      const char *nonce,
+                                      int require_noncoherent_readback,
+                                      VkBool32 *readback_coherent,
+                                      uint8_t *visual_readback_rgb,
+                                      uint8_t background_rgba[4])
 {
     VkImage render_image = VK_NULL_HANDLE;
     VkDeviceMemory render_memory = VK_NULL_HANDLE;
@@ -891,14 +952,23 @@ static int render_and_copy_to_scanout(VkPhysicalDevice physical_device,
         goto cleanup;
     VkMemoryRequirements readback_requirements = {0};
     vkGetBufferMemoryRequirements(device, readback_buffer, &readback_requirements);
-    uint32_t readback_memory_type = find_memory_type_with_flags(
-        physical_device, readback_requirements.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (readback_memory_type == UINT32_MAX)
+    uint32_t readback_memory_type = UINT32_MAX;
+    if (require_noncoherent_readback) {
+        readback_memory_type = find_noncoherent_host_visible_memory_type(
+            physical_device, readback_requirements.memoryTypeBits);
+    } else {
+        readback_memory_type = find_memory_type_with_flags(
+            physical_device, readback_requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
+    if (readback_memory_type == UINT32_MAX && !require_noncoherent_readback)
         readback_memory_type = find_memory_type_with_flags(
             physical_device, readback_requirements.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
     if (readback_memory_type == UINT32_MAX) {
+        if (require_noncoherent_readback)
+            fprintf(stderr, "dory-vulkan-compositor-probe: no noncoherent "
+                    "host-visible compositor readback memory type\n");
         result = VK_ERROR_FEATURE_NOT_PRESENT;
         goto cleanup;
     }
@@ -906,6 +976,8 @@ static int render_and_copy_to_scanout(VkPhysicalDevice physical_device,
     vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
     readback_memory_flags =
         memory_properties.memoryTypes[readback_memory_type].propertyFlags;
+    *readback_coherent =
+        (readback_memory_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
     VkMemoryAllocateInfo readback_allocation = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = readback_requirements.size,
@@ -954,6 +1026,7 @@ static int render_and_copy_to_scanout(VkPhysicalDevice physical_device,
         .pClearValues = &clear,
     };
     vkCmdBeginRenderPass(command_buffer, &pass_begin, VK_SUBPASS_CONTENTS_INLINE);
+    record_visual_challenge(command_buffer, nonce, 1, extent);
     vkCmdEndRenderPass(command_buffer);
     VkImageMemoryBarrier acquire_scanout = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -1083,32 +1156,55 @@ static int render_and_copy_to_scanout(VkPhysicalDevice physical_device,
             result = vkInvalidateMappedMemoryRanges(device, 1, &range);
         }
         if (result == VK_SUCCESS) {
-            VkDeviceSize center_offset =
-                ((VkDeviceSize)(extent->height / 2) * extent->width +
-                 extent->width / 2) * 4;
-            const uint8_t *pixel = (const uint8_t *)mapping + center_offset;
-            uint8_t expected[4] = {0};
-            if (format->vk_format == VK_FORMAT_B8G8R8A8_UNORM) {
-                expected[0] = 191;
-                expected[1] = 64;
-                expected[2] = 0;
-                expected[3] = 255;
-            } else {
-                expected[0] = 0;
-                expected[1] = 64;
-                expected[2] = 191;
-                expected[3] = 255;
-            }
+            const uint8_t *pixels = mapping;
+            const uint8_t *pixel = pixels;
+            const int bgra = format->vk_format == VK_FORMAT_B8G8R8A8_UNORM;
+            background_rgba[0] = bgra ? pixel[2] : pixel[0];
+            background_rgba[1] = pixel[1];
+            background_rgba[2] = bgra ? pixel[0] : pixel[2];
+            background_rgba[3] = pixel[3];
+            const uint8_t expected[4] = {0, 64, 191, 255};
             fprintf(stderr,
-                    "dory-vulkan-compositor-probe: format=%s copied-pixel=%u,%u,%u,%u "
+                    "dory-vulkan-compositor-probe: format=%s background-pixel=%u,%u,%u,%u "
                     "expected=%u,%u,%u,%u readback=vulkan-staging\n",
-                    format->name, pixel[0], pixel[1], pixel[2], pixel[3],
+                    format->name, background_rgba[0], background_rgba[1],
+                    background_rgba[2], background_rgba[3],
                     expected[0], expected[1], expected[2], expected[3]);
             for (uint32_t i = 0; i < 4; i++) {
-                int difference = (int)pixel[i] - (int)expected[i];
+                int difference = (int)background_rgba[i] - (int)expected[i];
                 if (difference < -2 || difference > 2) {
                     pixel_match = 0;
                     break;
+                }
+            }
+            const uint32_t cell_size = dory_visual_cell_size(
+                extent->width, extent->height);
+            const uint64_t challenge_hash = dory_visual_challenge_hash(nonce, 1);
+            for (uint32_t row = 0; row < DORY_VISUAL_CHALLENGE_ROWS; row++) {
+                for (uint32_t column = 0; column < DORY_VISUAL_CHALLENGE_COLUMNS;
+                     column++) {
+                    const uint32_t x = 24 + column * cell_size + cell_size / 2;
+                    const uint32_t y = 24 + row * cell_size + cell_size / 2;
+                    const uint8_t *sample = pixels +
+                        ((VkDeviceSize)y * extent->width + x) * 4;
+                    const size_t output =
+                        ((size_t)row * DORY_VISUAL_CHALLENGE_COLUMNS + column) * 3;
+                    visual_readback_rgb[output] = bgra ? sample[2] : sample[0];
+                    visual_readback_rgb[output + 1] = sample[1];
+                    visual_readback_rgb[output + 2] = bgra ? sample[0] : sample[2];
+                    const struct dory_visual_color expected_cell =
+                        dory_visual_cell_color(column, row, challenge_hash, 1);
+                    const uint8_t expected_rgb[3] = {
+                        expected_cell.red, expected_cell.green, expected_cell.blue,
+                    };
+                    for (uint32_t channel = 0; channel < 3; channel++) {
+                        const int difference = (int)visual_readback_rgb[output + channel]
+                            - (int)expected_rgb[channel];
+                        if (difference < -2 || difference > 2)
+                            pixel_match = 0;
+                    }
+                    if (sample[3] < 253)
+                        pixel_match = 0;
                 }
             }
         }
@@ -1146,8 +1242,12 @@ int main(int argc, char **argv)
 {
     const char *drm_path = "/dev/dri/card0";
     const char *nonce = "dory-compositor-default";
+    const char *ready_file = NULL;
+    uint32_t hold_milliseconds = 2000;
     int drm_seen = 0;
     int nonce_seen = 0;
+    int hold_seen = 0;
+    int require_noncoherent_readback = 0;
     for (int index = 1; index < argc; index++) {
         if (strncmp(argv[index], "--drm=", 6) == 0 && argv[index][6] != '\0' &&
             !drm_seen) {
@@ -1157,8 +1257,20 @@ int main(int argc, char **argv)
                    argv[index][8] != '\0' && !nonce_seen) {
             nonce = argv[index] + 8;
             nonce_seen = 1;
+        } else if (strncmp(argv[index], "--hold-ms=", 10) == 0 && !hold_seen &&
+                   dory_visual_parse_hold_milliseconds(
+                       argv[index] + 10, &hold_milliseconds) == 0) {
+            hold_seen = 1;
+        } else if (strncmp(argv[index], "--ready-file=", 13) == 0 &&
+                   argv[index][13] != '\0' && !ready_file) {
+            ready_file = argv[index] + 13;
+        } else if (strcmp(argv[index], "--readback-memory=noncoherent") == 0 &&
+                   !require_noncoherent_readback) {
+            require_noncoherent_readback = 1;
         } else {
-            fprintf(stderr, "usage: %s [--drm=/dev/dri/cardN] [--nonce=VALUE]\n",
+            fprintf(stderr, "usage: %s [--drm=/dev/dri/cardN] [--nonce=VALUE] "
+                    "[--hold-ms=0..30000] [--ready-file=/absolute/path] "
+                    "[--readback-memory=noncoherent]\n",
                     argv[0]);
             return 64;
         }
@@ -1173,6 +1285,10 @@ int main(int argc, char **argv)
     struct kms_framebuffer kms_framebuffer = {.drm_fd = -1};
     struct kms_scanout kms_scanout = {.drm_fd = -1};
     struct imported_image texture_image = {0};
+    VkBool32 readback_coherent = VK_FALSE;
+    uint8_t visual_readback_rgb[
+        DORY_VISUAL_CHALLENGE_COLUMNS * DORY_VISUAL_CHALLENGE_ROWS * 3] = {0};
+    uint8_t background_rgba[4] = {0};
 
     drm_fd = open(drm_path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (drm_fd < 0)
@@ -1185,6 +1301,15 @@ int main(int argc, char **argv)
     exit_code = discover_kms_scanout(drm_fd, &kms_scanout);
     if (exit_code != 0)
         goto cleanup;
+    const uint32_t challenge_cell_size = dory_visual_cell_size(
+        kms_scanout.extent.width, kms_scanout.extent.height);
+    if (24u + DORY_VISUAL_CHALLENGE_COLUMNS * challenge_cell_size >
+            kms_scanout.extent.width ||
+        24u + DORY_VISUAL_CHALLENGE_ROWS * challenge_cell_size >
+            kms_scanout.extent.height) {
+        exit_code = fail("active scanout cannot contain the visual challenge", VK_SUCCESS);
+        goto cleanup;
+    }
 
     uint32_t instance_extension_count = 0;
     VkExtensionProperties *available_instance_extensions =
@@ -1513,7 +1638,9 @@ int main(int argc, char **argv)
     report_phase("optimal-render-copy-begin");
     exit_code = render_and_copy_to_scanout(
         physical_device, device, queue, queue_family,
-        scanout_image.image, selected_format, &kms_scanout.extent);
+        scanout_image.image, selected_format, &kms_scanout.extent, nonce,
+        require_noncoherent_readback, &readback_coherent,
+        visual_readback_rgb, background_rgba);
     if (exit_code != 0)
         goto cleanup;
     report_phase("optimal-render-copy-complete");
@@ -1531,7 +1658,18 @@ int main(int argc, char **argv)
     if (exit_code != 0)
         goto cleanup;
     report_phase("kms-scanout-commit-complete");
-    sleep(2);
+    if (dory_visual_hold_milliseconds(50) != 0) {
+        exit_code = fail("could not settle presented scanout", VK_SUCCESS);
+        goto cleanup;
+    }
+    if (dory_visual_publish_presented(ready_file, nonce, 1) != 0) {
+        exit_code = fail("could not publish presented-scanout marker", VK_SUCCESS);
+        goto cleanup;
+    }
+    if (dory_visual_hold_milliseconds(hold_milliseconds) != 0) {
+        exit_code = fail("could not hold presented scanout", VK_SUCCESS);
+        goto cleanup;
+    }
     exit_code = restore_kms_scanout(&kms_scanout);
     if (exit_code != 0)
         goto cleanup;
@@ -1564,12 +1702,32 @@ int main(int argc, char **argv)
     printf("\"resultHash\":\"fnv1a64:%016" PRIx64 "\",", result_hash);
     fputs("\"frameCount\":1,\"nonce\":", stdout);
     print_json_string(nonce);
+    printf(",\"visualChallenge\":{\"kind\":\"dev.dory.visual-challenge\","
+           "\"version\":1,\"encoding\":\"fnv1a64-frame16-grid12x10\","
+           "\"frameMarker\":1,\"payloadHash\":\"fnv1a64:%016" PRIx64 "\"}",
+           dory_visual_challenge_hash(nonce, 1));
+    printf(",\"presentedHoldMilliseconds\":%u", hold_milliseconds);
+    if (ready_file) {
+        fputs(",\"presentedReadyFile\":", stdout);
+        print_json_string(ready_file);
+    }
     printf(",\"timings\":{\"totalMilliseconds\":%.3f},",
            (finished - started) / 1000000.0);
     fputs("\"profile\":", stdout);
     print_json_string("wlroots-vulkan-optimal-copy@" DORY_COMPOSITOR_SOURCE_COMMIT);
     fputs(",\"format\":", stdout);
     print_json_string(selected_format->name);
+    fputs(",\"readbackMemoryCoherency\":", stdout);
+    print_json_string(readback_coherent ? "coherent" : "noncoherent");
+    printf(",\"scanoutBackgroundRGBAHex\":\"%02x%02x%02x%02x\"",
+           background_rgba[0], background_rgba[1],
+           background_rgba[2], background_rgba[3]);
+    fputs(",\"visualReadbackEncoding\":\"rgb8-cell-centers-top-left-grid12x10@1\"",
+          stdout);
+    fputs(",\"visualReadbackRGBHex\":\"", stdout);
+    for (size_t index = 0; index < sizeof(visual_readback_rgb); index++)
+        printf("%02x", visual_readback_rgb[index]);
+    putchar('"');
     fputs(",\"drmNode\":", stdout);
     print_json_string(drm_path);
     printf(",\"extent\":{\"width\":%u,\"height\":%u}}\n",

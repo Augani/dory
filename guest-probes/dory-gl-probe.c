@@ -10,6 +10,8 @@
 #include <string.h>
 #include <time.h>
 
+#include "dory-visual-challenge.h"
+
 #define DORY_WIDTH 960
 #define DORY_HEIGHT 600
 
@@ -233,11 +235,40 @@ static GLuint create_text_texture(const char *text, int *width)
     return texture;
 }
 
+static void draw_visual_challenge(const char *nonce, uint32_t frame_marker)
+{
+    const uint32_t cell_size = dory_visual_cell_size(DORY_WIDTH, DORY_HEIGHT);
+    const uint64_t challenge_hash = dory_visual_challenge_hash(nonce, frame_marker);
+    const GLint origin_x = 24;
+    const GLint origin_y = DORY_HEIGHT - 24 -
+        (GLint)(DORY_VISUAL_CHALLENGE_ROWS * cell_size);
+    glDisable(GL_BLEND);
+    glEnable(GL_SCISSOR_TEST);
+    for (uint32_t row = 0; row < DORY_VISUAL_CHALLENGE_ROWS; row++) {
+        for (uint32_t column = 0; column < DORY_VISUAL_CHALLENGE_COLUMNS; column++) {
+            const struct dory_visual_color color = dory_visual_cell_color(
+                column, row, challenge_hash, (uint16_t)frame_marker);
+            glScissor(
+                origin_x + (GLint)(column * cell_size),
+                origin_y + (GLint)((DORY_VISUAL_CHALLENGE_ROWS - row - 1u) * cell_size),
+                (GLsizei)cell_size,
+                (GLsizei)cell_size);
+            glClearColor(
+                color.red / 255.0f, color.green / 255.0f,
+                color.blue / 255.0f, color.alpha / 255.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+    }
+    glDisable(GL_SCISSOR_TEST);
+    glEnable(GL_BLEND);
+}
+
 int main(int argc, char **argv)
 {
     const char *nonce = "dory-gl-default";
     uint32_t frame_count = 120;
     uint32_t hold_milliseconds = 2000;
+    const char *ready_file = NULL;
     for (int index = 1; index < argc; index++) {
         if (strncmp(argv[index], "--nonce=", 8) == 0 && argv[index][8]) {
             nonce = argv[index] + 8;
@@ -246,16 +277,20 @@ int main(int argc, char **argv)
             if (frame_count == 0 || frame_count > 10000)
                 frame_count = 0;
         } else if (strncmp(argv[index], "--hold-ms=", 10) == 0) {
-            hold_milliseconds = (uint32_t)strtoul(argv[index] + 10, NULL, 10);
-            if (hold_milliseconds > 30000)
+            if (dory_visual_parse_hold_milliseconds(
+                    argv[index] + 10, &hold_milliseconds) != 0)
                 hold_milliseconds = UINT32_MAX;
+        } else if (strncmp(argv[index], "--ready-file=", 13) == 0 &&
+                   argv[index][13] != '\0' && !ready_file) {
+            ready_file = argv[index] + 13;
         } else {
             frame_count = 0;
         }
     }
     if (frame_count == 0 || hold_milliseconds == UINT32_MAX) {
         fprintf(stderr,
-                "usage: %s [--nonce=VALUE] [--frames=1..10000] [--hold-ms=0..30000]\n",
+                "usage: %s [--nonce=VALUE] [--frames=1..10000] "
+                "[--hold-ms=0..30000] [--ready-file=/absolute/path]\n",
                 argv[0]);
         return 64;
     }
@@ -302,6 +337,8 @@ int main(int argc, char **argv)
     if (!renderer || !vendor || !version ||
         contains_ignoring_case(renderer, "llvmpipe") ||
         contains_ignoring_case(renderer, "lavapipe") ||
+        contains_ignoring_case(renderer, "softpipe") ||
+        contains_ignoring_case(renderer, "swrast") ||
         contains_ignoring_case(renderer, "software rasterizer")) {
         fprintf(stderr,
                 "dory-gl-probe: a hardware OpenGL renderer is required; software fallback is rejected\n");
@@ -391,15 +428,26 @@ int main(int argc, char **argv)
         glUniform1f(angle_location, 0.0f);
         glUniform4f(tint_location, 0.55f, 0.94f, 1.0f, 1.0f);
         glDrawArrays(GL_TRIANGLES, 0, 6);
+        draw_visual_challenge(nonce, frame_count);
         if (rendered + 1 == frame_count)
             glReadPixels(0, 0, DORY_WIDTH, DORY_HEIGHT, GL_RGBA,
                          GL_UNSIGNED_BYTE, pixels);
         SDL_GL_SwapWindow(window);
     }
     glFinish();
+    if (dory_visual_hold_milliseconds(50) != 0) {
+        perror("dory-gl-probe: could not settle presented frame");
+        return 1;
+    }
+    if (dory_visual_publish_presented(ready_file, nonce, rendered) != 0) {
+        perror("dory-gl-probe: could not publish presented-frame marker");
+        return 1;
+    }
     uint64_t render_finished = monotonic_nanoseconds();
-    if (hold_milliseconds)
-        SDL_Delay(hold_milliseconds);
+    if (dory_visual_hold_milliseconds(hold_milliseconds) != 0) {
+        perror("dory-gl-probe: could not hold presented frame");
+        return 1;
+    }
 
     uint64_t hash = fnv1a(nonce, strlen(nonce), UINT64_C(14695981039346656037));
     hash = fnv1a(pixels, (size_t)DORY_WIDTH * DORY_HEIGHT * 4, hash);
@@ -415,6 +463,33 @@ int main(int argc, char **argv)
     printf("\"resultHash\":\"fnv1a64:%016" PRIx64 "\",", hash);
     printf("\"frameCount\":%u,\"nonce\":", rendered);
     print_json_string(nonce);
+    printf(",\"visualChallenge\":{\"kind\":\"dev.dory.visual-challenge\","
+           "\"version\":1,\"encoding\":\"fnv1a64-frame16-grid12x10\","
+           "\"frameMarker\":%u,\"payloadHash\":\"fnv1a64:%016" PRIx64 "\"}",
+           rendered, dory_visual_challenge_hash(nonce, rendered));
+    /* Retain actual GPU readback at every challenge-cell center. The host derives the
+     * expected colors independently from the nonce and frame marker; a syntactically
+     * valid hash of an arbitrary framebuffer must not count as a rendered challenge. */
+    const uint32_t cell_size = dory_visual_cell_size(DORY_WIDTH, DORY_HEIGHT);
+    const uint32_t origin_y = DORY_HEIGHT - 24u -
+        DORY_VISUAL_CHALLENGE_ROWS * cell_size;
+    fputs(",\"visualReadbackEncoding\":\"rgb8-cell-centers-top-left-grid12x10@1\","
+          "\"visualReadbackRGBHex\":\"", stdout);
+    for (uint32_t row = 0; row < DORY_VISUAL_CHALLENGE_ROWS; row++) {
+        for (uint32_t column = 0; column < DORY_VISUAL_CHALLENGE_COLUMNS; column++) {
+            const uint32_t x = 24u + column * cell_size + cell_size / 2u;
+            const uint32_t y = origin_y +
+                (DORY_VISUAL_CHALLENGE_ROWS - row - 1u) * cell_size + cell_size / 2u;
+            const uint8_t *sample = pixels + ((size_t)y * DORY_WIDTH + x) * 4u;
+            printf("%02x%02x%02x", sample[0], sample[1], sample[2]);
+        }
+    }
+    putchar('"');
+    printf(",\"presentedHoldMilliseconds\":%u", hold_milliseconds);
+    if (ready_file) {
+        fputs(",\"presentedReadyFile\":", stdout);
+        print_json_string(ready_file);
+    }
     printf(",\"timings\":{\"renderMilliseconds\":%.3f,\"totalMilliseconds\":%.3f},",
            (render_finished - render_started) / 1000000.0,
            (finished - started) / 1000000.0);
