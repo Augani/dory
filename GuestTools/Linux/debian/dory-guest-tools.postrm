@@ -8,7 +8,8 @@ if command -v udevadm >/dev/null 2>&1; then
   udevadm control --reload-rules || true
 fi
 if [ "$1" = purge ]; then
-  rm -f /var/lib/dory/username
+  # This optional restriction is administrator-authored (or migrated from an older package),
+  # not a file owned by the current package. Leave it for an explicit administrator decision.
   rmdir /var/lib/dory 2>/dev/null || true
 fi
 

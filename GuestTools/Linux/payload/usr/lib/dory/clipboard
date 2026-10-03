@@ -11,15 +11,15 @@ case "$mime" in
   text/plain|text/plain\;charset=utf-8|image/png) ;;
   *) echo "unsupported clipboard type: $mime" >&2; exit 64 ;;
 esac
-user="$(cat /var/lib/dory/username 2>/dev/null || true)"
-if [ -z "$user" ] || ! id "$user" >/dev/null 2>&1; then
-  echo "Dory clipboard user is not configured" >&2
-  exit 69
-fi
-uid="$(id -u "$user")"
-home="$(getent passwd "$user" | cut -d: -f6)"
-runtime="/run/user/$uid"
-[ -d "$runtime" ] || { echo "Dory clipboard user session is not active" >&2; exit 69; }
+# shellcheck source=active-desktop-session
+source /usr/lib/dory/active-desktop-session
+dory_select_active_desktop_session || exit $?
+user="$DORY_ACTIVE_USERNAME"
+uid="$DORY_ACTIVE_UID"
+home="$DORY_ACTIVE_HOME"
+runtime="$DORY_ACTIVE_RUNTIME"
+authorized_session="$DORY_ACTIVE_SESSION_ID"
+authorized_session_type="$DORY_ACTIVE_SESSION_TYPE"
 session_marker="$runtime/dory/clipboard-session"
 [ -f "$session_marker" ] && [ ! -L "$session_marker" ] \
   || { echo "Dory clipboard user service is not active" >&2; exit 69; }
@@ -44,9 +44,19 @@ session_environment() {
     | sed -n "s/^${key}=//p" \
     | sed -n '1p'
 }
+marker_session="$(session_environment XDG_SESSION_ID)"
+[ -z "$marker_session" ] || [ "$marker_session" = "$DORY_ACTIVE_SESSION_ID" ] \
+  || { echo "Dory clipboard service belongs to another desktop session" >&2; exit 69; }
 
 run_as_user() {
-  runuser -u "$user" -- env \
+  # A user switch between resolution and exec revokes the old session's clipboard authority.
+  dory_select_active_desktop_session >/dev/null 2>&1 \
+    && [ "$DORY_ACTIVE_SESSION_ID" = "$authorized_session" ] \
+    && [ "$DORY_ACTIVE_SESSION_TYPE" = "$authorized_session_type" ] \
+    && [ "$DORY_ACTIVE_UID" = "$uid" ] \
+    || { echo "Dory active desktop changed before clipboard access" >&2; return 69; }
+  runuser -u "$user" -- env -i \
+    PATH=/usr/bin:/bin \
     HOME="$home" \
     USER="$user" \
     LOGNAME="$user" \
@@ -60,9 +70,11 @@ case "$wayland_socket" in
   */*) wayland_socket="" ;;
 esac
 
-if [ -n "$wayland_socket" ] && [ -S "$runtime/$wayland_socket" ] \
-  && command -v wl-copy >/dev/null 2>&1 \
-  && command -v wl-paste >/dev/null 2>&1; then
+if [ "$authorized_session_type" = wayland ]; then
+  [ -n "$wayland_socket" ] && [ -S "$runtime/$wayland_socket" ] \
+    && command -v wl-copy >/dev/null 2>&1 \
+    && command -v wl-paste >/dev/null 2>&1 \
+    || { echo "Dory active Wayland clipboard is unavailable" >&2; exit 69; }
   case "$operation" in
     set) run_as_user env WAYLAND_DISPLAY="$wayland_socket" wl-copy --type "$mime" ;;
     get) run_as_user env WAYLAND_DISPLAY="$wayland_socket" wl-paste --no-newline --type "$mime" ;;

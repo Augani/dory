@@ -8,7 +8,7 @@ Rules-Requires-Root: no
 
 Package: dory-guest-tools
 Architecture: any
-Depends: ${misc:Depends}, util-linux, wl-clipboard, xclip
+Depends: ${misc:Depends}, systemd, util-linux, wl-clipboard, xclip
 Description: Dory integration services for stock Linux virtual machines
  Provides the host-only vsock agent and bounded GNOME/KDE clipboard bridge used for lifecycle,
  shared-folder, time synchronization, and clipboard integration in Dory virtual machines.

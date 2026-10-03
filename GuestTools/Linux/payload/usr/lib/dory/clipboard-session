@@ -14,7 +14,17 @@ marker="$directory/clipboard-session"
 umask 077
 mkdir -p "$directory"
 temporary="$directory/.clipboard-session.$$"
-trap 'rm -f "$temporary" "$marker"' EXIT HUP INT TERM
+cleanup() {
+  rm -f "$temporary"
+  # A replacement service may have published a new PID while this process was stopping.
+  if [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$marker"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 printf '%s\n' "$$" > "$temporary"
 mv -f "$temporary" "$marker"
 

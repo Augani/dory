@@ -1,0 +1,80 @@
+#!/bin/bash
+# Source this file from a root-owned Dory guest helper. A local, active graphical logind session
+# is the authority for clipboard and resize; package-install order is not a session policy.
+# shellcheck disable=SC2034 # DORY_ACTIVE_* values are read by the scripts that source this file.
+
+dory_select_active_desktop_session() {
+  local restriction="" restriction_mode="" sessions="" session_id="" session_uid=""
+  local session_type="" session_remote="" session_class="" session_active=""
+  local selected_uid="" selected_type="" selected_id="" account="" username="" home=""
+  local candidate_count=0
+
+  command -v loginctl >/dev/null 2>&1 || {
+    echo "Dory requires logind to identify the active desktop session" >&2
+    return 69
+  }
+  if [ -e /var/lib/dory/username ] || [ -L /var/lib/dory/username ]; then
+    [ -f /var/lib/dory/username ] && [ ! -L /var/lib/dory/username ] \
+      && [ "$(stat -c %u /var/lib/dory/username 2>/dev/null)" = 0 ] || {
+      echo "Dory desktop account restriction is not a root-owned direct file" >&2
+      return 78
+    }
+    restriction_mode="$(stat -c %a /var/lib/dory/username 2>/dev/null)"
+    case "$restriction_mode" in 600|640|644) ;; *)
+      echo "Dory desktop account restriction has unsafe permissions" >&2
+      return 78 ;;
+    esac
+    restriction="$(/bin/cat /var/lib/dory/username)"
+    case "$restriction" in ''|*[!A-Za-z0-9_.-]*)
+      echo "Dory desktop account restriction is invalid" >&2
+      return 78 ;;
+    esac
+  fi
+
+  sessions="$(loginctl list-sessions --no-legend --no-pager)" || {
+    echo "Dory could not inspect guest desktop sessions" >&2
+    return 69
+  }
+  while IFS= read -r session_id; do
+    case "$session_id" in ''|*[!A-Za-z0-9_-]*) continue ;; esac
+    session_uid="$(loginctl show-session "$session_id" --property=User --value 2>/dev/null)" \
+      || continue
+    session_active="$(loginctl show-session "$session_id" --property=Active --value 2>/dev/null)" \
+      || continue
+    session_remote="$(loginctl show-session "$session_id" --property=Remote --value 2>/dev/null)" \
+      || continue
+    session_class="$(loginctl show-session "$session_id" --property=Class --value 2>/dev/null)" \
+      || continue
+    session_type="$(loginctl show-session "$session_id" --property=Type --value 2>/dev/null)" \
+      || continue
+    case "$session_uid" in ''|*[!0-9]*) continue ;; esac
+    [ "$session_active" = yes ] && [ "$session_remote" = no ] \
+      && [ "$session_class" = user ] || continue
+    case "$session_type" in wayland|x11) ;; *) continue ;; esac
+    [ "$session_uid" -ge 1000 ] && [ "$session_uid" -lt 60000 ] || continue
+    account="$(getent passwd "$session_uid")" || continue
+    IFS=: read -r username _ _ _ _ home _ <<< "$account"
+    [ -n "$username" ] && [ -n "$home" ] || continue
+    [ -z "$restriction" ] || [ "$restriction" = "$username" ] || continue
+    candidate_count=$((candidate_count + 1))
+    selected_uid="$session_uid"
+    selected_type="$session_type"
+    selected_id="$session_id"
+    DORY_ACTIVE_USERNAME="$username"
+    DORY_ACTIVE_HOME="$home"
+  done < <(printf '%s\n' "$sessions" | awk '{print $1}')
+
+  [ "$candidate_count" -eq 1 ] || {
+    echo "Dory requires exactly one active, local, permitted graphical user session" >&2
+    return 69
+  }
+  DORY_ACTIVE_UID="$selected_uid"
+  DORY_ACTIVE_SESSION_TYPE="$selected_type"
+  DORY_ACTIVE_SESSION_ID="$selected_id"
+  DORY_ACTIVE_RUNTIME="/run/user/$selected_uid"
+  [ -d "$DORY_ACTIVE_RUNTIME" ] \
+    && [ "$(stat -c %u "$DORY_ACTIVE_RUNTIME" 2>/dev/null)" = "$selected_uid" ] || {
+    echo "Dory active user runtime is unavailable or has the wrong owner" >&2
+    return 69
+  }
+}

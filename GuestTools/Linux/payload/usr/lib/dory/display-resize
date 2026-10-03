@@ -1,5 +1,5 @@
-#!/bin/sh
-set -eu
+#!/bin/bash
+set -euo pipefail
 
 device="${1:-}"
 case "$device" in
@@ -7,37 +7,58 @@ case "$device" in
   *) echo "invalid DRM device" >&2; exit 64 ;;
 esac
 
-user="$(cat /var/lib/dory/username 2>/dev/null || true)"
-if [ -z "$user" ] || ! id "$user" >/dev/null 2>&1; then
-  exit 0
-fi
-uid="$(id -u "$user")"
-home="$(getent passwd "$user" | cut -d: -f6)"
-runtime="/run/user/$uid"
+# shellcheck source=active-desktop-session
+source /usr/lib/dory/active-desktop-session
+dory_select_active_desktop_session >/dev/null 2>&1 || exit 0
+user="$DORY_ACTIVE_USERNAME"
+uid="$DORY_ACTIVE_UID"
+home="$DORY_ACTIVE_HOME"
+runtime="$DORY_ACTIVE_RUNTIME"
+authorized_session="$DORY_ACTIVE_SESSION_ID"
 marker="$runtime/dory/clipboard-session"
 [ -f "$marker" ] && [ ! -L "$marker" ] || exit 0
 [ "$(stat -c %u "$marker" 2>/dev/null || true)" = "$uid" ] || exit 0
+session_pid="$(cat "$marker" 2>/dev/null || true)"
+case "$session_pid" in ''|*[!0-9]*) exit 0 ;; esac
+session_process="/proc/$session_pid"
+[ -r "$session_process/environ" ] \
+  && [ "$(stat -c %u "$session_process" 2>/dev/null || true)" = "$uid" ] || exit 0
 
-# GNOME and KDE Wayland compositors consume the kernel DRM hotplug directly. Leave mode selection
-# to the compositor that owns the connector; this hook exists for Xorg's explicit refresh below.
-for candidate in "$runtime"/wayland-*; do
-  [ -S "$candidate" ] && exit 0
-done
+session_environment() {
+  local key="$1"
+  tr '\0' '\n' < "$session_process/environ" \
+    | sed -n "s/^${key}=//p" \
+    | sed -n '1p'
+}
+marker_session="$(session_environment XDG_SESSION_ID)"
+[ -z "$marker_session" ] || [ "$marker_session" = "$DORY_ACTIVE_SESSION_ID" ] || exit 0
+
+# GNOME and KDE Wayland compositors consume DRM hotplug directly. An old Wayland socket must not
+# suppress Xorg refresh after switching sessions, and a Wayland session must not drive Xrandr.
+[ "$DORY_ACTIVE_SESSION_TYPE" = x11 ] || exit 0
 
 # Xorg does not consistently apply a changed preferred mode on its own. Ask it to re-probe every
 # connected output; failure is non-fatal because the DRM event remains visible to the desktop.
 command -v xrandr >/dev/null 2>&1 || exit 0
-for socket in /tmp/.X11-unix/X*; do
-  [ -S "$socket" ] || continue
-  display=":${socket##*/X}"
+display="$(session_environment DISPLAY)"
+printf '%s\n' "$display" | grep -Eq '^:[0-9]+(\.[0-9]+)?$' || exit 0
+display_number="${display#:}"
+display_number="${display_number%%.*}"
+[ -S "/tmp/.X11-unix/X$display_number" ] || exit 0
+xauthority="$(session_environment XAUTHORITY)"
+if [ -z "$xauthority" ] && [ -f "$runtime/gdm/Xauthority" ]; then
+  xauthority="$runtime/gdm/Xauthority"
+fi
+if [ -z "$xauthority" ] && [ -f "$home/.Xauthority" ]; then
   xauthority="$home/.Xauthority"
-  if [ -f "$xauthority" ]; then
-    runuser -u "$user" -- env HOME="$home" USER="$user" LOGNAME="$user" \
-      DISPLAY="$display" XAUTHORITY="$xauthority" xrandr --auto >/dev/null 2>&1 || true
-  else
-    runuser -u "$user" -- env HOME="$home" USER="$user" LOGNAME="$user" \
-      DISPLAY="$display" xrandr --auto >/dev/null 2>&1 || true
-  fi
-  exit 0
-done
+fi
+case "$xauthority" in /*) ;; *) exit 0 ;; esac
+[ -f "$xauthority" ] && [ ! -L "$xauthority" ] \
+  && [ "$(stat -c %u "$xauthority" 2>/dev/null || true)" = "$uid" ] || exit 0
+dory_select_active_desktop_session >/dev/null 2>&1 \
+  && [ "$DORY_ACTIVE_SESSION_ID" = "$authorized_session" ] \
+  && [ "$DORY_ACTIVE_SESSION_TYPE" = x11 ] \
+  && [ "$DORY_ACTIVE_UID" = "$uid" ] || exit 0
+runuser -u "$user" -- env -i PATH=/usr/bin:/bin HOME="$home" USER="$user" LOGNAME="$user" \
+  DISPLAY="$display" XAUTHORITY="$xauthority" xrandr --auto >/dev/null 2>&1 || true
 exit 0
