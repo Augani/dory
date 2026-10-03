@@ -248,6 +248,9 @@ public final class DoryX86MemoryAccessCoordinator: @unchecked Sendable {
   }
 
   private static func normalized(_ ranges: [Range<UInt64>]) -> [Range<UInt64>] {
+    // Scalar CPU/JIT accesses already supply one normalized range. Reuse its storage;
+    // admission, writer priority and the multi-range coalescing path remain identical.
+    if ranges.count == 1 { return ranges[0].isEmpty ? [] : ranges }
     let sorted = ranges.filter { !$0.isEmpty }.sorted {
       $0.lowerBound == $1.lowerBound
         ? $0.upperBound < $1.upperBound
