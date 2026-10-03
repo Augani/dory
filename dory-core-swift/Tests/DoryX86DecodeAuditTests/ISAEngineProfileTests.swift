@@ -1567,25 +1567,31 @@ import Testing
     #endif
   }
 
-  @Test func unsupportedProtectedModeStoreIsAttributedAsInterpreterFallback() throws {
+  @Test func protectedModeStoreNativeRescueDoesNotInventInterpreterFallback() throws {
     #if arch(arm64)
       let machine = try DoryPCDirectKernelMachine(
         memoryBytes: 2 * 1024 * 1024, executionTier: .baselineJIT,
         baselineJITMaximumCodeBytes: 16 * 1024)
-      // This 32-bit store is outside the admitted native store path. It must remain an
-      // attributable Tier-1 decline rather than being misreported as a legacy native rescue.
-      try machine.load(kernel: makeMinimalELF(code: [0x89, 0x05, 0x00, 0x80, 0x00, 0x00]), commandLine: "x")
+      // MOV EAX, 0x01234567; MOV [0x8000], EAX. The protected-mode store declines
+      // Tier1 but retires through the admitted legacy native emitter. A compilation
+      // decline alone must not create confirmed interpreter work or its cost opportunity.
+      try machine.load(kernel: makeMinimalELF(code: [
+        0xB8, 0x67, 0x45, 0x23, 0x01, 0x89, 0x05, 0x00, 0x80, 0x00, 0x00,
+      ]), commandLine: "x")
       let receipt = try ISAEngineReceiptBuilder.run(
-        machine: machine, configuration: configuration, workloadName: "store", workloadRevision: "r",
-        completionCondition: .instructionBudget(instructionCount: 1),
+        machine: machine, configuration: configuration, workloadName: "native-store", workloadRevision: "r",
+        completionCondition: .instructionBudget(instructionCount: 2),
         translationCacheMaximumBytes: 16 * 1024)
+      #expect(receipt.outcome == .completed)
+      #expect(machine.state?.rip == 0x10_000B)
+      #expect(try machine.memory.read(at: 0x8000, byteCount: 4) == [0x67, 0x45, 0x23, 0x01])
       #expect(receipt.runSample.tier1CompilationDeclines == 1)
-      #expect(machine.executionStatistics.baselineJITInstructions == 0)
-      #expect(machine.executionStatistics.interpreterInstructions == 1)
+      #expect(machine.executionStatistics.baselineJITInstructions == 2)
+      #expect(machine.executionStatistics.interpreterInstructions == 0)
       let fallback = try #require(receipt.runSample.confirmedInterpreterFallback)
-      #expect(fallback.retiredInstructions(for: .nativeEmitter) == 1)
+      #expect(fallback.work.isEmpty)
       let report = try #require(ISAEngineCostReportGenerator.generate(from: receipt))
-      #expect(report.optimizationOpportunities.contains { $0.targetCostCategory == "tier1Declines" })
+      #expect(!report.optimizationOpportunities.contains { $0.targetCostCategory == "tier1Declines" })
     #endif
   }
 
