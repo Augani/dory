@@ -304,6 +304,23 @@ struct PVHStressIOTests {
     #expect(decoded.receiveUsedHead == 0 && decoded.receiveUsedLength == 1036)
     #expect(decoded.receiveDescriptorLength == 2048 && decoded.receiveDescriptorFlags == 2)
     #expect(decoded.receiveDescriptorPrefix == prefix)
+    let configuration = try PVHRunnerConfiguration(arguments: [
+      "--kernel", "/kernel", "--kernel-sha256", String(repeating: "a", count: 64),
+      "--initrd", "/initrd", "--initrd-sha256", String(repeating: "b", count: 64),
+      "--fixture-manifest", "/manifest", "--fixture-manifest-sha256", String(repeating: "c", count: 64),
+      "--source-commit", String(repeating: "d", count: 40), "--source-tree", "dirty",
+      "--host-class", "apple-silicon-development", "--processor-count", "1",
+      "--command-line", "console=ttyS0 rdinit=/init",
+      "--jit-write-policy", "checked-callbacks", "--raw-target-prediction", "none",
+      "--tier", "baseline-jit", "--memory-mib", "1024",
+      "--max-instructions", "120000000", "--wall-seconds", "120",
+      "--run-id", runID.uuidString.lowercased(), "--workload", "io.ethernet_frame_roundtrip"])
+    var record = PVHDiagnosticRecord(configuration: configuration)
+    record.stressNetworkFirstReply = sample
+    let roundTrip = try JSONDecoder().decode(PVHDiagnosticRecord.self,
+      from: JSONEncoder().encode(record))
+    #expect(roundTrip.stressNetworkFirstReply?.receiveUsedLength == 1036)
+    #expect(roundTrip.stressNetworkFirstReply?.receiveDescriptorPrefix == prefix)
     #expect(readSizes.allSatisfy { $0 <= 32 } && readSizes.reduce(0, +) <= 56)
     #expect(device.transport.deviceState.snapshot() == stateBefore)
     #expect(queue.snapshot().lastUsedIndex == 1)

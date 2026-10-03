@@ -999,7 +999,7 @@ struct PVHDiagnosticRecord: Codable, Sendable {
     case schemaVersion, kind, releaseQualified, configuration, hostOS, guestClock, observationScope
     case stage, fixtureManifest, runnerExecutable, kernel, initrd, symbols, retiredInstructions
     case elapsedNanoseconds, lastExits, state, executionStatistics, hostExecutionDiagnostics
-    case jitDiagnostics, stressIO
+    case jitDiagnostics, stressIO, stressNetworkFirstReply
     case timerInterruptState, consoleTail, consoleBytes, guestReceipt, outcome, error
   }
 
@@ -1059,6 +1059,8 @@ struct PVHDiagnosticRecord: Codable, Sendable {
     jitDiagnostics = try container.decodeIfPresent(
       PVHJITDiagnosticSample.self, forKey: .jitDiagnostics)
     stressIO = try container.decodeIfPresent(PVHStressIOSnapshot.self, forKey: .stressIO)
+    stressNetworkFirstReply = try container.decodeIfPresent(
+      PVHStressNetworkFirstReply.self, forKey: .stressNetworkFirstReply)
     timerInterruptState = try container.decodeIfPresent(
       PVHTimerInterruptSnapshot.self, forKey: .timerInterruptState)
     consoleTail = try container.decode(String.self, forKey: .consoleTail)

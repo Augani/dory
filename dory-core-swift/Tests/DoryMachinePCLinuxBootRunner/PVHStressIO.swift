@@ -276,6 +276,7 @@ struct PVHStressNetworkSnapshot: Codable, Sendable {
 struct PVHStressNetworkFirstReply: Codable, Sendable {
   let retiredInstructions: UInt64
   let deviceStatus: UInt8
+  let queueFailure: DoryPCVirtioPCIQueueFailure?
   let negotiatedFeatures: UInt64
   let pendingReceiveFrames: Int
   let droppedReceiveFrames: Int
@@ -297,6 +298,7 @@ struct PVHStressNetworkFirstReply: Codable, Sendable {
     self.retiredInstructions = retiredInstructions
     let state = device.transport.deviceState.snapshot()
     deviceStatus = state.status.rawValue
+    queueFailure = device.transport.lastQueueFailure
     negotiatedFeatures = state.negotiatedFeatures.rawValue
     pendingReceiveFrames = device.networkDevice.pendingReceiveCount
     droppedReceiveFrames = device.networkDevice.droppedReceiveCount

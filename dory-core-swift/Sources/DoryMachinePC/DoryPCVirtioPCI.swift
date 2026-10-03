@@ -16,6 +16,14 @@ public enum DoryPCVirtioPCIInterrupt: Sendable, Hashable {
   case configuration
 }
 
+/// Last synchronous queue-drain error, bound to its captured lifecycle epoch.
+/// Diagnostic text is bounded; it does not alter the fail-closed device reset transition.
+public struct DoryPCVirtioPCIQueueFailure: Codable, Sendable, Hashable {
+  public let queue: UInt16
+  public let lifecycleEpoch: UInt64?
+  public let reason: String
+}
+
 public struct DoryPCVirtioPCIQueueSnapshot: Sendable, Hashable {
   public let size: UInt16
   public let enabled: Bool
@@ -153,6 +161,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   private var registerReadCount: UInt64 = 0
   private var registerWriteCount: UInt64 = 0
   private var recentRegisterAccesses: [DoryPCVirtioPCIRegisterAccess] = []
+  private var queueFailure: DoryPCVirtioPCIQueueFailure?
   /// Queue indices requested while another drain owns the transport. A single drain owner
   /// serializes the non-reentrant lifecycle gate across all queues, not just each queue lock.
   private var pendingReDrain: Set<UInt16> = []
@@ -310,6 +319,15 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
         recentAccesses: recentRegisterAccesses
       )
     }
+  }
+
+  public var lastQueueFailure: DoryPCVirtioPCIQueueFailure? {
+    lock.withLock { queueFailure }
+  }
+
+  private func recordQueueFailure(queue: UInt16, epoch: UInt64?, error: any Error) {
+    let reason = String(String(describing: error).prefix(512))
+    lock.withLock { queueFailure = .init(queue: queue, lifecycleEpoch: epoch, reason: reason) }
   }
 
   @discardableResult
@@ -537,6 +555,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           }
           return false
         } catch {
+          recordQueueFailure(queue: index, epoch: terminalEpoch, error: error)
           return true
         }
       }
@@ -677,6 +696,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           // inner wrapper recording it; attribute it to the last pop epoch.
           deferredTerminalEpoch = lastPopEpoch
         }
+        recordQueueFailure(queue: index, epoch: deferredTerminalEpoch, error: error)
         return true
       }
     }
@@ -741,6 +761,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
         lock.withLock {
           configurationMSIXVector = .max
           isrStatus = 0
+          queueFailure = nil
           for index in queues.indices {
             queues[index].enabled = false
             queues[index].msixVector = .max

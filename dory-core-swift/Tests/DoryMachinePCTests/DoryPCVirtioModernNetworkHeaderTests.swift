@@ -60,6 +60,13 @@ import Testing
     #expect(try fixture.network.readBAR(offset: 0x14, byteCount: 1) == [15 | 64])
     #expect(fixture.network.networkDevice.pendingReceiveCount == 1)
     #expect(fixture.network.networkDevice.droppedReceiveCount == 0)
+    let failure = try #require(fixture.network.transport.lastQueueFailure)
+    #expect(failure.queue == 0)
+    #expect(failure.lifecycleEpoch == fixture.network.transport.deviceState.snapshot().lifecycleEpoch)
+    #expect(failure.reason.contains("receiveBufferTooSmall"))
+    #expect(failure.reason.count <= 512)
+    try fixture.network.writeBAR(offset: 0x14, bytes: [0])
+    #expect(fixture.network.transport.lastQueueFailure == nil)
   }
 
   @Test func malformedModernTransmitDoesNotReachBackendOrCompleteUsedRing() throws {
