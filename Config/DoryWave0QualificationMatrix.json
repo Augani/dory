@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "dev.dory.wave0-qualification-matrix",
-  "selectionDate": "2026-09-15",
+  "selectionDate": "2026-09-23",
   "selectionStatus": "proposed-review-required",
   "releaseQualified": false,
   "candidateCatalog": "Config/DoryVirtualizationGuestCandidates.json",
@@ -15,6 +15,16 @@
       "subject": "Fedora Linux 44",
       "url": "https://fedoramagazine.org/announcing-fedora-linux-44/",
       "selectionReason": "The Fedora Project's official magazine records Fedora Linux 44 as released on 28 April 2026; release approval must still reconfirm lifecycle status before publication."
+    },
+    {
+      "subject": "Ubuntu 24.04.4 desktop images",
+      "url": "https://cdimage.ubuntu.com/ubuntu/releases/24.04/release/SHA256SUMS",
+      "selectionReason": "Official ARM64 desktop checksum; the matching AMD64 desktop checksum is recorded in the candidate catalog. ISO bytes and guest behavior remain unqualified."
+    },
+    {
+      "subject": "Fedora Workstation 44 live images",
+      "url": "https://www.fedoraproject.org/workstation/download/",
+      "selectionReason": "Fedora's Workstation download page publishes the selected ARM64 and x86_64 live-ISO checksums. ISO bytes and guest behavior remain unqualified."
     },
     {
       "subject": "Apple Virtualization framework",
@@ -61,6 +71,19 @@
         "package-install",
         "storage-recovery"
       ]
+    },
+    {
+      "id": "macos-single-display",
+      "guestCPUs": 4,
+      "guestMemoryMiB": 8192,
+      "guestDiskGiB": 64,
+      "display": "one-1920x1080",
+      "workloads": [
+        "install",
+        "cold-reopen",
+        "guest-metal",
+        "saved-state-recovery"
+      ]
     }
   ],
   "cpuProfiles": [
@@ -69,6 +92,18 @@
       "architecture": "arm64",
       "executionOwner": "Dory native Hypervisor.framework runner",
       "status": "implementation-only"
+    },
+    {
+      "id": "dory.x86_64.compat-v1",
+      "architecture": "x86_64",
+      "executionOwner": "Dory x86-to-ARM64 translator",
+      "status": "implementation-only"
+    },
+    {
+      "id": "apple.vzmac.arm64-v1",
+      "architecture": "arm64",
+      "executionOwner": "Apple Virtualization.framework Mac runtime",
+      "status": "implementation-only"
     }
   ],
   "graphicsProfiles": [
@@ -76,6 +111,30 @@
       "id": "arm64-virgl2-angle-metal",
       "guestArchitecture": "arm64",
       "guestPageKiB": 4,
+      "status": "unqualified"
+    },
+    {
+      "id": "arm64-venus-moltenvk-metal",
+      "guestArchitecture": "arm64",
+      "guestPageKiB": 4,
+      "status": "unqualified"
+    },
+    {
+      "id": "x86_64-virgl2-angle-metal",
+      "guestArchitecture": "x86_64",
+      "guestPageKiB": 4,
+      "status": "unqualified"
+    },
+    {
+      "id": "x86_64-venus-moltenvk-metal",
+      "guestArchitecture": "x86_64",
+      "guestPageKiB": 4,
+      "status": "unqualified"
+    },
+    {
+      "id": "macos-vz-metal",
+      "guestArchitecture": "arm64",
+      "guestPageKiB": 16,
       "status": "unqualified"
     }
   ],
@@ -92,6 +151,51 @@
       "graphicsProfiles": [
         "arm64-virgl2-angle-metal"
       ]
+    },
+    {
+      "id": "linux-arm64-ubuntu-desktop-24.04.4",
+      "guest": "linux",
+      "architecture": "arm64",
+      "mediaID": "ubuntu-desktop-24.04.4-arm64",
+      "cpuProfile": "dory.arm64.raw-hv-v1",
+      "resourceClasses": ["linux-standard"],
+      "graphicsProfiles": ["arm64-virgl2-angle-metal", "arm64-venus-moltenvk-metal"]
+    },
+    {
+      "id": "linux-arm64-fedora-workstation-44",
+      "guest": "linux",
+      "architecture": "arm64",
+      "mediaID": "fedora-workstation-44-arm64",
+      "cpuProfile": "dory.arm64.raw-hv-v1",
+      "resourceClasses": ["linux-standard"],
+      "graphicsProfiles": ["arm64-virgl2-angle-metal", "arm64-venus-moltenvk-metal"]
+    },
+    {
+      "id": "linux-x86_64-ubuntu-desktop-24.04.4",
+      "guest": "linux",
+      "architecture": "x86_64",
+      "mediaID": "ubuntu-desktop-24.04.4-x86_64",
+      "cpuProfile": "dory.x86_64.compat-v1",
+      "resourceClasses": ["linux-standard"],
+      "graphicsProfiles": ["x86_64-virgl2-angle-metal", "x86_64-venus-moltenvk-metal"]
+    },
+    {
+      "id": "linux-x86_64-fedora-workstation-44",
+      "guest": "linux",
+      "architecture": "x86_64",
+      "mediaID": "fedora-workstation-44-x86_64",
+      "cpuProfile": "dory.x86_64.compat-v1",
+      "resourceClasses": ["linux-standard"],
+      "graphicsProfiles": ["x86_64-virgl2-angle-metal", "x86_64-venus-moltenvk-metal"]
+    },
+    {
+      "id": "macos-arm64-26.6.2-25G83",
+      "guest": "macos",
+      "architecture": "arm64",
+      "mediaID": "macos-26.6.2-25G83-arm64",
+      "cpuProfile": "apple.vzmac.arm64-v1",
+      "resourceClasses": ["macos-single-display"],
+      "graphicsProfiles": ["macos-vz-metal"]
     }
   ],
   "review": {
@@ -104,5 +208,5 @@
     "approvalRule": "Each required role must record reviewer identity, UTC review time and an HTTPS review record binding approvalPayloadSHA256 emitted by the validator. That digest includes the catalog digest and all tuples, excluding only approval records and status fields. Review records document human approval, not a cryptographic signature.",
     "approvals": []
   },
-  "candidateCatalogSHA256": "be7e5f9a171f6b487334886eb089fa121aa0f7959cba805381572f1766285ad1"
+  "candidateCatalogSHA256": "30f102fbe989be8fd0f96d5bb2c08a95d4efecc9033bd50c2af94b995f5844b7"
 }

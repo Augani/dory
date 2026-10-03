@@ -134,7 +134,7 @@ DoryNativeHVArm64 remains a probe, not a replacement production machine. Generic
 
 **Acceptance:** every current change has a disposition; accepted changes have relevant passing checks; no untriaged failure in the admitted configuration; experiments remain visibly disabled. The working tree may contain deliberately retained user work, but the candidate source set must be unambiguous.
 
-**Local environment observed during review:** Apple Silicon/macOS 27.0 development host; Xcode 26.6 RC installed; global xcode-select points to CommandLineTools; the proposed matrix instead names macOS 26.6.2. These are different environments. Use a per-command DEVELOPER_DIR, not a global host change. A pre-existing long-running SwiftPM process owned the normal package build directory, and free storage was about 27 GiB; full live-disk campaigns need separately budgeted capacity.
+**Historical local environment observed during review:** Apple Silicon/macOS 27.0 development host; Xcode 26.6 RC installed; global xcode-select pointed to CommandLineTools; the proposed matrix instead named macOS 26.6.2. These were different environments. A pre-existing long-running SwiftPM process owned the normal package build directory, and free storage was about 27 GiB; full live-disk campaigns need separately budgeted capacity. **Current development host (22 September 2026):** `/Applications/Xcode.app` is the final Xcode 27.0 build 27A266a with macOS 27.0 SDK and is selected by `xcode-select`. The old RC is not a current build input. Keep the separately pinned final-Xcode-26.6 release policy distinct until the release matrix is deliberately updated.
 
 ### 1.6 P1-02 — Reproduce artifacts and record one current baseline
 
@@ -976,15 +976,15 @@ Do not append an endless narrative to PLAN.md. Update the current state of the r
 
 Focused examples, using the installed toolchain explicitly:
 
-    DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer \
+    DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
       xcrun swift test --package-path dory-core-swift --jobs 4 \
       --filter 'DoryDBTX86Tests|DoryMachinePCTests'
 
-    DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer \
+    DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
       xcrun swift test --package-path Packages/ContainerizationEngine --jobs 4 \
       --filter 'DoryHVTests|DoryRendererWorkerServiceCoreTests|DoryRendererWorkerVirglBackendTests'
 
-    DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer \
+    DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
       xcrun swift test --package-path dory-core-swift --jobs 4 \
       --filter 'DoryVZMacCoreTests|DoryVZMacCompatibilityTests|DorydKitTests'
 

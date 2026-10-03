@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "kind": "virtualization-guest-candidates",
-  "selectionDate": "2026-09-04",
-  "scope": "Candidate inputs, not release support claims. Ubuntu and Fedora are two distinct general-purpose Linux families on each Linux architecture. Alpine is a separate small diagnostic input.",
+  "selectionDate": "2026-09-23",
+  "scope": "Candidate inputs, not release support claims. Ubuntu and Fedora server and desktop images are distinct inputs on each Linux architecture. Alpine is a separate small diagnostic input.",
   "downloadPolicy": "Only explicit artifact IDs are downloaded; SHA-256 is mandatory and no floating substitution is permitted. Missing required input fails.",
   "artifacts": [
     {
@@ -220,6 +220,74 @@
           "maximumBytes": 6392230
         }
       ]
+    },
+    {
+      "id": "ubuntu-desktop-24.04.4-arm64",
+      "family": "debian",
+      "role": "general-purpose",
+      "guest": "linux",
+      "architecture": "arm64",
+      "version": "24.04.4",
+      "url": "https://cdimage.ubuntu.com/ubuntu/releases/24.04/release/ubuntu-24.04.4-desktop-arm64.iso",
+      "filename": "ubuntu-24.04.4-desktop-arm64.iso",
+      "sha256": "c2610520bf582976839a1724c669e1cfed0547427be5a0ad12d457b92b46ffbe",
+      "kernel": "Installed kernel identity must be collected from the selected desktop image and guest runtime.",
+      "libc": "Installed libc identity must be collected from the selected desktop image and guest runtime.",
+      "graphics": "Stock Ubuntu Desktop image; Mesa/driver capability and hardware rendering are unqualified.",
+      "bootLayout": "Official ARM64 desktop live ISO; installation and installed-disk boot are pending qualification.",
+      "metadataEvidence": "https://cdimage.ubuntu.com/ubuntu/releases/24.04/release/SHA256SUMS",
+      "qualification": "Candidate only; official checksum and URL availability checked 2026-09-23, no ISO-byte or guest qualification."
+    },
+    {
+      "id": "ubuntu-desktop-24.04.4-x86_64",
+      "family": "debian",
+      "role": "general-purpose",
+      "guest": "linux",
+      "architecture": "x86_64",
+      "version": "24.04.4",
+      "url": "https://releases.ubuntu.com/24.04/ubuntu-24.04.4-desktop-amd64.iso",
+      "filename": "ubuntu-24.04.4-desktop-amd64.iso",
+      "sha256": "3a4c9877b483ab46d7c3fbe165a0db275e1ae3cfe56a5657e5a47c2f99a99d1e",
+      "kernel": "Installed kernel identity must be collected from the selected desktop image and guest runtime.",
+      "libc": "Installed libc identity must be collected from the selected desktop image and guest runtime.",
+      "graphics": "Stock Ubuntu Desktop image; Mesa/driver capability and hardware rendering are unqualified.",
+      "bootLayout": "Official AMD64 desktop live ISO; installation and installed-disk boot are pending qualification.",
+      "metadataEvidence": "https://releases.ubuntu.com/24.04/SHA256SUMS",
+      "qualification": "Candidate only; official checksum and URL availability checked 2026-09-23, no ISO-byte or guest qualification."
+    },
+    {
+      "id": "fedora-workstation-44-arm64",
+      "family": "fedora",
+      "role": "general-purpose",
+      "guest": "linux",
+      "architecture": "arm64",
+      "version": "44-1.7",
+      "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Workstation/aarch64/iso/Fedora-Workstation-Live-44-1.7.aarch64.iso",
+      "filename": "Fedora-Workstation-Live-44-1.7.aarch64.iso",
+      "sha256": "162ba3c552a2d241c7c63ec26777af0255ee1b5a135adc0be986ceed999933ef",
+      "kernel": "Installed kernel identity must be collected from the selected Workstation image and guest runtime.",
+      "libc": "Installed libc identity must be collected from the selected Workstation image and guest runtime.",
+      "graphics": "Stock Fedora Workstation image; Mesa/driver capability and hardware rendering are unqualified.",
+      "bootLayout": "Official AArch64 Workstation live ISO; installation and installed-disk boot are pending qualification.",
+      "metadataEvidence": "https://www.fedoraproject.org/workstation/download/",
+      "qualification": "Candidate only; official checksum and URL availability checked 2026-09-23, no ISO-byte or guest qualification."
+    },
+    {
+      "id": "fedora-workstation-44-x86_64",
+      "family": "fedora",
+      "role": "general-purpose",
+      "guest": "linux",
+      "architecture": "x86_64",
+      "version": "44-1.7",
+      "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Workstation/x86_64/iso/Fedora-Workstation-Live-44-1.7.x86_64.iso",
+      "filename": "Fedora-Workstation-Live-44-1.7.x86_64.iso",
+      "sha256": "1620295f6a00c27c3208f0c00b8ece4eab1ec69b9002152d97488bf26a426ddf",
+      "kernel": "Installed kernel identity must be collected from the selected Workstation image and guest runtime.",
+      "libc": "Installed libc identity must be collected from the selected Workstation image and guest runtime.",
+      "graphics": "Stock Fedora Workstation image; Mesa/driver capability and hardware rendering are unqualified.",
+      "bootLayout": "Official AMD64 Workstation live ISO; installation and installed-disk boot are pending qualification.",
+      "metadataEvidence": "https://www.fedoraproject.org/workstation/download/",
+      "qualification": "Candidate only; official checksum and URL availability checked 2026-09-23, no ISO-byte or guest qualification."
     }
   ]
 }

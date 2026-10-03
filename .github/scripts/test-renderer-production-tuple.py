@@ -368,6 +368,13 @@ class StaticTupleTests(unittest.TestCase):
             "--producer-fence-contract stock-linux-6.13-runtime-verified",
             xcode,
         )
+        self.assertIn("--producer-fence-contract dory-pc-x86_64-virgl2", xcode)
+        self.assertIn("--producer-fence-contract dory-pc-x86_64-venus", xcode)
+        self.assertIn(
+            "renderer-bootstrap-qualification-pc-x86_64-venus.json",
+            xcode,
+        )
+        self.assertIn("dory-pc-x86_64-venus", QUALIFICATION_VERIFIER.read_text())
         self.assertIn("DORY_RENDERER_QUALIFICATION_MODE", xcode)
         self.assertIn("--require-release-signature", xcode)
 
