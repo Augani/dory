@@ -4,6 +4,66 @@ import Testing
 @testable import Dory
 
 struct MachineRuntimeProjectionTests {
+    @Test func nativeMacDisplayRepairIsDiagnosticNotStartOrSavedRAMDiscardAdmission() {
+        var projected = machine(state: .failed)
+        projected.guestFamily = "macos"
+        projected.nativeMacDisplayRepair = .init(originalManifestSHA256: String(repeating: "a", count: 64),
+            displays: [.init(widthPixels: 2560, heightPixels: 1600, pixelsPerInch: 220),
+                       .init(widthPixels: 1920, heightPixels: 1080, pixelsPerInch: 144)],
+            pendingSelectedDisplayIndex: nil, preservesSavedState: true, bundleRepairCompleted: false)
+        projected.failure = .init(schemaVersion: 1, code: .savedStateInvalid, occurredAtUnixMilliseconds: 1_000,
+            operationID: nil, causalChain: [.artifactAuthority], recoveryDisposition: .repair, evidenceReferences: [])
+        #expect(projected.actionLabel == "Display Repair Required")
+        #expect(!projected.requiresSavedStateRecovery)
+        #expect(!projected.canDiscardSavedState)
+        #expect(projected.runtimeEvidence.contains { $0.id == "display-repair" && $0.detail.contains("saved RAM are preserved") })
+        projected.status = .suspended
+        #expect(!projected.canDiscardSavedState)
+    }
+    @Test func invalidSavedStateOffersExplicitRecoveryNotStart() {
+        var projected = machine(state: .failed)
+        projected.failure = .init(
+            schemaVersion: 1, code: .savedStateInvalid,
+            occurredAtUnixMilliseconds: 1_000, operationID: nil,
+            causalChain: [.artifactAuthority], recoveryDisposition: .repair, evidenceReferences: []
+        )
+        #expect(projected.requiresSavedStateRecovery)
+        #expect(projected.canDiscardSavedState)
+        #expect(projected.actionLabel == "Recover…")
+        projected.processID = 123
+        #expect(!projected.canDiscardSavedState)
+        projected.processID = nil
+        projected.activeOperation = .init(operationID: UUID().uuidString.lowercased(), kind: .stopping, phase: .publishing)
+        #expect(!projected.canDiscardSavedState)
+    }
+
+    @Test func ordinaryFailuresAndLiveGuestsCannotDiscardSavedState() {
+        for state in DoryVirtualMachineState.allCases {
+            let projected = machine(state: state)
+            #expect(!projected.requiresSavedStateRecovery)
+            #expect(projected.canDiscardSavedState == (state == .suspended))
+        }
+    }
+
+    @Test func pendingColdRecoveryOffersOnlyItsOriginalStopOperation() {
+        let operationID = UUID()
+        var projected = machine(state: .recovering)
+        projected.failure = .init(
+            schemaVersion: 1, code: .lifecycleRecoveryRequired,
+            occurredAtUnixMilliseconds: 1_000, operationID: operationID.uuidString.lowercased(),
+            causalChain: [.journal], recoveryDisposition: .repair, evidenceReferences: []
+        )
+        projected.activeOperation = .init(operationID: operationID.uuidString.lowercased(), kind: .stopping, phase: .publishing)
+        #expect(projected.pendingSavedStateRecoveryOperationID == operationID)
+        #expect(projected.canDiscardSavedState)
+        #expect(projected.actionLabel == "Retry Recovery…")
+        projected.activeOperation?.kind = .repairing
+        #expect(!projected.canDiscardSavedState)
+        projected.activeOperation?.kind = .stopping
+        projected.processID = 42
+        #expect(!projected.canDiscardSavedState)
+    }
+
     private func machine(state: DoryVirtualMachineState = .running) -> Machine {
         Machine(
             name: "dev", distro: "Ubuntu", version: "24.04", status: state,

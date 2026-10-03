@@ -1,6 +1,7 @@
 @testable import DorydKit
 import DoryCore
 import DoryOperations
+import DoryVMDisplayWireContracts
 import XCTest
 
 final class DorydConfigurationTests: XCTestCase {
@@ -1042,10 +1043,33 @@ final class DorydConfigurationTests: XCTestCase {
             runtimeDirectory: directory + "/home/.dory/machines",
             lifecycleJournalHome: directory + "/home",
             baseArguments: ["--foreground", "--verbose"],
+            displayRelayServiceName: DoryVMDisplayBrokerXPCInterface.serviceName(
+                controlServiceName: try env.machServiceName()
+            ),
             passMachineArguments: false,
             logDirectory: directory + "/logs",
             requiresReadyHandoff: false
         ))
+    }
+
+    func testMachineManagerConfigurationKeepsARMAndPCGuestToolsMediaSeparate() throws {
+        let directory = "/tmp/doryd-tools-isa-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let helper = try executableFixture(at: directory + "/dory-vmm")
+        let armTools = directory + "/dory-guest-tools-arm64.iso"
+        let pcTools = directory + "/dory-guest-tools-x86_64.iso"
+        try Data("arm-tools".utf8).write(to: URL(fileURLWithPath: armTools))
+        try Data("pc-tools".utf8).write(to: URL(fileURLWithPath: pcTools))
+        let env = DorydEnvironment(values: [
+            "DORYD_VMM_HELPER": helper,
+            "DORYD_MACHINE_STATE_DIR": directory + "/machines",
+            "DORYD_GUEST_TOOLS_ISO_ARM64": armTools,
+            "DORYD_GUEST_TOOLS_ISO_X86_64": pcTools,
+        ], home: directory + "/home", cwd: directory)
+        let config = try XCTUnwrap(env.machineManagerConfiguration())
+        XCTAssertEqual(config.guestToolsISOPathsByArchitecture[.arm64], armTools)
+        XCTAssertEqual(config.guestToolsISOPathsByArchitecture[.x86_64], pcTools)
     }
 
     func testMachineManagerConfigurationFindsFirmwareInManagedResources() throws {

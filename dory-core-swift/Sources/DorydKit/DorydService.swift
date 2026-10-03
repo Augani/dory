@@ -715,6 +715,33 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineStartMetalProbe(
+        _ machineID: String,
+        operationID: String,
+        challengePath: String,
+        resultPath: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let parsedOperationID = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "Mac Metal probe start requires a canonical operation ID")
+            return
+        }
+        let request: DoryVZMacMetalProbeLaunchRequest
+        do {
+            request = try DoryVZMacMetalProbeLaunchRequest(
+                challengePath: challengePath, resultPath: resultPath
+            )
+        } catch {
+            reply(false, [:], "\(error)")
+            return
+        }
+        machineControl(machineID, action: "start", reply: reply) { manager, id in
+            try manager.start(
+                id: id, operationID: parsedOperationID, metalProbe: request
+            )
+        }
+    }
+
     public func machineStop(
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
@@ -846,6 +873,15 @@ public final class DorydService: NSObject, DorydControl {
             return
         }
         do {
+            if config["nativeMacDisplayRepair"] != nil {
+                let request = try MachineNativeMacDisplayRepairRequest(config)
+                let status = try machineManager.repairNativeMacDisplay(id: machineID,
+                    keepingDisplayAt: request.selectedDisplayIndex,
+                    originalManifestSHA256: request.originalManifestSHA256, operationID: request.operationID)
+                incidentWriter?.record(type: "machine.display_repair", detail: machineID)
+                reply(true, status.xpcDictionary, "")
+                return
+            }
             let update = try MachineUpdateRequest(xpcDictionary: config)
             let operationID: UUID
             if let raw = config["operationID"] {
@@ -1082,6 +1118,31 @@ public final class DorydService: NSObject, DorydControl {
         } catch {
             reply(false, [], "\(error)")
         }
+    }
+
+    public func machineQualificationFault(
+        _ machineID: String, requestJSON: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager, requestJSON.utf8.count <= 8_192 else {
+            reply(false, [:], "qualification fault authority is unavailable")
+            return
+        }
+        do {
+            let data = Data(requestJSON.utf8)
+            let request = try JSONDecoder().decode(DoryRuntimeQualificationFaultRequest.self, from: data)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            guard try encoder.encode(request) == data, request.machineID == machineID else {
+                throw DoryRuntimeQualificationFaultError.invalidIdentity
+            }
+            let observation = try machineManager.qualificationFault(id: machineID, request: request)
+            let object = try JSONSerialization.jsonObject(with: encoder.encode(observation))
+            guard let dictionary = object as? NSDictionary else {
+                throw DoryRuntimeQualificationFaultError.invalidIdentity
+            }
+            reply(true, dictionary, "")
+        } catch { reply(false, [:], "\(error)") }
     }
 
     public func machineUSBAttach(
@@ -2376,6 +2437,34 @@ private enum XPCNetworkRouteError: Error, CustomStringConvertible {
     }
 }
 
+struct MachineNativeMacDisplayRepairRequest {
+    let operationID: UUID
+    let originalManifestSHA256: String
+    let selectedDisplayIndex: Int
+
+    init(_ dictionary: NSDictionary) throws {
+        guard let keys = dictionary.allKeys as? [String], Set(keys) == ["operationID", "nativeMacDisplayRepair"],
+              let rawID = dictionary["operationID"] as? String,
+              rawID != "00000000-0000-0000-0000-000000000000",
+              let operationID = DoryOperationIdentity.parseCanonical(rawID),
+              let repair = dictionary["nativeMacDisplayRepair"] as? NSDictionary,
+              let repairKeys = repair.allKeys as? [String],
+              Set(repairKeys) == ["schemaVersion", "originalManifestSHA256", "selectedDisplayIndex"],
+              Self.integer(repair["schemaVersion"]) == 1,
+              let digest = repair["originalManifestSHA256"] as? String, digest.count == 64,
+              digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+              let index = Self.integer(repair["selectedDisplayIndex"]), index < 8 else {
+            throw XPCRemoteConfigError.invalid("nativeMacDisplayRepair")
+        }
+        self.operationID = operationID; originalManifestSHA256 = digest; selectedDisplayIndex = Int(index)
+    }
+    private static func integer(_ value: Any?) -> UInt64? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              ["c", "C", "s", "S", "i", "I", "l", "L", "q", "Q"].contains(String(cString: number.objCType)) else { return nil }
+        return UInt64(number.stringValue)
+    }
+}
+
 private struct MachineExecRequest {
     var argv: [String]
     var cwd: String
@@ -3108,6 +3197,27 @@ private extension DoryMachineStatus {
             }
         }
         dictionary["integrationHealth"] = integrationHealth.xpcDictionary
+        if let macGuestTools {
+            var tools: [String: Any] = [
+                "machineID": macGuestTools.machineID,
+                "state": macGuestTools.state.rawValue,
+                "runtimeGeneration": macGuestTools.runtimeGeneration,
+                "grantedCapabilities": macGuestTools.grantedCapabilities,
+            ]
+            if let value = macGuestTools.toolsVersion { tools["toolsVersion"] = value }
+            if let value = macGuestTools.toolsBuild { tools["toolsBuild"] = value }
+            if let value = macGuestTools.guestOSVersion { tools["guestOSVersion"] = value }
+            if let value = macGuestTools.lastHealthAtUnixMilliseconds {
+                tools["lastHealthAtUnixMilliseconds"] = value
+            }
+            if let value = macGuestTools.guestTimeUnixMilliseconds {
+                tools["guestTimeUnixMilliseconds"] = value
+            }
+            if let value = macGuestTools.lastErrorCode {
+                tools["lastErrorCode"] = value
+            }
+            dictionary["macGuestTools"] = tools as NSDictionary
+        }
         if let agentSocketPath {
             dictionary["agentSocketPath"] = agentSocketPath
         }
@@ -3145,6 +3255,20 @@ private extension DoryMachineStatus {
             ] as NSDictionary
         }
         dictionary["bootMode"] = bootMode.rawValue
+        if let repair = nativeMacDisplayRepair {
+            var value: [String: Any] = [
+                "schema": 1,
+                "originalManifestSHA256": repair.originalManifestSHA256,
+                "displays": repair.displays.map {
+                    ["widthPixels": $0.widthInPixels, "heightPixels": $0.heightInPixels,
+                     "pixelsPerInch": $0.pixelsPerInch] as NSDictionary
+                },
+                "preservesSavedState": repair.preservesSavedState,
+                "bundleRepairCompleted": repair.bundleRepairCompleted,
+            ]
+            if let index = repair.pendingSelectedDisplayIndex { value["pendingSelectedDisplayIndex"] = index }
+            dictionary["nativeMacDisplayRepair"] = value as NSDictionary
+        }
         dictionary["installerMediaAttached"] = installerMediaAttached
         dictionary["guestToolsMediaAttached"] = guestToolsMediaAttached
         if let typedSettings {
@@ -3163,6 +3287,9 @@ private extension DoryMachineStatus {
         dictionary["runtimeIdentity"] = runtimeIdentity.xpcDictionary
         if let runtimeGraphicsSelection, runtimeGraphicsSelection.isValid {
             dictionary["runtimeGraphicsSelection"] = runtimeGraphicsSelection.xpcDictionary
+        }
+        if let runtimeDetail {
+            dictionary["runtimeDetail"] = runtimeDetail
         }
         if let installedDesktopPayloadReceipt {
             dictionary["installedDesktopPayloadReceipt"] =

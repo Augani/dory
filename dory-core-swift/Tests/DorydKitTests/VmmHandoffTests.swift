@@ -1,10 +1,38 @@
 import Darwin
 import DoryCore
 import DoryOperations
+import DoryRendererWorkerWireContracts
 @testable import DorydKit
 import XCTest
 
 final class VmmHandoffTests: XCTestCase {
+    func testPCReadinessBackendMustMatchSignedProducerFenceContract() {
+        var selection = DoryRuntimeGraphicsSelection(
+            operationID: UUID().uuidString.lowercased(),
+            resolvedPlanSHA256: String(repeating: "a", count: 64),
+            planRevision: 1,
+            accelerationLevel: .hardwareAccelerated3D,
+            backend: .virgl,
+            rendererGeneration: 1,
+            rendererWorkerReceiptSHA256: String(repeating: "b", count: 64),
+            verificationState: .provisional
+        )
+        XCTAssertTrue(selection.isValid)
+        XCTAssertTrue(selection.matchesPCProducerFenceContract(
+            .doryPCX8664LinuxVirGL2PrepareFBV1))
+        XCTAssertFalse(selection.matchesPCProducerFenceContract(
+            .doryPCX8664LinuxVenusPrepareFBV1))
+        XCTAssertFalse(selection.matchesPCProducerFenceContract(nil))
+
+        selection.backend = .virglVenus
+        selection.guestDriver = .venus
+        XCTAssertTrue(selection.isValid)
+        XCTAssertTrue(selection.matchesPCProducerFenceContract(
+            .doryPCX8664LinuxVenusPrepareFBV1))
+        XCTAssertFalse(selection.matchesPCProducerFenceContract(
+            .doryPCX8664LinuxVirGL2PrepareFBV1))
+    }
+
     func testReadinessRefreshRetainsIndependentDescriptorOwnership() throws {
         let originalFD = open("/dev/null", O_RDONLY)
         XCTAssertGreaterThanOrEqual(originalFD, 0)

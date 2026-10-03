@@ -163,8 +163,11 @@ struct MachineManagerStartJournalIntegrationTests {
                 try recovered.machineManager.start(id: harness.id, operationID: retryID)
             }
             let deadline = Date().addingTimeInterval(20)
+            // Readiness commits its durable journal before publishing the in-memory state.
+            // Both boundaries must be observed, just as in awaitStart and recovery below.
             while Date() < deadline,
-                  try harness.journal.read(retryID).state.status != .completed {
+                  try harness.journal.read(retryID).state.status != .completed
+                    || recovered.machineManager.status(id: harness.id)?.state != .running {
                 Thread.sleep(forTimeInterval: 0.01)
             }
             #expect(try harness.journal.read(operationID).state.status == .failed)

@@ -26,7 +26,7 @@ struct UsbDevicesView: View {
 
                 ScrollView {
                     if hostDevices.isEmpty {
-                        Text("No attachable host USB devices found.")
+                        Text("No host USB devices found.")
                             .font(.system(size: 11.5))
                             .foregroundStyle(p.text3)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -43,6 +43,10 @@ struct UsbDevicesView: View {
                 .frame(minHeight: 180, maxHeight: 280)
                 .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+
+                Text("For x86 PC guests, physical passthrough currently admits only unmounted standalone storage and CDC serial devices with complete interface identities. HID, camera, audio, smart-card, vendor-specific, and mixed devices remain unavailable; the helper checks again before capture.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(p.text3)
             }
             .padding(16)
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))

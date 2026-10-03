@@ -268,8 +268,13 @@ public enum DoryDataDriveArchive {
             try phase?(.validating)
             return try verifyBackup(at: destination)
         } catch {
-            try? fileManager.removeItem(atPath: published ? destination : partial)
-            try? syncDirectory(parent)
+            // The exclusive rename commits the verified archive to its final name. A later
+            // directory flush, journal transition, or readback failure must retain that copy
+            // and its operation identity for recovery, not undo publication by deleting it.
+            if !published {
+                try? fileManager.removeItem(atPath: partial)
+                try? syncDirectory(parent)
+            }
             throw error
         }
     }
@@ -379,8 +384,13 @@ public enum DoryDataDriveArchive {
             try drive.validateManifest(fileManager: fileManager)
             return loaded.verification
         } catch {
-            try? fileManager.removeItem(atPath: published ? drive.root : partial)
-            try? syncDirectory(parent)
+            // Keep the published tree and restore-owner marker together so the same journal
+            // can validate/finalize the restore after a post-publication failure. Only a
+            // sibling partial that never acquired the final name is safe to roll back.
+            if !published {
+                try? fileManager.removeItem(atPath: partial)
+                try? syncDirectory(parent)
+            }
             throw error
         }
     }

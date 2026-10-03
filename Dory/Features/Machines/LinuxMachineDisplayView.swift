@@ -8,57 +8,64 @@ import QuartzCore
 import SwiftUI
 
 extension Notification.Name {
-    static let doryOpenLinuxMachineDisplay = Notification.Name(
-        "dev.dory.open-linux-machine-display"
-    )
-    static let doryCloseLinuxMachineDisplay = Notification.Name(
-        "dev.dory.close-linux-machine-display"
-    )
-    static let doryRestartLinuxMachineGraphics = Notification.Name(
-        "dev.dory.restart-linux-machine-graphics"
-    )
+  static let doryOpenLinuxMachineDisplay = Notification.Name(
+    "dev.dory.open-linux-machine-display"
+  )
+  static let doryCloseLinuxMachineDisplay = Notification.Name(
+    "dev.dory.close-linux-machine-display"
+  )
+  static let doryRestartLinuxMachineGraphics = Notification.Name(
+    "dev.dory.restart-linux-machine-graphics"
+  )
 }
 
 nonisolated enum DoryDisplayQualificationLaunchError: Error, Equatable,
-    CustomStringConvertible {
-    case invalidMachineID
-    case invalidMachService
-    case productionMachService
-    case invalidScanoutID
-    case invalidWindowReceiptPath
-    case incompleteInputAuthority
-    case invalidInputScriptPath
-    case invalidInputReceiptPath
-    case incompleteCaptureAuthority
-    case invalidCaptureRequestPath
-    case invalidCaptureReceiptPath
+  CustomStringConvertible
+{
+  case invalidMachineID
+  case invalidMachService
+  case productionMachService
+  case invalidScanoutID
+  case invalidWindowReceiptPath
+  case incompleteInputAuthority
+  case invalidInputScriptPath
+  case invalidInputReceiptPath
+  case incompleteCaptureAuthority
+  case invalidCaptureRequestPath
+  case invalidCaptureReceiptPath
+  case incompleteRendererRestartAuthority
+  case invalidRendererRestartPath
 
-    var description: String {
-        switch self {
-        case .invalidMachineID:
-            "DORY_DISPLAY_QUALIFICATION_MACHINE_ID must be a valid 1...63 byte machine ID"
-        case .invalidMachService:
-            "DORYD_MACH_SERVICE must name a valid explicit launchd service"
-        case .productionMachService:
-            "display qualification refuses the installed dev.dory.doryd service"
-        case .invalidScanoutID:
-            "DORY_DISPLAY_QUALIFICATION_SCANOUT_ID must name an available scanout"
-        case .invalidWindowReceiptPath:
-            "DORY_DISPLAY_QUALIFICATION_WINDOW_RECEIPT must be a normalized absolute path"
-        case .incompleteInputAuthority:
-            "qualification input requires both script and receipt paths"
-        case .invalidInputScriptPath:
-            "DORY_DISPLAY_QUALIFICATION_INPUT_SCRIPT must be a normalized absolute path"
-        case .invalidInputReceiptPath:
-            "DORY_DISPLAY_QUALIFICATION_INPUT_RECEIPT must be a normalized absolute path"
-        case .incompleteCaptureAuthority:
-            "qualification capture requires both request and receipt paths"
-        case .invalidCaptureRequestPath:
-            "DORY_DISPLAY_QUALIFICATION_CAPTURE_REQUEST must be a normalized absolute path"
-        case .invalidCaptureReceiptPath:
-            "DORY_DISPLAY_QUALIFICATION_CAPTURE_RECEIPT must be a normalized absolute path"
-        }
+  var description: String {
+    switch self {
+    case .invalidMachineID:
+      "DORY_DISPLAY_QUALIFICATION_MACHINE_ID must be a valid 1...63 byte machine ID"
+    case .invalidMachService:
+      "DORYD_MACH_SERVICE must name a valid explicit launchd service"
+    case .productionMachService:
+      "display qualification refuses the installed dev.dory.doryd service"
+    case .invalidScanoutID:
+      "DORY_DISPLAY_QUALIFICATION_SCANOUT_ID must name an available scanout"
+    case .invalidWindowReceiptPath:
+      "DORY_DISPLAY_QUALIFICATION_WINDOW_RECEIPT must be a normalized absolute path"
+    case .incompleteInputAuthority:
+      "qualification input requires both script and receipt paths"
+    case .invalidInputScriptPath:
+      "DORY_DISPLAY_QUALIFICATION_INPUT_SCRIPT must be a normalized absolute path"
+    case .invalidInputReceiptPath:
+      "DORY_DISPLAY_QUALIFICATION_INPUT_RECEIPT must be a normalized absolute path"
+    case .incompleteCaptureAuthority:
+      "qualification capture requires both request and receipt paths"
+    case .invalidCaptureRequestPath:
+      "DORY_DISPLAY_QUALIFICATION_CAPTURE_REQUEST must be a normalized absolute path"
+    case .invalidCaptureReceiptPath:
+      "DORY_DISPLAY_QUALIFICATION_CAPTURE_RECEIPT must be a normalized absolute path"
+    case .incompleteRendererRestartAuthority:
+      "qualification renderer restart requires both request and receipt paths"
+    case .invalidRendererRestartPath:
+      "qualification renderer restart paths must be distinct normalized absolute paths"
     }
+  }
 }
 
 /// An explicit, display-only application launch used by physical qualification campaigns.
@@ -67,1767 +74,2352 @@ nonisolated enum DoryDisplayQualificationLaunchError: Error, Equatable,
 /// candidate render and accept input for exactly one campaign-owned machine while the installed
 /// Dory application and all user-owned VMs continue running untouched.
 nonisolated struct DoryDisplayQualificationLaunch: Equatable, Sendable {
-    static let machineIDEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_MACHINE_ID"
-    static let scanoutIDEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_SCANOUT_ID"
-    static let machServiceEnvironmentKey = "DORYD_MACH_SERVICE"
-    static let windowReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_WINDOW_RECEIPT"
-    static let inputScriptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_INPUT_SCRIPT"
-    static let inputReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_INPUT_RECEIPT"
-    static let captureRequestEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_CAPTURE_REQUEST"
-    static let captureReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_CAPTURE_RECEIPT"
-    static let productionMachServiceName = "dev.dory.doryd"
+  static let machineIDEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_MACHINE_ID"
+  static let scanoutIDEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_SCANOUT_ID"
+  static let machServiceEnvironmentKey = "DORYD_MACH_SERVICE"
+  static let windowReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_WINDOW_RECEIPT"
+  static let inputScriptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_INPUT_SCRIPT"
+  static let inputReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_INPUT_RECEIPT"
+  static let captureRequestEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_CAPTURE_REQUEST"
+  static let captureReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_CAPTURE_RECEIPT"
+  static let rendererRestartRequestEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_RENDERER_RESTART_REQUEST"
+  static let rendererRestartReceiptEnvironmentKey = "DORY_DISPLAY_QUALIFICATION_RENDERER_RESTART_RECEIPT"
+  static let productionMachServiceName = "dev.dory.doryd"
 
-    let machineID: String
+  let machineID: String
+  let scanoutID: UInt32
+  let machServiceName: String
+  let windowReceiptPath: String
+  let inputScriptPath: String?
+  let inputReceiptPath: String?
+  let captureRequestPath: String?
+  let captureReceiptPath: String?
+  let rendererRestartRequestPath: String?
+  let rendererRestartReceiptPath: String?
+
+  var display: LinuxMachineDisplayWindow {
+    LinuxMachineDisplayWindow(machineID: machineID, scanoutID: scanoutID)
+  }
+
+  static func isRequested(environment: [String: String]) -> Bool {
+    environment[machineIDEnvironmentKey] != nil
+  }
+
+  static func parse(
+    environment: [String: String]
+  ) throws -> DoryDisplayQualificationLaunch? {
+    guard let machineID = environment[machineIDEnvironmentKey] else { return nil }
+    guard validMachineID(machineID) else {
+      throw DoryDisplayQualificationLaunchError.invalidMachineID
+    }
+    guard let machServiceName = environment[machServiceEnvironmentKey],
+      validMachServiceName(machServiceName)
+    else {
+      throw DoryDisplayQualificationLaunchError.invalidMachService
+    }
+    guard machServiceName != productionMachServiceName else {
+      throw DoryDisplayQualificationLaunchError.productionMachService
+    }
+    guard let windowReceiptPath = environment[windowReceiptEnvironmentKey],
+      validAbsolutePath(windowReceiptPath)
+    else {
+      throw DoryDisplayQualificationLaunchError.invalidWindowReceiptPath
+    }
+    let inputScriptPath = environment[inputScriptEnvironmentKey]
+    let inputReceiptPath = environment[inputReceiptEnvironmentKey]
+    guard (inputScriptPath == nil) == (inputReceiptPath == nil) else {
+      throw DoryDisplayQualificationLaunchError.incompleteInputAuthority
+    }
+    if let inputScriptPath, !validAbsolutePath(inputScriptPath) {
+      throw DoryDisplayQualificationLaunchError.invalidInputScriptPath
+    }
+    if let inputReceiptPath, !validAbsolutePath(inputReceiptPath) {
+      throw DoryDisplayQualificationLaunchError.invalidInputReceiptPath
+    }
+    if inputScriptPath == inputReceiptPath, inputScriptPath != nil {
+      throw DoryDisplayQualificationLaunchError.invalidInputReceiptPath
+    }
+    let captureRequestPath = environment[captureRequestEnvironmentKey]
+    let captureReceiptPath = environment[captureReceiptEnvironmentKey]
+    guard (captureRequestPath == nil) == (captureReceiptPath == nil) else {
+      throw DoryDisplayQualificationLaunchError.incompleteCaptureAuthority
+    }
+    if let captureRequestPath, !validAbsolutePath(captureRequestPath) {
+      throw DoryDisplayQualificationLaunchError.invalidCaptureRequestPath
+    }
+    if let captureReceiptPath, !validAbsolutePath(captureReceiptPath) {
+      throw DoryDisplayQualificationLaunchError.invalidCaptureReceiptPath
+    }
+    let existingPaths = Set(
+      [
+        windowReceiptPath,
+        inputScriptPath,
+        inputReceiptPath,
+      ].compactMap { $0 })
+    if let captureRequestPath, let captureReceiptPath,
+      captureRequestPath == captureReceiptPath
+        || existingPaths.contains(captureRequestPath)
+        || existingPaths.contains(captureReceiptPath)
+    {
+      throw DoryDisplayQualificationLaunchError.invalidCaptureReceiptPath
+    }
+    let rendererRestartRequestPath = environment[rendererRestartRequestEnvironmentKey]
+    let rendererRestartReceiptPath = environment[rendererRestartReceiptEnvironmentKey]
+    guard (rendererRestartRequestPath == nil) == (rendererRestartReceiptPath == nil) else {
+      throw DoryDisplayQualificationLaunchError.incompleteRendererRestartAuthority
+    }
+    if let request = rendererRestartRequestPath, let receipt = rendererRestartReceiptPath {
+      let occupiedPaths = existingPaths.union([captureRequestPath, captureReceiptPath].compactMap { $0 })
+      guard validAbsolutePath(request), validAbsolutePath(receipt), request != receipt,
+        !occupiedPaths.contains(request), !occupiedPaths.contains(receipt)
+      else { throw DoryDisplayQualificationLaunchError.invalidRendererRestartPath }
+    }
     let scanoutID: UInt32
-    let machServiceName: String
-    let windowReceiptPath: String
-    let inputScriptPath: String?
-    let inputReceiptPath: String?
-    let captureRequestPath: String?
-    let captureReceiptPath: String?
-
-    var display: LinuxMachineDisplayWindow {
-        LinuxMachineDisplayWindow(machineID: machineID, scanoutID: scanoutID)
+    if let rawScanoutID = environment[scanoutIDEnvironmentKey] {
+      guard let parsed = UInt32(rawScanoutID),
+        parsed < DoryVMDisplayFrame.maximumScanoutCount
+      else {
+        throw DoryDisplayQualificationLaunchError.invalidScanoutID
+      }
+      scanoutID = parsed
+    } else {
+      scanoutID = 0
     }
+    return DoryDisplayQualificationLaunch(
+      machineID: machineID,
+      scanoutID: scanoutID,
+      machServiceName: machServiceName,
+      windowReceiptPath: windowReceiptPath,
+      inputScriptPath: inputScriptPath,
+      inputReceiptPath: inputReceiptPath,
+      captureRequestPath: captureRequestPath,
+      captureReceiptPath: captureReceiptPath,
+      rendererRestartRequestPath: rendererRestartRequestPath,
+      rendererRestartReceiptPath: rendererRestartReceiptPath
+    )
+  }
 
-    static func isRequested(environment: [String: String]) -> Bool {
-        environment[machineIDEnvironmentKey] != nil
+  private static func validMachineID(_ value: String) -> Bool {
+    let bytes = Array(value.utf8)
+    guard !bytes.isEmpty, bytes.count <= 63, isAlphaNumeric(bytes[0]) else {
+      return false
     }
+    return bytes.allSatisfy {
+      isAlphaNumeric($0) || $0 == 45 || $0 == 46 || $0 == 95
+    }
+  }
 
-    static func parse(
-        environment: [String: String]
-    ) throws -> DoryDisplayQualificationLaunch? {
-        guard let machineID = environment[machineIDEnvironmentKey] else { return nil }
-        guard validMachineID(machineID) else {
-            throw DoryDisplayQualificationLaunchError.invalidMachineID
-        }
-        guard let machServiceName = environment[machServiceEnvironmentKey],
-              validMachServiceName(machServiceName) else {
-            throw DoryDisplayQualificationLaunchError.invalidMachService
-        }
-        guard machServiceName != productionMachServiceName else {
-            throw DoryDisplayQualificationLaunchError.productionMachService
-        }
-        guard let windowReceiptPath = environment[windowReceiptEnvironmentKey],
-              validAbsolutePath(windowReceiptPath) else {
-            throw DoryDisplayQualificationLaunchError.invalidWindowReceiptPath
-        }
-        let inputScriptPath = environment[inputScriptEnvironmentKey]
-        let inputReceiptPath = environment[inputReceiptEnvironmentKey]
-        guard (inputScriptPath == nil) == (inputReceiptPath == nil) else {
-            throw DoryDisplayQualificationLaunchError.incompleteInputAuthority
-        }
-        if let inputScriptPath, !validAbsolutePath(inputScriptPath) {
-            throw DoryDisplayQualificationLaunchError.invalidInputScriptPath
-        }
-        if let inputReceiptPath, !validAbsolutePath(inputReceiptPath) {
-            throw DoryDisplayQualificationLaunchError.invalidInputReceiptPath
-        }
-        if inputScriptPath == inputReceiptPath, inputScriptPath != nil {
-            throw DoryDisplayQualificationLaunchError.invalidInputReceiptPath
-        }
-        let captureRequestPath = environment[captureRequestEnvironmentKey]
-        let captureReceiptPath = environment[captureReceiptEnvironmentKey]
-        guard (captureRequestPath == nil) == (captureReceiptPath == nil) else {
-            throw DoryDisplayQualificationLaunchError.incompleteCaptureAuthority
-        }
-        if let captureRequestPath, !validAbsolutePath(captureRequestPath) {
-            throw DoryDisplayQualificationLaunchError.invalidCaptureRequestPath
-        }
-        if let captureReceiptPath, !validAbsolutePath(captureReceiptPath) {
-            throw DoryDisplayQualificationLaunchError.invalidCaptureReceiptPath
-        }
-        let existingPaths = Set([
-            windowReceiptPath,
-            inputScriptPath,
-            inputReceiptPath,
-        ].compactMap { $0 })
-        if let captureRequestPath, let captureReceiptPath,
-           captureRequestPath == captureReceiptPath
-            || existingPaths.contains(captureRequestPath)
-            || existingPaths.contains(captureReceiptPath) {
-            throw DoryDisplayQualificationLaunchError.invalidCaptureReceiptPath
-        }
-        let scanoutID: UInt32
-        if let rawScanoutID = environment[scanoutIDEnvironmentKey] {
-            guard let parsed = UInt32(rawScanoutID),
-                  parsed < DoryVMDisplayFrame.maximumScanoutCount else {
-                throw DoryDisplayQualificationLaunchError.invalidScanoutID
-            }
-            scanoutID = parsed
-        } else {
-            scanoutID = 0
-        }
-        return DoryDisplayQualificationLaunch(
-            machineID: machineID,
-            scanoutID: scanoutID,
-            machServiceName: machServiceName,
-            windowReceiptPath: windowReceiptPath,
-            inputScriptPath: inputScriptPath,
-            inputReceiptPath: inputReceiptPath,
-            captureRequestPath: captureRequestPath,
-            captureReceiptPath: captureReceiptPath
-        )
+  private static func validMachServiceName(_ value: String) -> Bool {
+    let bytes = Array(value.utf8)
+    guard !bytes.isEmpty, bytes.count <= 255,
+      isAlphaNumeric(bytes[0]), isAlphaNumeric(bytes[bytes.count - 1]),
+      !value.contains("..")
+    else {
+      return false
     }
+    return bytes.allSatisfy {
+      isAlphaNumeric($0) || $0 == 45 || $0 == 46 || $0 == 95
+    }
+  }
 
-    private static func validMachineID(_ value: String) -> Bool {
-        let bytes = Array(value.utf8)
-        guard !bytes.isEmpty, bytes.count <= 63, isAlphaNumeric(bytes[0]) else {
-            return false
-        }
-        return bytes.allSatisfy {
-            isAlphaNumeric($0) || $0 == 45 || $0 == 46 || $0 == 95
-        }
+  static func validAbsolutePath(_ value: String) -> Bool {
+    guard value.hasPrefix("/"), value != "/", !value.utf8.contains(0) else {
+      return false
     }
+    let url = URL(fileURLWithPath: value)
+    return url.standardizedFileURL.path == value && !url.lastPathComponent.isEmpty
+  }
 
-    private static func validMachServiceName(_ value: String) -> Bool {
-        let bytes = Array(value.utf8)
-        guard !bytes.isEmpty, bytes.count <= 255,
-              isAlphaNumeric(bytes[0]), isAlphaNumeric(bytes[bytes.count - 1]),
-              !value.contains("..") else {
-            return false
-        }
-        return bytes.allSatisfy {
-            isAlphaNumeric($0) || $0 == 45 || $0 == 46 || $0 == 95
-        }
-    }
-
-    static func validAbsolutePath(_ value: String) -> Bool {
-        guard value.hasPrefix("/"), value != "/", !value.utf8.contains(0) else {
-            return false
-        }
-        let url = URL(fileURLWithPath: value)
-        return url.standardizedFileURL.path == value && !url.lastPathComponent.isEmpty
-    }
-
-    private static func isAlphaNumeric(_ byte: UInt8) -> Bool {
-        (48...57).contains(byte) || (65...90).contains(byte) || (97...122).contains(byte)
-    }
+  private static func isAlphaNumeric(_ byte: UInt8) -> Bool {
+    (48...57).contains(byte) || (65...90).contains(byte) || (97...122).contains(byte)
+  }
 }
 
 /// Maps a relayed scanout rectangle into Metal texture coordinates. The display view is a flipped
 /// AppKit surface, so its CAMetalLayer presents top-origin guest rows in their stored order. Only a
 /// renderer texture explicitly marked bottom-origin needs its V endpoints swapped.
+nonisolated enum LinuxMachineDisplayEvidenceAdmission {
+  static func accepts(
+    presented: Bool,
+    completionID: UInt64?,
+    brokerAccepted: Bool
+  ) -> Bool {
+    presented && brokerAccepted && (completionID ?? 0) > 0
+  }
+}
+
+nonisolated struct LinuxMachineFramePollingGate: Sendable {
+  private(set) var isHeld = false
+
+  mutating func hold() -> Bool {
+    guard !isHeld else { return false }
+    isHeld = true
+    return true
+  }
+
+  mutating func release() -> Bool {
+    guard isHeld else { return false }
+    isHeld = false
+    return true
+  }
+}
+
+/// Broker sequence numbers are scoped to one runner operation. A window can outlive the runner,
+/// so its poll cursors must move to the new operation before acknowledging the first new frame.
+nonisolated struct LinuxMachineDisplayOperationCursor: Sendable {
+  private(set) var operationID: UUID?
+  private(set) var afterFrameSequence: UInt64 = 0
+  private(set) var afterCursorSequence: UInt64 = 0
+
+  mutating func observeOperation(_ operationID: UUID) -> Bool {
+    guard self.operationID != operationID else { return false }
+    self.operationID = operationID
+    afterFrameSequence = 0
+    afterCursorSequence = 0
+    return true
+  }
+
+  mutating func acknowledgeFrame(sequence: UInt64) {
+    afterFrameSequence = max(afterFrameSequence, sequence)
+  }
+
+  mutating func observeCursor(sequence: UInt64) {
+    afterCursorSequence = max(afterCursorSequence, sequence)
+  }
+}
+
 nonisolated enum LinuxMachineScanoutTextureCoordinates {
-    static func sourceUV(
-        sourceRect: DoryVMDisplayRect,
-        backingWidth: Int,
-        backingHeight: Int,
-        yOriginTop: Bool
-    ) -> SIMD4<Float> {
-        let left = Float(sourceRect.x) / Float(backingWidth)
-        let right = Float(sourceRect.x + sourceRect.width) / Float(backingWidth)
-        let firstY = Float(sourceRect.y) / Float(backingHeight)
-        let secondY = Float(sourceRect.y + sourceRect.height) / Float(backingHeight)
-        return SIMD4<Float>(
-            left,
-            yOriginTop ? firstY : secondY,
-            right,
-            yOriginTop ? secondY : firstY
-        )
-    }
+  static func sourceUV(
+    sourceRect: DoryVMDisplayRect,
+    backingWidth: Int,
+    backingHeight: Int,
+    yOriginTop: Bool
+  ) -> SIMD4<Float> {
+    let left = Float(sourceRect.x) / Float(backingWidth)
+    let right = Float(sourceRect.x + sourceRect.width) / Float(backingWidth)
+    let firstY = Float(sourceRect.y) / Float(backingHeight)
+    let secondY = Float(sourceRect.y + sourceRect.height) / Float(backingHeight)
+    return SIMD4<Float>(
+      left,
+      yOriginTop ? firstY : secondY,
+      right,
+      yOriginTop ? secondY : firstY
+    )
+  }
 }
 
 private nonisolated struct DoryDisplayQualificationWindowReceipt: Encodable {
-    let kind = "dev.dory.display-qualification-window"
-    let schemaVersion = 1
-    let capturedAt: String
-    let bundleIdentifier: String
-    let processID: Int32
-    let windowNumber: Int
-    let windowTitle: String
-    let machineID: String
-    let scanoutID: UInt32
-    let machServiceName: String
-    let operationID: String
-    let frameSequence: UInt64
-    let displayResourceGeneration: UInt64
-    let metalCommandBufferCompletionID: UInt64
-    let transport: String
+  let kind = "dev.dory.display-qualification-window"
+  let schemaVersion = 2
+  let capturedAt: String
+  let bundleIdentifier: String
+  let processID: Int32
+  let windowNumber: Int
+  let windowTitle: String
+  let machineID: String
+  let scanoutID: UInt32
+  let machServiceName: String
+  let operationID: String
+  let frameSequence: UInt64
+  let displayResourceGeneration: UInt64
+  let metalCommandBufferCompletionID: UInt64
+  let transport: String
+  let guestViewport: DoryDisplayQualificationViewport
+  let framePollingHeldForCapture: Bool?
+}
+
+private nonisolated struct DoryDisplayQualificationViewport: Encodable {
+  let coordinateSpace = "capture-pixels-top-left"
+  let x: Int
+  let y: Int
+  let width: Int
+  let height: Int
+  let sourceX: UInt32
+  let sourceY: UInt32
+  let sourceWidth: UInt32
+  let sourceHeight: UInt32
+  let backingScaleFactor: Double
+  let colorSpace = "sRGB"
 }
 
 nonisolated struct LinuxMachineDisplayWindow: Codable, Hashable, Identifiable {
-    var machineID: String
-    var scanoutID: UInt32 = 0
+  var machineID: String
+  var scanoutID: UInt32 = 0
 
-    var id: String { "\(machineID):\(scanoutID)" }
-    var windowTitle: String { "Dory — \(machineID) — Display \(scanoutID + 1)" }
+  var id: String { "\(machineID):\(scanoutID)" }
+  var windowTitle: String { "Dory — \(machineID) — Display \(scanoutID + 1)" }
 }
 
 struct LinuxMachineDisplayScene: View {
-    let display: LinuxMachineDisplayWindow
+  let display: LinuxMachineDisplayWindow
 
-    @Environment(AppStore.self) private var store
-    @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismiss) private var dismiss
+  @Environment(AppStore.self) private var store
+  @Environment(\.openWindow) private var openWindow
+  @Environment(\.dismiss) private var dismiss
 
-    private var topology: [DoryVMDisplayTopologyEntry] {
-        store.runtimeLinuxDisplayTopology(for: display.machineID)
-    }
+  private var topology: [DoryVMDisplayTopologyEntry] {
+    store.runtimeLinuxDisplayTopology(for: display.machineID)
+  }
 
-    var body: some View {
-        LinuxMachineDisplayView(
-            machineID: display.machineID,
-            scanoutID: display.scanoutID,
-            topology: topology.isEmpty ? nil : topology
-        )
-        .background(Color.black)
-        .navigationTitle(display.windowTitle)
-        .toolbar {
-            if display.scanoutID == 0 {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button {
-                        guard let added = store.addRuntimeLinuxDisplay(
-                            machineID: display.machineID
-                        ) else { return }
-                        openWindow(value: added)
-                    } label: {
-                        Label("Add Display", systemImage: "rectangle.badge.plus")
-                    }
-                    .disabled(topology.count >= Int(DoryVMDisplayFrame.maximumScanoutCount))
-                    .help("Add a display to the running virtual machine")
+  private var canReconfigureDisplays: Bool {
+    store.canReconfigureRuntimeLinuxDisplays(machineID: display.machineID)
+  }
 
-                    Button {
-                        guard let removed = store.removeRuntimeLinuxDisplay(
-                            machineID: display.machineID
-                        ) else { return }
-                        NotificationCenter.default.post(
-                            name: .doryCloseLinuxMachineDisplay,
-                            object: removed
-                        )
-                    } label: {
-                        Label("Remove Display", systemImage: "rectangle.badge.minus")
-                    }
-                    .disabled(topology.count <= 1)
-                    .help("Remove the last display from the running virtual machine")
+  private var isQualificationDisplay: Bool {
+    DoryDisplayQualificationLaunch.isRequested(
+      environment: ProcessInfo.processInfo.environment
+    )
+  }
 
-                    Button {
-                        NotificationCenter.default.post(
-                            name: .doryRestartLinuxMachineGraphics,
-                            object: display.machineID
-                        )
-                    } label: {
-                        Label("Restart Graphics", systemImage: "arrow.clockwise")
-                    }
-                    .help("Start a fresh isolated graphics renderer without restarting the VM")
-                }
-            }
+  var body: some View {
+    LinuxMachineDisplayView(
+      machineID: display.machineID,
+      scanoutID: display.scanoutID,
+      topology: canReconfigureDisplays && display.scanoutID == 0
+        ? store.runtimeLinuxDisplayTopologyOverride(for: display.machineID) : nil,
+      dynamicDisplayEnabled: canReconfigureDisplays || isQualificationDisplay
+    )
+    .background(Color.black)
+    .navigationTitle(display.windowTitle)
+    .toolbar {
+      if display.scanoutID == 0 {
+        ToolbarItemGroup(placement: .primaryAction) {
+          Button {
+            guard
+              let added = store.addRuntimeLinuxDisplay(
+                machineID: display.machineID
+              )
+            else { return }
+            openWindow(value: added)
+          } label: {
+            Label("Add Display", systemImage: "rectangle.badge.plus")
+          }
+          .disabled(!canReconfigureDisplays
+            || topology.count >= Int(DoryVMDisplayFrame.maximumScanoutCount))
+          .help(canReconfigureDisplays
+            ? "Add a display to the running virtual machine"
+            : "Dynamic displays are unavailable for this virtual machine")
+
+          Button {
+            guard
+              let removed = store.removeRuntimeLinuxDisplay(
+                machineID: display.machineID
+              )
+            else { return }
+            NotificationCenter.default.post(
+              name: .doryCloseLinuxMachineDisplay,
+              object: removed
+            )
+          } label: {
+            Label("Remove Display", systemImage: "rectangle.badge.minus")
+          }
+          .disabled(!canReconfigureDisplays || topology.count <= 1)
+          .help(canReconfigureDisplays
+            ? "Remove the last display from the running virtual machine"
+            : "Dynamic displays are unavailable for this virtual machine")
+
+          Button {
+            NotificationCenter.default.post(
+              name: .doryRestartLinuxMachineGraphics,
+              object: display.machineID
+            )
+          } label: {
+            Label("Restart Graphics", systemImage: "arrow.clockwise")
+          }
+          .help("Start a fresh isolated graphics renderer without restarting the VM")
         }
-        .onReceive(
-            NotificationCenter.default.publisher(for: .doryCloseLinuxMachineDisplay)
-        ) { notification in
-            guard notification.object as? LinuxMachineDisplayWindow == display else { return }
-            dismiss()
-        }
+      }
     }
+    .onReceive(
+      NotificationCenter.default.publisher(for: .doryCloseLinuxMachineDisplay)
+    ) { notification in
+      guard notification.object as? LinuxMachineDisplayWindow == display else { return }
+      dismiss()
+    }
+  }
 }
 
 struct LinuxMachineDisplayView: NSViewRepresentable {
-    let machineID: String
-    let scanoutID: UInt32
-    var topology: [DoryVMDisplayTopologyEntry]? = nil
+  let machineID: String
+  let scanoutID: UInt32
+  var topology: [DoryVMDisplayTopologyEntry]? = nil
+  var dynamicDisplayEnabled = false
 
-    func makeNSView(context: Context) -> LinuxMachineMetalView {
-        LinuxMachineMetalView(machineID: machineID, scanoutID: scanoutID)
-    }
+  func makeNSView(context: Context) -> LinuxMachineMetalView {
+    LinuxMachineMetalView(machineID: machineID, scanoutID: scanoutID)
+  }
 
-    func updateNSView(_ nsView: LinuxMachineMetalView, context: Context) {
-        if let topology { nsView.applyRuntimeTopology(topology) }
-    }
+  func updateNSView(_ nsView: LinuxMachineMetalView, context: Context) {
+    nsView.setDynamicDisplayEnabled(dynamicDisplayEnabled)
+    if let topology { nsView.applyRuntimeTopology(topology) }
+  }
 
-    static func dismantleNSView(_ nsView: LinuxMachineMetalView, coordinator: ()) {
-        nsView.stop()
-    }
+  static func dismantleNSView(_ nsView: LinuxMachineMetalView, coordinator: ()) {
+    nsView.stop()
+  }
 }
 
 private final class LinuxMachineImportedFrame: @unchecked Sendable {
-    let texture: any MTLTexture
-    let frame: DoryVMDisplayFrame
+  let texture: any MTLTexture
+  let frame: DoryVMDisplayFrame
 
-    private let mappedAddress: UnsafeMutableRawPointer?
-    private let mappedLength: Int
-    private let buffer: (any MTLBuffer)?
-    private let sharedTextureHandle: MTLSharedTextureHandle?
+  private let mappedAddress: UnsafeMutableRawPointer?
+  private let mappedLength: Int
+  private let buffer: (any MTLBuffer)?
+  private let sharedTextureHandle: MTLSharedTextureHandle?
 
-    init(
-        texture: any MTLTexture,
-        frame: DoryVMDisplayFrame,
-        mappedAddress: UnsafeMutableRawPointer? = nil,
-        mappedLength: Int = 0,
-        buffer: (any MTLBuffer)? = nil,
-        sharedTextureHandle: MTLSharedTextureHandle? = nil
-    ) {
-        self.texture = texture
-        self.frame = frame
-        self.mappedAddress = mappedAddress
-        self.mappedLength = mappedLength
-        self.buffer = buffer
-        self.sharedTextureHandle = sharedTextureHandle
+  init(
+    texture: any MTLTexture,
+    frame: DoryVMDisplayFrame,
+    mappedAddress: UnsafeMutableRawPointer? = nil,
+    mappedLength: Int = 0,
+    buffer: (any MTLBuffer)? = nil,
+    sharedTextureHandle: MTLSharedTextureHandle? = nil
+  ) {
+    self.texture = texture
+    self.frame = frame
+    self.mappedAddress = mappedAddress
+    self.mappedLength = mappedLength
+    self.buffer = buffer
+    self.sharedTextureHandle = sharedTextureHandle
+  }
+
+  deinit {
+    if let mappedAddress, mappedLength > 0 {
+      munmap(mappedAddress, mappedLength)
     }
-
-    deinit {
-        if let mappedAddress, mappedLength > 0 {
-            munmap(mappedAddress, mappedLength)
-        }
-    }
+  }
 }
 
 private enum LinuxMachineCaptureModifierTransition {
-    case forward
-    case release
-    case consume
+  case forward
+  case release
+  case consume
+}
+
+/// Held input belongs to one runner operation, not to the lifetime of an app window. A runner
+/// replacement starts with no held keys; focus-loss releases retain the original operation ID.
+nonisolated struct LinuxMachineHeldInputState: Sendable {
+  struct Release: Equatable, Sendable {
+    let operationID: UUID
+    let endpoint: DoryVMDisplayInputEndpoint
+    let events: [DoryVMDisplayInputEvent]
+  }
+
+  private(set) var operationID: UUID?
+  private var keyboard = Set<UInt16>()
+  private var absoluteButtons = Set<UInt16>()
+  private var relativeButtons = Set<UInt16>()
+
+  @discardableResult
+  mutating func observeOperation(_ operationID: UUID) -> Bool {
+    guard self.operationID != operationID else { return false }
+    self.operationID = operationID
+    keyboard.removeAll()
+    absoluteButtons.removeAll()
+    relativeButtons.removeAll()
+    return true
+  }
+
+  mutating func record(
+    operationID: UUID, endpoint: DoryVMDisplayInputEndpoint, events: [DoryVMDisplayInputEvent]
+  ) {
+    observeOperation(operationID)
+    for event in events where event.type == 1 && (0...2).contains(event.value) {
+      switch endpoint {
+      case .keyboard: Self.update(&keyboard, event: event)
+      case .absolutePointer: Self.update(&absoluteButtons, event: event)
+      case .relativePointer: Self.update(&relativeButtons, event: event)
+      }
+    }
+  }
+
+  mutating func takeReleases() -> [Release] {
+    defer {
+      keyboard.removeAll()
+      absoluteButtons.removeAll()
+      relativeButtons.removeAll()
+    }
+    guard let operationID else { return [] }
+    let endpoints: [(DoryVMDisplayInputEndpoint, Set<UInt16>)] = [
+      (.keyboard, keyboard), (.absolutePointer, absoluteButtons), (.relativePointer, relativeButtons)
+    ]
+    return endpoints.compactMap { endpoint, codes in
+      guard !codes.isEmpty else { return nil }
+      return Release(operationID: operationID, endpoint: endpoint,
+                     events: codes.sorted().map { .init(type: 1, code: $0, value: 0) })
+    }
+  }
+
+  private static func update(_ codes: inout Set<UInt16>, event: DoryVMDisplayInputEvent) {
+    if event.value == 0 { codes.remove(event.code) } else { codes.insert(event.code) }
+  }
 }
 
 private struct LinuxMachinePointerCaptureState {
-    private(set) var isCaptured = false
-    private(set) var acceptsAbsoluteInput = true
-    private var consumesReleaseChord = false
+  private(set) var isCaptured = false
+  private(set) var acceptsAbsoluteInput = true
+  private var consumesReleaseChord = false
 
-    mutating func capture() -> Bool {
-        guard !isCaptured else { return false }
-        isCaptured = true
-        acceptsAbsoluteInput = false
-        consumesReleaseChord = false
-        return true
-    }
+  mutating func capture() -> Bool {
+    guard !isCaptured else { return false }
+    isCaptured = true
+    acceptsAbsoluteInput = false
+    consumesReleaseChord = false
+    return true
+  }
 
-    mutating func cancel() -> Bool {
-        let wasCaptured = isCaptured
-        isCaptured = false
-        consumesReleaseChord = false
-        return wasCaptured
-    }
+  mutating func cancel() -> Bool {
+    let wasCaptured = isCaptured
+    isCaptured = false
+    consumesReleaseChord = false
+    return wasCaptured
+  }
 
-    mutating func modifierTransition(
-        command: Bool,
-        control: Bool
-    ) -> LinuxMachineCaptureModifierTransition {
-        if isCaptured, command, control {
-            isCaptured = false
-            consumesReleaseChord = true
-            return .release
-        }
-        if consumesReleaseChord {
-            if !command && !control { consumesReleaseChord = false }
-            return .consume
-        }
-        return .forward
+  mutating func modifierTransition(
+    command: Bool,
+    control: Bool
+  ) -> LinuxMachineCaptureModifierTransition {
+    if isCaptured, command, control {
+      isCaptured = false
+      consumesReleaseChord = true
+      return .release
     }
+    if consumesReleaseChord {
+      if !command && !control { consumesReleaseChord = false }
+      return .consume
+    }
+    return .forward
+  }
 }
 
 /// The broker orders commands per running VM, while each display owns an independent XPC
-/// connection. Allocate one process-wide sequence so resize/input from separate windows cannot
-/// collide when they target the same runner generation.
+/// connection. Allocate from system uptime plus a process-wide cursor so resize/input from
+/// separate windows and a newly relaunched app remain ordered for the same runner generation.
 private final class LinuxMachineDisplayCommandSequencer: @unchecked Sendable {
-    static let shared = LinuxMachineDisplayCommandSequencer()
+  static let shared = LinuxMachineDisplayCommandSequencer()
 
-    private struct Cursor {
-        var operationID: UUID
-        var nextSequence: UInt64
+  private struct Cursor {
+    var operationID: UUID
+    var sequence = DoryDisplayCommandSequence()
+  }
+
+  private let lock = NSLock()
+  private var cursors: [String: Cursor] = [:]
+
+  func next(machineID: String, operationID: UUID) -> UInt64? {
+    lock.withLock {
+      var cursor = cursors[machineID]
+      if cursor?.operationID != operationID {
+        cursor = Cursor(operationID: operationID)
+      }
+      guard var cursor,
+        let sequence = cursor.sequence.next(
+          uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+        )
+      else { return nil }
+      cursors[machineID] = cursor
+      return sequence
     }
-
-    private let lock = NSLock()
-    private var cursors: [String: Cursor] = [:]
-
-    func next(machineID: String, operationID: UUID) -> UInt64? {
-        lock.withLock {
-            var cursor = cursors[machineID]
-            if cursor?.operationID != operationID {
-                cursor = Cursor(operationID: operationID, nextSequence: 1)
-            }
-            guard var cursor, cursor.nextSequence < UInt64.max else { return nil }
-            let sequence = cursor.nextSequence
-            cursor.nextSequence += 1
-            cursors[machineID] = cursor
-            return sequence
-        }
-    }
+  }
 }
 
 private final class LinuxMachineDisplayClient: @unchecked Sendable {
-    typealias FrameHandler = @MainActor @Sendable (
-        DoryVMDisplayFrame,
-        [FileHandle],
-        MTLSharedTextureHandle?
+  typealias FrameHandler =
+    @MainActor @Sendable (
+      DoryVMDisplayFrame,
+      [FileHandle],
+      MTLSharedTextureHandle?
     ) -> Void
-    typealias CursorHandler = @MainActor @Sendable (DoryVMDisplayCursor?) -> Void
+  typealias CursorHandler = @MainActor @Sendable (DoryVMDisplayCursor?) -> Void
 
-    private struct State {
-        var stopped = false
-        var framePollInFlight = false
-        var cursorPollInFlight = false
-        var afterFrameSequence: UInt64 = 0
-        var afterCursorSequence: UInt64 = 0
-        var operationID: UUID?
-        var pendingTopology: [DoryVMDisplayTopologyEntry]?
-    }
-
-    private let machineID: String
-    private let scanoutID: UInt32
-    private let connection: NSXPCConnection
-    private let frameHandler: FrameHandler
-    private let cursorHandler: CursorHandler
-    private let failureHandler: @MainActor @Sendable (String) -> Void
-    private let queue = DispatchQueue(
-        label: "dev.dory.app.linux-display-relay",
-        qos: .userInteractive
-    )
+  private final class AcknowledgementResult: @unchecked Sendable {
     private let lock = NSLock()
-    private var state = State()
+    private var resolved = false
+    private let completion: @MainActor @Sendable (Bool) -> Void
 
-    init(
-        machineID: String,
-        scanoutID: UInt32,
-        frameHandler: @escaping FrameHandler,
-        cursorHandler: @escaping CursorHandler,
-        failureHandler: @escaping @MainActor @Sendable (String) -> Void
-    ) {
-        self.machineID = machineID
-        self.scanoutID = scanoutID
-        self.frameHandler = frameHandler
-        self.cursorHandler = cursorHandler
-        self.failureHandler = failureHandler
-        let controlName = ProcessInfo.processInfo.environment["DORYD_MACH_SERVICE"]
-            ?? "dev.dory.doryd"
-        let serviceName = DoryVMDisplayBrokerXPCInterface.serviceName(
-            controlServiceName: controlName
+    init(completion: @escaping @MainActor @Sendable (Bool) -> Void) {
+      self.completion = completion
+    }
+
+    func resolve(_ accepted: Bool) {
+      let shouldComplete = lock.withLock { () -> Bool in
+        guard !resolved else { return false }
+        resolved = true
+        return true
+      }
+      guard shouldComplete else { return }
+      Task { @MainActor [completion] in completion(accepted) }
+    }
+  }
+
+  private struct State {
+    var stopped = false
+    var framePollInFlight = false
+    var framePollingGate = LinuxMachineFramePollingGate()
+    var cursorPollInFlight = false
+    var operationCursor = LinuxMachineDisplayOperationCursor()
+    var pendingTopology: [DoryVMDisplayTopologyEntry]?
+    var requestedTopology: [DoryVMDisplayTopologyEntry]?
+  }
+
+  private let machineID: String
+  private let scanoutID: UInt32
+  private let connection: NSXPCConnection
+  private let frameHandler: FrameHandler
+  private let cursorHandler: CursorHandler
+  private let failureHandler: @MainActor @Sendable (String) -> Void
+  private let queue = DispatchQueue(
+    label: "dev.dory.app.linux-display-relay",
+    qos: .userInteractive
+  )
+  private let lock = NSLock()
+  private var state = State()
+
+  init(
+    machineID: String,
+    scanoutID: UInt32,
+    frameHandler: @escaping FrameHandler,
+    cursorHandler: @escaping CursorHandler,
+    failureHandler: @escaping @MainActor @Sendable (String) -> Void
+  ) {
+    self.machineID = machineID
+    self.scanoutID = scanoutID
+    self.frameHandler = frameHandler
+    self.cursorHandler = cursorHandler
+    self.failureHandler = failureHandler
+    let controlName =
+      ProcessInfo.processInfo.environment["DORYD_MACH_SERVICE"]
+      ?? "dev.dory.doryd"
+    let serviceName = DoryVMDisplayBrokerXPCInterface.serviceName(
+      controlServiceName: controlName
+    )
+    let connection = NSXPCConnection(machServiceName: serviceName, options: [])
+    connection.remoteObjectInterface = DoryVMDisplayBrokerXPCInterface.make()
+    self.connection = connection
+    connection.interruptionHandler = { [weak self] in
+      self?.failed("The VM display broker was interrupted.")
+    }
+    connection.invalidationHandler = { [weak self] in
+      self?.failed("The VM display broker disconnected.")
+    }
+    connection.resume()
+  }
+
+  func start() {
+    schedulePoll(after: 0)
+    scheduleCursorPoll(after: 0)
+  }
+
+  func stop() {
+    let shouldInvalidate = lock.withLock { () -> Bool in
+      guard !state.stopped else { return false }
+      state.stopped = true
+      return true
+    }
+    if shouldInvalidate { connection.invalidate() }
+  }
+
+  /// A campaign screenshot must observe the frame named by its broker-accepted receipt. Normal
+  /// product windows never invoke this gate; the qualification view releases it after capture.
+  func holdFramePolling() -> Bool {
+    lock.withLock { () -> Bool in
+      guard !state.stopped else { return false }
+      return state.framePollingGate.hold()
+    }
+  }
+
+  func resumeFramePolling() {
+    let resumed = lock.withLock { () -> Bool in
+      guard !state.stopped else { return false }
+      return state.framePollingGate.release()
+    }
+    if resumed { schedulePoll(after: 0) }
+  }
+
+  func acknowledge(
+    _ frame: DoryVMDisplayFrame,
+    presented: Bool,
+    metalCommandBufferCompletionID: UInt64 = 0,
+    completion: @escaping @MainActor @Sendable (Bool) -> Void = { _ in }
+  ) {
+    let result = AcknowledgementResult(completion: completion)
+    guard let leaseID = try? frame.leaseID.rawValue.uuidString.lowercased() else {
+      failed("The VM display frame carried an invalid lease.")
+      result.resolve(false)
+      return
+    }
+    guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
+      self?.failed("The VM display broker call failed: \(error)")
+      result.resolve(false)
+    }) as? DoryVMDisplayBrokerXPCProtocol else {
+      failed("The VM display broker proxy is unavailable.")
+      result.resolve(false)
+      return
+    }
+    proxy.acknowledgeFrame(
+      machineID,
+      leaseID: leaseID,
+      presented: presented,
+      metalCommandBufferCompletionID: metalCommandBufferCompletionID
+    ) { [weak self] accepted, detail in
+      guard let self else {
+        result.resolve(false)
+        return
+      }
+      let retired = detail == "guest-reset" || detail == "retired-frame"
+      let currentOperation = self.lock.withLock { () -> Bool in
+        guard !self.state.stopped,
+          self.state.operationCursor.operationID?.uuidString.lowercased() == frame.operationID
+        else { return false }
+        if accepted || retired {
+          self.state.operationCursor.acknowledgeFrame(sequence: frame.sequence)
+        }
+        return true
+      }
+      if currentOperation, accepted || retired {
+        self.schedulePoll(after: 0)
+      } else if !accepted, !retired {
+        self.failed("The VM display broker rejected a frame acknowledgement: \(detail)")
+      }
+      result.resolve(accepted && currentOperation)
+    }
+  }
+
+  var currentOperationID: UUID? {
+    lock.withLock { !state.stopped ? state.operationCursor.operationID : nil }
+  }
+
+  @discardableResult
+  func sendFocus(expectedOperationID: UUID, leaseID: UUID, active: Bool) -> Bool {
+    sendCommand(expectedOperationID: expectedOperationID) { operationID, sequence in
+      try .focus(machineID: machineID, operationID: operationID, sequence: sequence,
+                 leaseID: leaseID, active: active)
+    }
+  }
+
+  @discardableResult
+  func sendInput(
+    expectedOperationID: UUID,
+    endpoint: DoryVMDisplayInputEndpoint,
+    events: [DoryVMDisplayInputEvent]
+  ) -> Bool {
+    sendCommand(expectedOperationID: expectedOperationID) { operationID, sequence in
+      try .input(
+        machineID: machineID,
+        operationID: operationID,
+        sequence: sequence,
+        endpoint: endpoint,
+        events: events
+      )
+    }
+  }
+
+  @discardableResult
+  func sendQualificationKeyboardInput(
+    expectedOperationID: UUID,
+    events: [DoryVMDisplayInputEvent],
+    completion: @escaping @Sendable (UInt64, Bool, String) -> Void
+  ) -> Bool {
+    guard
+      lock.withLock({ !state.stopped ? state.operationCursor.operationID : nil })
+        == expectedOperationID
+    else { return false }
+    return sendCommand(
+      { operationID, sequence in
+        guard operationID == expectedOperationID else {
+          throw DoryDisplayQualificationInputCommandError.operationChanged
+        }
+        return try DoryVMDisplayCommand.input(
+          machineID: machineID,
+          operationID: operationID,
+          sequence: sequence,
+          endpoint: .keyboard,
+          events: events
         )
-        let connection = NSXPCConnection(machServiceName: serviceName, options: [])
-        connection.remoteObjectInterface = DoryVMDisplayBrokerXPCInterface.make()
-        self.connection = connection
-        connection.interruptionHandler = { [weak self] in
-            self?.failed("The VM display broker was interrupted.")
+      },
+      completion: { [weak self] sequence, accepted, detail in
+        guard accepted, let self else {
+          completion(sequence, false, detail)
+          return
         }
-        connection.invalidationHandler = { [weak self] in
-            self?.failed("The VM display broker disconnected.")
-        }
-        connection.resume()
-    }
+        self.pollQualificationCommandStatus(
+          operationID: expectedOperationID,
+          sequence: sequence,
+          attemptsRemaining: 600,
+          completion: completion
+        )
+      })
+  }
 
-    func start() {
-        schedulePoll(after: 0)
+  func sendResize(
+    width: UInt32,
+    height: UInt32,
+    physicalWidthMillimeters: UInt16,
+    physicalHeightMillimeters: UInt16
+  ) {
+    sendCommand { operationID, sequence in
+      try .resize(
+        machineID: machineID,
+        operationID: operationID,
+        sequence: sequence,
+        scanoutID: scanoutID,
+        width: width,
+        height: height,
+        physicalWidthMillimeters: physicalWidthMillimeters,
+        physicalHeightMillimeters: physicalHeightMillimeters
+      )
+    }
+  }
+
+  func sendTopology(_ displays: [DoryVMDisplayTopologyEntry]) {
+    guard !displays.isEmpty else { return }
+    lock.withLock { state.requestedTopology = displays }
+    let sent = sendCommand { operationID, sequence in
+      try .topology(
+        machineID: machineID,
+        operationID: operationID,
+        sequence: sequence,
+        displays: displays
+      )
+    }
+    lock.withLock {
+      if sent {
+        if state.pendingTopology == displays { state.pendingTopology = nil }
+      } else if !state.stopped {
+        state.pendingTopology = displays
+      }
+    }
+  }
+
+  func clearPendingTopology() {
+    lock.withLock {
+      state.pendingTopology = nil
+      state.requestedTopology = nil
+    }
+  }
+
+  func sendRestartGraphics() {
+    _ = sendCommand { operationID, sequence in
+      try .restartGraphics(
+        machineID: machineID,
+        operationID: operationID,
+        sequence: sequence
+      )
+    }
+  }
+
+  @discardableResult
+  func sendQualificationRendererRestart(
+    expectedOperationID: UUID,
+    completion: @escaping @Sendable (UInt64, Bool, String) -> Void
+  ) -> Bool {
+    guard lock.withLock({ !state.stopped ? state.operationCursor.operationID : nil }) == expectedOperationID else { return false }
+    return sendCommand({ operationID, sequence in
+      guard operationID == expectedOperationID else { throw DoryDisplayQualificationInputCommandError.operationChanged }
+      return try .restartGraphics(machineID: machineID, operationID: operationID, sequence: sequence)
+    }, completion: { [weak self] sequence, accepted, detail in
+      guard accepted, let self else { completion(sequence, false, detail); return }
+      self.pollQualificationCommandStatus(operationID: expectedOperationID, sequence: sequence,
+                                          attemptsRemaining: 600, completion: completion)
+    })
+  }
+
+  @discardableResult
+  private func sendCommand(
+    expectedOperationID: UUID? = nil,
+    _ make: (UUID, UInt64) throws -> DoryVMDisplayCommand,
+    completion: (@Sendable (UInt64, Bool, String) -> Void)? = nil
+  ) -> Bool {
+    let operationID = lock.withLock {
+      !state.stopped ? state.operationCursor.operationID : nil
+    }
+    if let expectedOperationID, operationID != expectedOperationID { return false }
+    let identity = operationID.flatMap { operationID in
+      LinuxMachineDisplayCommandSequencer.shared.next(
+        machineID: machineID,
+        operationID: operationID
+      ).map { (operationID, $0) }
+    }
+    guard let identity else { return false }
+    do {
+      let data = try DoryVMDisplayCommandCodec.encode(
+        make(identity.0, identity.1)
+      )
+      proxy { proxy in
+        proxy.sendCommand(data) { [weak self] accepted, detail in
+          if !accepted {
+            self?.failed("The VM rejected a display command: \(detail)")
+          }
+          completion?(identity.1, accepted, detail)
+        }
+      }
+      return true
+    } catch {
+      failed("Could not encode a VM display command: \(error)")
+      return false
+    }
+  }
+
+  private func pollQualificationCommandStatus(
+    operationID: UUID,
+    sequence: UInt64,
+    attemptsRemaining: Int,
+    completion: @escaping @Sendable (UInt64, Bool, String) -> Void
+  ) {
+    let operationText = operationID.uuidString.lowercased()
+    guard attemptsRemaining > 0,
+      lock.withLock({ !state.stopped && state.operationCursor.operationID == operationID })
+    else {
+      completion(sequence, false, "runner-command-timeout-or-generation-changed")
+      return
+    }
+    guard
+      let statusProxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
+        self?.failed("The VM display broker call failed: \(error)")
+        completion(sequence, false, "display-broker-error")
+      }) as? DoryVMDisplayBrokerXPCProtocol
+    else {
+      failed("The VM display broker proxy is unavailable.")
+      completion(sequence, false, "display-broker-proxy-unavailable")
+      return
+    }
+    statusProxy.commandStatus(
+      machineID,
+      operationID: operationText,
+      sequence: sequence
+    ) { [weak self] known, applied, detail in
+      guard let self else {
+        completion(sequence, false, "display-client-released")
+        return
+      }
+      if known, applied {
+        completion(sequence, true, "")
+      } else if known, detail == "pending" {
+        self.queue.asyncAfter(deadline: .now() + 1.0 / 60.0) {
+          self.pollQualificationCommandStatus(
+            operationID: operationID,
+            sequence: sequence,
+            attemptsRemaining: attemptsRemaining - 1,
+            completion: completion
+          )
+        }
+      } else {
+        completion(
+          sequence,
+          false,
+          detail.isEmpty ? "runner-command-not-applied" : detail
+        )
+      }
+    }
+  }
+
+  private func schedulePoll(after delay: TimeInterval) {
+    queue.asyncAfter(deadline: .now() + max(0, delay)) { [weak self] in
+      self?.poll()
+    }
+  }
+
+  private func poll() {
+    let afterSequence = lock.withLock { () -> UInt64? in
+      guard !state.stopped, !state.framePollInFlight, !state.framePollingGate.isHeld else {
+        return nil
+      }
+      state.framePollInFlight = true
+      return state.operationCursor.afterFrameSequence
+    }
+    guard let afterSequence else { return }
+    proxy { proxy in
+      proxy.nextFrame(
+        self.machineID,
+        scanoutID: self.scanoutID,
+        afterSequence: afterSequence
+      ) { [weak self] found, data, descriptors, handle, detail in
+        self?.receivedFrame(
+          found: found,
+          data: data,
+          descriptors: descriptors,
+          handle: handle,
+          detail: detail
+        )
+      }
+    }
+  }
+
+  private func receivedFrame(
+    found: Bool,
+    data: Data,
+    descriptors: [FileHandle],
+    handle: MTLSharedTextureHandle?,
+    detail: String
+  ) {
+    lock.withLock { state.framePollInFlight = false }
+    guard found else {
+      if !detail.isEmpty, detail != "no-frame" {
+        failed("The VM display broker could not provide a frame: \(detail)")
+        // A desktop window commonly opens while its VM is still planning or starting.
+        // In that interval the broker has no registered runner yet. Keep polling so the
+        // same window attaches as soon as the runner publishes its first frame.
+        schedulePoll(after: 0.25)
+      } else {
+        schedulePoll(after: 1.0 / 60.0)
+      }
+      return
+    }
+    do {
+      let frame = try DoryVMDisplayFrameCodec.decode(data)
+      try frame.validate(
+        descriptorCount: descriptors.count,
+        hasSharedTextureHandle: handle != nil
+      )
+      guard frame.machineID == machineID, frame.scanoutID == scanoutID,
+        let operationID = UUID(uuidString: frame.operationID)
+      else {
+        throw DoryVMDisplayWireError.invalidFrameIdentity
+      }
+      let admission = lock.withLock { () -> (Bool, [DoryVMDisplayTopologyEntry]?) in
+        guard !state.stopped else { return (false, nil) }
+        let operationChanged = state.operationCursor.observeOperation(operationID)
+        return (true, operationChanged
+          ? state.requestedTopology ?? state.pendingTopology : state.pendingTopology)
+      }
+      guard admission.0 else {
+        for descriptor in descriptors { try? descriptor.close() }
+        return
+      }
+      if let topologyToReplay = admission.1 { sendTopology(topologyToReplay) }
+      Task { @MainActor [weak self, frameHandler] in
+        guard let self, self.currentOperationID == operationID else {
+          for descriptor in descriptors { try? descriptor.close() }
+          return
+        }
+        frameHandler(frame, descriptors, handle)
+      }
+    } catch {
+      for descriptor in descriptors { try? descriptor.close() }
+      failed("The VM display broker returned an invalid frame: \(error)")
+      schedulePoll(after: 0.25)
+    }
+  }
+
+  private func scheduleCursorPoll(after delay: TimeInterval) {
+    queue.asyncAfter(deadline: .now() + max(0, delay)) { [weak self] in
+      self?.pollCursor()
+    }
+  }
+
+  private func pollCursor() {
+    let afterSequence = lock.withLock { () -> UInt64? in
+      guard !state.stopped, !state.cursorPollInFlight else { return nil }
+      state.cursorPollInFlight = true
+      return state.operationCursor.afterCursorSequence
+    }
+    guard let afterSequence else { return }
+    proxy { proxy in
+      proxy.nextCursor(
+        self.machineID,
+        scanoutID: self.scanoutID,
+        afterSequence: afterSequence
+      ) { [weak self] found, data, detail in
+        self?.receivedCursor(found: found, data: data, detail: detail)
+      }
+    }
+  }
+
+  private func receivedCursor(found: Bool, data: Data, detail: String) {
+    lock.withLock { state.cursorPollInFlight = false }
+    guard found else {
+      if !detail.isEmpty, detail != "no-cursor" {
+        failed("The VM display broker could not provide a cursor: \(detail)")
+        scheduleCursorPoll(after: 0.25)
+      } else {
+        scheduleCursorPoll(after: 1.0 / 60.0)
+      }
+      return
+    }
+    do {
+      let cursor = try DoryVMDisplayCursorCodec.decode(data)
+      guard cursor.machineID == machineID,
+        cursor.scanoutID == scanoutID
+      else {
+        throw DoryVMDisplayWireError.invalidCursor
+      }
+      let admitted = lock.withLock { () -> Bool in
+        guard !state.stopped,
+          state.operationCursor.operationID?.uuidString.lowercased() == cursor.operationID
+        else { return false }
+        state.operationCursor.observeCursor(sequence: cursor.sequence)
+        return true
+      }
+      guard admitted else {
         scheduleCursorPoll(after: 0)
+        return
+      }
+      Task { @MainActor [weak self, cursorHandler] in
+        guard let self, self.lock.withLock({
+          !self.state.stopped
+            && self.state.operationCursor.operationID?.uuidString.lowercased() == cursor.operationID
+            && self.state.operationCursor.afterCursorSequence == cursor.sequence
+        }) else { return }
+        cursorHandler(cursor.visible ? cursor : nil)
+      }
+      scheduleCursorPoll(after: 0)
+    } catch {
+      failed("The VM display broker returned an invalid cursor: \(error)")
+      scheduleCursorPoll(after: 0.25)
     }
+  }
 
-    func stop() {
-        let shouldInvalidate = lock.withLock { () -> Bool in
-            guard !state.stopped else { return false }
-            state.stopped = true
-            return true
-        }
-        if shouldInvalidate { connection.invalidate() }
+  private func proxy(_ body: (DoryVMDisplayBrokerXPCProtocol) -> Void) {
+    guard
+      let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
+        self?.failed("The VM display broker call failed: \(error)")
+      }) as? DoryVMDisplayBrokerXPCProtocol
+    else {
+      failed("The VM display broker proxy is unavailable.")
+      return
     }
+    body(proxy)
+  }
 
-    func acknowledge(
-        _ frame: DoryVMDisplayFrame,
-        presented: Bool,
-        metalCommandBufferCompletionID: UInt64 = 0
-    ) {
-        guard let leaseID = try? frame.leaseID.rawValue.uuidString.lowercased() else {
-            failed("The VM display frame carried an invalid lease.")
-            return
-        }
-        proxy { proxy in
-            proxy.acknowledgeFrame(
-                self.machineID,
-                leaseID: leaseID,
-                presented: presented,
-                metalCommandBufferCompletionID: metalCommandBufferCompletionID
-            ) { [weak self] accepted, detail in
-                guard let self else { return }
-                if accepted {
-                    self.lock.withLock {
-                        self.state.afterFrameSequence = max(
-                            self.state.afterFrameSequence,
-                            frame.sequence
-                        )
-                    }
-                    self.schedulePoll(after: 0)
-                } else {
-                    self.failed("The VM display broker rejected a frame acknowledgement: \(detail)")
-                }
-            }
-        }
+  private func failed(_ message: String) {
+    let shouldReport = lock.withLock { !state.stopped }
+    guard shouldReport else { return }
+    Task { @MainActor [weak self, failureHandler] in
+      guard let self, self.lock.withLock({ !self.state.stopped }) else { return }
+      failureHandler(message)
     }
-
-    func sendInput(
-        endpoint: DoryVMDisplayInputEndpoint,
-        events: [DoryVMDisplayInputEvent]
-    ) {
-        sendCommand { operationID, sequence in
-            try .input(
-                machineID: machineID,
-                operationID: operationID,
-                sequence: sequence,
-                endpoint: endpoint,
-                events: events
-            )
-        }
-    }
-
-    @discardableResult
-    func sendQualificationKeyboardInput(
-        expectedOperationID: UUID,
-        events: [DoryVMDisplayInputEvent],
-        completion: @escaping @Sendable (UInt64, Bool, String) -> Void
-    ) -> Bool {
-        guard lock.withLock({ !state.stopped ? state.operationID : nil })
-            == expectedOperationID else { return false }
-        return sendCommand({ operationID, sequence in
-            guard operationID == expectedOperationID else {
-                throw DoryDisplayQualificationInputCommandError.operationChanged
-            }
-            return try DoryVMDisplayCommand.input(
-                machineID: machineID,
-                operationID: operationID,
-                sequence: sequence,
-                endpoint: .keyboard,
-                events: events
-            )
-        }, completion: { [weak self] sequence, accepted, detail in
-            guard accepted, let self else {
-                completion(sequence, false, detail)
-                return
-            }
-            self.pollQualificationCommandStatus(
-                operationID: expectedOperationID,
-                sequence: sequence,
-                attemptsRemaining: 600,
-                completion: completion
-            )
-        })
-    }
-
-    func sendResize(
-        width: UInt32,
-        height: UInt32,
-        physicalWidthMillimeters: UInt16,
-        physicalHeightMillimeters: UInt16
-    ) {
-        sendCommand { operationID, sequence in
-            try .resize(
-                machineID: machineID,
-                operationID: operationID,
-                sequence: sequence,
-                scanoutID: scanoutID,
-                width: width,
-                height: height,
-                physicalWidthMillimeters: physicalWidthMillimeters,
-                physicalHeightMillimeters: physicalHeightMillimeters
-            )
-        }
-    }
-
-    func sendTopology(_ displays: [DoryVMDisplayTopologyEntry]) {
-        guard !displays.isEmpty else { return }
-        let sent = sendCommand { operationID, sequence in
-            try .topology(
-                machineID: machineID,
-                operationID: operationID,
-                sequence: sequence,
-                displays: displays
-            )
-        }
-        lock.withLock {
-            if sent {
-                if state.pendingTopology == displays { state.pendingTopology = nil }
-            } else if !state.stopped {
-                state.pendingTopology = displays
-            }
-        }
-    }
-
-    func sendRestartGraphics() {
-        _ = sendCommand { operationID, sequence in
-            try .restartGraphics(
-                machineID: machineID,
-                operationID: operationID,
-                sequence: sequence
-            )
-        }
-    }
-
-    @discardableResult
-    private func sendCommand(
-        _ make: (UUID, UInt64) throws -> DoryVMDisplayCommand,
-        completion: (@Sendable (UInt64, Bool, String) -> Void)? = nil
-    ) -> Bool {
-        let operationID = lock.withLock { !state.stopped ? state.operationID : nil }
-        let identity = operationID.flatMap { operationID in
-            LinuxMachineDisplayCommandSequencer.shared.next(
-                machineID: machineID,
-                operationID: operationID
-            ).map { (operationID, $0) }
-        }
-        guard let identity else { return false }
-        do {
-            let data = try DoryVMDisplayCommandCodec.encode(
-                make(identity.0, identity.1)
-            )
-            proxy { proxy in
-                proxy.sendCommand(data) { [weak self] accepted, detail in
-                    if !accepted {
-                        self?.failed("The VM rejected a display command: \(detail)")
-                    }
-                    completion?(identity.1, accepted, detail)
-                }
-            }
-            return true
-        } catch {
-            failed("Could not encode a VM display command: \(error)")
-            return false
-        }
-    }
-
-    private func pollQualificationCommandStatus(
-        operationID: UUID,
-        sequence: UInt64,
-        attemptsRemaining: Int,
-        completion: @escaping @Sendable (UInt64, Bool, String) -> Void
-    ) {
-        let operationText = operationID.uuidString.lowercased()
-        guard attemptsRemaining > 0,
-              lock.withLock({ !state.stopped && state.operationID == operationID }) else {
-            completion(sequence, false, "runner-command-timeout-or-generation-changed")
-            return
-        }
-        guard let statusProxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
-            self?.failed("The VM display broker call failed: \(error)")
-            completion(sequence, false, "display-broker-error")
-        }) as? DoryVMDisplayBrokerXPCProtocol else {
-            failed("The VM display broker proxy is unavailable.")
-            completion(sequence, false, "display-broker-proxy-unavailable")
-            return
-        }
-        statusProxy.commandStatus(
-            machineID,
-            operationID: operationText,
-            sequence: sequence
-        ) { [weak self] known, applied, detail in
-            guard let self else {
-                completion(sequence, false, "display-client-released")
-                return
-            }
-            if known, applied {
-                completion(sequence, true, "")
-            } else if known, detail == "pending" {
-                self.queue.asyncAfter(deadline: .now() + 1.0 / 60.0) {
-                    self.pollQualificationCommandStatus(
-                        operationID: operationID,
-                        sequence: sequence,
-                        attemptsRemaining: attemptsRemaining - 1,
-                        completion: completion
-                    )
-                }
-            } else {
-                completion(
-                    sequence,
-                    false,
-                    detail.isEmpty ? "runner-command-not-applied" : detail
-                )
-            }
-        }
-    }
-
-    private func schedulePoll(after delay: TimeInterval) {
-        queue.asyncAfter(deadline: .now() + max(0, delay)) { [weak self] in
-            self?.poll()
-        }
-    }
-
-    private func poll() {
-        let afterSequence = lock.withLock { () -> UInt64? in
-            guard !state.stopped, !state.framePollInFlight else { return nil }
-            state.framePollInFlight = true
-            return state.afterFrameSequence
-        }
-        guard let afterSequence else { return }
-        proxy { proxy in
-            proxy.nextFrame(
-                self.machineID,
-                scanoutID: self.scanoutID,
-                afterSequence: afterSequence
-            ) { [weak self] found, data, descriptors, handle, detail in
-                self?.receivedFrame(
-                    found: found,
-                    data: data,
-                    descriptors: descriptors,
-                    handle: handle,
-                    detail: detail
-                )
-            }
-        }
-    }
-
-    private func receivedFrame(
-        found: Bool,
-        data: Data,
-        descriptors: [FileHandle],
-        handle: MTLSharedTextureHandle?,
-        detail: String
-    ) {
-        lock.withLock { state.framePollInFlight = false }
-        guard found else {
-            if !detail.isEmpty, detail != "no-frame" {
-                failed("The VM display broker could not provide a frame: \(detail)")
-                // A desktop window commonly opens while its VM is still planning or starting.
-                // In that interval the broker has no registered runner yet. Keep polling so the
-                // same window attaches as soon as the runner publishes its first frame.
-                schedulePoll(after: 0.25)
-            } else {
-                schedulePoll(after: 1.0 / 60.0)
-            }
-            return
-        }
-        do {
-            let frame = try DoryVMDisplayFrameCodec.decode(data)
-            try frame.validate(
-                descriptorCount: descriptors.count,
-                hasSharedTextureHandle: handle != nil
-            )
-            guard frame.machineID == machineID, frame.scanoutID == scanoutID,
-                  let operationID = UUID(uuidString: frame.operationID) else {
-                throw DoryVMDisplayWireError.invalidFrameIdentity
-            }
-            let pendingTopology = lock.withLock { () -> [DoryVMDisplayTopologyEntry]? in
-                state.operationID = operationID
-                return state.pendingTopology
-            }
-            if let pendingTopology { sendTopology(pendingTopology) }
-            Task { @MainActor [frameHandler] in
-                frameHandler(frame, descriptors, handle)
-            }
-        } catch {
-            for descriptor in descriptors { try? descriptor.close() }
-            failed("The VM display broker returned an invalid frame: \(error)")
-            schedulePoll(after: 0.25)
-        }
-    }
-
-    private func scheduleCursorPoll(after delay: TimeInterval) {
-        queue.asyncAfter(deadline: .now() + max(0, delay)) { [weak self] in
-            self?.pollCursor()
-        }
-    }
-
-    private func pollCursor() {
-        let afterSequence = lock.withLock { () -> UInt64? in
-            guard !state.stopped, !state.cursorPollInFlight else { return nil }
-            state.cursorPollInFlight = true
-            return state.afterCursorSequence
-        }
-        guard let afterSequence else { return }
-        proxy { proxy in
-            proxy.nextCursor(
-                self.machineID,
-                scanoutID: self.scanoutID,
-                afterSequence: afterSequence
-            ) { [weak self] found, data, detail in
-                self?.receivedCursor(found: found, data: data, detail: detail)
-            }
-        }
-    }
-
-    private func receivedCursor(found: Bool, data: Data, detail: String) {
-        lock.withLock { state.cursorPollInFlight = false }
-        guard found else {
-            if !detail.isEmpty, detail != "no-cursor" {
-                failed("The VM display broker could not provide a cursor: \(detail)")
-                scheduleCursorPoll(after: 0.25)
-            } else {
-                scheduleCursorPoll(after: 1.0 / 60.0)
-            }
-            return
-        }
-        do {
-            let cursor = try DoryVMDisplayCursorCodec.decode(data)
-            guard cursor.machineID == machineID,
-                  cursor.scanoutID == scanoutID,
-                  lock.withLock({ state.operationID?.uuidString.lowercased() })
-                    == cursor.operationID else {
-                throw DoryVMDisplayWireError.invalidCursor
-            }
-            lock.withLock { state.afterCursorSequence = cursor.sequence }
-            Task { @MainActor [cursorHandler] in
-                cursorHandler(cursor.visible ? cursor : nil)
-            }
-            scheduleCursorPoll(after: 0)
-        } catch {
-            failed("The VM display broker returned an invalid cursor: \(error)")
-            scheduleCursorPoll(after: 0.25)
-        }
-    }
-
-    private func proxy(_ body: (DoryVMDisplayBrokerXPCProtocol) -> Void) {
-        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
-            self?.failed("The VM display broker call failed: \(error)")
-        }) as? DoryVMDisplayBrokerXPCProtocol else {
-            failed("The VM display broker proxy is unavailable.")
-            return
-        }
-        body(proxy)
-    }
-
-    private func failed(_ message: String) {
-        let shouldReport = lock.withLock { !state.stopped }
-        guard shouldReport else { return }
-        Task { @MainActor [failureHandler] in failureHandler(message) }
-    }
+  }
 }
 
 @MainActor
 final class LinuxMachineMetalView: NSView {
-    private static var nextMetalCommandBufferCompletionID: UInt64 = 1
+  private static var nextMetalCommandBufferCompletionID: UInt64 = 1
 
-    private let machineID: String
-    private let scanoutID: UInt32
-    private let device: any MTLDevice
-    private let commandQueue: any MTLCommandQueue
-    private let pipeline: any MTLRenderPipelineState
-    private let sampler: any MTLSamplerState
-    private var client: LinuxMachineDisplayClient!
-    private var resizeWorkItem: DispatchWorkItem?
-    private var trackingAreaReference: NSTrackingArea?
-    private var lastFailure: String?
-    private var guestCursor = NSCursor.arrow
-    private var guestCursorUpdate: DoryVMDisplayCursor?
-    private var scanoutSize = CGSize.zero
-    private var pointerCaptureState = LinuxMachinePointerCaptureState()
-    private var pressedKeyboardCodes = Set<UInt16>()
-    private var pressedAbsoluteButtons = Set<UInt16>()
-    private var pressedRelativeButtons = Set<UInt16>()
-    private var hostCursorHidden = false
-    private var requestedTopology: [DoryVMDisplayTopologyEntry]?
-    private var qualificationWindowReceiptWritten = false
-    private var qualificationCaptureFrameReceiptWritten = false
-    private var qualificationInputStarted = false
-    private var qualificationInputTask: Task<Void, Never>?
+  private let machineID: String
+  private let scanoutID: UInt32
+  private let device: any MTLDevice
+  private let commandQueue: any MTLCommandQueue
+  private let pipeline: any MTLRenderPipelineState
+  private let sampler: any MTLSamplerState
+  private var client: LinuxMachineDisplayClient!
+  private var resizeWorkItem: DispatchWorkItem?
+  private var trackingAreaReference: NSTrackingArea?
+  private var lastFailure: String?
+  private var guestCursor = NSCursor.arrow
+  private var guestCursorUpdate: DoryVMDisplayCursor?
+  private var scanoutSize = CGSize.zero
+  private var pointerCaptureState = LinuxMachinePointerCaptureState()
+  private var heldInput = LinuxMachineHeldInputState()
+  private var focusLease: (operationID: UUID, leaseID: UUID)?
+  private var focusRenewalTask: Task<Void, Never>?
+  private var stopped = false
+  private weak var observedInputWindow: NSWindow?
+  private var workspaceSessionObserver: NSObjectProtocol?
+  private var hostCursorHidden = false
+  private var requestedTopology: [DoryVMDisplayTopologyEntry]?
+  private var dynamicDisplayEnabled = false
+  private var qualificationWindowReceiptWritten = false
+  private var qualificationCaptureFrameReceiptWritten = false
+  private var qualificationInputStarted = false
+  private var qualificationInputTask: Task<Void, Never>?
+  private var qualificationRendererRestartStarted = false
+  private var qualificationRendererRestartTask: Task<Void, Never>?
+  private var qualificationCaptureHoldTask: Task<Void, Never>?
 
-    override var acceptsFirstResponder: Bool { true }
-    override var wantsUpdateLayer: Bool { true }
-    override var isFlipped: Bool { true }
-    override func makeBackingLayer() -> CALayer { CAMetalLayer() }
+  override var acceptsFirstResponder: Bool { true }
+  override var wantsUpdateLayer: Bool { true }
+  override var isFlipped: Bool { true }
+  override func makeBackingLayer() -> CALayer { CAMetalLayer() }
 
-    init(machineID: String, scanoutID: UInt32) {
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let queue = device.makeCommandQueue(),
-              let library = try? device.makeLibrary(source: Self.shaderSource, options: nil),
-              let vertex = library.makeFunction(name: "doryLinuxDisplayVertex"),
-              let fragment = library.makeFunction(name: "doryLinuxDisplayFragment") else {
-            fatalError("Dory requires Metal for Linux VM presentation")
-        }
-        let pipelineDescriptor = MTLRenderPipelineDescriptor()
-        pipelineDescriptor.vertexFunction = vertex
-        pipelineDescriptor.fragmentFunction = fragment
-        pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-        guard let pipeline = try? device.makeRenderPipelineState(
-            descriptor: pipelineDescriptor
-        ) else {
-            fatalError("Dory could not create its Linux display pipeline")
-        }
-        let samplerDescriptor = MTLSamplerDescriptor()
-        samplerDescriptor.minFilter = .linear
-        samplerDescriptor.magFilter = .linear
-        samplerDescriptor.sAddressMode = .clampToEdge
-        samplerDescriptor.tAddressMode = .clampToEdge
-        guard let sampler = device.makeSamplerState(descriptor: samplerDescriptor) else {
-            fatalError("Dory could not create its Linux display sampler")
-        }
-        self.machineID = machineID
-        self.scanoutID = scanoutID
-        self.device = device
-        self.commandQueue = queue
-        self.pipeline = pipeline
-        self.sampler = sampler
-        super.init(frame: .zero)
-        wantsLayer = true
-        guard let metalLayer = layer as? CAMetalLayer else {
-            fatalError("Dory could not create a Linux display Metal layer")
-        }
-        metalLayer.device = device
-        metalLayer.pixelFormat = .bgra8Unorm
-        metalLayer.framebufferOnly = true
-        metalLayer.contentsGravity = .resizeAspect
-        client = LinuxMachineDisplayClient(
-            machineID: machineID,
-            scanoutID: scanoutID,
-            frameHandler: { [weak self] in self?.present($0, descriptors: $1, handle: $2) },
-            cursorHandler: { [weak self] in self?.presentCursor($0) },
-            failureHandler: { [weak self] in self?.showFailure($0) }
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(restartGraphicsRequested(_:)),
-            name: .doryRestartLinuxMachineGraphics,
-            object: nil
-        )
-        client.start()
+  init(machineID: String, scanoutID: UInt32) {
+    guard let device = MTLCreateSystemDefaultDevice(),
+      let queue = device.makeCommandQueue(),
+      let library = try? device.makeLibrary(source: Self.shaderSource, options: nil),
+      let vertex = library.makeFunction(name: "doryLinuxDisplayVertex"),
+      let fragment = library.makeFunction(name: "doryLinuxDisplayFragment")
+    else {
+      fatalError("Dory requires Metal for Linux VM presentation")
     }
-
-    required init?(coder: NSCoder) { nil }
-
-    func stop() {
-        qualificationInputTask?.cancel()
-        qualificationInputTask = nil
-        resizeWorkItem?.cancel()
-        resizeWorkItem = nil
-        releasePressedInput()
-        NotificationCenter.default.removeObserver(
-            self,
-            name: .doryRestartLinuxMachineGraphics,
-            object: nil
-        )
-        client?.stop()
+    let pipelineDescriptor = MTLRenderPipelineDescriptor()
+    pipelineDescriptor.vertexFunction = vertex
+    pipelineDescriptor.fragmentFunction = fragment
+    pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+    guard
+      let pipeline = try? device.makeRenderPipelineState(
+        descriptor: pipelineDescriptor
+      )
+    else {
+      fatalError("Dory could not create its Linux display pipeline")
     }
-
-    @objc private func restartGraphicsRequested(_ notification: Notification) {
-        guard scanoutID == 0,
-              notification.object as? String == machineID else { return }
-        client.sendRestartGraphics()
+    let samplerDescriptor = MTLSamplerDescriptor()
+    samplerDescriptor.minFilter = .linear
+    samplerDescriptor.magFilter = .linear
+    samplerDescriptor.sAddressMode = .clampToEdge
+    samplerDescriptor.tAddressMode = .clampToEdge
+    guard let sampler = device.makeSamplerState(descriptor: samplerDescriptor) else {
+      fatalError("Dory could not create its Linux display sampler")
     }
-
-    func applyRuntimeTopology(_ topology: [DoryVMDisplayTopologyEntry]) {
-        guard requestedTopology != topology else { return }
-        requestedTopology = topology
-        client.sendTopology(topology)
+    self.machineID = machineID
+    self.scanoutID = scanoutID
+    self.device = device
+    self.commandQueue = queue
+    self.pipeline = pipeline
+    self.sampler = sampler
+    super.init(frame: .zero)
+    wantsLayer = true
+    guard let metalLayer = layer as? CAMetalLayer else {
+      fatalError("Dory could not create a Linux display Metal layer")
     }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        window?.makeFirstResponder(self)
-        updateDrawableSizeAndScheduleResize()
+    metalLayer.device = device
+    metalLayer.pixelFormat = .bgra8Unorm
+    metalLayer.framebufferOnly = true
+    metalLayer.contentsGravity = .resizeAspect
+    metalLayer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
+    client = LinuxMachineDisplayClient(
+      machineID: machineID,
+      scanoutID: scanoutID,
+      frameHandler: { [weak self] in self?.present($0, descriptors: $1, handle: $2) },
+      cursorHandler: { [weak self] in self?.presentCursor($0) },
+      failureHandler: { [weak self] in self?.showFailure($0) }
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(restartGraphicsRequested(_:)),
+      name: .doryRestartLinuxMachineGraphics,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(inputAuthorityLost(_:)),
+      name: NSApplication.didResignActiveNotification, object: nil
+    )
+    workspaceSessionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      Task { @MainActor in self?.releasePressedInput() }
     }
-
-    override func viewWillMove(toWindow newWindow: NSWindow?) {
-        if newWindow == nil { releasePressedInput() }
-        super.viewWillMove(toWindow: newWindow)
+    client.start()
+    focusRenewalTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        self?.renewClipboardFocus()
+        do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+      }
     }
+  }
 
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+  required init?(coder: NSCoder) { nil }
 
-    override func layout() {
-        super.layout()
-        updateDrawableSizeAndScheduleResize()
+  func stop() {
+    guard !stopped else { return }
+    stopped = true
+    focusRenewalTask?.cancel()
+    focusRenewalTask = nil
+    qualificationInputTask?.cancel()
+    qualificationInputTask = nil
+    qualificationRendererRestartTask?.cancel()
+    qualificationRendererRestartTask = nil
+    resizeWorkItem?.cancel()
+    resizeWorkItem = nil
+    qualificationCaptureHoldTask?.cancel()
+    qualificationCaptureHoldTask = nil
+    releasePressedInput()
+    NotificationCenter.default.removeObserver(self)
+    if let workspaceSessionObserver {
+      NSWorkspace.shared.notificationCenter.removeObserver(workspaceSessionObserver)
+      self.workspaceSessionObserver = nil
     }
+    observedInputWindow = nil
+    client?.stop()
+  }
 
-    override func updateTrackingAreas() {
-        if let trackingAreaReference { removeTrackingArea(trackingAreaReference) }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
-            owner: self
-        )
-        addTrackingArea(area)
-        trackingAreaReference = area
-        super.updateTrackingAreas()
+  @objc private func inputAuthorityLost(_ notification: Notification) {
+    releasePressedInput()
+  }
+
+  private func observeInputWindow(_ newWindow: NSWindow?) {
+    guard observedInputWindow !== newWindow else { return }
+    if let oldWindow = observedInputWindow {
+      for name in Self.inputRevocationNotifications {
+        NotificationCenter.default.removeObserver(self, name: name, object: oldWindow)
+      }
     }
-
-    private func updateDrawableSizeAndScheduleResize() {
-        guard let metalLayer = layer as? CAMetalLayer else { return }
-        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
-        let pixelSize = CGSize(
-            width: max(1, bounds.width * scale),
-            height: max(1, bounds.height * scale)
-        )
-        metalLayer.contentsScale = scale
-        metalLayer.drawableSize = pixelSize
-        resizeWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            Task { @MainActor in self?.sendResize(pixelSize: pixelSize) }
-        }
-        resizeWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: item)
+    observedInputWindow = newWindow
+    guard !stopped, let newWindow else { return }
+    for name in Self.inputRevocationNotifications {
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(inputAuthorityLost(_:)), name: name, object: newWindow
+      )
     }
+  }
 
-    private func sendResize(pixelSize: CGSize) {
-        let width = UInt32(clamping: max(1, Int(pixelSize.width.rounded())))
-        let height = UInt32(clamping: max(1, Int(pixelSize.height.rounded())))
-        let physical = physicalSize(width: width, height: height)
-        client.sendResize(
-            width: width,
-            height: height,
-            physicalWidthMillimeters: physical.0,
-            physicalHeightMillimeters: physical.1
-        )
+  private static let inputRevocationNotifications: [Notification.Name] = [
+    NSWindow.didResignKeyNotification, NSWindow.didMiniaturizeNotification,
+    NSWindow.willCloseNotification
+  ]
+
+  override func resignFirstResponder() -> Bool {
+    let resigned = super.resignFirstResponder()
+    if resigned { releasePressedInput() }
+    return resigned
+  }
+
+  override func becomeFirstResponder() -> Bool {
+    let accepted = super.becomeFirstResponder()
+    if accepted { renewClipboardFocus() }
+    return accepted
+  }
+
+  private func renewClipboardFocus() {
+    guard hasInputFocus, let operationID = client.currentOperationID else {
+      revokeClipboardFocus()
+      return
     }
-
-    private func physicalSize(width: UInt32, height: UInt32) -> (UInt16, UInt16) {
-        guard let screen = window?.screen,
-              let number = screen.deviceDescription[
-                NSDeviceDescriptionKey("NSScreenNumber")
-              ] as? NSNumber,
-              screen.frame.width > 0, screen.frame.height > 0 else {
-            return Self.fallbackPhysicalSize(width: width, height: height)
-        }
-        let panel = CGDisplayScreenSize(CGDirectDisplayID(number.uint32Value))
-        guard panel.width > 0, panel.height > 0 else {
-            return Self.fallbackPhysicalSize(width: width, height: height)
-        }
-        return (
-            UInt16(clamping: max(1, Int((panel.width * bounds.width / screen.frame.width).rounded()))),
-            UInt16(clamping: max(1, Int((panel.height * bounds.height / screen.frame.height).rounded())))
-        )
+    if focusLease?.operationID != operationID {
+      revokeClipboardFocus()
+      focusLease = (operationID, UUID())
     }
+    guard let focusLease else { return }
+    client.sendFocus(expectedOperationID: operationID, leaseID: focusLease.leaseID, active: true)
+  }
 
-    private static func fallbackPhysicalSize(width: UInt32, height: UInt32) -> (UInt16, UInt16) {
-        (
-            UInt16(clamping: max(1, Int((Double(width) * 25.4 / 160).rounded()))),
-            UInt16(clamping: max(1, Int((Double(height) * 25.4 / 160).rounded())))
-        )
+  private func revokeClipboardFocus() {
+    guard let focusLease else { return }
+    self.focusLease = nil
+    client.sendFocus(expectedOperationID: focusLease.operationID,
+                     leaseID: focusLease.leaseID, active: false)
+  }
+
+  private var hasInputFocus: Bool {
+    !stopped && NSApp.isActive && window?.isKeyWindow == true
+      && window?.firstResponder === self
+  }
+
+  @objc private func restartGraphicsRequested(_ notification: Notification) {
+    guard scanoutID == 0,
+      notification.object as? String == machineID
+    else { return }
+    client.sendRestartGraphics()
+  }
+
+  func applyRuntimeTopology(_ topology: [DoryVMDisplayTopologyEntry]) {
+    guard dynamicDisplayEnabled else { return }
+    guard requestedTopology != topology else { return }
+    requestedTopology = topology
+    client.sendTopology(topology)
+  }
+
+  func setDynamicDisplayEnabled(_ enabled: Bool) {
+    guard dynamicDisplayEnabled != enabled else { return }
+    dynamicDisplayEnabled = enabled
+    if enabled {
+      updateDrawableSizeAndScheduleResize()
+    } else {
+      resizeWorkItem?.cancel()
+      resizeWorkItem = nil
+      requestedTopology = nil
+      client.clearPendingTopology()
     }
+  }
 
-    private func present(
-        _ frame: DoryVMDisplayFrame,
-        descriptors: [FileHandle],
-        handle: MTLSharedTextureHandle?
-    ) {
-        do {
-            let imported = try importFrame(frame, descriptors: descriptors, handle: handle)
-            scanoutSize = CGSize(
-                width: Int(frame.sourceRect.width),
-                height: Int(frame.sourceRect.height)
-            )
-            if guestCursorUpdate != nil { rebuildGuestCursor() }
-            guard render(imported, completion: { [weak self] presented, completionID in
-                guard let self else { return }
-                self.client.acknowledge(
-                    frame,
-                    presented: presented,
-                    metalCommandBufferCompletionID: completionID ?? 0
-                )
-                if presented, let completionID {
-                    self.writeQualificationWindowReceipt(
-                        for: frame,
-                        metalCommandBufferCompletionID: completionID
-                    )
-                    self.startQualificationInputIfNeeded(for: frame)
-                    self.writeQualificationCaptureFrameReceiptIfRequested(
-                        for: frame,
-                        metalCommandBufferCompletionID: completionID
-                    )
-                }
-            }) else {
-                client.acknowledge(frame, presented: false)
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    guard !stopped else { return }
+    observeInputWindow(window)
+    window?.makeFirstResponder(self)
+    updateDrawableSizeAndScheduleResize()
+  }
+
+  override func viewWillMove(toWindow newWindow: NSWindow?) {
+    if window !== newWindow {
+      releasePressedInput()
+      qualificationCaptureHoldTask?.cancel()
+      client.resumeFramePolling()
+      observeInputWindow(nil)
+    }
+    super.viewWillMove(toWindow: newWindow)
+  }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+  override func viewDidChangeBackingProperties() {
+    super.viewDidChangeBackingProperties()
+    guard !stopped else { return }
+    updateDrawableSizeAndScheduleResize()
+    if guestCursorUpdate != nil { rebuildGuestCursor() }
+  }
+
+  override func layout() {
+    super.layout()
+    updateDrawableSizeAndScheduleResize()
+  }
+
+  override func updateTrackingAreas() {
+    if let trackingAreaReference { removeTrackingArea(trackingAreaReference) }
+    let area = NSTrackingArea(
+      rect: bounds,
+      options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
+      owner: self
+    )
+    addTrackingArea(area)
+    trackingAreaReference = area
+    super.updateTrackingAreas()
+  }
+
+  private func updateDrawableSizeAndScheduleResize() {
+    guard !stopped else { return }
+    guard let metalLayer = layer as? CAMetalLayer else { return }
+    let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+    let pixelSize = CGSize(
+      width: max(1, bounds.width * scale),
+      height: max(1, bounds.height * scale)
+    )
+    metalLayer.contentsScale = scale
+    metalLayer.drawableSize = pixelSize
+    resizeWorkItem?.cancel()
+    guard dynamicDisplayEnabled else {
+      resizeWorkItem = nil
+      return
+    }
+    let item = DispatchWorkItem { [weak self] in
+      Task { @MainActor in self?.sendResize(pixelSize: pixelSize) }
+    }
+    resizeWorkItem = item
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: item)
+  }
+
+  private func sendResize(pixelSize: CGSize) {
+    guard !stopped, dynamicDisplayEnabled else { return }
+    let width = UInt32(clamping: max(1, Int(pixelSize.width.rounded())))
+    let height = UInt32(clamping: max(1, Int(pixelSize.height.rounded())))
+    let physical = physicalSize(width: width, height: height)
+    client.sendResize(
+      width: width,
+      height: height,
+      physicalWidthMillimeters: physical.0,
+      physicalHeightMillimeters: physical.1
+    )
+  }
+
+  private func physicalSize(width: UInt32, height: UInt32) -> (UInt16, UInt16) {
+    guard let screen = window?.screen,
+      let number = screen.deviceDescription[
+        NSDeviceDescriptionKey("NSScreenNumber")
+      ] as? NSNumber,
+      screen.frame.width > 0, screen.frame.height > 0
+    else {
+      return Self.fallbackPhysicalSize(width: width, height: height)
+    }
+    let panel = CGDisplayScreenSize(CGDirectDisplayID(number.uint32Value))
+    guard panel.width > 0, panel.height > 0 else {
+      return Self.fallbackPhysicalSize(width: width, height: height)
+    }
+    return (
+      UInt16(clamping: max(1, Int((panel.width * bounds.width / screen.frame.width).rounded()))),
+      UInt16(clamping: max(1, Int((panel.height * bounds.height / screen.frame.height).rounded())))
+    )
+  }
+
+  private static func fallbackPhysicalSize(width: UInt32, height: UInt32) -> (UInt16, UInt16) {
+    (
+      UInt16(clamping: max(1, Int((Double(width) * 25.4 / 160).rounded()))),
+      UInt16(clamping: max(1, Int((Double(height) * 25.4 / 160).rounded())))
+    )
+  }
+
+  private func present(
+    _ frame: DoryVMDisplayFrame,
+    descriptors: [FileHandle],
+    handle: MTLSharedTextureHandle?
+  ) {
+    guard !stopped, let operationID = UUID(uuidString: frame.operationID),
+      client.currentOperationID == operationID else {
+      for descriptor in descriptors { try? descriptor.close() }
+      if !stopped { client.acknowledge(frame, presented: false) }
+      return
+    }
+    if heldInput.observeOperation(operationID) {
+      // The old runner owns its own held state. Do not synthesize releases in its successor.
+      if pointerCaptureState.cancel() { restoreHostPointerAfterCapture() }
+      guestCursorUpdate = nil
+      guestCursor = .arrow
+      window?.invalidateCursorRects(for: self)
+    }
+    do {
+      let imported = try importFrame(frame, descriptors: descriptors, handle: handle)
+      scanoutSize = CGSize(
+        width: Int(frame.sourceRect.width),
+        height: Int(frame.sourceRect.height)
+      )
+      if guestCursorUpdate != nil { rebuildGuestCursor() }
+      guard
+        render(
+          imported,
+          completion: { [weak self] presented, completionID in
+            guard let self, !self.stopped, self.client.currentOperationID == operationID else { return }
+            let captureRequestPath = presented && completionID != nil
+              ? self.qualificationCaptureRequestPath(for: frame) : nil
+            let pollingHeld = captureRequestPath != nil && self.client.holdFramePolling()
+            self.client.acknowledge(
+              frame,
+              presented: presented,
+              metalCommandBufferCompletionID: completionID ?? 0
+            ) { [weak self] brokerAccepted in
+              guard let self, !self.stopped, self.client.currentOperationID == operationID else { return }
+              guard LinuxMachineDisplayEvidenceAdmission.accepts(
+                  presented: presented,
+                  completionID: completionID,
+                  brokerAccepted: brokerAccepted
+                ),
+                let completionID
+              else {
+                if pollingHeld { self.client.resumeFramePolling() }
                 return
-            }
-        } catch {
-            for descriptor in descriptors { try? descriptor.close() }
-            client.acknowledge(frame, presented: false)
-            showFailure("Dory could not import the Linux display frame: \(error)")
-        }
-    }
-
-    private func importFrame(
-        _ frame: DoryVMDisplayFrame,
-        descriptors: [FileHandle],
-        handle: MTLSharedTextureHandle?
-    ) throws -> LinuxMachineImportedFrame {
-        switch frame.transport {
-        case .cpuCopy:
-            guard descriptors.count == 1, handle == nil else {
-                throw DoryVMDisplayWireError.invalidTransportAuthority
-            }
-            let descriptor = descriptors[0]
-            let lease = try DoryVMDisplayCPUFrameLeaseCodec.decode(frame.leasePayload)
-            return try importLinearFrame(
-                frame,
-                descriptor: descriptor,
-                pixelFormat: DoryRendererScanoutPixelFormat(rawValue: lease.pixelFormat)!,
-                width: lease.width,
-                height: lease.height,
-                stride: lease.stride,
-                storageOffset: 0,
-                declaredFileSize: lease.declaredFileSize
-            )
-        case .sharedTexture:
-            guard descriptors.isEmpty, let handle,
-                  let texture = device.makeSharedTexture(handle: handle) else {
-                throw DoryVMDisplayWireError.invalidTransportAuthority
-            }
-            return LinuxMachineImportedFrame(
-                texture: texture,
-                frame: frame,
-                sharedTextureHandle: handle
-            )
-        case .sharedMemory:
-            guard descriptors.count == 1, handle == nil else {
-                throw DoryVMDisplayWireError.invalidTransportAuthority
-            }
-            let descriptor = descriptors[0]
-            let lease = try DoryRendererScanoutLeaseCodec.decode(frame.leasePayload)
-            guard lease.declaredFileSize <= UInt64(Int.max),
-                  lease.storageOffset <= UInt64(Int.max) else {
-                throw DoryVMDisplayWireError.invalidTransportAuthority
-            }
-            return try importLinearFrame(
-                frame,
-                descriptor: descriptor,
-                pixelFormat: lease.pixelFormat,
-                width: lease.width,
-                height: lease.height,
-                stride: lease.stride,
-                storageOffset: lease.storageOffset,
-                declaredFileSize: lease.declaredFileSize
-            )
-        }
-    }
-
-    private func importLinearFrame(
-        _ frame: DoryVMDisplayFrame,
-        descriptor: FileHandle,
-        pixelFormat: DoryRendererScanoutPixelFormat,
-        width: UInt32,
-        height: UInt32,
-        stride: UInt32,
-        storageOffset: UInt64,
-        declaredFileSize: UInt64
-    ) throws -> LinuxMachineImportedFrame {
-            guard declaredFileSize <= UInt64(Int.max),
-                  storageOffset <= UInt64(Int.max) else {
-                throw DoryVMDisplayWireError.invalidTransportAuthority
-            }
-            let length = Int(declaredFileSize)
-            var statBuffer = stat()
-            guard length > 0, fstat(descriptor.fileDescriptor, &statBuffer) == 0,
-                  statBuffer.st_size == off_t(length) else {
-                throw DoryVMDisplayWireError.invalidTransportAuthority
-            }
-            let address = mmap(
-                nil,
-                length,
-                PROT_READ,
-                MAP_SHARED,
-                descriptor.fileDescriptor,
-                0
-            )
-            guard address != MAP_FAILED else {
-                throw DoryVMDisplayWireError.invalidTransportAuthority
-            }
-            try? descriptor.close()
-            guard let buffer = device.makeBuffer(
-                bytesNoCopy: address!,
-                length: length,
-                options: .storageModeShared,
-                deallocator: nil
-            ) else {
-                munmap(address, length)
-                throw DoryVMDisplayWireError.invalidTransportAuthority
-            }
-            let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: Self.pixelFormat(pixelFormat),
-                width: Int(width),
-                height: Int(height),
-                mipmapped: false
-            )
-            textureDescriptor.storageMode = .shared
-            textureDescriptor.usage = [.shaderRead]
-            guard let texture = buffer.makeTexture(
-                descriptor: textureDescriptor,
-                offset: Int(storageOffset),
-                bytesPerRow: Int(stride)
-            ) else {
-                munmap(address, length)
-                throw DoryVMDisplayWireError.invalidTransportAuthority
-            }
-            return LinuxMachineImportedFrame(
-                texture: texture,
-                frame: frame,
-                mappedAddress: address,
-                mappedLength: length,
-                buffer: buffer
-            )
-    }
-
-    private func render(
-        _ imported: LinuxMachineImportedFrame,
-        completion: @escaping @MainActor @Sendable (Bool, UInt64?) -> Void
-    ) -> Bool {
-        guard let metalLayer = layer as? CAMetalLayer,
-              let drawable = metalLayer.nextDrawable(),
-              let commandBuffer = commandQueue.makeCommandBuffer() else { return false }
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = drawable.texture
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        pass.colorAttachments[0].clearColor = MTLClearColor(
-            red: 0.025, green: 0.03, blue: 0.04, alpha: 1
-        )
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
-            return false
-        }
-        let yOriginTop: Bool
-        switch imported.frame.transport {
-        case .cpuCopy:
-            yOriginTop = (try? DoryVMDisplayCPUFrameLeaseCodec.decode(
-                imported.frame.leasePayload
-            ).yOriginTop) ?? true
-        case .sharedMemory:
-            yOriginTop = (try? DoryRendererScanoutLeaseCodec.decode(
-                imported.frame.leasePayload
-            ).yOriginTop) ?? true
-        case .sharedTexture:
-            yOriginTop = (try? DoryRendererSharedTextureScanoutLeaseCodec.decode(
-                imported.frame.leasePayload
-            ).yOriginTop) ?? true
-        }
-        var uv = LinuxMachineScanoutTextureCoordinates.sourceUV(
-            sourceRect: imported.frame.sourceRect,
-            backingWidth: imported.texture.width,
-            backingHeight: imported.texture.height,
-            yOriginTop: yOriginTop
-        )
-        encoder.setRenderPipelineState(pipeline)
-        encoder.setVertexBytes(&uv, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
-        encoder.setFragmentTexture(imported.texture, index: 0)
-        encoder.setFragmentSamplerState(sampler, index: 0)
-        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
-        encoder.endEncoding()
-        commandBuffer.addCompletedHandler { [imported, failureTarget = self] buffer in
-            let presented = buffer.status == .completed
-            let detail = presented ? nil : buffer.error?.localizedDescription
-                ?? "Metal presentation failed with status \(buffer.status.rawValue)"
-            Task { @MainActor in
-                if let detail { failureTarget.showFailure(detail) }
-                let completionID = presented
-                    ? Self.takeMetalCommandBufferCompletionID()
-                    : nil
-                completion(presented, completionID)
-            }
-            _ = imported
-        }
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
-        return true
-    }
-
-    private static func takeMetalCommandBufferCompletionID() -> UInt64? {
-        guard nextMetalCommandBufferCompletionID < UInt64.max else { return nil }
-        let completionID = nextMetalCommandBufferCompletionID
-        nextMetalCommandBufferCompletionID += 1
-        return completionID
-    }
-
-    private func writeQualificationWindowReceipt(
-        for frame: DoryVMDisplayFrame,
-        metalCommandBufferCompletionID: UInt64
-    ) {
-        guard !qualificationWindowReceiptWritten,
-              let launch = try? DoryDisplayQualificationLaunch.parse(
-                environment: ProcessInfo.processInfo.environment
-              ),
-              launch.machineID == machineID, launch.scanoutID == scanoutID,
-              let window, window.windowNumber > 0,
-              window.title == launch.display.windowTitle else { return }
-        if writeQualificationReceipt(
-            at: launch.windowReceiptPath,
-            launch: launch,
-            window: window,
-            frame: frame,
-            metalCommandBufferCompletionID: metalCommandBufferCompletionID,
-            label: "window"
-        ) {
-            qualificationWindowReceiptWritten = true
-        }
-    }
-
-    private func writeQualificationCaptureFrameReceiptIfRequested(
-        for frame: DoryVMDisplayFrame,
-        metalCommandBufferCompletionID: UInt64
-    ) {
-        guard !qualificationCaptureFrameReceiptWritten,
-              let launch = try? DoryDisplayQualificationLaunch.parse(
-                environment: ProcessInfo.processInfo.environment
-              ),
-              launch.machineID == machineID, launch.scanoutID == scanoutID,
-              let requestPath = launch.captureRequestPath,
-              let receiptPath = launch.captureReceiptPath,
-              let window, window.windowNumber > 0,
-              window.title == launch.display.windowTitle else { return }
-        let request = URL(fileURLWithPath: requestPath)
-        let requestValues = try? request.resourceValues(forKeys: [
-            .isRegularFileKey, .isSymbolicLinkKey,
-        ])
-        guard requestValues?.isRegularFile == true,
-              requestValues?.isSymbolicLink != true else { return }
-        if writeQualificationReceipt(
-            at: receiptPath,
-            launch: launch,
-            window: window,
-            frame: frame,
-            metalCommandBufferCompletionID: metalCommandBufferCompletionID,
-            label: "capture"
-        ) {
-            qualificationCaptureFrameReceiptWritten = true
-        }
-    }
-
-    private func writeQualificationReceipt(
-        at path: String,
-        launch: DoryDisplayQualificationLaunch,
-        window: NSWindow,
-        frame: DoryVMDisplayFrame,
-        metalCommandBufferCompletionID: UInt64,
-        label: String
-    ) -> Bool {
-        let destination = URL(fileURLWithPath: path)
-        let parent = destination.deletingLastPathComponent()
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory),
-              isDirectory.boolValue,
-              (try? parent.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
-              !FileManager.default.fileExists(atPath: destination.path) else {
-            showFailure("Dory could not create the display qualification \(label) receipt.")
-            return false
-        }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let receipt = DoryDisplayQualificationWindowReceipt(
-            capturedAt: formatter.string(from: Date()),
-            bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
-            processID: getpid(),
-            windowNumber: window.windowNumber,
-            windowTitle: window.title,
-            machineID: machineID,
-            scanoutID: scanoutID,
-            machServiceName: launch.machServiceName,
-            operationID: frame.operationID,
-            frameSequence: frame.sequence,
-            displayResourceGeneration: frame.displayResourceGeneration,
-            metalCommandBufferCompletionID: metalCommandBufferCompletionID,
-            transport: frame.transport.rawValue
-        )
-        let temporary = parent.appendingPathComponent(
-            ".\(destination.lastPathComponent).tmp-\(UUID().uuidString)"
-        )
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            let data = try encoder.encode(receipt) + Data("\n".utf8)
-            try data.write(to: temporary, options: .withoutOverwriting)
-            try FileManager.default.moveItem(at: temporary, to: destination)
-            return true
-        } catch {
-            showFailure(
-                "Dory could not write the display qualification \(label) receipt: \(error)"
-            )
-            return false
-        }
-    }
-
-    private func startQualificationInputIfNeeded(for frame: DoryVMDisplayFrame) {
-        guard !qualificationInputStarted,
-              let launch = try? DoryDisplayQualificationLaunch.parse(
-                environment: ProcessInfo.processInfo.environment
-              ),
-              launch.machineID == machineID,
-              launch.scanoutID == scanoutID,
-              let scriptPath = launch.inputScriptPath,
-              let receiptPath = launch.inputReceiptPath,
-              let operationID = UUID(uuidString: frame.operationID) else { return }
-        qualificationInputStarted = true
-        do {
-            let loaded = try DoryDisplayQualificationInputFiles.loadScript(
-                at: scriptPath,
-                machineID: machineID
-            )
-            qualificationInputTask = Task { @MainActor [weak self] in
-                guard let self else { return }
-                do {
-                    var firstSequence: UInt64?
-                    var lastSequence: UInt64?
-                    for step in loaded.script.steps {
-                        try Task.checkCancellation()
-                        if step.delayMilliseconds > 0 {
-                            try await Task.sleep(
-                                for: .milliseconds(step.delayMilliseconds)
-                            )
-                        }
-                        let sequence = try await sendQualificationKeyboardStep(
-                            step.events,
-                            operationID: operationID
-                        )
-                        firstSequence = firstSequence ?? sequence
-                        lastSequence = sequence
-                    }
-                    guard let firstSequence, let lastSequence else {
-                        throw DoryDisplayQualificationInputError.invalidScript
-                    }
-                    let formatter = ISO8601DateFormatter()
-                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                    try DoryDisplayQualificationInputFiles.writeReceipt(
-                        DoryDisplayQualificationInputReceipt(
-                            completedAt: formatter.string(from: Date()),
-                            bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
-                            processID: getpid(),
-                            machineID: machineID,
-                            machServiceName: launch.machServiceName,
-                            operationID: frame.operationID,
-                            scriptSHA256: loaded.sha256,
-                            stepCount: loaded.script.steps.count,
-                            eventCount: loaded.script.eventCount,
-                            firstCommandSequence: firstSequence,
-                            lastCommandSequence: lastSequence
-                        ),
-                        at: receiptPath
-                    )
-                } catch is CancellationError {
-                    return
-                } catch {
-                    showFailure("Dory qualification input failed: \(error)")
-                }
-            }
-        } catch {
-            showFailure("Dory could not load qualification input: \(error)")
-        }
-    }
-
-    private func sendQualificationKeyboardStep(
-        _ events: [DoryVMDisplayInputEvent],
-        operationID: UUID
-    ) async throws -> UInt64 {
-        try await withCheckedThrowingContinuation { continuation in
-            let submitted = client.sendQualificationKeyboardInput(
-                expectedOperationID: operationID,
-                events: events
-            ) {
-                sequence, accepted, detail in
-                if accepted {
-                    continuation.resume(returning: sequence)
-                } else {
-                    continuation.resume(
-                        throwing: DoryDisplayQualificationInputCommandError.rejected(detail)
-                    )
-                }
-            }
-            if !submitted {
-                continuation.resume(
-                    throwing: DoryDisplayQualificationInputCommandError.unavailable
+              }
+              self.writeQualificationWindowReceipt(
+                for: frame,
+                metalCommandBufferCompletionID: completionID
+              )
+              self.startQualificationInputIfNeeded(for: frame, metalCommandBufferCompletionID: completionID)
+              if pollingHeld, let captureRequestPath,
+                self.writeQualificationCaptureFrameReceiptIfRequested(
+                  for: frame,
+                  metalCommandBufferCompletionID: completionID
                 )
+              {
+                self.waitForQualificationCaptureRelease(at: captureRequestPath)
+              } else if pollingHeld {
+                self.client.resumeFramePolling()
+              }
             }
-        }
+          })
+      else {
+        client.acknowledge(frame, presented: false)
+        return
+      }
+    } catch {
+      for descriptor in descriptors { try? descriptor.close() }
+      client.acknowledge(frame, presented: false)
+      showFailure("Dory could not import the Linux display frame: \(error)")
     }
+  }
 
-    private func showFailure(_ message: String) {
-        guard lastFailure != message else { return }
-        lastFailure = message
-        toolTip = message
+  private func importFrame(
+    _ frame: DoryVMDisplayFrame,
+    descriptors: [FileHandle],
+    handle: MTLSharedTextureHandle?
+  ) throws -> LinuxMachineImportedFrame {
+    switch frame.transport {
+    case .cpuCopy:
+      guard descriptors.count == 1, handle == nil else {
+        throw DoryVMDisplayWireError.invalidTransportAuthority
+      }
+      let descriptor = descriptors[0]
+      let lease = try DoryVMDisplayCPUFrameLeaseCodec.decode(frame.leasePayload)
+      return try importLinearFrame(
+        frame,
+        descriptor: descriptor,
+        pixelFormat: DoryRendererScanoutPixelFormat(rawValue: lease.pixelFormat)!,
+        width: lease.width,
+        height: lease.height,
+        stride: lease.stride,
+        storageOffset: 0,
+        declaredFileSize: lease.declaredFileSize
+      )
+    case .sharedTexture:
+      guard descriptors.isEmpty, let handle,
+        let texture = device.makeSharedTexture(handle: handle)
+      else {
+        throw DoryVMDisplayWireError.invalidTransportAuthority
+      }
+      return LinuxMachineImportedFrame(
+        texture: texture,
+        frame: frame,
+        sharedTextureHandle: handle
+      )
+    case .sharedMemory:
+      guard descriptors.count == 1, handle == nil else {
+        throw DoryVMDisplayWireError.invalidTransportAuthority
+      }
+      let descriptor = descriptors[0]
+      let lease = try DoryRendererScanoutLeaseCodec.decode(frame.leasePayload)
+      guard lease.declaredFileSize <= UInt64(Int.max),
+        lease.storageOffset <= UInt64(Int.max)
+      else {
+        throw DoryVMDisplayWireError.invalidTransportAuthority
+      }
+      return try importLinearFrame(
+        frame,
+        descriptor: descriptor,
+        pixelFormat: lease.pixelFormat,
+        width: lease.width,
+        height: lease.height,
+        stride: lease.stride,
+        storageOffset: lease.storageOffset,
+        declaredFileSize: lease.declaredFileSize
+      )
     }
+  }
 
-    private func presentCursor(_ cursor: DoryVMDisplayCursor?) {
-        guestCursorUpdate = cursor
-        rebuildGuestCursor()
+  private func importLinearFrame(
+    _ frame: DoryVMDisplayFrame,
+    descriptor: FileHandle,
+    pixelFormat: DoryRendererScanoutPixelFormat,
+    width: UInt32,
+    height: UInt32,
+    stride: UInt32,
+    storageOffset: UInt64,
+    declaredFileSize: UInt64
+  ) throws -> LinuxMachineImportedFrame {
+    guard declaredFileSize <= UInt64(Int.max),
+      storageOffset <= UInt64(Int.max)
+    else {
+      throw DoryVMDisplayWireError.invalidTransportAuthority
     }
+    let length = Int(declaredFileSize)
+    var statBuffer = stat()
+    guard length > 0, fstat(descriptor.fileDescriptor, &statBuffer) == 0,
+      statBuffer.st_size == off_t(length)
+    else {
+      throw DoryVMDisplayWireError.invalidTransportAuthority
+    }
+    let address = mmap(
+      nil,
+      length,
+      PROT_READ,
+      MAP_SHARED,
+      descriptor.fileDescriptor,
+      0
+    )
+    guard address != MAP_FAILED else {
+      throw DoryVMDisplayWireError.invalidTransportAuthority
+    }
+    try? descriptor.close()
+    guard
+      let buffer = device.makeBuffer(
+        bytesNoCopy: address!,
+        length: length,
+        options: .storageModeShared,
+        deallocator: nil
+      )
+    else {
+      munmap(address, length)
+      throw DoryVMDisplayWireError.invalidTransportAuthority
+    }
+    let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: Self.pixelFormat(pixelFormat),
+      width: Int(width),
+      height: Int(height),
+      mipmapped: false
+    )
+    textureDescriptor.storageMode = .shared
+    textureDescriptor.usage = [.shaderRead]
+    guard
+      let texture = buffer.makeTexture(
+        descriptor: textureDescriptor,
+        offset: Int(storageOffset),
+        bytesPerRow: Int(stride)
+      )
+    else {
+      munmap(address, length)
+      throw DoryVMDisplayWireError.invalidTransportAuthority
+    }
+    return LinuxMachineImportedFrame(
+      texture: texture,
+      frame: frame,
+      mappedAddress: address,
+      mappedLength: length,
+      buffer: buffer
+    )
+  }
 
-    private func rebuildGuestCursor() {
-        guard let cursor = guestCursorUpdate else {
-            guestCursor = Self.transparentCursor
-            window?.invalidateCursorRects(for: self)
-            return
-        }
-        let scale = bounds.width > 0 && scanoutSize.width > 0
-            ? max(1, scanoutSize.width / bounds.width)
-            : max(1, window?.backingScaleFactor ?? 1)
-        guestCursor = Self.makeCursor(cursor, scale: scale) ?? Self.transparentCursor
-        window?.invalidateCursorRects(for: self)
+  private func render(
+    _ imported: LinuxMachineImportedFrame,
+    completion: @escaping @MainActor @Sendable (Bool, UInt64?) -> Void
+  ) -> Bool {
+    guard let metalLayer = layer as? CAMetalLayer,
+      let drawable = metalLayer.nextDrawable(),
+      let commandBuffer = commandQueue.makeCommandBuffer()
+    else { return false }
+    let pass = MTLRenderPassDescriptor()
+    pass.colorAttachments[0].texture = drawable.texture
+    pass.colorAttachments[0].loadAction = .clear
+    pass.colorAttachments[0].storeAction = .store
+    pass.colorAttachments[0].clearColor = MTLClearColor(
+      red: 0.025, green: 0.03, blue: 0.04, alpha: 1
+    )
+    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+      return false
     }
+    let yOriginTop: Bool
+    switch imported.frame.transport {
+    case .cpuCopy:
+      yOriginTop =
+        (try? DoryVMDisplayCPUFrameLeaseCodec.decode(
+          imported.frame.leasePayload
+        ).yOriginTop) ?? true
+    case .sharedMemory:
+      yOriginTop =
+        (try? DoryRendererScanoutLeaseCodec.decode(
+          imported.frame.leasePayload
+        ).yOriginTop) ?? true
+    case .sharedTexture:
+      yOriginTop =
+        (try? DoryRendererSharedTextureScanoutLeaseCodec.decode(
+          imported.frame.leasePayload
+        ).yOriginTop) ?? true
+    }
+    var uv = LinuxMachineScanoutTextureCoordinates.sourceUV(
+      sourceRect: imported.frame.sourceRect,
+      backingWidth: imported.texture.width,
+      backingHeight: imported.texture.height,
+      yOriginTop: yOriginTop
+    )
+    encoder.setRenderPipelineState(pipeline)
+    encoder.setVertexBytes(&uv, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
+    encoder.setFragmentTexture(imported.texture, index: 0)
+    encoder.setFragmentSamplerState(sampler, index: 0)
+    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+    encoder.endEncoding()
+    commandBuffer.addCompletedHandler { [imported, failureTarget = self] buffer in
+      let presented = buffer.status == .completed
+      let detail =
+        presented
+        ? nil
+        : buffer.error?.localizedDescription
+          ?? "Metal presentation failed with status \(buffer.status.rawValue)"
+      Task { @MainActor in
+        if let detail { failureTarget.showFailure(detail) }
+        let completionID =
+          presented
+          ? Self.takeMetalCommandBufferCompletionID()
+          : nil
+        completion(presented, completionID)
+      }
+      _ = imported
+    }
+    commandBuffer.present(drawable)
+    commandBuffer.commit()
+    return true
+  }
 
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: guestCursor)
-    }
+  private static func takeMetalCommandBufferCompletionID() -> UInt64? {
+    guard nextMetalCommandBufferCompletionID < UInt64.max else { return nil }
+    let completionID = nextMetalCommandBufferCompletionID
+    nextMetalCommandBufferCompletionID += 1
+    return completionID
+  }
 
-    override func keyDown(with event: NSEvent) {
-        guard let code = Self.keyMap[event.keyCode] else {
-            super.keyDown(with: event)
-            return
-        }
-        sendKeyboard([
-            DoryVMDisplayInputEvent(
-                type: 1,
-                code: code,
-                value: event.isARepeat ? 2 : 1
-            )
-        ])
-    }
-
-    override func keyUp(with event: NSEvent) {
-        guard let code = Self.keyMap[event.keyCode] else {
-            super.keyUp(with: event)
-            return
-        }
-        sendKeyboard([DoryVMDisplayInputEvent(type: 1, code: code, value: 0)])
-    }
-
-    override func flagsChanged(with event: NSEvent) {
-        switch pointerCaptureState.modifierTransition(
-            command: event.modifierFlags.contains(.command),
-            control: event.modifierFlags.contains(.control)
-        ) {
-        case .release:
-            releaseTrackedInput()
-            restoreHostPointerAfterCapture()
-            return
-        case .consume:
-            return
-        case .forward:
-            break
-        }
-        guard let code = Self.keyMap[event.keyCode],
-              let flag = Self.modifierFlag(for: event.keyCode) else {
-            super.flagsChanged(with: event)
-            return
-        }
-        sendKeyboard([.init(
-            type: 1,
-            code: code,
-            value: event.modifierFlags.contains(flag) ? 1 : 0
-        )])
-    }
-
-    override func mouseMoved(with event: NSEvent) { sendPointer(event) }
-    override func mouseDragged(with event: NSEvent) { sendPointer(event) }
-    override func rightMouseDragged(with event: NSEvent) { sendPointer(event) }
-    override func otherMouseDragged(with event: NSEvent) { sendPointer(event) }
-    override func mouseDown(with event: NSEvent) { sendPointer(event, button: 272, pressed: true) }
-    override func mouseUp(with event: NSEvent) { sendPointer(event, button: 272, pressed: false) }
-    override func rightMouseDown(with event: NSEvent) { sendPointer(event, button: 273, pressed: true) }
-    override func rightMouseUp(with event: NSEvent) { sendPointer(event, button: 273, pressed: false) }
-    override func otherMouseDown(with event: NSEvent) {
-        sendPointer(event, button: Self.otherButton(event.buttonNumber), pressed: true)
-    }
-    override func otherMouseUp(with event: NSEvent) {
-        sendPointer(event, button: Self.otherButton(event.buttonNumber), pressed: false)
-    }
-
-    private func sendPointer(_ event: NSEvent, button: UInt16? = nil, pressed: Bool = false) {
-        window?.makeFirstResponder(self)
-        if button != nil, !pointerCaptureState.isCaptured { enterPointerCapture() }
-        if pointerCaptureState.isCaptured {
-            var events: [DoryVMDisplayInputEvent] = []
-            let x = Self.relativeDelta(event.deltaX)
-            let y = Self.relativeDelta(-event.deltaY)
-            if x != 0 { events.append(.init(type: 2, code: 0, value: x)) }
-            if y != 0 { events.append(.init(type: 2, code: 1, value: y)) }
-            if let button {
-                events.append(.init(type: 1, code: button, value: pressed ? 1 : 0))
-            }
-            if !events.isEmpty { sendPointer(events, endpoint: .relativePointer) }
-            return
-        }
-        guard pointerCaptureState.acceptsAbsoluteInput else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        let x = Int32((min(1, max(0, point.x / max(1, bounds.width))) * 32_767).rounded())
-        let y = Int32((min(1, max(0, point.y / max(1, bounds.height))) * 32_767).rounded())
-        var events = [
-            DoryVMDisplayInputEvent(type: 3, code: 0, value: x),
-            DoryVMDisplayInputEvent(type: 3, code: 1, value: y),
-        ]
-        if let button {
-            events.append(DoryVMDisplayInputEvent(
-                type: 1,
-                code: button,
-                value: pressed ? 1 : 0
-            ))
-        }
-        sendPointer(events, endpoint: .absolutePointer)
-    }
-
-    override func scrollWheel(with event: NSEvent) {
-        let vertical = Int32(event.scrollingDeltaY.rounded())
-        let horizontal = Int32(event.scrollingDeltaX.rounded())
-        var events: [DoryVMDisplayInputEvent] = []
-        if vertical != 0 {
-            events.append(.init(type: 2, code: 8, value: vertical))
-        }
-        if horizontal != 0 {
-            events.append(.init(type: 2, code: 6, value: horizontal))
-        }
-        if !events.isEmpty {
-            sendPointer(
-                events,
-                endpoint: pointerCaptureState.isCaptured ? .relativePointer : .absolutePointer
-            )
-        }
-    }
-
-    private func sendKeyboard(_ events: [DoryVMDisplayInputEvent]) {
-        for event in events where event.type == 1 {
-            if event.value == 0 {
-                pressedKeyboardCodes.remove(event.code)
-            } else {
-                pressedKeyboardCodes.insert(event.code)
-            }
-        }
-        client.sendInput(endpoint: .keyboard, events: events)
-    }
-
-    private func sendPointer(
-        _ events: [DoryVMDisplayInputEvent],
-        endpoint: DoryVMDisplayInputEndpoint
+  private func writeQualificationWindowReceipt(
+    for frame: DoryVMDisplayFrame,
+    metalCommandBufferCompletionID: UInt64
+  ) {
+    guard !qualificationWindowReceiptWritten,
+      let launch = try? DoryDisplayQualificationLaunch.parse(
+        environment: ProcessInfo.processInfo.environment
+      ),
+      launch.machineID == machineID, launch.scanoutID == scanoutID,
+      let window, window.windowNumber > 0,
+      window.title == launch.display.windowTitle
+    else { return }
+    if writeQualificationReceipt(
+      at: launch.windowReceiptPath,
+      launch: launch,
+      window: window,
+      frame: frame,
+      metalCommandBufferCompletionID: metalCommandBufferCompletionID,
+      label: "window"
     ) {
-        for event in events where event.type == 1 {
-            if event.value == 0 {
-                if endpoint == .relativePointer {
-                    pressedRelativeButtons.remove(event.code)
-                } else {
-                    pressedAbsoluteButtons.remove(event.code)
-                }
-            } else if endpoint == .relativePointer {
-                pressedRelativeButtons.insert(event.code)
-            } else {
-                pressedAbsoluteButtons.insert(event.code)
+      qualificationWindowReceiptWritten = true
+    }
+  }
+
+  private func qualificationCaptureRequestPath(for frame: DoryVMDisplayFrame) -> String? {
+    guard !qualificationCaptureFrameReceiptWritten,
+      let launch = try? DoryDisplayQualificationLaunch.parse(
+        environment: ProcessInfo.processInfo.environment
+      ),
+      launch.machineID == machineID, launch.scanoutID == scanoutID,
+      let requestPath = launch.captureRequestPath,
+      launch.captureReceiptPath != nil,
+      let window, window.windowNumber > 0,
+      window.title == launch.display.windowTitle,
+      frame.machineID == machineID,
+      frame.scanoutID == scanoutID
+    else { return nil }
+    let requestValues = try? URL(fileURLWithPath: requestPath).resourceValues(forKeys: [
+      .isRegularFileKey, .isSymbolicLinkKey,
+    ])
+    guard requestValues?.isRegularFile == true,
+      requestValues?.isSymbolicLink != true
+    else { return nil }
+    return requestPath
+  }
+
+  private func writeQualificationCaptureFrameReceiptIfRequested(
+    for frame: DoryVMDisplayFrame,
+    metalCommandBufferCompletionID: UInt64
+  ) -> Bool {
+    guard !qualificationCaptureFrameReceiptWritten,
+      let launch = try? DoryDisplayQualificationLaunch.parse(
+        environment: ProcessInfo.processInfo.environment
+      ),
+      launch.machineID == machineID, launch.scanoutID == scanoutID,
+      let requestPath = launch.captureRequestPath,
+      let receiptPath = launch.captureReceiptPath,
+      let window, window.windowNumber > 0,
+      window.title == launch.display.windowTitle
+    else { return false }
+    let request = URL(fileURLWithPath: requestPath)
+    let requestValues = try? request.resourceValues(forKeys: [
+      .isRegularFileKey, .isSymbolicLinkKey,
+    ])
+    guard requestValues?.isRegularFile == true,
+      requestValues?.isSymbolicLink != true
+    else { return false }
+    if writeQualificationReceipt(
+      at: receiptPath,
+      launch: launch,
+      window: window,
+      frame: frame,
+      metalCommandBufferCompletionID: metalCommandBufferCompletionID,
+      label: "capture"
+    ) {
+      qualificationCaptureFrameReceiptWritten = true
+      return true
+    }
+    return false
+  }
+
+  private func waitForQualificationCaptureRelease(at requestPath: String) {
+    qualificationCaptureHoldTask?.cancel()
+    qualificationCaptureHoldTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        if !FileManager.default.fileExists(atPath: requestPath) { break }
+        do {
+          try await Task.sleep(for: .milliseconds(50))
+        } catch {
+          break
+        }
+      }
+      self?.client.resumeFramePolling()
+    }
+  }
+
+  private func writeQualificationReceipt(
+    at path: String,
+    launch: DoryDisplayQualificationLaunch,
+    window: NSWindow,
+    frame: DoryVMDisplayFrame,
+    metalCommandBufferCompletionID: UInt64,
+    label: String
+  ) -> Bool {
+    let destination = URL(fileURLWithPath: path)
+    let parent = destination.deletingLastPathComponent()
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory),
+      isDirectory.boolValue,
+      (try? parent.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+      !FileManager.default.fileExists(atPath: destination.path)
+    else {
+      showFailure("Dory could not create the display qualification \(label) receipt.")
+      return false
+    }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let scale = window.backingScaleFactor
+    let contentRect = convert(bounds, to: nil)
+    let viewport = DoryDisplayQualificationViewport(
+      x: max(0, Int((contentRect.minX * scale).rounded())),
+      y: max(0, Int(((window.frame.height - contentRect.maxY) * scale).rounded())),
+      width: max(1, Int((contentRect.width * scale).rounded())),
+      height: max(1, Int((contentRect.height * scale).rounded())),
+      sourceX: frame.sourceRect.x,
+      sourceY: frame.sourceRect.y,
+      sourceWidth: frame.sourceRect.width,
+      sourceHeight: frame.sourceRect.height,
+      backingScaleFactor: scale
+    )
+    let receipt = DoryDisplayQualificationWindowReceipt(
+      capturedAt: formatter.string(from: Date()),
+      bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
+      processID: getpid(),
+      windowNumber: window.windowNumber,
+      windowTitle: window.title,
+      machineID: machineID,
+      scanoutID: scanoutID,
+      machServiceName: launch.machServiceName,
+      operationID: frame.operationID,
+      frameSequence: frame.sequence,
+      displayResourceGeneration: frame.displayResourceGeneration,
+      metalCommandBufferCompletionID: metalCommandBufferCompletionID,
+      transport: frame.transport.rawValue,
+      guestViewport: viewport,
+      framePollingHeldForCapture: label == "capture" ? true : nil
+    )
+    let temporary = parent.appendingPathComponent(
+      ".\(destination.lastPathComponent).tmp-\(UUID().uuidString)"
+    )
+    defer { try? FileManager.default.removeItem(at: temporary) }
+    do {
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+      let data = try encoder.encode(receipt) + Data("\n".utf8)
+      try data.write(to: temporary, options: .withoutOverwriting)
+      try FileManager.default.moveItem(at: temporary, to: destination)
+      return true
+    } catch {
+      showFailure(
+        "Dory could not write the display qualification \(label) receipt: \(error)"
+      )
+      return false
+    }
+  }
+
+  private func startQualificationInputIfNeeded(for frame: DoryVMDisplayFrame, metalCommandBufferCompletionID: UInt64) {
+    startQualificationRendererRestartIfRequested(for: frame, metalCommandBufferCompletionID: metalCommandBufferCompletionID)
+    guard !qualificationInputStarted,
+      let launch = try? DoryDisplayQualificationLaunch.parse(
+        environment: ProcessInfo.processInfo.environment
+      ),
+      launch.machineID == machineID,
+      launch.scanoutID == scanoutID,
+      let scriptPath = launch.inputScriptPath,
+      let receiptPath = launch.inputReceiptPath,
+      let operationID = UUID(uuidString: frame.operationID)
+    else { return }
+    qualificationInputStarted = true
+    do {
+      let loaded = try DoryDisplayQualificationInputFiles.loadScript(
+        at: scriptPath,
+        machineID: machineID
+      )
+      qualificationInputTask = Task { @MainActor [weak self] in
+        guard let self else { return }
+        do {
+          var firstSequence: UInt64?
+          var lastSequence: UInt64?
+          for step in loaded.script.steps {
+            try Task.checkCancellation()
+            if step.delayMilliseconds > 0 {
+              try await Task.sleep(
+                for: .milliseconds(step.delayMilliseconds)
+              )
             }
-        }
-        client.sendInput(endpoint: endpoint, events: events)
-    }
-
-    private func releasePressedInput() {
-        if pointerCaptureState.cancel() { restoreHostPointerAfterCapture() }
-        releaseTrackedInput()
-    }
-
-    private func releaseTrackedInput() {
-        let keys = pressedKeyboardCodes.sorted()
-        let absoluteButtons = pressedAbsoluteButtons.sorted()
-        let relativeButtons = pressedRelativeButtons.sorted()
-        pressedKeyboardCodes.removeAll()
-        pressedAbsoluteButtons.removeAll()
-        pressedRelativeButtons.removeAll()
-        if !keys.isEmpty {
-            client.sendInput(
-                endpoint: .keyboard,
-                events: keys.map { .init(type: 1, code: $0, value: 0) }
+            let sequence = try await sendQualificationKeyboardStep(
+              step.events,
+              operationID: operationID
             )
+            firstSequence = firstSequence ?? sequence
+            lastSequence = sequence
+          }
+          guard let firstSequence, let lastSequence else {
+            throw DoryDisplayQualificationInputError.invalidScript
+          }
+          let formatter = ISO8601DateFormatter()
+          formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+          try DoryDisplayQualificationInputFiles.writeReceipt(
+            DoryDisplayQualificationInputReceipt(
+              completedAt: formatter.string(from: Date()),
+              bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
+              processID: getpid(),
+              machineID: machineID,
+              machServiceName: launch.machServiceName,
+              operationID: frame.operationID,
+              scriptSHA256: loaded.sha256,
+              stepCount: loaded.script.steps.count,
+              eventCount: loaded.script.eventCount,
+              firstCommandSequence: firstSequence,
+              lastCommandSequence: lastSequence
+            ),
+            at: receiptPath
+          )
+        } catch is CancellationError {
+          return
+        } catch {
+          showFailure("Dory qualification input failed: \(error)")
         }
-        if !absoluteButtons.isEmpty {
-            client.sendInput(
-                endpoint: .absolutePointer,
-                events: absoluteButtons.map { .init(type: 1, code: $0, value: 0) }
-            )
-        }
-        if !relativeButtons.isEmpty {
-            client.sendInput(
-                endpoint: .relativePointer,
-                events: relativeButtons.map { .init(type: 1, code: $0, value: 0) }
-            )
-        }
+      }
+    } catch {
+      showFailure("Dory could not load qualification input: \(error)")
     }
+  }
 
-    private func enterPointerCapture() {
-        guard !pointerCaptureState.isCaptured,
-              CGAssociateMouseAndMouseCursorPosition(0) == .success else { return }
-        guard pointerCaptureState.capture() else {
-            _ = CGAssociateMouseAndMouseCursorPosition(1)
-            return
+  private func startQualificationRendererRestartIfRequested(for frame: DoryVMDisplayFrame, metalCommandBufferCompletionID: UInt64) {
+    guard !qualificationRendererRestartStarted,
+      let launch = try? DoryDisplayQualificationLaunch.parse(environment: ProcessInfo.processInfo.environment),
+      launch.machineID == machineID, launch.scanoutID == scanoutID,
+      let requestPath = launch.rendererRestartRequestPath, let receiptPath = launch.rendererRestartReceiptPath,
+      FileManager.default.fileExists(atPath: requestPath),
+      let operation = UUID(uuidString: frame.operationID)
+    else { return }
+    qualificationRendererRestartStarted = true
+    do {
+      let loaded = try DoryDisplayQualificationRendererRestartRequest.load(at: requestPath)
+      try loaded.request.validate(machineID: machineID, service: launch.machServiceName,
+                                  operationID: frame.operationID, displayGeneration: frame.displayResourceGeneration,
+                                  frameSequence: frame.sequence)
+      qualificationRendererRestartTask = Task { @MainActor [weak self] in
+        guard let self else { return }
+        do {
+          let sequence: UInt64 = try await withCheckedThrowingContinuation { continuation in
+            let submitted = client.sendQualificationRendererRestart(expectedOperationID: operation) { sequence, applied, detail in
+              if applied { continuation.resume(returning: sequence) }
+              else { continuation.resume(throwing: DoryDisplayQualificationInputCommandError.rejected(detail)) }
+            }
+            if !submitted { continuation.resume(throwing: DoryDisplayQualificationInputCommandError.unavailable) }
+          }
+          try Task.checkCancellation()
+          let formatter = ISO8601DateFormatter()
+          formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+          try DoryDisplayQualificationInputFiles.writeReceipt(DoryDisplayQualificationRendererRestartReceipt(
+            completedAt: formatter.string(from: Date()), bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
+            processID: getpid(), machineID: machineID, machServiceName: launch.machServiceName,
+            operationID: frame.operationID, nonce: loaded.request.nonce, requestSHA256: loaded.sha256,
+            beforeRendererGeneration: loaded.request.beforeRendererGeneration,
+            beforeDisplayResourceGeneration: loaded.request.beforeDisplayResourceGeneration,
+            beforeFrameSequence: loaded.request.beforeFrameSequence, commandFrameSequence: frame.sequence,
+            commandDisplayResourceGeneration: frame.displayResourceGeneration,
+            commandMetalCommandBufferCompletionID: metalCommandBufferCompletionID, commandSequence: sequence
+          ), at: receiptPath)
+        } catch is CancellationError { return }
+        catch { showFailure("Dory qualification renderer restart failed: \(error)") }
+      }
+    } catch { showFailure("Dory could not load renderer restart authority: \(error)") }
+  }
+
+  private func sendQualificationKeyboardStep(
+    _ events: [DoryVMDisplayInputEvent],
+    operationID: UUID
+  ) async throws -> UInt64 {
+    try await withCheckedThrowingContinuation { continuation in
+      let submitted = client.sendQualificationKeyboardInput(
+        expectedOperationID: operationID,
+        events: events
+      ) {
+        sequence, accepted, detail in
+        if accepted {
+          continuation.resume(returning: sequence)
+        } else {
+          continuation.resume(
+            throwing: DoryDisplayQualificationInputCommandError.rejected(detail)
+          )
         }
-        NSCursor.hide()
-        hostCursorHidden = true
-    }
-
-    private func restoreHostPointerAfterCapture() {
-        _ = CGAssociateMouseAndMouseCursorPosition(1)
-        if hostCursorHidden {
-            NSCursor.unhide()
-            hostCursorHidden = false
-        }
-    }
-
-    private static func relativeDelta(_ value: Double) -> Int32 {
-        guard value.isFinite else { return 0 }
-        if value >= Double(Int32.max) { return .max }
-        if value <= Double(Int32.min) { return .min }
-        return Int32(value.rounded())
-    }
-
-    private static func otherButton(_ buttonNumber: Int) -> UInt16 {
-        switch buttonNumber {
-        case 2: 274
-        case 3: 275
-        default: 276
-        }
-    }
-
-    private static func modifierFlag(for keyCode: UInt16) -> NSEvent.ModifierFlags? {
-        switch keyCode {
-        case 54, 55: .command
-        case 56, 60: .shift
-        case 57: .capsLock
-        case 58, 61: .option
-        case 59, 62: .control
-        default: nil
-        }
-    }
-
-    private static let transparentCursor: NSCursor = {
-        let image = NSImage(
-            size: NSSize(width: 1, height: 1),
-            flipped: false,
-            drawingHandler: { _ in true }
+      }
+      if !submitted {
+        continuation.resume(
+          throwing: DoryDisplayQualificationInputCommandError.unavailable
         )
-        return NSCursor(image: image, hotSpot: .zero)
-    }()
-
-    private static func makeCursor(
-        _ update: DoryVMDisplayCursor,
-        scale: CGFloat
-    ) -> NSCursor? {
-        guard update.visible,
-              let provider = CGDataProvider(data: update.bytes as CFData),
-              let image = CGImage(
-                width: Int(update.width),
-                height: Int(update.height),
-                bitsPerComponent: 8,
-                bitsPerPixel: 32,
-                bytesPerRow: Int(update.width) * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGBitmapInfo.byteOrder32Little.union(CGBitmapInfo(
-                    rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
-                )),
-                provider: provider,
-                decode: nil,
-                shouldInterpolate: false,
-                intent: .defaultIntent
-              ) else { return nil }
-        let imageSize = NSSize(
-            width: CGFloat(update.width) / scale,
-            height: CGFloat(update.height) / scale
-        )
-        return NSCursor(
-            image: NSImage(cgImage: image, size: imageSize),
-            hotSpot: NSPoint(
-                x: CGFloat(update.hotX) / scale,
-                y: CGFloat(update.hotY) / scale
-            )
-        )
+      }
     }
+  }
 
-    private static func pixelFormat(
-        _ format: DoryRendererScanoutPixelFormat
-    ) -> MTLPixelFormat {
-        switch format {
-        case .bgra8Unorm: .bgra8Unorm
-        case .rgba8Unorm: .rgba8Unorm
-        }
+  private func showFailure(_ message: String) {
+    guard lastFailure != message else { return }
+    lastFailure = message
+    toolTip = message
+  }
+
+  private func presentCursor(_ cursor: DoryVMDisplayCursor?) {
+    guestCursorUpdate = cursor
+    rebuildGuestCursor()
+  }
+
+  private func rebuildGuestCursor() {
+    guard let cursor = guestCursorUpdate else {
+      guestCursor = Self.transparentCursor
+      window?.invalidateCursorRects(for: self)
+      return
     }
+    let scale =
+      bounds.width > 0 && scanoutSize.width > 0
+      ? max(1, scanoutSize.width / bounds.width)
+      : max(1, window?.backingScaleFactor ?? 1)
+    guestCursor = Self.makeCursor(cursor, scale: scale) ?? Self.transparentCursor
+    window?.invalidateCursorRects(for: self)
+  }
 
-    private static let keyMap: [UInt16: UInt16] = [
-        0: 30, 1: 31, 2: 32, 3: 33, 4: 35, 5: 34, 6: 44, 7: 45,
-        8: 46, 9: 47, 11: 48, 12: 16, 13: 17, 14: 18, 15: 19, 16: 21,
-        17: 20, 18: 2, 19: 3, 20: 4, 21: 5, 22: 7, 23: 6, 24: 13,
-        25: 10, 26: 8, 27: 12, 28: 9, 29: 11, 30: 27, 31: 24, 32: 22,
-        33: 26, 34: 23, 35: 25, 36: 28, 37: 38, 38: 36, 39: 40, 40: 37,
-        41: 39, 42: 43, 43: 51, 44: 53, 45: 49, 46: 50, 47: 52, 48: 15,
-        49: 57, 50: 41, 51: 14, 53: 1, 54: 126, 55: 125, 56: 42, 57: 58,
-        58: 56, 59: 29, 60: 54, 61: 100, 62: 97, 65: 83, 67: 55, 69: 78,
-        71: 69, 75: 98, 76: 96, 78: 74, 81: 117, 82: 82, 83: 79, 84: 80,
-        85: 81, 86: 75, 87: 76, 88: 77, 89: 71, 91: 72, 92: 73,
-        96: 63, 97: 64, 98: 65, 99: 61, 100: 66, 101: 67, 103: 87,
-        109: 68, 111: 88, 114: 110, 115: 102, 116: 104, 117: 111,
-        118: 62, 119: 107, 120: 60, 121: 109, 122: 59, 123: 105,
-        124: 106, 125: 108, 126: 103,
+  override func resetCursorRects() {
+    addCursorRect(bounds, cursor: guestCursor)
+  }
+
+  override func keyDown(with event: NSEvent) {
+    guard let code = Self.keyMap[event.keyCode] else {
+      super.keyDown(with: event)
+      return
+    }
+    sendKeyboard([
+      DoryVMDisplayInputEvent(
+        type: 1,
+        code: code,
+        value: event.isARepeat ? 2 : 1
+      )
+    ])
+  }
+
+  override func keyUp(with event: NSEvent) {
+    guard let code = Self.keyMap[event.keyCode] else {
+      super.keyUp(with: event)
+      return
+    }
+    sendKeyboard([DoryVMDisplayInputEvent(type: 1, code: code, value: 0)])
+  }
+
+  override func flagsChanged(with event: NSEvent) {
+    switch pointerCaptureState.modifierTransition(
+      command: event.modifierFlags.contains(.command),
+      control: event.modifierFlags.contains(.control)
+    ) {
+    case .release:
+      releaseTrackedInput()
+      restoreHostPointerAfterCapture()
+      return
+    case .consume:
+      return
+    case .forward:
+      break
+    }
+    guard let code = Self.keyMap[event.keyCode],
+      let flag = Self.modifierFlag(for: event.keyCode)
+    else {
+      super.flagsChanged(with: event)
+      return
+    }
+    sendKeyboard([
+      .init(
+        type: 1,
+        code: code,
+        value: event.modifierFlags.contains(flag) ? 1 : 0
+      )
+    ])
+  }
+
+  override func mouseMoved(with event: NSEvent) { sendPointer(event) }
+  override func mouseDragged(with event: NSEvent) { sendPointer(event) }
+  override func rightMouseDragged(with event: NSEvent) { sendPointer(event) }
+  override func otherMouseDragged(with event: NSEvent) { sendPointer(event) }
+  override func mouseDown(with event: NSEvent) { sendPointer(event, button: 272, pressed: true) }
+  override func mouseUp(with event: NSEvent) { sendPointer(event, button: 272, pressed: false) }
+  override func rightMouseDown(with event: NSEvent) {
+    sendPointer(event, button: 273, pressed: true)
+  }
+  override func rightMouseUp(with event: NSEvent) {
+    sendPointer(event, button: 273, pressed: false)
+  }
+  override func otherMouseDown(with event: NSEvent) {
+    sendPointer(event, button: Self.otherButton(event.buttonNumber), pressed: true)
+  }
+  override func otherMouseUp(with event: NSEvent) {
+    sendPointer(event, button: Self.otherButton(event.buttonNumber), pressed: false)
+  }
+
+  private func sendPointer(_ event: NSEvent, button: UInt16? = nil, pressed: Bool = false) {
+    guard !stopped, NSApp.isActive, let window, window.isKeyWindow else { return }
+    // Hover/mouse-up must not steal focus from a toolbar or recapture a released pointer.
+    if button != nil, pressed, !window.makeFirstResponder(self) { return }
+    guard hasInputFocus else { return }
+    if button != nil, pressed, !pointerCaptureState.isCaptured { enterPointerCapture() }
+    if pointerCaptureState.isCaptured {
+      var events: [DoryVMDisplayInputEvent] = []
+      let x = Self.relativeDelta(event.deltaX)
+      let y = Self.relativeDelta(-event.deltaY)
+      if x != 0 { events.append(.init(type: 2, code: 0, value: x)) }
+      if y != 0 { events.append(.init(type: 2, code: 1, value: y)) }
+      if let button {
+        events.append(.init(type: 1, code: button, value: pressed ? 1 : 0))
+      }
+      if !events.isEmpty { sendPointer(events, endpoint: .relativePointer) }
+      return
+    }
+    guard pointerCaptureState.acceptsAbsoluteInput else { return }
+    let point = convert(event.locationInWindow, from: nil)
+    let x = Int32((min(1, max(0, point.x / max(1, bounds.width))) * 32_767).rounded())
+    let y = Int32((min(1, max(0, point.y / max(1, bounds.height))) * 32_767).rounded())
+    var events = [
+      DoryVMDisplayInputEvent(type: 3, code: 0, value: x),
+      DoryVMDisplayInputEvent(type: 3, code: 1, value: y),
     ]
+    if let button {
+      events.append(
+        DoryVMDisplayInputEvent(
+          type: 1,
+          code: button,
+          value: pressed ? 1 : 0
+        ))
+    }
+    sendPointer(events, endpoint: .absolutePointer)
+  }
 
-    private static let shaderSource = """
+  override func scrollWheel(with event: NSEvent) {
+    guard hasInputFocus else { return }
+    let vertical = Self.relativeDelta(event.scrollingDeltaY)
+    let horizontal = Self.relativeDelta(event.scrollingDeltaX)
+    var events: [DoryVMDisplayInputEvent] = []
+    if vertical != 0 {
+      events.append(.init(type: 2, code: 8, value: vertical))
+    }
+    if horizontal != 0 {
+      events.append(.init(type: 2, code: 6, value: horizontal))
+    }
+    if !events.isEmpty {
+      sendPointer(
+        events,
+        endpoint: pointerCaptureState.isCaptured ? .relativePointer : .absolutePointer
+      )
+    }
+  }
+
+  private func sendKeyboard(_ events: [DoryVMDisplayInputEvent]) {
+    sendTrackedInput(events, endpoint: .keyboard)
+  }
+
+  private func sendPointer(
+    _ events: [DoryVMDisplayInputEvent],
+    endpoint: DoryVMDisplayInputEndpoint
+  ) {
+    sendTrackedInput(events, endpoint: endpoint)
+  }
+
+  private func sendTrackedInput(
+    _ events: [DoryVMDisplayInputEvent], endpoint: DoryVMDisplayInputEndpoint
+  ) {
+    guard hasInputFocus, let operationID = client.currentOperationID,
+      client.sendInput(expectedOperationID: operationID, endpoint: endpoint, events: events)
+    else { return }
+    heldInput.record(operationID: operationID, endpoint: endpoint, events: events)
+  }
+
+  private func releasePressedInput() {
+    revokeClipboardFocus()
+    if pointerCaptureState.cancel() { restoreHostPointerAfterCapture() }
+    releaseTrackedInput()
+  }
+
+  private func releaseTrackedInput() {
+    for release in heldInput.takeReleases() {
+      client.sendInput(
+        expectedOperationID: release.operationID, endpoint: release.endpoint, events: release.events
+      )
+    }
+  }
+
+  private func enterPointerCapture() {
+    guard !pointerCaptureState.isCaptured,
+      CGAssociateMouseAndMouseCursorPosition(0) == .success
+    else { return }
+    guard pointerCaptureState.capture() else {
+      _ = CGAssociateMouseAndMouseCursorPosition(1)
+      return
+    }
+    NSCursor.hide()
+    hostCursorHidden = true
+  }
+
+  private func restoreHostPointerAfterCapture() {
+    _ = CGAssociateMouseAndMouseCursorPosition(1)
+    if hostCursorHidden {
+      NSCursor.unhide()
+      hostCursorHidden = false
+    }
+  }
+
+  private static func relativeDelta(_ value: Double) -> Int32 {
+    guard value.isFinite else { return 0 }
+    if value >= Double(Int32.max) { return .max }
+    if value <= Double(Int32.min) { return .min }
+    return Int32(value.rounded())
+  }
+
+  private static func otherButton(_ buttonNumber: Int) -> UInt16 {
+    switch buttonNumber {
+    case 2: 274
+    case 3: 275
+    default: 276
+    }
+  }
+
+  private static func modifierFlag(for keyCode: UInt16) -> NSEvent.ModifierFlags? {
+    switch keyCode {
+    case 54, 55: .command
+    case 56, 60: .shift
+    case 57: .capsLock
+    case 58, 61: .option
+    case 59, 62: .control
+    default: nil
+    }
+  }
+
+  private static let transparentCursor: NSCursor = {
+    let image = NSImage(
+      size: NSSize(width: 1, height: 1),
+      flipped: false,
+      drawingHandler: { _ in true }
+    )
+    return NSCursor(image: image, hotSpot: .zero)
+  }()
+
+  private static func makeCursor(
+    _ update: DoryVMDisplayCursor,
+    scale: CGFloat
+  ) -> NSCursor? {
+    guard update.visible,
+      let provider = CGDataProvider(data: update.bytes as CFData),
+      let image = CGImage(
+        width: Int(update.width),
+        height: Int(update.height),
+        bitsPerComponent: 8,
+        bitsPerPixel: 32,
+        bytesPerRow: Int(update.width) * 4,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGBitmapInfo.byteOrder32Little.union(
+          CGBitmapInfo(
+            rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
+          )),
+        provider: provider,
+        decode: nil,
+        shouldInterpolate: false,
+        intent: .defaultIntent
+      )
+    else { return nil }
+    let imageSize = NSSize(
+      width: CGFloat(update.width) / scale,
+      height: CGFloat(update.height) / scale
+    )
+    return NSCursor(
+      image: NSImage(cgImage: image, size: imageSize),
+      hotSpot: NSPoint(
+        x: CGFloat(update.hotX) / scale,
+        y: CGFloat(update.hotY) / scale
+      )
+    )
+  }
+
+  private static func pixelFormat(
+    _ format: DoryRendererScanoutPixelFormat
+  ) -> MTLPixelFormat {
+    switch format {
+    case .bgra8Unorm: .bgra8Unorm
+    case .rgba8Unorm: .rgba8Unorm
+    }
+  }
+
+  private static let keyMap: [UInt16: UInt16] = [
+    0: 30, 1: 31, 2: 32, 3: 33, 4: 35, 5: 34, 6: 44, 7: 45,
+    8: 46, 9: 47, 11: 48, 12: 16, 13: 17, 14: 18, 15: 19, 16: 21,
+    17: 20, 18: 2, 19: 3, 20: 4, 21: 5, 22: 7, 23: 6, 24: 13,
+    25: 10, 26: 8, 27: 12, 28: 9, 29: 11, 30: 27, 31: 24, 32: 22,
+    33: 26, 34: 23, 35: 25, 36: 28, 37: 38, 38: 36, 39: 40, 40: 37,
+    41: 39, 42: 43, 43: 51, 44: 53, 45: 49, 46: 50, 47: 52, 48: 15,
+    49: 57, 50: 41, 51: 14, 53: 1, 54: 126, 55: 125, 56: 42, 57: 58,
+    58: 56, 59: 29, 60: 54, 61: 100, 62: 97, 65: 83, 67: 55, 69: 78,
+    71: 69, 75: 98, 76: 96, 78: 74, 81: 117, 82: 82, 83: 79, 84: 80,
+    85: 81, 86: 75, 87: 76, 88: 77, 89: 71, 91: 72, 92: 73,
+    96: 63, 97: 64, 98: 65, 99: 61, 100: 66, 101: 67, 103: 87,
+    109: 68, 111: 88, 114: 110, 115: 102, 116: 104, 117: 111,
+    118: 62, 119: 107, 120: 60, 121: 109, 122: 59, 123: 105,
+    124: 106, 125: 108, 126: 103,
+  ]
+
+  private static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
     struct DoryLinuxDisplayVertexOutput {

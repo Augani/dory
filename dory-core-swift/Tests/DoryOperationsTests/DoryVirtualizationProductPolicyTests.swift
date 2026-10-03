@@ -142,4 +142,33 @@ struct DoryVirtualizationProductPolicyTests {
             #expect(availability.reason?.message.isEmpty == false)
         }
     }
+
+    @Test("qualification bootstrap exposes only implemented cells as experimental")
+    func qualificationBootstrapAvailability() {
+        for guest in [
+            DoryGuestPlatform(family: .linux, architecture: .arm64),
+            DoryGuestPlatform(family: .linux, architecture: .x86_64),
+            DoryGuestPlatform(family: .macOS, architecture: .arm64),
+        ] {
+            let availability = DoryReleaseSupportPolicy.availability(
+                hostArchitecture: .arm64,
+                guest: guest,
+                qualificationBootstrapEnabled: true
+            )
+            #expect(availability.isUsable)
+            #expect(availability.supportTier == .experimental)
+        }
+        for (host, guest) in [
+            (DoryHostArchitecture.x86_64,
+             DoryGuestPlatform(family: .linux, architecture: .arm64)),
+            (.arm64, DoryGuestPlatform(family: .windows, architecture: .arm64)),
+            (.arm64, DoryGuestPlatform(family: .macOS, architecture: .x86_64)),
+        ] {
+            #expect(!DoryReleaseSupportPolicy.availability(
+                hostArchitecture: host,
+                guest: guest,
+                qualificationBootstrapEnabled: true
+            ).isUsable)
+        }
+    }
 }

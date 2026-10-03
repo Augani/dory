@@ -1,567 +1,621 @@
 import CryptoKit
-@testable import DorydKit
 import DoryOperations
 import DoryRendererWorkerWireContracts
 import Foundation
 import Testing
 
+@testable import DorydKit
+
 @Suite("Renderer bootstrap qualification")
 struct DoryRendererBootstrapQualificationTests {
-    @Test("signed real dual-capset evidence binds the exact worker")
-    func signedDualCapsetEvidenceBindsExactWorker() throws {
-        let fixture = try RendererBootstrapQualificationFixture()
-        let qualification = try DoryVerifiedRendererBootstrapQualification
-            .verifyForTesting(
-                receiptData: fixture.receipt,
-                signatureData: fixture.signature,
-                publicKeyBase64: fixture.publicKey,
-                now: fixture.now
-            )
+  @Test("signed real dual-capset evidence binds the exact worker")
+  func signedDualCapsetEvidenceBindsExactWorker() throws {
+    let fixture = try RendererBootstrapQualificationFixture()
+    let qualification =
+      try DoryVerifiedRendererBootstrapQualification
+      .verifyForTesting(
+        receiptData: fixture.receipt,
+        signatureData: fixture.signature,
+        publicKeyBase64: fixture.publicKey,
+        now: fixture.now
+      )
 
-        #expect(qualification.productionAccelerationIsQualified)
-        #expect(qualification.releaseSignatureVerified)
-        #expect(qualification.capsets.map(\.id) == [2, 4])
-        #expect(qualification.authorizes(
-            candidateInventory: try fixture.digest("1"),
-            workerExecutable: try fixture.digest("2"),
-            workerCodeDirectoryHash: try DoryCodeDirectoryHash(
-                lowercaseHexadecimal: String(repeating: "ab", count: 20)
-            )
-        ))
-        #expect(!qualification.authorizes(
-            candidateInventory: try fixture.digest("1"),
-            workerExecutable: try fixture.digest("9"),
-            workerCodeDirectoryHash: try DoryCodeDirectoryHash(
-                lowercaseHexadecimal: String(repeating: "ab", count: 20)
-            )
-        ))
+    #expect(qualification.productionAccelerationIsQualified)
+    #expect(qualification.releaseSignatureVerified)
+    #expect(qualification.capsets.map(\.id) == [2, 4])
+    #expect(
+      qualification.authorizes(
+        candidateInventory: try fixture.digest("1"),
+        workerExecutable: try fixture.digest("2"),
+        workerCodeDirectoryHash: try DoryCodeDirectoryHash(
+          lowercaseHexadecimal: String(repeating: "ab", count: 20)
+        )
+      ))
+    #expect(
+      !qualification.authorizes(
+        candidateInventory: try fixture.digest("1"),
+        workerExecutable: try fixture.digest("9"),
+        workerCodeDirectoryHash: try DoryCodeDirectoryHash(
+          lowercaseHexadecimal: String(repeating: "ab", count: 20)
+        )
+      ))
 
-        let bootstrap = try fixture.bootstrap()
-        let liveReceipt = try DoryRendererCapabilityReceipt(
-            accepting: bootstrap,
-            features: .productionAcceleration,
-            capsets: [
-                try DoryRendererCapsetAttestation(
-                    id: 2,
-                    maximumVersion: 2,
-                    data: fixture.virgl2Capset
-                ),
-                try DoryRendererCapsetAttestation(
-                    id: 4,
-                    maximumVersion: 0,
-                    data: fixture.venusCapset
-                ),
-            ]
+    let bootstrap = try fixture.bootstrap()
+    let liveReceipt = try DoryRendererCapabilityReceipt(
+      accepting: bootstrap,
+      features: .productionAcceleration,
+      capsets: [
+        try DoryRendererCapsetAttestation(
+          id: 2,
+          maximumVersion: 2,
+          data: fixture.virgl2Capset
+        ),
+        try DoryRendererCapsetAttestation(
+          id: 4,
+          maximumVersion: 0,
+          data: fixture.venusCapset
+        ),
+      ]
+    )
+    #expect(
+      qualification.authorizes(
+        bootstrap: bootstrap,
+        liveReceipt: liveReceipt
+      ))
+    let driftedReceipt = try DoryRendererCapabilityReceipt(
+      accepting: bootstrap,
+      features: .productionAcceleration,
+      capsets: [
+        try DoryRendererCapsetAttestation(
+          id: 2,
+          maximumVersion: 2,
+          data: fixture.virgl2Capset + Data([0])
+        ),
+        try DoryRendererCapsetAttestation(
+          id: 4,
+          maximumVersion: 0,
+          data: fixture.venusCapset
+        ),
+      ]
+    )
+    #expect(
+      !qualification.authorizes(
+        bootstrap: bootstrap,
+        liveReceipt: driftedReceipt
+      ))
+  }
+
+  @Test("candidate producer canonically binds exact bootstrap and real receipt")
+  func candidateProducerBindsExactTranscript() throws {
+    let fixture = try RendererBootstrapQualificationFixture()
+    let bootstrap = try fixture.bootstrap()
+    let liveReceipt = try fixture.liveReceipt(accepting: bootstrap)
+    let bytes = try DoryVerifiedRendererBootstrapQualification.makeCandidateReceipt(
+      bootstrap: bootstrap,
+      liveReceipt: liveReceipt,
+      issuedAt: fixture.now.addingTimeInterval(-60),
+      expiresAt: fixture.now.addingTimeInterval(24 * 60 * 60)
+    )
+    let qualification =
+      try DoryVerifiedRendererBootstrapQualification
+      .decodeDeveloperIDSignedCandidate(receiptData: bytes, now: fixture.now)
+    #expect(!qualification.releaseSignatureVerified)
+    #expect(qualification.managedGuestKernelSHA256 == bootstrap.artifacts.managedGuestKernel)
+    #expect(qualification.authorizes(bootstrap: bootstrap, liveReceipt: liveReceipt))
+
+    let driftedBootstrap = try DoryRendererWorkerBootstrap(
+      workspaceID: bootstrap.workspaceID,
+      generation: bootstrap.generation,
+      sourceTuple: bootstrap.sourceTuple,
+      producerFenceContract: bootstrap.producerFenceContract,
+      requestedCapabilities: bootstrap.requestedCapabilities,
+      artifacts: DoryRendererArtifactManifest(
+        candidateInventory: bootstrap.artifacts.candidateInventory,
+        managedGuestKernel: try fixture.digest("8"),
+        guestMesa: bootstrap.artifacts.guestMesa,
+        rendererWorkerExecutable: bootstrap.artifacts.rendererWorkerExecutable,
+        rendererWorkerCodeDirectoryHash:
+          bootstrap.artifacts.rendererWorkerCodeDirectoryHash
+      )
+    )
+    #expect(
+      !qualification.authorizes(
+        bootstrap: driftedBootstrap,
+        liveReceipt: try fixture.liveReceipt(accepting: driftedBootstrap)
+      ))
+  }
+
+  @Test("stock qualification binds host capabilities without pinning guest artifacts")
+  func stockQualificationLeavesGuestArtifactsRuntimeObserved() throws {
+    let fixture = try RendererBootstrapQualificationFixture()
+    let qualificationBootstrap = try DoryRendererWorkerBootstrap(
+      workspaceID: DoryRendererWorkspaceID(
+        rawValue: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+      ),
+      generation: DoryRendererWorkerGeneration(rawValue: 7),
+      sourceTuple: .productionCandidate,
+      producerFenceContract: .stockLinux613RuntimeVerifiedV1,
+      requestedCapabilities: .productionAcceleration,
+      artifacts: DoryRendererArtifactManifest(
+        candidateInventory: try fixture.digest("1"),
+        managedGuestKernel: nil,
+        guestMesa: try fixture.digest("8"),
+        rendererWorkerExecutable: try fixture.digest("2"),
+        rendererWorkerCodeDirectoryHash: try DoryCodeDirectoryHash(
+          lowercaseHexadecimal: String(repeating: "ab", count: 20)
         )
-        #expect(qualification.authorizes(
-            bootstrap: bootstrap,
-            liveReceipt: liveReceipt
-        ))
-        let driftedReceipt = try DoryRendererCapabilityReceipt(
-            accepting: bootstrap,
-            features: .productionAcceleration,
-            capsets: [
-                try DoryRendererCapsetAttestation(
-                    id: 2,
-                    maximumVersion: 2,
-                    data: fixture.virgl2Capset + Data([0])
-                ),
-                try DoryRendererCapsetAttestation(
-                    id: 4,
-                    maximumVersion: 0,
-                    data: fixture.venusCapset
-                ),
-            ]
-        )
-        #expect(!qualification.authorizes(
-            bootstrap: bootstrap,
-            liveReceipt: driftedReceipt
-        ))
+      ),
+      hostVisibleArenaByteCount:
+        DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
+    )
+    let qualificationReceipt = try fixture.liveReceipt(
+      accepting: qualificationBootstrap
+    )
+    let bytes = try DoryVerifiedRendererBootstrapQualification.makeCandidateReceipt(
+      bootstrap: qualificationBootstrap,
+      liveReceipt: qualificationReceipt,
+      issuedAt: fixture.now.addingTimeInterval(-60),
+      expiresAt: fixture.now.addingTimeInterval(24 * 60 * 60)
+    )
+    let qualification =
+      try DoryVerifiedRendererBootstrapQualification
+      .decodeDeveloperIDSignedCandidate(receiptData: bytes, now: fixture.now)
+    #expect(qualificationBootstrap.artifacts.managedGuestKernel == nil)
+
+    let liveBootstrap = try DoryRendererWorkerBootstrap(
+      workspaceID: qualificationBootstrap.workspaceID,
+      generation: qualificationBootstrap.generation,
+      sourceTuple: qualificationBootstrap.sourceTuple,
+      producerFenceContract: .stockLinux613RuntimeVerifiedV1,
+      requestedCapabilities: .productionAcceleration,
+      artifacts: DoryRendererArtifactManifest(
+        candidateInventory: qualificationBootstrap.artifacts.candidateInventory,
+        managedGuestKernel: nil,
+        guestMesa: try fixture.digest("a"),
+        rendererWorkerExecutable:
+          qualificationBootstrap.artifacts.rendererWorkerExecutable,
+        rendererWorkerCodeDirectoryHash:
+          qualificationBootstrap.artifacts.rendererWorkerCodeDirectoryHash
+      ),
+      hostVisibleArenaByteCount:
+        DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
+    )
+    #expect(
+      qualification.authorizes(
+        bootstrap: liveBootstrap,
+        liveReceipt: try fixture.liveReceipt(accepting: liveBootstrap)
+      ))
+  }
+
+  @Test("unsigned preview requires outer seal and invalid signature never downgrades")
+  func runtimeCandidateTrustTransition() throws {
+    let fixture = try RendererBootstrapQualificationFixture()
+    let bootstrap = try fixture.bootstrap()
+    let liveReceipt = try fixture.liveReceipt(accepting: bootstrap)
+    let receipt = try DoryVerifiedRendererBootstrapQualification.makeCandidateReceipt(
+      bootstrap: bootstrap,
+      liveReceipt: liveReceipt,
+      issuedAt: fixture.now.addingTimeInterval(-60),
+      expiresAt: fixture.now.addingTimeInterval(24 * 60 * 60)
+    )
+    let temporary = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+      .appendingPathExtension("app")
+    defer { try? FileManager.default.removeItem(at: temporary) }
+    let contents = temporary.appendingPathComponent("Contents", isDirectory: true)
+    let resources = contents.appendingPathComponent("Resources", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: resources,
+      withIntermediateDirectories: true
+    )
+    let info: [String: Any] = [
+      "CFBundleIdentifier": "dev.dory.qualification-test",
+      "CFBundleName": "QualificationTest",
+      "CFBundlePackageType": "APPL",
+      "CFBundleVersion": "1",
+    ]
+    try PropertyListSerialization.data(
+      fromPropertyList: info,
+      format: .xml,
+      options: 0
+    ).write(to: contents.appendingPathComponent("Info.plist"))
+    try receipt.write(
+      to: resources.appendingPathComponent(
+        DoryVerifiedRendererBootstrapQualification.receiptFilename
+      )
+    )
+    let bundle = try #require(Bundle(url: temporary))
+
+    #expect(throws: DoryRendererBootstrapQualificationError.developerIDSealInvalid) {
+      _ = try DoryVerifiedRendererBootstrapQualification.loadRuntimeCandidate(
+        from: bundle,
+        now: fixture.now
+      )
     }
+    var sealChecks = 0
+    let preview =
+      try DoryVerifiedRendererBootstrapQualification
+      .loadRuntimeCandidateForTesting(
+        from: bundle,
+        now: fixture.now
+      ) { _ in
+        sealChecks += 1
+      }
+    #expect(sealChecks == 1)
+    #expect(!preview.releaseSignatureVerified)
 
-    @Test("candidate producer canonically binds exact bootstrap and real receipt")
-    func candidateProducerBindsExactTranscript() throws {
-        let fixture = try RendererBootstrapQualificationFixture()
-        let bootstrap = try fixture.bootstrap()
-        let liveReceipt = try fixture.liveReceipt(accepting: bootstrap)
-        let bytes = try DoryVerifiedRendererBootstrapQualification.makeCandidateReceipt(
-            bootstrap: bootstrap,
-            liveReceipt: liveReceipt,
-            issuedAt: fixture.now.addingTimeInterval(-60),
-            expiresAt: fixture.now.addingTimeInterval(24 * 60 * 60)
-        )
-        let qualification = try DoryVerifiedRendererBootstrapQualification
-            .decodeDeveloperIDSignedCandidate(receiptData: bytes, now: fixture.now)
-        #expect(!qualification.releaseSignatureVerified)
-        #expect(qualification.managedGuestKernelSHA256 == bootstrap.artifacts.managedGuestKernel)
-        #expect(qualification.authorizes(bootstrap: bootstrap, liveReceipt: liveReceipt))
-
-        let driftedBootstrap = try DoryRendererWorkerBootstrap(
-            workspaceID: bootstrap.workspaceID,
-            generation: bootstrap.generation,
-            sourceTuple: bootstrap.sourceTuple,
-            producerFenceContract: bootstrap.producerFenceContract,
-            requestedCapabilities: bootstrap.requestedCapabilities,
-            artifacts: DoryRendererArtifactManifest(
-                candidateInventory: bootstrap.artifacts.candidateInventory,
-                managedGuestKernel: try fixture.digest("8"),
-                guestMesa: bootstrap.artifacts.guestMesa,
-                rendererWorkerExecutable: bootstrap.artifacts.rendererWorkerExecutable,
-                rendererWorkerCodeDirectoryHash:
-                    bootstrap.artifacts.rendererWorkerCodeDirectoryHash
-            )
-        )
-        #expect(!qualification.authorizes(
-            bootstrap: driftedBootstrap,
-            liveReceipt: try fixture.liveReceipt(accepting: driftedBootstrap)
-        ))
-    }
-
-    @Test("stock qualification binds host capabilities without pinning guest artifacts")
-    func stockQualificationLeavesGuestArtifactsRuntimeObserved() throws {
-        let fixture = try RendererBootstrapQualificationFixture()
-        let qualificationBootstrap = try DoryRendererWorkerBootstrap(
-            workspaceID: DoryRendererWorkspaceID(
-                rawValue: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
-            ),
-            generation: DoryRendererWorkerGeneration(rawValue: 7),
-            sourceTuple: .productionCandidate,
-            producerFenceContract: .stockLinux613RuntimeVerifiedV1,
-            requestedCapabilities: .productionAcceleration,
-            artifacts: DoryRendererArtifactManifest(
-                candidateInventory: try fixture.digest("1"),
-                managedGuestKernel: nil,
-                guestMesa: try fixture.digest("8"),
-                rendererWorkerExecutable: try fixture.digest("2"),
-                rendererWorkerCodeDirectoryHash: try DoryCodeDirectoryHash(
-                    lowercaseHexadecimal: String(repeating: "ab", count: 20)
-                )
-            ),
-            hostVisibleArenaByteCount:
-                DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
-        )
-        let qualificationReceipt = try fixture.liveReceipt(
-            accepting: qualificationBootstrap
-        )
-        let bytes = try DoryVerifiedRendererBootstrapQualification.makeCandidateReceipt(
-            bootstrap: qualificationBootstrap,
-            liveReceipt: qualificationReceipt,
-            issuedAt: fixture.now.addingTimeInterval(-60),
-            expiresAt: fixture.now.addingTimeInterval(24 * 60 * 60)
-        )
-        let qualification = try DoryVerifiedRendererBootstrapQualification
-            .decodeDeveloperIDSignedCandidate(receiptData: bytes, now: fixture.now)
-        #expect(qualificationBootstrap.artifacts.managedGuestKernel == nil)
-
-        let liveBootstrap = try DoryRendererWorkerBootstrap(
-            workspaceID: qualificationBootstrap.workspaceID,
-            generation: qualificationBootstrap.generation,
-            sourceTuple: qualificationBootstrap.sourceTuple,
-            producerFenceContract: .stockLinux613RuntimeVerifiedV1,
-            requestedCapabilities: .productionAcceleration,
-            artifacts: DoryRendererArtifactManifest(
-                candidateInventory: qualificationBootstrap.artifacts.candidateInventory,
-                managedGuestKernel: nil,
-                guestMesa: try fixture.digest("a"),
-                rendererWorkerExecutable:
-                    qualificationBootstrap.artifacts.rendererWorkerExecutable,
-                rendererWorkerCodeDirectoryHash:
-                    qualificationBootstrap.artifacts.rendererWorkerCodeDirectoryHash
-            ),
-            hostVisibleArenaByteCount:
-                DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
-        )
-        #expect(qualification.authorizes(
-            bootstrap: liveBootstrap,
-            liveReceipt: try fixture.liveReceipt(accepting: liveBootstrap)
-        ))
-    }
-
-    @Test("unsigned preview requires outer seal and invalid signature never downgrades")
-    func runtimeCandidateTrustTransition() throws {
-        let fixture = try RendererBootstrapQualificationFixture()
-        let bootstrap = try fixture.bootstrap()
-        let liveReceipt = try fixture.liveReceipt(accepting: bootstrap)
-        let receipt = try DoryVerifiedRendererBootstrapQualification.makeCandidateReceipt(
-            bootstrap: bootstrap,
-            liveReceipt: liveReceipt,
-            issuedAt: fixture.now.addingTimeInterval(-60),
-            expiresAt: fixture.now.addingTimeInterval(24 * 60 * 60)
-        )
-        let temporary = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            .appendingPathExtension("app")
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        let contents = temporary.appendingPathComponent("Contents", isDirectory: true)
-        let resources = contents.appendingPathComponent("Resources", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: resources,
-            withIntermediateDirectories: true
-        )
-        let info: [String: Any] = [
-            "CFBundleIdentifier": "dev.dory.qualification-test",
-            "CFBundleName": "QualificationTest",
-            "CFBundlePackageType": "APPL",
-            "CFBundleVersion": "1",
-        ]
-        try PropertyListSerialization.data(
-            fromPropertyList: info,
-            format: .xml,
-            options: 0
-        ).write(to: contents.appendingPathComponent("Info.plist"))
-        try receipt.write(
-            to: resources.appendingPathComponent(
-                DoryVerifiedRendererBootstrapQualification.receiptFilename
-            )
-        )
-        let bundle = try #require(Bundle(url: temporary))
-
-        #expect(throws: DoryRendererBootstrapQualificationError.developerIDSealInvalid) {
-            _ = try DoryVerifiedRendererBootstrapQualification.loadRuntimeCandidate(
-                from: bundle,
-                now: fixture.now
-            )
-        }
-        var sealChecks = 0
-        let preview = try DoryVerifiedRendererBootstrapQualification
-            .loadRuntimeCandidateForTesting(
-                from: bundle,
-                now: fixture.now
-            ) { _ in
-                sealChecks += 1
-            }
-        #expect(sealChecks == 1)
-        #expect(!preview.releaseSignatureVerified)
-
-        try Data("not-a-signature\n".utf8).write(
-            to: resources.appendingPathComponent(
-                DoryVerifiedRendererBootstrapQualification.signatureFilename
-            )
-        )
-        sealChecks = 0
-        #expect(throws: DoryRendererBootstrapQualificationError.nonCanonicalSignature) {
-            _ = try DoryVerifiedRendererBootstrapQualification
-                .loadRuntimeCandidateForTesting(
-                    from: bundle,
-                    now: fixture.now
-                ) { _ in
-                    sealChecks += 1
-                }
-        }
-        #expect(sealChecks == 0)
-    }
-
-    @Test("runtime candidate loader selects ARM Venus and PC VirGL2 receipts independently")
-    func runtimeCandidateProfilesCoexistInOneBundle() throws {
-        let fixture = try RendererBootstrapQualificationFixture()
-        let pcReceipt = try fixture.pcVirGL2Receipt()
-        let temporary = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            .appendingPathExtension("app")
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        let contents = temporary.appendingPathComponent("Contents", isDirectory: true)
-        let resources = contents.appendingPathComponent("Resources", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: resources,
-            withIntermediateDirectories: true
-        )
-        let info: [String: Any] = [
-            "CFBundleIdentifier": "dev.dory.qualification-profiles-test",
-            "CFBundleName": "QualificationProfilesTest",
-            "CFBundlePackageType": "APPL",
-            "CFBundleVersion": "1",
-        ]
-        try PropertyListSerialization.data(
-            fromPropertyList: info,
-            format: .xml,
-            options: 0
-        ).write(to: contents.appendingPathComponent("Info.plist"))
-        try fixture.productionRuntimeReceipt().write(
-            to: resources.appendingPathComponent(
-                DoryVerifiedRendererBootstrapQualification.receiptFilename
-            )
-        )
-        try pcReceipt.write(
-            to: resources.appendingPathComponent(
-                DoryVerifiedRendererBootstrapQualification.pcVirGL2ReceiptFilename
-            )
-        )
-        let bundle = try #require(Bundle(url: temporary))
-
-        var sealChecks = 0
-        let arm = try DoryVerifiedRendererBootstrapQualification
-            .loadRuntimeCandidateForTesting(
-                from: bundle,
-                now: fixture.now
-            ) { _ in
-                sealChecks += 1
-            }
-        let pc = try DoryVerifiedRendererBootstrapQualification
-            .loadRuntimeCandidateForTesting(
-                producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1,
-                from: bundle,
-                now: fixture.now
-            ) { _ in
-                sealChecks += 1
-            }
-
-        #expect(sealChecks == 2)
-        #expect(arm.producerFenceContract == .managedLinux612106PrepareFBV1)
-        #expect(arm.capsets.map(\.id) == [2, 4])
-        #expect(pc.producerFenceContract == .doryPCX8664LinuxVirGL2PrepareFBV1)
-        #expect(pc.capsets.map(\.id) == [2])
-        #expect(pc.guestMesaSHA256.lowercaseSHA256
-            != DoryRendererSourceTuple.guestMesaRuntimeSHA256)
-    }
-
-    @Test("single-capset and fabricated feature evidence fail even when signed")
-    func incompleteCapabilitiesFailClosed() throws {
-        let fixture = try RendererBootstrapQualificationFixture()
-        var singleCapset = fixture.object
-        singleCapset["capsets"] = [fixture.capsets[1]]
-        let singleBytes = try fixture.canonical(singleCapset)
-        #expect(throws: DoryRendererBootstrapQualificationError.capabilityMismatch) {
-            _ = try DoryVerifiedRendererBootstrapQualification.verifyForTesting(
-                receiptData: singleBytes,
-                signatureData: fixture.sign(singleBytes),
-                publicKeyBase64: fixture.publicKey,
-                now: fixture.now
-            )
-        }
-
-        var fabricatedFeatures = fixture.object
-        fabricatedFeatures["featureBits"] = Int(
-            DoryRendererWorkerFeatures.venus.rawValue
-        )
-        let fabricatedBytes = try fixture.canonical(fabricatedFeatures)
-        #expect(throws: DoryRendererBootstrapQualificationError.capabilityMismatch) {
-            _ = try DoryVerifiedRendererBootstrapQualification.verifyForTesting(
-                receiptData: fabricatedBytes,
-                signatureData: fixture.sign(fabricatedBytes),
-                publicKeyBase64: fixture.publicKey,
-                now: fixture.now
-            )
+    try Data("not-a-signature\n".utf8).write(
+      to: resources.appendingPathComponent(
+        DoryVerifiedRendererBootstrapQualification.signatureFilename
+      )
+    )
+    sealChecks = 0
+    #expect(throws: DoryRendererBootstrapQualificationError.nonCanonicalSignature) {
+      _ =
+        try DoryVerifiedRendererBootstrapQualification
+        .loadRuntimeCandidateForTesting(
+          from: bundle,
+          now: fixture.now
+        ) { _ in
+          sealChecks += 1
         }
     }
+    #expect(sealChecks == 0)
+  }
 
-    @Test("tamper expiry and stale revocation evidence fail closed")
-    func trustAndFreshnessFailClosed() throws {
-        let fixture = try RendererBootstrapQualificationFixture()
-        var tampered = fixture.receipt
-        tampered[tampered.index(tampered.startIndex, offsetBy: 20)] ^= 1
-        #expect(throws: DoryRendererBootstrapQualificationError.signatureInvalid) {
-            _ = try DoryVerifiedRendererBootstrapQualification.verifyForTesting(
-                receiptData: tampered,
-                signatureData: fixture.signature,
-                publicKeyBase64: fixture.publicKey,
-                now: fixture.now
-            )
-        }
+  @Test("runtime candidate loader selects ARM, PC VirGL2 and PC Venus receipts independently")
+  func runtimeCandidateProfilesCoexistInOneBundle() throws {
+    let fixture = try RendererBootstrapQualificationFixture()
+    let pcReceipt = try fixture.pcVirGL2Receipt()
+    let pcVenusReceipt = try fixture.pcVenusReceipt()
+    let temporary = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+      .appendingPathExtension("app")
+    defer { try? FileManager.default.removeItem(at: temporary) }
+    let contents = temporary.appendingPathComponent("Contents", isDirectory: true)
+    let resources = contents.appendingPathComponent("Resources", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: resources,
+      withIntermediateDirectories: true
+    )
+    let info: [String: Any] = [
+      "CFBundleIdentifier": "dev.dory.qualification-profiles-test",
+      "CFBundleName": "QualificationProfilesTest",
+      "CFBundlePackageType": "APPL",
+      "CFBundleVersion": "1",
+    ]
+    try PropertyListSerialization.data(
+      fromPropertyList: info,
+      format: .xml,
+      options: 0
+    ).write(to: contents.appendingPathComponent("Info.plist"))
+    try fixture.productionRuntimeReceipt().write(
+      to: resources.appendingPathComponent(
+        DoryVerifiedRendererBootstrapQualification.receiptFilename
+      )
+    )
+    try pcReceipt.write(
+      to: resources.appendingPathComponent(
+        DoryVerifiedRendererBootstrapQualification.pcVirGL2ReceiptFilename
+      )
+    )
+    try pcVenusReceipt.write(
+      to: resources.appendingPathComponent(
+        DoryVerifiedRendererBootstrapQualification.pcVenusReceiptFilename
+      )
+    )
+    let bundle = try #require(Bundle(url: temporary))
 
-        var expired = fixture.object
-        expired["expiresAt"] = "2026-08-25T12:00:00Z"
-        let expiredBytes = try fixture.canonical(expired)
-        #expect(throws: DoryRendererBootstrapQualificationError.validityInvalid) {
-            _ = try DoryVerifiedRendererBootstrapQualification.verifyForTesting(
-                receiptData: expiredBytes,
-                signatureData: fixture.sign(expiredBytes),
-                publicKeyBase64: fixture.publicKey,
-                now: fixture.now
-            )
-        }
+    var sealChecks = 0
+    let arm =
+      try DoryVerifiedRendererBootstrapQualification
+      .loadRuntimeCandidateForTesting(
+        from: bundle,
+        now: fixture.now
+      ) { _ in
+        sealChecks += 1
+      }
+    let pc =
+      try DoryVerifiedRendererBootstrapQualification
+      .loadRuntimeCandidateForTesting(
+        producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1,
+        from: bundle,
+        now: fixture.now
+      ) { _ in
+        sealChecks += 1
+      }
+    let pcVenus =
+      try DoryVerifiedRendererBootstrapQualification
+      .loadRuntimeCandidateForTesting(
+        producerFenceContract: .doryPCX8664LinuxVenusPrepareFBV1,
+        from: bundle,
+        now: fixture.now
+      ) { _ in
+        sealChecks += 1
+      }
 
-        #expect(throws: DoryRendererBootstrapQualificationError.revoked) {
-            _ = try DoryVerifiedRendererBootstrapQualification.verifyForTesting(
-                receiptData: fixture.receipt,
-                signatureData: fixture.signature,
-                publicKeyBase64: fixture.publicKey,
-                now: fixture.now,
-                minimumRevocationSequence: 2
-            )
-        }
+    #expect(sealChecks == 3)
+    #expect(arm.producerFenceContract == .managedLinux612106PrepareFBV1)
+    #expect(arm.capsets.map(\.id) == [2, 4])
+    #expect(pc.producerFenceContract == .doryPCX8664LinuxVirGL2PrepareFBV1)
+    #expect(pc.capsets.map(\.id) == [2])
+    #expect(
+      pc.guestMesaSHA256.lowercaseSHA256
+        != DoryRendererSourceTuple.guestMesaRuntimeSHA256)
+    #expect(pcVenus.producerFenceContract == .doryPCX8664LinuxVenusPrepareFBV1)
+    #expect(pcVenus.capsets.map(\.id) == [2, 4])
+    #expect(pcVenus.featureBits == DoryRendererWorkerFeatures.pcVenusAcceleration.rawValue)
+  }
+
+  @Test("single-capset and fabricated feature evidence fail even when signed")
+  func incompleteCapabilitiesFailClosed() throws {
+    let fixture = try RendererBootstrapQualificationFixture()
+    var singleCapset = fixture.object
+    singleCapset["capsets"] = [fixture.capsets[1]]
+    let singleBytes = try fixture.canonical(singleCapset)
+    #expect(throws: DoryRendererBootstrapQualificationError.capabilityMismatch) {
+      _ = try DoryVerifiedRendererBootstrapQualification.verifyForTesting(
+        receiptData: singleBytes,
+        signatureData: fixture.sign(singleBytes),
+        publicKeyBase64: fixture.publicKey,
+        now: fixture.now
+      )
     }
+
+    var fabricatedFeatures = fixture.object
+    fabricatedFeatures["featureBits"] = Int(
+      DoryRendererWorkerFeatures.venus.rawValue
+    )
+    let fabricatedBytes = try fixture.canonical(fabricatedFeatures)
+    #expect(throws: DoryRendererBootstrapQualificationError.capabilityMismatch) {
+      _ = try DoryVerifiedRendererBootstrapQualification.verifyForTesting(
+        receiptData: fabricatedBytes,
+        signatureData: fixture.sign(fabricatedBytes),
+        publicKeyBase64: fixture.publicKey,
+        now: fixture.now
+      )
+    }
+  }
+
+  @Test("tamper expiry and stale revocation evidence fail closed")
+  func trustAndFreshnessFailClosed() throws {
+    let fixture = try RendererBootstrapQualificationFixture()
+    var tampered = fixture.receipt
+    tampered[tampered.index(tampered.startIndex, offsetBy: 20)] ^= 1
+    #expect(throws: DoryRendererBootstrapQualificationError.signatureInvalid) {
+      _ = try DoryVerifiedRendererBootstrapQualification.verifyForTesting(
+        receiptData: tampered,
+        signatureData: fixture.signature,
+        publicKeyBase64: fixture.publicKey,
+        now: fixture.now
+      )
+    }
+
+    var expired = fixture.object
+    expired["expiresAt"] = "2026-08-25T12:00:00Z"
+    let expiredBytes = try fixture.canonical(expired)
+    #expect(throws: DoryRendererBootstrapQualificationError.validityInvalid) {
+      _ = try DoryVerifiedRendererBootstrapQualification.verifyForTesting(
+        receiptData: expiredBytes,
+        signatureData: fixture.sign(expiredBytes),
+        publicKeyBase64: fixture.publicKey,
+        now: fixture.now
+      )
+    }
+
+    #expect(throws: DoryRendererBootstrapQualificationError.revoked) {
+      _ = try DoryVerifiedRendererBootstrapQualification.verifyForTesting(
+        receiptData: fixture.receipt,
+        signatureData: fixture.signature,
+        publicKeyBase64: fixture.publicKey,
+        now: fixture.now,
+        minimumRevocationSequence: 2
+      )
+    }
+  }
 }
 
 private struct RendererBootstrapQualificationFixture {
-    let privateKey = Curve25519.Signing.PrivateKey()
-    let now: Date
-    let virgl2Capset = Data("real-virgl2-capset".utf8)
-    let venusCapset = Data("real-venus-capset".utf8)
-    let object: [String: Any]
-    let capsets: [[String: Any]]
-    let receipt: Data
-    let signature: Data
+  let privateKey = Curve25519.Signing.PrivateKey()
+  let now: Date
+  let virgl2Capset = Data("real-virgl2-capset".utf8)
+  let venusCapset = Data("real-venus-capset".utf8)
+  let object: [String: Any]
+  let capsets: [[String: Any]]
+  let receipt: Data
+  let signature: Data
 
-    var publicKey: String {
-        privateKey.publicKey.rawRepresentation.base64EncodedString()
-    }
+  var publicKey: String {
+    privateKey.publicKey.rawRepresentation.base64EncodedString()
+  }
 
-    init() throws {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        now = try #require(formatter.date(from: "2026-08-26T12:00:00Z"))
-        let transcript = String(repeating: "6", count: 64)
-        let virgl2SHA256 = SHA256.hash(data: virgl2Capset).map {
-            String(format: "%02x", $0)
-        }.joined()
-        let venusSHA256 = SHA256.hash(data: venusCapset).map {
-            String(format: "%02x", $0)
-        }.joined()
-        capsets = [
-            [
-                "byteCount": virgl2Capset.count,
-                "id": 2,
-                "maximumVersion": 2,
-                "sha256": virgl2SHA256,
-            ],
-            [
-                "byteCount": venusCapset.count,
-                "id": 4,
-                "maximumVersion": 0,
-                "sha256": venusSHA256,
-            ],
-        ]
-        let keyID = SHA256.hash(data: privateKey.publicKey.rawRepresentation).map {
-            String(format: "%02x", $0)
-        }.joined()
-        object = [
-            "bootstrapProtocolVersion": 3,
-            "bootstrapTranscriptSHA256": transcript,
-            "capabilityReceiptProtocolVersion": 4,
-            "capabilityReceiptSHA256": String(repeating: "5", count: 64),
-            "candidateInventorySHA256": String(repeating: "1", count: 64),
-            "capsets": capsets,
-            "expiresAt": "2026-09-26T12:00:00Z",
-            "featureBits": Int(
-                DoryRendererWorkerFeatures.productionAcceleration.rawValue
-            ),
-            "guestMesaSHA256": DoryRendererSourceTuple.guestMesaRuntimeSHA256,
-            "issuedAt": "2026-08-25T12:00:00Z",
-            "kind": DoryVerifiedRendererBootstrapQualification.kind,
-            "managedGuestKernelSHA256": String(repeating: "7", count: 64),
-            "producerFenceContract": Int(
-                DoryRendererProducerFenceContract
-                    .managedLinux612106PrepareFBV1.rawValue
-            ),
-            "qualificationIdentity": "dory-renderer-bootstrap:\(transcript)",
-            "revocationKeyID": keyID,
-            "revocationSequence": 1,
-            "schemaVersion": 1,
-            "signingKeyID": keyID,
-            "sourceTuple": Int(DoryRendererSourceTuple.productionCandidate.rawValue),
-            "tupleDefinitionSHA256":
-                DoryRendererSourceTuple.productionDefinitionSHA256,
-            "workerCodeDirectoryHash": String(repeating: "ab", count: 20),
-            "workerExecutableSHA256": String(repeating: "2", count: 64),
-        ]
-        receipt = try Self.canonical(object)
-        signature = try Self.signature(receipt, key: privateKey)
-    }
+  init() throws {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    now = try #require(formatter.date(from: "2026-08-26T12:00:00Z"))
+    let transcript = String(repeating: "6", count: 64)
+    let virgl2SHA256 = SHA256.hash(data: virgl2Capset).map {
+      String(format: "%02x", $0)
+    }.joined()
+    let venusSHA256 = SHA256.hash(data: venusCapset).map {
+      String(format: "%02x", $0)
+    }.joined()
+    capsets = [
+      [
+        "byteCount": virgl2Capset.count,
+        "id": 2,
+        "maximumVersion": 2,
+        "sha256": virgl2SHA256,
+      ],
+      [
+        "byteCount": venusCapset.count,
+        "id": 4,
+        "maximumVersion": 0,
+        "sha256": venusSHA256,
+      ],
+    ]
+    let keyID = SHA256.hash(data: privateKey.publicKey.rawRepresentation).map {
+      String(format: "%02x", $0)
+    }.joined()
+    object = [
+      "bootstrapProtocolVersion": 3,
+      "bootstrapTranscriptSHA256": transcript,
+      "capabilityReceiptProtocolVersion": 4,
+      "capabilityReceiptSHA256": String(repeating: "5", count: 64),
+      "candidateInventorySHA256": String(repeating: "1", count: 64),
+      "capsets": capsets,
+      "expiresAt": "2026-09-26T12:00:00Z",
+      "featureBits": Int(
+        DoryRendererWorkerFeatures.productionAcceleration.rawValue
+      ),
+      "guestMesaSHA256": DoryRendererSourceTuple.guestMesaRuntimeSHA256,
+      "issuedAt": "2026-08-25T12:00:00Z",
+      "kind": DoryVerifiedRendererBootstrapQualification.kind,
+      "managedGuestKernelSHA256": String(repeating: "7", count: 64),
+      "producerFenceContract": Int(
+        DoryRendererProducerFenceContract
+          .managedLinux612106PrepareFBV1.rawValue
+      ),
+      "qualificationIdentity": "dory-renderer-bootstrap:\(transcript)",
+      "revocationKeyID": keyID,
+      "revocationSequence": 1,
+      "schemaVersion": 1,
+      "signingKeyID": keyID,
+      "sourceTuple": Int(DoryRendererSourceTuple.productionCandidate.rawValue),
+      "tupleDefinitionSHA256":
+        DoryRendererSourceTuple.productionDefinitionSHA256,
+      "workerCodeDirectoryHash": String(repeating: "ab", count: 20),
+      "workerExecutableSHA256": String(repeating: "2", count: 64),
+    ]
+    receipt = try Self.canonical(object)
+    signature = try Self.signature(receipt, key: privateKey)
+  }
 
-    func digest(_ nibble: Character) throws -> DoryRendererArtifactDigest {
-        try DoryRendererArtifactDigest(
-            lowercaseSHA256: String(repeating: nibble, count: 64)
+  func digest(_ nibble: Character) throws -> DoryRendererArtifactDigest {
+    try DoryRendererArtifactDigest(
+      lowercaseSHA256: String(repeating: nibble, count: 64)
+    )
+  }
+
+  func bootstrap() throws -> DoryRendererWorkerBootstrap {
+    try DoryRendererWorkerBootstrap(
+      workspaceID: DoryRendererWorkspaceID(
+        rawValue: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+      ),
+      generation: DoryRendererWorkerGeneration(rawValue: 7),
+      sourceTuple: .productionCandidate,
+      producerFenceContract: .managedLinux612106PrepareFBV1,
+      requestedCapabilities: .productionAcceleration,
+      artifacts: DoryRendererArtifactManifest(
+        candidateInventory: try digest("1"),
+        managedGuestKernel: try digest("7"),
+        guestMesa: try DoryRendererArtifactDigest(
+          lowercaseSHA256: DoryRendererSourceTuple.guestMesaRuntimeSHA256
+        ),
+        rendererWorkerExecutable: try digest("2"),
+        rendererWorkerCodeDirectoryHash: try DoryCodeDirectoryHash(
+          lowercaseHexadecimal: String(repeating: "ab", count: 20)
         )
-    }
+      )
+    )
+  }
 
-    func bootstrap() throws -> DoryRendererWorkerBootstrap {
-        try DoryRendererWorkerBootstrap(
-            workspaceID: DoryRendererWorkspaceID(
-                rawValue: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
-            ),
-            generation: DoryRendererWorkerGeneration(rawValue: 7),
-            sourceTuple: .productionCandidate,
-            producerFenceContract: .managedLinux612106PrepareFBV1,
-            requestedCapabilities: .productionAcceleration,
-            artifacts: DoryRendererArtifactManifest(
-                candidateInventory: try digest("1"),
-                managedGuestKernel: try digest("7"),
-                guestMesa: try DoryRendererArtifactDigest(
-                    lowercaseSHA256: DoryRendererSourceTuple.guestMesaRuntimeSHA256
-                ),
-                rendererWorkerExecutable: try digest("2"),
-                rendererWorkerCodeDirectoryHash: try DoryCodeDirectoryHash(
-                    lowercaseHexadecimal: String(repeating: "ab", count: 20)
-                )
-            )
-        )
-    }
+  func liveReceipt(
+    accepting bootstrap: DoryRendererWorkerBootstrap
+  ) throws -> DoryRendererCapabilityReceipt {
+    try DoryRendererCapabilityReceipt(
+      accepting: bootstrap,
+      features: .productionAcceleration,
+      capsets: [
+        try DoryRendererCapsetAttestation(
+          id: 2,
+          maximumVersion: 2,
+          data: virgl2Capset
+        ),
+        try DoryRendererCapsetAttestation(
+          id: 4,
+          maximumVersion: 0,
+          data: venusCapset
+        ),
+      ]
+    )
+  }
 
-    func liveReceipt(
-        accepting bootstrap: DoryRendererWorkerBootstrap
-    ) throws -> DoryRendererCapabilityReceipt {
-        try DoryRendererCapabilityReceipt(
-            accepting: bootstrap,
-            features: .productionAcceleration,
-            capsets: [
-                try DoryRendererCapsetAttestation(
-                    id: 2,
-                    maximumVersion: 2,
-                    data: virgl2Capset
-                ),
-                try DoryRendererCapsetAttestation(
-                    id: 4,
-                    maximumVersion: 0,
-                    data: venusCapset
-                ),
-            ]
-        )
-    }
+  func canonical(_ value: [String: Any]) throws -> Data {
+    try Self.canonical(value)
+  }
 
-    func canonical(_ value: [String: Any]) throws -> Data {
-        try Self.canonical(value)
-    }
+  func sign(_ value: Data) -> Data {
+    try! Self.signature(value, key: privateKey)
+  }
 
-    func sign(_ value: Data) -> Data {
-        try! Self.signature(value, key: privateKey)
-    }
+  func productionRuntimeReceipt() throws -> Data {
+    var runtime = object
+    let productionKeyID = try Self.productionSigningKeyID()
+    runtime["signingKeyID"] = productionKeyID
+    runtime["revocationKeyID"] = productionKeyID
+    return try Self.canonical(runtime)
+  }
 
-    func productionRuntimeReceipt() throws -> Data {
-        var runtime = object
-        let productionKeyID = try Self.productionSigningKeyID()
-        runtime["signingKeyID"] = productionKeyID
-        runtime["revocationKeyID"] = productionKeyID
-        return try Self.canonical(runtime)
-    }
+  func pcVirGL2Receipt() throws -> Data {
+    let transcript = String(repeating: "c", count: 64)
+    var pc = object
+    let productionKeyID = try Self.productionSigningKeyID()
+    pc["bootstrapTranscriptSHA256"] = transcript
+    pc["qualificationIdentity"] = "dory-renderer-bootstrap:\(transcript)"
+    pc["signingKeyID"] = productionKeyID
+    pc["revocationKeyID"] = productionKeyID
+    pc["capsets"] = [capsets[0]]
+    pc["featureBits"] = Int(
+      DoryRendererWorkerFeatures.pcVirGL2Acceleration.rawValue
+    )
+    pc["guestMesaSHA256"] = String(repeating: "9", count: 64)
+    pc["managedGuestKernelSHA256"] = String(repeating: "8", count: 64)
+    pc["producerFenceContract"] = Int(
+      DoryRendererProducerFenceContract
+        .doryPCX8664LinuxVirGL2PrepareFBV1.rawValue
+    )
+    return try Self.canonical(pc)
+  }
 
-    func pcVirGL2Receipt() throws -> Data {
-        let transcript = String(repeating: "c", count: 64)
-        var pc = object
-        let productionKeyID = try Self.productionSigningKeyID()
-        pc["bootstrapTranscriptSHA256"] = transcript
-        pc["qualificationIdentity"] = "dory-renderer-bootstrap:\(transcript)"
-        pc["signingKeyID"] = productionKeyID
-        pc["revocationKeyID"] = productionKeyID
-        pc["capsets"] = [capsets[0]]
-        pc["featureBits"] = Int(
-            DoryRendererWorkerFeatures.pcVirGL2Acceleration.rawValue
-        )
-        pc["guestMesaSHA256"] = String(repeating: "9", count: 64)
-        pc["managedGuestKernelSHA256"] = String(repeating: "8", count: 64)
-        pc["producerFenceContract"] = Int(
-            DoryRendererProducerFenceContract
-                .doryPCX8664LinuxVirGL2PrepareFBV1.rawValue
-        )
-        return try Self.canonical(pc)
-    }
+  func pcVenusReceipt() throws -> Data {
+    let transcript = String(repeating: "d", count: 64)
+    var pc = object
+    let productionKeyID = try Self.productionSigningKeyID()
+    pc["bootstrapTranscriptSHA256"] = transcript
+    pc["qualificationIdentity"] = "dory-renderer-bootstrap:\(transcript)"
+    pc["signingKeyID"] = productionKeyID
+    pc["revocationKeyID"] = productionKeyID
+    pc["capsets"] = capsets
+    pc["featureBits"] = Int(
+      DoryRendererWorkerFeatures.pcVenusAcceleration.rawValue
+    )
+    pc["guestMesaSHA256"] = String(repeating: "9", count: 64)
+    pc["managedGuestKernelSHA256"] = String(repeating: "8", count: 64)
+    pc["producerFenceContract"] = Int(
+      DoryRendererProducerFenceContract
+        .doryPCX8664LinuxVenusPrepareFBV1.rawValue
+    )
+    return try Self.canonical(pc)
+  }
 
-    private static func canonical(_ value: [String: Any]) throws -> Data {
-        try DoryRendererProductionInventory.canonicalJSONData(value)
-            + Data("\n".utf8)
-    }
+  private static func canonical(_ value: [String: Any]) throws -> Data {
+    try DoryRendererProductionInventory.canonicalJSONData(value)
+      + Data("\n".utf8)
+  }
 
-    private static func productionSigningKeyID() throws -> String {
-        let publicKey = try #require(Data(base64Encoded: DoryComponentDefaults.publicKey))
-        return SHA256.hash(data: publicKey).map {
-            String(format: "%02x", $0)
-        }.joined()
-    }
+  private static func productionSigningKeyID() throws -> String {
+    let publicKey = try #require(Data(base64Encoded: DoryComponentDefaults.publicKey))
+    return SHA256.hash(data: publicKey).map {
+      String(format: "%02x", $0)
+    }.joined()
+  }
 
-    private static func signature(
-        _ value: Data,
-        key: Curve25519.Signing.PrivateKey
-    ) throws -> Data {
-        Data(try key.signature(for: value).base64EncodedString().utf8)
-            + Data("\n".utf8)
-    }
+  private static func signature(
+    _ value: Data,
+    key: Curve25519.Signing.PrivateKey
+  ) throws -> Data {
+    Data(try key.signature(for: value).base64EncodedString().utf8)
+      + Data("\n".utf8)
+  }
 }

@@ -619,6 +619,15 @@ enum DorydLaunchAgent {
                 <string>\(xmlEscaped($0))</string>
             """
         } ?? ""
+        #if DEBUG
+        let qualificationGraphicsAdmissionEnvironment = configuration.vmQualificationBootstrapEnabled
+            ? """
+                <key>DORY_GRAPHICS_ADMISSION_OVERRIDE</key>
+                <string>unsafe-development</string>
+            """ : ""
+        #else
+        let qualificationGraphicsAdmissionEnvironment = ""
+        #endif
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -662,6 +671,7 @@ enum DorydLaunchAgent {
                 <string>\(configuration.hostCLIEnabled ? "1" : "0")</string>
                 <key>DORYD_VM_QUALIFICATION_BOOTSTRAP</key>
                 <string>\(configuration.vmQualificationBootstrapEnabled ? "1" : "0")</string>
+            \(qualificationGraphicsAdmissionEnvironment)
                 <key>DORYD_AMD64</key>
                 <string>\(configuration.amd64EmulationEnabled ? "1" : "0")</string>
                 <key>DORYD_GPU</key>

@@ -149,6 +149,7 @@ final class AppStore {
     var pods: [Pod] = []
     var machines: [Machine] = []
     var runtimeLinuxDisplayTopologies: [String: [DoryVMDisplayTopologyEntry]] = [:]
+    private var runtimeLinuxDisplayTopologyOverrides: Set<String> = []
     var engineRunning = false
     var engineVersion = "1.4.0"
     /// True while the in-app Auto-Idle monitor has stopped the engine to reclaim memory. The docker
@@ -5499,11 +5500,14 @@ final class AppStore {
             guestToolsMediaAttached: status.guestToolsMediaAttached,
             runtimeIdentity: status.runtimeIdentity,
             runtimeGraphicsSelection: status.runtimeGraphicsSelection,
+            runtimeDetail: status.runtimeDetail,
+            nativeMacDisplayRepair: status.nativeMacDisplayRepair,
             cloneReceipt: status.cloneReceipt,
             agentBuild: status.agentBuild,
             agentProtocolVersion: status.agentProtocolVersion,
             agentCapabilities: status.agentCapabilities,
             integrationHealth: status.integrationHealth,
+            macGuestTools: status.macGuestTools,
             fileTransferPolicy: fileTransferPolicy,
             mounts: status.shares.map(Self.mountPair(fromDoryd:))
         )
@@ -5625,18 +5629,30 @@ final class AppStore {
         return Self.displayTopologyEntries(machine.displays)
     }
 
+    func runtimeLinuxDisplayTopologyOverride(
+        for machineID: String
+    ) -> [DoryVMDisplayTopologyEntry]? {
+        guard runtimeLinuxDisplayTopologyOverrides.contains(machineID) else { return nil }
+        return runtimeLinuxDisplayTopology(for: machineID)
+    }
+
+    func canReconfigureRuntimeLinuxDisplays(machineID: String) -> Bool {
+        runtimeOwnedByDoryd && machines.contains {
+            $0.name == machineID && $0.supportsRuntimeDisplayReconfiguration
+        }
+    }
+
     @discardableResult
     func addRuntimeLinuxDisplay(machineID: String) -> LinuxMachineDisplayWindow? {
-        guard let machine = machines.first(where: {
-            $0.name == machineID && $0.status == .running
-                && $0.guestFamily == "linux" && $0.displayMode == .desktop
-        }) else { return nil }
+        guard canReconfigureRuntimeLinuxDisplays(machineID: machineID),
+              let machine = machines.first(where: { $0.name == machineID }) else { return nil }
         var topology = runtimeLinuxDisplayTopologies[machineID]
             ?? Self.displayTopologyEntries(machine.displays)
         guard !topology.isEmpty,
               topology.count < Int(DoryVMDisplayFrame.maximumScanoutCount) else { return nil }
         topology.append(topology.last ?? Self.defaultRuntimeDisplayTopologyEntry)
         runtimeLinuxDisplayTopologies[machineID] = topology
+        runtimeLinuxDisplayTopologyOverrides.insert(machineID)
         return LinuxMachineDisplayWindow(
             machineID: machineID,
             scanoutID: UInt32(topology.count - 1)
@@ -5645,10 +5661,8 @@ final class AppStore {
 
     @discardableResult
     func removeRuntimeLinuxDisplay(machineID: String) -> LinuxMachineDisplayWindow? {
-        guard let machine = machines.first(where: {
-            $0.name == machineID && $0.status == .running
-                && $0.guestFamily == "linux" && $0.displayMode == .desktop
-        }) else { return nil }
+        guard canReconfigureRuntimeLinuxDisplays(machineID: machineID),
+              let machine = machines.first(where: { $0.name == machineID }) else { return nil }
         var topology = runtimeLinuxDisplayTopologies[machineID]
             ?? Self.displayTopologyEntries(machine.displays)
         guard topology.count > 1 else { return nil }
@@ -5658,20 +5672,26 @@ final class AppStore {
         )
         topology.removeLast()
         runtimeLinuxDisplayTopologies[machineID] = topology
+        runtimeLinuxDisplayTopologyOverrides.insert(machineID)
         return removed
     }
 
     private func reconcileRuntimeLinuxDisplayTopologies() {
         let live = Set(machines.map(\.name))
+        let runningDesktops = Set(machines.filter {
+            $0.guestFamily == "linux" && $0.displayMode == .desktop && $0.status == .running
+        }.map(\.name))
         runtimeLinuxDisplayTopologies = runtimeLinuxDisplayTopologies.filter {
             live.contains($0.key)
         }
+        runtimeLinuxDisplayTopologyOverrides.formIntersection(runningDesktops)
         for machine in machines where machine.guestFamily == "linux"
             && machine.displayMode == .desktop {
             if machine.status != .running || runtimeLinuxDisplayTopologies[machine.name] == nil {
                 runtimeLinuxDisplayTopologies[machine.name] = Self.displayTopologyEntries(
                     machine.displays
                 )
+                runtimeLinuxDisplayTopologyOverrides.remove(machine.name)
             }
         }
     }
@@ -5723,6 +5743,7 @@ final class AppStore {
 
     func canTransferFiles(to machine: Machine) -> Bool {
         guard runtimeOwnedByDoryd,
+              machine.guestFamily != "macos",
               machine.status == .running,
               machine.fileTransferPolicy.allowsHostToGuest,
               machine.agentProtocolVersion == 1 else {
@@ -5743,6 +5764,7 @@ final class AppStore {
 
     func canExportGuestFiles(from machine: Machine) -> Bool {
         runtimeOwnedByDoryd
+            && machine.guestFamily != "macos"
             && machine.status == .running
             && machine.fileTransferPolicy.allowsGuestToHost
             && machine.agentProtocolVersion == 1
@@ -6405,6 +6427,8 @@ final class AppStore {
 
     func toggleMachine(_ machine: Machine) {
         guard requireDorydMachines() else { return }
+        // Discarding saved execution is a separate, confirmed action, never an implicit Start.
+        guard !machine.requiresSavedStateRecovery, machine.nativeMacDisplayRepair == nil else { return }
         guard !busyMachines.contains(machine.name) else { return }
         guard let idx = machines.firstIndex(where: { $0.id == machine.id }) else { return }
         let previousState = machines[idx].status
@@ -6444,6 +6468,52 @@ final class AppStore {
                 }
                 actionError = "Could not \(action) \(name): \(error)"
             }
+            await refreshMachines()
+        }
+    }
+
+    func discardMachineSavedState(_ machine: Machine, operationID: UUID? = nil) {
+        guard requireDorydMachines(), machine.canDiscardSavedState,
+              !busyMachines.contains(machine.name),
+              let current = machines.first(where: { $0.id == machine.id }),
+              current.canDiscardSavedState, current.status == machine.status,
+              current.pendingSavedStateRecoveryOperationID == machine.pendingSavedStateRecoveryOperationID else {
+            return
+        }
+        let durableOperationID = machine.pendingSavedStateRecoveryOperationID ?? operationID ?? UUID()
+        if let operationID, operationID != durableOperationID { return }
+        busyMachines.insert(machine.name)
+        Task {
+            defer { busyMachines.remove(machine.name) }
+            do {
+                // Stop already owns the authenticated, durable cold-recovery operation.
+                // Recovery does not start a replacement helper or recreate the machine.
+                _ = try await dorydClient.machineStop(machine.name, operationID: durableOperationID)
+            } catch {
+                actionError = "Could not discard saved state for \(machine.name): \(error)"
+            }
+            await refreshMachines()
+        }
+    }
+
+    func repairNativeMacDisplay(_ machine: Machine, keepingDisplayAt selectedIndex: Int, operationID: UUID? = nil) {
+        guard requireDorydMachines(), machine.canRepairNativeMacDisplay,
+              !busyMachines.contains(machine.name), let repair = machine.nativeMacDisplayRepair,
+              repair.displays.indices.contains(selectedIndex),
+              repair.pendingSelectedDisplayIndex == nil || repair.pendingSelectedDisplayIndex == selectedIndex,
+              let current = machines.first(where: { $0.id == machine.id }), current.canRepairNativeMacDisplay,
+              current.nativeMacDisplayRepair == repair,
+              current.pendingNativeMacDisplayRepairOperationID == machine.pendingNativeMacDisplayRepairOperationID else { return }
+        let durableID = machine.pendingNativeMacDisplayRepairOperationID ?? operationID ?? UUID()
+        if let operationID, operationID != durableID { return }
+        busyMachines.insert(machine.name)
+        Task {
+            defer { busyMachines.remove(machine.name) }
+            do {
+                _ = try await dorydClient.machineRepairNativeMacDisplay(machine.name,
+                    originalManifestSHA256: repair.originalManifestSHA256,
+                    selectedDisplayIndex: selectedIndex, operationID: durableID)
+            } catch { actionError = "Could not repair the display for \(machine.name): \(error)" }
             await refreshMachines()
         }
     }
@@ -6866,7 +6936,8 @@ final class AppStore {
         )
         let releaseAvailability = DoryReleaseSupportPolicy.availability(
             hostArchitecture: .current,
-            guest: releaseGuest
+            guest: releaseGuest,
+            qualificationBootstrapEnabled: AppInfo.vmQualificationBootstrapEnabled
         )
         guard releaseAvailability.isUsable else {
             let message = releaseAvailability.reason?.message
@@ -6874,7 +6945,9 @@ final class AppStore {
             actionError = message
             return message
         }
-        if settings.bootMode == .efi, let installerISOPath = settings.installerISOPath {
+        if !AppInfo.vmQualificationBootstrapEnabled,
+           settings.bootMode == .efi,
+           let installerISOPath = settings.installerISOPath {
             do {
                 let identity = try DoryInstallerISOInspector.portableEFIMediaIdentity(
                     atPath: installerISOPath

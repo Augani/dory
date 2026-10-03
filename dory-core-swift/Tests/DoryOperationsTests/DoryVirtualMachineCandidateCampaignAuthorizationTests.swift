@@ -168,6 +168,122 @@ struct DoryVirtualMachineCandidateCampaignAuthorizationTests {
         }
     }
 
+    @Test("existing signed authorities grant no fault injection")
+    func noImplicitFaultAuthority() throws {
+        let fixture = try Fixture(guestArchitecture: .arm64)
+        let authority = try fixture.resolve()
+        let cell = DoryResolvedCandidateCampaignCell(
+            campaignIdentifier: authority.campaignIdentifier, manifestSHA256: authority.manifestSHA256,
+            signingKeyID: authority.signingKeyID, cell: fixture.cell
+        )
+        #expect(throws: DoryRuntimeQualificationFaultError.unauthorized) {
+            try authority.authorizeRuntimeFaults(cell: cell, machineID: "campaign-arm-1", operationID: UUID(),
+                                                resolvedPlanSHA256: String(repeating: "b", count: 64), now: fixture.now)
+        }
+        let object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.authorityURL)) as? [String: Any])
+        let cells = try #require(object["cells"] as? [[String: Any]])
+        #expect(cells[0]["faultPolicy"] == nil)
+    }
+
+    @Test("faults require an exact signed ARM cell, identity and unexpired authority")
+    func signedFaultPolicy() throws {
+        let policy = DoryCandidateCampaignFaultPolicy(permittedFaults: [.blockFullFlushNoSpace])
+        let fixture = try Fixture(guestArchitecture: .arm64, faultPolicy: policy)
+        let authority = try fixture.resolve()
+        let cell = DoryResolvedCandidateCampaignCell(
+            campaignIdentifier: authority.campaignIdentifier, manifestSHA256: authority.manifestSHA256,
+            signingKeyID: authority.signingKeyID, cell: fixture.cell
+        )
+        let operationID = UUID()
+        let grant = try authority.authorizeRuntimeFaults(
+            cell: cell, machineID: "campaign-arm-1", operationID: operationID,
+            resolvedPlanSHA256: String(repeating: "b", count: 64), now: fixture.now
+        )
+        #expect(grant.operationID == operationID)
+        #expect(grant.machineID == "campaign-arm-1")
+        #expect(grant.policy == policy)
+        #expect(grant.campaignManifestSHA256 == authority.manifestSHA256)
+        #expect(throws: DoryRuntimeQualificationFaultError.invalidIdentity) {
+            try authority.authorizeRuntimeFaults(cell: cell, machineID: "personal-vm", operationID: operationID,
+                                                resolvedPlanSHA256: String(repeating: "b", count: 64), now: fixture.now)
+        }
+        #expect(throws: DoryRuntimeQualificationFaultError.invalidIdentity) {
+            try authority.authorizeRuntimeFaults(cell: cell, machineID: "campaign-arm-1", operationID: operationID,
+                                                resolvedPlanSHA256: "bad-plan", now: fixture.now)
+        }
+        #expect(throws: DoryRuntimeQualificationFaultError.expired) {
+            try authority.authorizeRuntimeFaults(cell: cell, machineID: "campaign-arm-1", operationID: operationID,
+                                                resolvedPlanSHA256: String(repeating: "b", count: 64),
+                                                now: fixture.now.addingTimeInterval(3600))
+        }
+        #expect(throws: DoryRuntimeQualificationFaultError.unauthorized) {
+            try authority.authorizeRuntimeFaults(cell: cell, machineID: "campaign-arm-1", operationID: operationID,
+                                                resolvedPlanSHA256: String(repeating: "b", count: 64),
+                                                now: fixture.now.addingTimeInterval(-120))
+        }
+        var altered = cell.cell
+        altered.faultPolicy?.maximumArmingCount = 8
+        let forgedCell = DoryResolvedCandidateCampaignCell(
+            campaignIdentifier: cell.campaignIdentifier, manifestSHA256: cell.manifestSHA256,
+            signingKeyID: cell.signingKeyID, cell: altered
+        )
+        #expect(throws: DoryRuntimeQualificationFaultError.unauthorized) {
+            try authority.authorizeRuntimeFaults(cell: forgedCell, machineID: "campaign-arm-1", operationID: operationID,
+                                                resolvedPlanSHA256: String(repeating: "b", count: 64), now: fixture.now)
+        }
+    }
+
+    @Test("renderer crash requires exact signed permission and does not grant other faults",
+          arguments: [DoryGuestArchitecture.arm64, .x86_64])
+    func signedRendererCrashPolicy(architecture: DoryGuestArchitecture) throws {
+        let policy = DoryCandidateCampaignFaultPolicy(permittedFaults: [.rendererWorkerCrash])
+        let fixture = try Fixture(guestArchitecture: architecture, faultPolicy: policy)
+        let authority = try fixture.resolve()
+        let cell = DoryResolvedCandidateCampaignCell(
+            campaignIdentifier: authority.campaignIdentifier, manifestSHA256: authority.manifestSHA256,
+            signingKeyID: authority.signingKeyID, cell: fixture.cell
+        )
+        let operation = UUID()
+        let grant = try authority.authorizeRuntimeFaults(cell: cell, machineID: "campaign-renderer-1",
+            operationID: operation, resolvedPlanSHA256: String(repeating: "b", count: 64), now: fixture.now)
+        #expect(grant.policy.permittedFaults == [.rendererWorkerCrash])
+        #expect(!grant.policy.permittedFaults.contains(.blockFullFlushNoSpace))
+        let admission = try grant.rendererCrashAdmission(challenge: UUID(), workerGeneration: 7,
+            now: fixture.now, monotonicNanoseconds: 100)
+        #expect(admission.permits(workspaceID: operation, workerGeneration: 7, now: fixture.now))
+        #expect(!admission.permits(workspaceID: operation, workerGeneration: 8, now: fixture.now))
+        #expect(admission.claimDispatchPermission(now: fixture.now, monotonicNanoseconds: 101))
+        #expect(!admission.claimDispatchPermission(now: fixture.now, monotonicNanoseconds: 102))
+    }
+
+    @Test("PC renderer permission never enables ARM storage/memory faults or software graphics")
+    func pcRendererFaultScope() throws {
+        for faults: [DoryRuntimeQualificationFaultKind] in [
+            [.blockFullFlushNoSpace, .rendererWorkerCrash],
+            [.mappedPageRepeatedPermission, .rendererWorkerCrash]
+        ] {
+            let fixture = try Fixture(faultPolicy: .init(permittedFaults: faults))
+            #expect(throws: DoryCandidateCampaignAuthorizationError.self) { try fixture.resolve() }
+        }
+        for graphics in [DoryGraphicsAccelerationLevel.none, .software, .hostAcceleratedDisplay] {
+            let fixture = try Fixture(graphics: graphics,
+                faultPolicy: .init(permittedFaults: [.rendererWorkerCrash]))
+            #expect(throws: DoryCandidateCampaignAuthorizationError.self) { try fixture.resolve() }
+        }
+    }
+
+    @Test("invalid policies and PC storage faults cannot carry fault authority")
+    func invalidFaultPolicies() throws {
+        let policy = DoryCandidateCampaignFaultPolicy(permittedFaults: [.blockFullFlushNoSpace])
+        let unsupported = try Fixture(guestArchitecture: .x86_64, faultPolicy: policy)
+        #expect(throws: DoryCandidateCampaignAuthorizationError.self) { try unsupported.resolve() }
+        var malformed = policy
+        malformed.maximumArmingCount = 0
+        let invalid = try Fixture(guestArchitecture: .arm64, faultPolicy: malformed)
+        #expect(throws: DoryCandidateCampaignAuthorizationError.self) { try invalid.resolve() }
+        #expect(!DoryCandidateCampaignFaultPolicy(permittedFaults: [.blockFullFlushNoSpace, .blockFullFlushNoSpace]).isValid)
+    }
+
     private final class Fixture {
         let temporary: URL
         let root: URL
@@ -181,7 +297,9 @@ struct DoryVirtualMachineCandidateCampaignAuthorizationTests {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let cell: DoryCandidateCampaignCell
 
-        init() throws {
+        init(guestArchitecture: DoryGuestArchitecture = .x86_64,
+             graphics: DoryGraphicsAccelerationLevel = .hardwareAccelerated3D,
+             faultPolicy: DoryCandidateCampaignFaultPolicy? = nil) throws {
             temporary = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appending(path: "dory-campaign-tests-\(UUID().uuidString.lowercased())")
             root = temporary
@@ -216,14 +334,14 @@ struct DoryVirtualMachineCandidateCampaignAuthorizationTests {
             cell = DoryCandidateCampaignCell(
                 cellIdentifier: "linux-x86_64-pc",
                 capability: DoryVirtualMachineCapabilityRequest(
-                    guest: DoryGuestPlatform(family: .linux, architecture: .x86_64),
+                    guest: DoryGuestPlatform(family: .linux, architecture: guestArchitecture),
                     bootMedia: DoryBootMedia(
                         kind: .installerISO,
                         source: .userProvided,
                         artifactSHA256: String(repeating: "a", count: 64)
                     ),
                     backend: .doryHypervisor,
-                    graphics: .hardwareAccelerated3D,
+                    graphics: graphics,
                     devices: DoryVirtualMachineDeviceCapabilityRequest(
                         networkInterface: .stable(machineID: "campaign-template"),
                         display: DoryVirtualMachineDisplayCapabilityRequest(
@@ -242,7 +360,8 @@ struct DoryVirtualMachineCandidateCampaignAuthorizationTests {
                     maximumVirtualCPUCount: 8,
                     maximumMemoryBytes: 16 * 1_024 * 1_024 * 1_024,
                     maximumStorageBytes: 128 * 1_024 * 1_024 * 1_024
-                )
+                ),
+                faultPolicy: faultPolicy
             )
             try writeAuthority()
         }

@@ -193,11 +193,13 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine status NAME
           dorydctl [global] machine stats NAME
           dorydctl [global] machine device-telemetry NAME
+          dorydctl [global] machine qualification-fault NAME --action arm|observe|cancel --operation-id UUID --plan-sha256 SHA256 --manifest-sha256 SHA256 --challenge UUID [--kind block-full-flush-enospc|mapped-page-repeated-permission|renderer-worker-sigkill] [--guest-physical-address GPA] [--renderer-worker-generation N] (signed campaign only)
           dorydctl [global] machine flight-recorder NAME [--after SEQUENCE]
           dorydctl [global] machine console NAME [--generation SHA256 --after OFFSET] [--limit BYTES] [--input TEXT]
           dorydctl [global] machine create NAME (--kernel PATH --rootfs PATH [--boot-mode linux-kernel|efi] [--guest-architecture arm64|x86_64] | --installer-iso PATH [--disk-size-gb N]) [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--guest-user NAME] [--guest-uid N] [--desktop-distro ID] [--desktop-name NAME] [--desktop-version VERSION] [--desktop-environment NAME] [--clipboard off|host-to-guest|guest-to-host|bidirectional] [--runtime auto|accelerated|compatible] [--graphics auto|virgl|virgl-venus|software] [--network shared-nat|host-only|disconnected|bridged] [--forward ID:tcp|udp:HOST_PORT:GUEST_PORT:loopback|lan ...] [--audio-input on|off] [--audio-output on|off] [--intel-application-translation on|off] [--sandbox [--sandbox-expires-at UNIX_SECONDS] [--sandbox-ssh-agent denied|granted] [--sandbox-profile standard|agent-ready] [--sandbox-tool TOOL ...] [--sandbox-baseline ID]]
-          dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [typed create options | --clear-guest-account | --clear-desktop-identity | --clear-clipboard | --clear-runtime | --clear-graphics | --clear-network | --clear-forwards | --clear-audio | --clear-intel-application-translation] [--attach-installer | --eject-installer]
+          dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [typed create options | --clear-guest-account | --clear-desktop-identity | --clear-clipboard | --clear-runtime | --clear-graphics | --clear-network | --clear-forwards | --clear-audio | --clear-intel-application-translation] [--attach-installer | --eject-installer | --attach-guest-tools | --eject-guest-tools]
           dorydctl [global] machine start|stop|pause|suspend|resume|restart|delete NAME
+          dorydctl [global] machine start-metal-probe NAME --operation-id UUID --challenge ABSOLUTE_JSON --result ABSOLUTE_JSON
           dorydctl [global] machine usb-attach NAME BUS_ID IDENTITY_TOKEN
           dorydctl [global] machine usb-detach NAME BUS_ID
           dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--env-json-stdin] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
@@ -1191,7 +1193,7 @@ func runBalloon(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let subcommand = try cursor.take("usage: dorydctl machine list|status|stats|device-telemetry|flight-recorder|console|create|update|desktop-update|start|stop|pause|suspend|resume|restart|delete|usb-attach|usb-detach|exec|shell|recipes|provision|snapshots|snapshot|backup")
+    let subcommand = try cursor.take("usage: dorydctl machine list|status|stats|device-telemetry|qualification-fault|flight-recorder|console|create|update|desktop-update|start|start-metal-probe|stop|pause|suspend|resume|restart|delete|usb-attach|usb-detach|exec|shell|recipes|provision|snapshots|snapshot|backup")
     switch subcommand {
     case "recipes":
         guard cursor.values.isEmpty else {
@@ -1236,6 +1238,48 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
                 proxy.machineDeviceTelemetry(name, reply: reply)
             }
         try emitJSON(telemetry)
+    case "qualification-fault":
+        let usage = "usage: dorydctl machine qualification-fault NAME --action arm|observe|cancel --operation-id UUID --plan-sha256 SHA256 --manifest-sha256 SHA256 --challenge UUID [--kind block-full-flush-enospc|mapped-page-repeated-permission|renderer-worker-sigkill] [--guest-physical-address GPA] [--renderer-worker-generation N]"
+        let name = try cursor.take(usage)
+        guard let actionText = try cursor.optionValue("--action"),
+          let action = DoryRuntimeQualificationFaultRequest.Action(rawValue: actionText),
+          let operationText = try cursor.optionValue("--operation-id"),
+          let operation = DoryOperationIdentity.parseCanonical(operationText),
+          let plan = try cursor.optionValue("--plan-sha256"),
+          let manifest = try cursor.optionValue("--manifest-sha256"),
+          let challengeText = try cursor.optionValue("--challenge"),
+          let challenge = DoryOperationIdentity.parseCanonical(challengeText),
+          plan.wholeMatch(of: /[0-9a-f]{64}/) != nil,
+          manifest.wholeMatch(of: /[0-9a-f]{64}/) != nil
+        else { throw DorydCtlError.usage(usage) }
+        let kindText = try cursor.optionValue("--kind")
+        let kind = kindText.flatMap(DoryRuntimeQualificationFaultKind.init(rawValue:))
+        let addressText = try cursor.optionValue("--guest-physical-address")
+        let address = addressText.flatMap { value in
+          value.hasPrefix("0x") ? UInt64(value.dropFirst(2), radix: 16) : UInt64(value)
+        }
+        let generationText = try cursor.optionValue("--renderer-worker-generation")
+        let generation = generationText.flatMap(UInt64.init)
+        guard cursor.values.isEmpty,
+          (action == .arm && kind != nil) || (action != .arm && kindText == nil),
+          (action == .arm && kind == .mappedPageRepeatedPermission
+            ? address.map { $0 > 0 && $0.isMultiple(of: UInt64(DoryMappedPageQualificationChallenge.pageBytes)) } == true
+            : addressText == nil),
+          (action == .arm && kind == .rendererWorkerCrash
+            ? generation.map { $0 > 0 } == true : generationText == nil)
+        else { throw DorydCtlError.usage(usage) }
+        let request = DoryRuntimeQualificationFaultRequest(
+          action: action, machineID: name, operationID: operation,
+          resolvedPlanSHA256: plan, campaignManifestSHA256: manifest,
+          challenge: challenge, kind: kind, guestPhysicalAddress: address, rendererWorkerGeneration: generation
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let json = String(decoding: try encoder.encode(request), as: UTF8.self)
+        let observation: NSDictionary = try client.withTimeout(atLeast: 10).statusCommand { proxy, reply in
+          proxy.machineQualificationFault(name, requestJSON: json, reply: reply)
+        }
+        try emitJSON(observation)
     case "flight-recorder":
         let name = try cursor.take(
             "usage: dorydctl machine flight-recorder NAME [--after SEQUENCE]"
@@ -1471,6 +1515,29 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         let operationID = DoryOperationIdentity.canonical(UUID())
         try emitJSON(try client.withTimeout(atLeast: DoryMachineControlTiming.startSeconds).statusCommand {
             $0.machineStart(name, operationID: operationID, reply: $1)
+        })
+    case "start-metal-probe":
+        let instruction = "usage: dorydctl machine start-metal-probe NAME --operation-id UUID --challenge ABSOLUTE_JSON --result ABSOLUTE_JSON"
+        let name = try cursor.take(instruction)
+        guard let rawOperationID = try cursor.optionValue("--operation-id"),
+              let operationID = DoryOperationIdentity.parseCanonical(rawOperationID),
+              let challengePath = try cursor.optionValue("--challenge"),
+              let resultPath = try cursor.optionValue("--result"),
+              cursor.values.isEmpty
+        else {
+            throw DorydCtlError.usage(instruction)
+        }
+        _ = try DoryVZMacMetalProbeLaunchRequest(
+            challengePath: challengePath, resultPath: resultPath
+        )
+        try emitJSON(try client.withTimeout(atLeast: DoryMachineControlTiming.startSeconds).statusCommand {
+            $0.machineStartMetalProbe(
+                name,
+                operationID: DoryOperationIdentity.canonical(operationID),
+                challengePath: challengePath,
+                resultPath: resultPath,
+                reply: $1
+            )
         })
     case "stop":
         let name = try cursor.take("usage: dorydctl machine stop NAME")
@@ -1717,7 +1784,7 @@ func runMachineBackup(cursor: inout ArgumentCursor, client: DorydCtlClient) thro
 }
 
 func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let usage = "usage: dorydctl machine update NAME [resource/network options] [typed guest/desktop/clipboard options] [--attach-installer | --eject-installer]"
+    let usage = "usage: dorydctl machine update NAME [resource/network options] [typed guest/desktop/clipboard options] [--attach-installer | --eject-installer | --attach-guest-tools | --eject-guest-tools]"
     let name = try cursor.take(usage)
     var config: [String: Any] = [:]
     if let memory = try cursor.optionValue("--memory-mb") {
@@ -1753,14 +1820,22 @@ func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) thro
     }
     let typedSettings = try parseMachineTypedSettings(cursor: &cursor, allowsClears: true)
     mergeMachineTypedSettings(typedSettings, into: &config)
-    let attachInstaller = cursor.values.contains("--attach-installer")
-    let ejectInstaller = cursor.values.contains("--eject-installer")
-    guard !attachInstaller || !ejectInstaller else {
-        throw DorydCtlError.usage("use either --attach-installer or --eject-installer, not both")
+    let mediaFlags: [String: (key: String, attached: Bool)] = [
+        "--attach-installer": ("installerMediaAttached", true),
+        "--eject-installer": ("installerMediaAttached", false),
+        "--attach-guest-tools": ("guestToolsMediaAttached", true),
+        "--eject-guest-tools": ("guestToolsMediaAttached", false),
+    ]
+    let selectedMediaFlags = cursor.values.filter { mediaFlags[$0] != nil }
+    guard selectedMediaFlags.count <= 1 else {
+        throw DorydCtlError.usage("use exactly one optical-media flag per machine update")
     }
-    if attachInstaller || ejectInstaller {
-        cursor.values.removeAll { $0 == "--attach-installer" || $0 == "--eject-installer" }
-        config["installerMediaAttached"] = attachInstaller
+    if let flag = selectedMediaFlags.first, let transition = mediaFlags[flag] {
+        guard config.isEmpty else {
+            throw DorydCtlError.usage("optical-media changes must be their own machine update")
+        }
+        cursor.values.removeAll { $0 == flag }
+        config[transition.key] = transition.attached
     }
     guard !config.isEmpty else {
         throw DorydCtlError.usage(usage)

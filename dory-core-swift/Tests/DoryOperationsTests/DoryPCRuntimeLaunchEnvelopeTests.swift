@@ -1,6 +1,8 @@
 import CryptoKit
+import Darwin
 import DoryFirmware
 import DoryMachinePC
+import DoryRendererWorkerWireContracts
 import DoryVMContracts
 import Foundation
 @testable import DoryOperations
@@ -57,6 +59,41 @@ final class DoryPCRuntimeLaunchEnvelopeTests: XCTestCase {
                 .directorySharing,
             true
         )
+    }
+
+    func testOrderedMultipleDisplaysSurviveTheLaunchEnvelope() throws {
+        let displays: [DoryVirtualMachineDisplayCapabilityRequest] = [
+            .init(id: "display-0", widthPixels: 1_280, heightPixels: 800),
+            .init(id: "display-1", widthPixels: 1_920, heightPixels: 1_080),
+        ]
+        let envelope = try makeEnvelope(displays: displays)
+
+        XCTAssertNoThrow(try envelope.validatedResources())
+        XCTAssertEqual(
+            try DoryPCRuntimeLaunchEnvelope.decodeArgument(envelope.encodedArgument())
+                .devices.displays,
+            displays
+        )
+    }
+
+    func testSparseAndExcessDisplayTopologiesAreRejected() throws {
+        let first = DoryVirtualMachineDisplayCapabilityRequest(
+            id: "display-0", widthPixels: 1_280, heightPixels: 800
+        )
+        let sparse = try makeEnvelope(displays: [
+            first,
+            .init(id: "display-2", widthPixels: 1_920, heightPixels: 1_080),
+        ])
+        XCTAssertThrowsError(try sparse.validatedResources()) { error in
+            XCTAssertEqual(error as? DoryPCRuntimeLaunchEnvelopeError, .invalidDeviceContract)
+        }
+
+        let excess = try makeEnvelope(displays: (0...16).map {
+            .init(id: "display-\($0)", widthPixels: 1_280, heightPixels: 800)
+        })
+        XCTAssertThrowsError(try excess.validatedResources()) { error in
+            XCTAssertEqual(error as? DoryPCRuntimeLaunchEnvelopeError, .invalidDeviceContract)
+        }
     }
 
     func testPlatformAndDescriptorSubstitutionFailClosed() throws {
@@ -123,9 +160,72 @@ final class DoryPCRuntimeLaunchEnvelopeTests: XCTestCase {
         }
     }
 
+    func testPCFaultHandoffAdmitsOnlyAuthenticatedRendererScopeAndClosesDescriptor() throws {
+        let envelope = try makeEnvelope(accelerated: true)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let grant = DoryRuntimeQualificationFaultAuthority(
+            machineID: envelope.machineID, operationID: envelope.operationID,
+            resolvedPlanSHA256: envelope.resolvedPlanSHA256,
+            campaignManifestSHA256: String(repeating: "d", count: 64),
+            expiresAt: now.addingTimeInterval(60),
+            policy: .init(permittedFaults: [.rendererWorkerCrash])
+        )
+        let channel = try DoryRuntimeQualificationFaultHandoff.makeChannel(authority: grant)
+        defer { withExtendedLifetime(channel) {} }
+        let fd = try channel.takeDescriptor()
+        var authenticated = false
+        let received = try DoryRuntimeQualificationFaultHandoff.receive(
+            descriptor: fd, envelope: envelope, now: now, authenticate: { _ in authenticated = true }
+        )
+        XCTAssertTrue(authenticated)
+        XCTAssertEqual(received, grant)
+        XCTAssertEqual(fcntl(fd, F_GETFD), -1)
+        XCTAssertEqual(errno, EBADF)
+    }
+
+    func testPCFaultHandoffRejectsUnsignedSenderSoftwareGraphicsAndBroaderARMGrants() throws {
+        let envelope = try makeEnvelope(accelerated: true)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        for variant in ["unsigned", "software", "block", "memory", "mixed", "machine", "operation", "plan", "expired"] {
+            let faults: [DoryRuntimeQualificationFaultKind]
+            switch variant {
+            case "block": faults = [.blockFullFlushNoSpace]
+            case "memory": faults = [.mappedPageRepeatedPermission]
+            case "mixed": faults = [.blockFullFlushNoSpace, .rendererWorkerCrash]
+            default: faults = [.rendererWorkerCrash]
+            }
+            let grant = DoryRuntimeQualificationFaultAuthority(
+                machineID: variant == "machine" ? "other-pc" : envelope.machineID,
+                operationID: variant == "operation" ? UUID() : envelope.operationID,
+                resolvedPlanSHA256: variant == "plan" ? String(repeating: "e", count: 64) : envelope.resolvedPlanSHA256,
+                campaignManifestSHA256: String(repeating: "d", count: 64),
+                expiresAt: variant == "expired" ? now : now.addingTimeInterval(60),
+                policy: .init(permittedFaults: faults)
+            )
+            let channel = try DoryRuntimeQualificationFaultHandoff.makeChannel(authority: grant)
+            defer { withExtendedLifetime(channel) {} }
+            let fd = try channel.takeDescriptor()
+            XCTAssertThrowsError(try DoryRuntimeQualificationFaultHandoff.receive(
+                descriptor: fd, envelope: variant == "software" ? makeEnvelope() : envelope, now: now,
+                authenticate: { descriptor in
+                    if variant == "unsigned" {
+                        try DoryRuntimeQualificationFaultHandoff.authenticateDaemon(descriptor: descriptor)
+                    }
+                }
+            ), variant) { error in
+                XCTAssertEqual(error as? DoryRuntimeQualificationFaultError,
+                               variant == "expired" ? .expired : .unauthorized, variant)
+            }
+            XCTAssertEqual(fcntl(fd, F_GETFD), -1, variant)
+            XCTAssertEqual(errno, EBADF, variant)
+        }
+    }
+
     private func makeEnvelope(
         installer: Bool = false,
-        directorySharing: Bool = false
+        directorySharing: Bool = false,
+        displays: [DoryVirtualMachineDisplayCapabilityRequest]? = nil,
+        accelerated: Bool = false
     ) throws -> DoryPCRuntimeLaunchEnvelope {
         let firmware = Data(repeating: 0xA5, count: 4_096)
         let variables = Data("variables".utf8)
@@ -175,10 +275,11 @@ final class DoryPCRuntimeLaunchEnvelopeTests: XCTestCase {
             planRevision: 1,
             executionComponentBuildIdentifier: "dory-dbt-test.1",
             virtualHardwareABIVersion: 1,
-            graphics: .software,
+            graphics: accelerated ? .hardwareAccelerated3D : .software,
+            rendererProducerFenceContract: accelerated ? .doryPCX8664LinuxVirGL2PrepareFBV1 : nil,
             devices: DoryVirtualMachineDeviceCapabilityRequest(
                 networkInterface: .stable(machineID: "x86-linux"),
-                display: .init(widthPixels: 1_280, heightPixels: 800),
+                displays: displays ?? [.init(widthPixels: 1_280, heightPixels: 800)],
                 keyboard: true,
                 pointer: true,
                 directorySharing: directorySharing
@@ -195,7 +296,9 @@ final class DoryPCRuntimeLaunchEnvelopeTests: XCTestCase {
             firmwareSBOMByteCount: UInt64(sbom.count),
             installerMediaByteCount: installer ? UInt64(installerBytes.count) : nil,
             installerMediaSHA256: installer ? digest(installerBytes) : nil,
-            installerMediaLogicalID: installer ? installerID : nil
+            installerMediaLogicalID: installer ? installerID : nil,
+            rendererBootstrapByteCount: accelerated ? UInt64(DoryRendererWorkerBootstrapCodec.fixedByteCount) : nil,
+            rendererBootstrapSHA256: accelerated ? String(repeating: "f", count: 64) : nil
         )
     }
 

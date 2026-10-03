@@ -596,6 +596,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
     public var snapshotRestoreSpecificationDigest: String?
     public var creationSpecificationDigest: String?
     public var snapshotSpecificationDigest: String?
+    public var nativeMacDisplayRepairSpecificationDigest: String?
 
     public init(
         operationID: UUID = UUID(),
@@ -619,7 +620,8 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         desktopUpdateSpecificationDigest: String? = nil,
         snapshotRestoreSpecificationDigest: String? = nil,
         creationSpecificationDigest: String? = nil,
-        snapshotSpecificationDigest: String? = nil
+        snapshotSpecificationDigest: String? = nil,
+        nativeMacDisplayRepairSpecificationDigest: String? = nil
     ) {
         schemaVersion = Self.schemaVersion
         sourceSchemaVersion = Self.schemaVersion
@@ -645,6 +647,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         self.snapshotRestoreSpecificationDigest = snapshotRestoreSpecificationDigest
         self.creationSpecificationDigest = creationSpecificationDigest
         self.snapshotSpecificationDigest = snapshotSpecificationDigest
+        self.nativeMacDisplayRepairSpecificationDigest = nativeMacDisplayRepairSpecificationDigest
     }
 
     public func validate() -> [DoryWorkspaceOperationValidationIssue] {
@@ -661,8 +664,15 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         }
         if operationID == UUID.zero { add(.invalidOperationID, "operationID") }
         if [configurationUpdateSpecificationDigest, desktopUpdateSpecificationDigest,
-            snapshotRestoreSpecificationDigest, creationSpecificationDigest, snapshotSpecificationDigest].compactMap({ $0 }).count > 1 {
+            snapshotRestoreSpecificationDigest, creationSpecificationDigest, snapshotSpecificationDigest,
+            nativeMacDisplayRepairSpecificationDigest].compactMap({ $0 }).count > 1 {
             add(.invalidCondition, "privateSpecifications")
+        }
+        if let nativeMacDisplayRepairSpecificationDigest,
+           kind != .repairing || schemaVersion != Self.schemaVersion
+            || !DoryOperationJournalStore.isDigest(nativeMacDisplayRepairSpecificationDigest)
+            || target.runtime?.authorizationState != .requiresReplanning {
+            add(.invalidCondition, "nativeMacDisplayRepairSpecificationDigest")
         }
         if let snapshotSpecificationDigest,
            kind != .snapshotting || schemaVersion != Self.schemaVersion
@@ -931,6 +941,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         case snapshotRestoreSpecificationDigest
         case creationSpecificationDigest
         case snapshotSpecificationDigest
+        case nativeMacDisplayRepairSpecificationDigest
     }
 
     public init(from decoder: Decoder) throws {
@@ -995,6 +1006,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         snapshotRestoreSpecificationDigest = try container.decodeIfPresent(String.self, forKey: .snapshotRestoreSpecificationDigest)
         creationSpecificationDigest = try container.decodeIfPresent(String.self, forKey: .creationSpecificationDigest)
         snapshotSpecificationDigest = try container.decodeIfPresent(String.self, forKey: .snapshotSpecificationDigest)
+        nativeMacDisplayRepairSpecificationDigest = try container.decodeIfPresent(String.self, forKey: .nativeMacDisplayRepairSpecificationDigest)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1025,6 +1037,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         try container.encodeIfPresent(snapshotRestoreSpecificationDigest, forKey: .snapshotRestoreSpecificationDigest)
         try container.encodeIfPresent(creationSpecificationDigest, forKey: .creationSpecificationDigest)
         try container.encodeIfPresent(snapshotSpecificationDigest, forKey: .snapshotSpecificationDigest)
+        try container.encodeIfPresent(nativeMacDisplayRepairSpecificationDigest, forKey: .nativeMacDisplayRepairSpecificationDigest)
     }
 
     public func journalSpecification() throws -> DoryOperationSpecification {
@@ -1189,6 +1202,7 @@ extension DoryOperationJournalStore {
         snapshotRestoreSpecification: DoryOperationSpecification? = nil,
         creationSpecification: DoryOperationSpecification? = nil,
         snapshotSpecification: DoryOperationSpecification? = nil,
+        nativeMacDisplayRepairSpecification: DoryOperationSpecification? = nil,
         fileManager: FileManager = .default
     ) throws -> DoryOperationLease {
         let operation: DoryWorkspaceLifecycleOperation
@@ -1215,11 +1229,12 @@ extension DoryOperationJournalStore {
         try validateSnapshotRestoreSpecification(snapshotRestoreSpecification, operation: operation)
         try validateCreationSpecification(creationSpecification, operation: operation)
         try validateSnapshotSpecification(snapshotSpecification, operation: operation)
+        try validateNativeMacDisplayRepairSpecification(nativeMacDisplayRepairSpecification, operation: operation)
         let mutationScope = authenticatedMutationScope(for: binding.plan)
         return try begin(
             binding.plan,
             completenessPlanData: nil,
-            specifications: [binding.specification] + [configurationUpdateSpecification, desktopUpdateSpecification, snapshotRestoreSpecification, creationSpecification, snapshotSpecification].compactMap { $0 },
+            specifications: [binding.specification] + [configurationUpdateSpecification, desktopUpdateSpecification, snapshotRestoreSpecification, creationSpecification, snapshotSpecification, nativeMacDisplayRepairSpecification].compactMap { $0 },
             at: Date(
                 timeIntervalSince1970: Double(operation.createdAtUnixMilliseconds) / 1_000
             ),
@@ -1239,6 +1254,7 @@ extension DoryOperationJournalStore {
         snapshotRestoreSpecification: DoryOperationSpecification? = nil,
         creationSpecification: DoryOperationSpecification? = nil,
         snapshotSpecification: DoryOperationSpecification? = nil,
+        nativeMacDisplayRepairSpecification: DoryOperationSpecification? = nil,
         fileManager: FileManager = .default
     ) throws -> DoryOperationLease {
         let operation: DoryWorkspaceLifecycleOperation
@@ -1265,11 +1281,12 @@ extension DoryOperationJournalStore {
         try validateSnapshotRestoreSpecification(snapshotRestoreSpecification, operation: operation)
         try validateCreationSpecification(creationSpecification, operation: operation)
         try validateSnapshotSpecification(snapshotSpecification, operation: operation)
+        try validateNativeMacDisplayRepairSpecification(nativeMacDisplayRepairSpecification, operation: operation)
         let mutationScope = authenticatedMutationScope(for: binding.plan)
         return try begin(
             binding.plan,
             completenessPlanData: nil,
-            specifications: [binding.specification] + [configurationUpdateSpecification, desktopUpdateSpecification, snapshotRestoreSpecification, creationSpecification, snapshotSpecification].compactMap { $0 },
+            specifications: [binding.specification] + [configurationUpdateSpecification, desktopUpdateSpecification, snapshotRestoreSpecification, creationSpecification, snapshotSpecification, nativeMacDisplayRepairSpecification].compactMap { $0 },
             at: Date(
                 timeIntervalSince1970: Double(operation.createdAtUnixMilliseconds) / 1_000
             ),
@@ -1277,6 +1294,15 @@ extension DoryOperationJournalStore {
             mutationScope: mutationScope,
             heldMutationLock: holdingMutationLock
         )
+    }
+
+    private func validateNativeMacDisplayRepairSpecification(
+        _ specification: DoryOperationSpecification?, operation: DoryWorkspaceLifecycleOperation
+    ) throws {
+        guard specification?.digest == operation.nativeMacDisplayRepairSpecificationDigest,
+              specification?.isValid != false else {
+            throw DoryOperationJournalError.invalidPlan("Mac display repair recovery specification mismatch")
+        }
     }
 
     private func validateConfigurationUpdateSpecification(
@@ -1355,6 +1381,9 @@ extension DoryOperationLease {
             _ = try readSpecification(digest: digest)
         }
         if let digest = operation.creationSpecificationDigest {
+            _ = try readSpecification(digest: digest)
+        }
+        if let digest = operation.nativeMacDisplayRepairSpecificationDigest {
             _ = try readSpecification(digest: digest)
         }
         return operation

@@ -204,6 +204,8 @@ public enum DoryARMVirtV1TopologyPlanner {
             audioInput: definition.audio.inputEnabled,
             audioOutput: definition.audio.outputEnabled,
             cameraInput: definition.camera.enabled,
+            cameraDeviceUniqueID: definition.camera.enabled
+                ? definition.camera.hostDeviceUniqueID : nil,
             keyboard: definition.input.keyboardEnabled,
             pointer: definition.input.pointerEnabled,
             directorySharing: !definition.shares.isEmpty,

@@ -1690,18 +1690,33 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             return bootMedia.inspectionEvidence == nil
                 && bootMedia.media.mutableProvenance != nil
                 && bootMedia.mutableProvenanceEvidence != nil
-                && launchArtifacts.contains { artifact in
-                    artifact.resolverReference == bootMedia.resolverReference
-                        && artifact.media == bootMedia.media
-                        && artifact.mutableProvenanceEvidence
-                            == bootMedia.mutableProvenanceEvidence
-                        && artifact.usages.contains {
-                            $0.kind == .boot && $0.identifier == "system" && !$0.readOnly
-                        }
-                        && artifact.usages.contains {
-                            $0.kind == .storage && $0.identifier == "system" && !$0.readOnly
-                        }
-                }
+                && hasWritableNativeMacBootArtifact()
+        }
+        return false
+    }
+
+    /// Keep this comparison out of the baseline getter. Under the final Xcode 27 debug
+    /// toolchain, nested `contains` closures capturing the complete plan produce a stack frame
+    /// large enough to exhaust a Swift Testing worker during saved-state replanning.
+    private func hasWritableNativeMacBootArtifact() -> Bool {
+        guard let resolverReference = bootMedia.resolverReference,
+              let provenanceEvidence = bootMedia.mutableProvenanceEvidence else {
+            return false
+        }
+        let media = bootMedia.media
+        for artifact in launchArtifacts {
+            guard artifact.resolverReference == resolverReference,
+                  artifact.media == media,
+                  artifact.mutableProvenanceEvidence == provenanceEvidence else {
+                continue
+            }
+            var hasWritableBoot = false
+            var hasWritableStorage = false
+            for usage in artifact.usages where usage.identifier == "system" && !usage.readOnly {
+                if usage.kind == .boot { hasWritableBoot = true }
+                if usage.kind == .storage { hasWritableStorage = true }
+            }
+            if hasWritableBoot && hasWritableStorage { return true }
         }
         return false
     }

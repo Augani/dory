@@ -1,10 +1,48 @@
 import DoryCore
+import DoryOperations
 @testable import DorydKit
 import Darwin
 import Foundation
 import XCTest
 
 final class VmmLifecycleReceiptTests: XCTestCase {
+    func testFaultControlRejectsUnsignedPeersAndOrdinaryCommandFieldSmuggling() throws {
+        let root = "/tmp/dory-fault-control-" + UUID().uuidString
+        let socketPath = root + "/control.sock"
+        let fault = DoryRuntimeQualificationFaultRequest(
+            action: .arm, machineID: "campaign-arm-1", operationID: UUID(),
+            resolvedPlanSHA256: String(repeating: "b", count: 64),
+            campaignManifestSHA256: String(repeating: "c", count: 64),
+            challenge: UUID(), kind: .blockFullFlushNoSpace
+        )
+        let server = VmmLifecycleReceiptServer(socketPath: socketPath, qualificationFaultHandler: { _ in
+            XCTFail("unsigned peer reached qualification fault handler")
+            throw DoryRuntimeQualificationFaultError.unauthorized
+        })
+        defer {
+            server.stop()
+            try? FileManager.default.removeItem(atPath: root)
+        }
+        try server.start()
+        for request in [
+            VmmControlRequest(command: "qualificationFault", qualificationFault: fault),
+            VmmControlRequest(command: "qualificationFault", targetMB: 1, qualificationFault: fault),
+            VmmControlRequest(command: "acknowledgeLifecycle", lifecycleAction: .preparePause,
+                              operationID: UUID().uuidString.lowercased(), qualificationFault: fault),
+        ] {
+            let response = try VmmControlClient.send(socketPath: socketPath, request: request)
+            XCTAssertFalse(response.ok)
+            XCTAssertNil(response.qualificationFault)
+        }
+        XCTAssertThrowsError(try VmmControlClient.sendAuthenticatingPeer(
+            socketPath: socketPath,
+            request: VmmControlRequest(command: "qualificationFault", qualificationFault: fault),
+            expectedPeer: DoryApplicationLaunchPeerIdentity(
+                processIdentifier: getpid() + 1, auditToken: audit_token_t()
+            )
+        ))
+    }
+
     private final class ActionRecorder: @unchecked Sendable {
         private let lock = NSLock()
         private var actions: [DoryLifecycleReceiptAction] = []

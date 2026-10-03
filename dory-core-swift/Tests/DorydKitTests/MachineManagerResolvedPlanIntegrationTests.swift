@@ -53,14 +53,69 @@ struct MachineManagerResolvedPlanIntegrationTests {
             to: &arguments
         )
 
-        #expect(arguments.suffix(12) == [
+        #expect(arguments.suffix(22) == [
             "--network", "disconnected",
             "--audio-input", "false",
             "--audio-output", "true",
             "--clipboard", "false",
+            "--spice-clipboard", "false",
+            "--clipboard-text-read", "false",
+            "--clipboard-text-write", "false",
+            "--clipboard-image-read", "false",
+            "--clipboard-image-write", "false",
             "--directory-sharing", "false",
             "--camera", "false",
         ])
+    }
+
+    @Test("native VZMac directional text uses Guest Tools without enabling SPICE")
+    func nativeVZMacDirectionalTextClipboardDoesNotWidenImageOrDirection() throws {
+        var arguments = ["vzmac", "run"]
+        let devices = DoryVirtualMachineDeviceCapabilityRequest(
+            clipboard: true,
+            clipboardPolicy: DoryVMClipboardPolicy(
+                text: .hostToGuest, image: .off, files: .off
+            )
+        )
+        try MachineManager.appendVZMacResolvedDevicePolicyArguments(
+            from: devices, to: &arguments
+        )
+        func value(for flag: String) -> String? {
+            guard let index = arguments.firstIndex(of: flag),
+                arguments.indices.contains(index + 1) else { return nil }
+            return arguments[index + 1]
+        }
+        #expect(value(for: "--clipboard") == "true")
+        #expect(value(for: "--spice-clipboard") == "false")
+        #expect(value(for: "--clipboard-text-read") == "false")
+        #expect(value(for: "--clipboard-text-write") == "true")
+        #expect(value(for: "--clipboard-image-read") == "false")
+        #expect(value(for: "--clipboard-image-write") == "false")
+    }
+
+    @Test("native VZMac directional PNG uses Guest Tools without widening text or SPICE")
+    func nativeVZMacDirectionalImageClipboardUsesIndependentBridge() throws {
+        var arguments = ["vzmac", "run"]
+        let devices = DoryVirtualMachineDeviceCapabilityRequest(
+            clipboard: true,
+            clipboardPolicy: DoryVMClipboardPolicy(
+                text: .off, image: .guestToHost, files: .off
+            )
+        )
+        try MachineManager.appendVZMacResolvedDevicePolicyArguments(
+            from: devices, to: &arguments
+        )
+        func value(for flag: String) -> String? {
+            guard let index = arguments.firstIndex(of: flag),
+                arguments.indices.contains(index + 1) else { return nil }
+            return arguments[index + 1]
+        }
+        #expect(value(for: "--clipboard") == "true")
+        #expect(value(for: "--spice-clipboard") == "false")
+        #expect(value(for: "--clipboard-text-read") == "false")
+        #expect(value(for: "--clipboard-text-write") == "false")
+        #expect(value(for: "--clipboard-image-read") == "true")
+        #expect(value(for: "--clipboard-image-write") == "false")
     }
 
     @Test("native VZMac launch rejects resolved policies it cannot construct")
@@ -74,22 +129,6 @@ struct MachineManagerResolvedPlanIntegrationTests {
             try MachineManager.appendVZMacResolvedDevicePolicyArguments(
                 from: devices,
                 to: &isolatedArguments
-            )
-        }
-
-        var directionalClipboardArguments: [String] = []
-        #expect(throws: MachineManagerError.self) {
-            let devices = DoryVirtualMachineDeviceCapabilityRequest(
-                clipboard: true,
-                clipboardPolicy: DoryVMClipboardPolicy(
-                    text: .hostToGuest,
-                    image: .hostToGuest,
-                    files: .off
-                )
-            )
-            try MachineManager.appendVZMacResolvedDevicePolicyArguments(
-                from: devices,
-                to: &directionalClipboardArguments
             )
         }
 
@@ -138,6 +177,51 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(arguments.contains("--gvproxy"))
         #expect(arguments.contains("/Applications/Dory.app/Contents/Helpers/gvproxy"))
         #expect(arguments.contains("--resolved-port-forwards"))
+    }
+
+    @Test("native VZMac camera launch emits only an exact private-identity grant")
+    func nativeVZMacCameraGrantIsMachineBound() throws {
+        let operationID = UUID(uuidString: "d1ec76d2-a4a0-42dc-a725-643167a06f52")!
+        let identity = DoryRuntimeReconnectLaunchIdentity(
+            machineID: "mac-work",
+            operationID: operationID,
+            resolvedPlanSHA256: String(repeating: "a", count: 64),
+            planRevision: 1,
+            secret: String(repeating: "b", count: 64)
+        )
+        var arguments: [String] = []
+        try MachineManager.appendVZMacResolvedDevicePolicyArguments(
+            from: DoryVirtualMachineDeviceCapabilityRequest(
+                cameraInput: true,
+                cameraDeviceUniqueID: "selected-host-camera"
+            ),
+            machineID: "mac-work",
+            operationID: operationID,
+            runtimeReconnectIdentity: identity,
+            to: &arguments
+        )
+        guard let deviceIndex = arguments.firstIndex(of: "--camera-device-id"),
+              let grantIndex = arguments.firstIndex(of: "--camera-grant") else {
+            Issue.record("VZMac launch omitted the camera device or grant")
+            return
+        }
+        #expect(arguments[deviceIndex + 1] == "selected-host-camera")
+        #expect(identity.verifiesCameraGrant(
+            arguments[grantIndex + 1], deviceUniqueID: "selected-host-camera"
+        ))
+        #expect(throws: MachineManagerError.self) {
+            var mismatched: [String] = []
+            try MachineManager.appendVZMacResolvedDevicePolicyArguments(
+                from: DoryVirtualMachineDeviceCapabilityRequest(
+                    cameraInput: true,
+                    cameraDeviceUniqueID: "selected-host-camera"
+                ),
+                machineID: "another-machine",
+                operationID: operationID,
+                runtimeReconnectIdentity: identity,
+                to: &mismatched
+            )
+        }
     }
 
     @Test("native VZMac extracts only the daemon gvproxy base argument")
@@ -382,7 +466,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                         var changed = binding
                         switch mutation {
                         case .graphics:
-                            changed.graphics = .software
+                            changed.graphics = .hostAcceleratedDisplay
                         case .devices:
                             changed.devices.keyboard.toggle()
                         case .portForwards:
@@ -437,7 +521,11 @@ struct MachineManagerResolvedPlanIntegrationTests {
             "exact-arguments",
             acceleratedExecutablePath: helper,
             passMachineArguments: true,
-            initialEnvironment: ["DORY_GUEST_UID": "502", "DORY_GUEST_USER": "dorydev"]
+            initialEnvironment: [
+                "DORY_GUEST_UID": "502", "DORY_GUEST_USER": "dorydev",
+                DoryDesktopGraphicsPreference.environmentKey:
+                    DoryDesktopGraphicsPreference.virgl.rawValue,
+            ]
         ) { manager, starter, state in
             let definition = try DoryWorkspaceRepository(root: state)
                 .readPersistedRecord(id: "dev").definition
@@ -449,7 +537,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
             let resolver = ClosureLaunchResolver { request in
                 let resolution = try exactResolution(
                     request: request,
-                    componentSHA256: helperSHA256
+                    componentSHA256: helperSHA256,
+                    graphics: .hostAcceleratedDisplay
                 )
                 plans.set(resolution.resolvedPlan)
                 return resolution
@@ -720,9 +809,11 @@ struct MachineManagerResolvedPlanIntegrationTests {
     func resolvedARMHardware3DReadinessRenewsRendererGeneration() throws {
         let renewalFile = "/private/tmp/dory-arm-rg-renewal-\(UUID().uuidString).json"
         let renewalOutcomeFile = renewalFile + ".outcome"
+        let provisionalAckFile = renewalFile + ".provisional-ack"
         defer {
             try? FileManager.default.removeItem(atPath: renewalFile)
             try? FileManager.default.removeItem(atPath: renewalOutcomeFile)
+            try? FileManager.default.removeItem(atPath: provisionalAckFile)
         }
         try withHarness(
             "stock-arm-renderer-renewal",
@@ -769,28 +860,29 @@ struct MachineManagerResolvedPlanIntegrationTests {
             let operationID = try #require(starting.activeOperationID)
             let plan = try plans.read(id: "dev")
             let planDigest = try planSHA256(plan)
+            let initialReady = VmmReadyMessage(
+                machineID: "dev",
+                operationID: operationID,
+                agentBuild: "dory-agent/arm-renderer-generation-renewal",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [
+                    DoryAgentCapability(id: "renderer-generation-renewal", version: 1),
+                ],
+                agentSocketPath: "/run/dory-agent.sock",
+                controlSocketPath: try authenticatedControlSocket(state: state),
+                graphicsSelection: try graphicsSelection(
+                    plan: plan,
+                    operationID: operationID
+                ),
+                guestBooted: true,
+                toolsConnected: true,
+                desktopVisible: true,
+                workloadReady: true,
+                detail: "initial ARM hardware-3D ready"
+            )
             try sendVmmHandoff(
                 path: try #require(starting.handoffSocketPath),
-                ready: VmmReadyMessage(
-                    machineID: "dev",
-                    operationID: operationID,
-                    agentBuild: "dory-agent/arm-renderer-generation-renewal",
-                    agentProtocolVersion: DoryCore.protocolVersion(),
-                    agentCapabilities: [
-                        DoryAgentCapability(id: "renderer-generation-renewal", version: 1),
-                    ],
-                    agentSocketPath: "/run/dory-agent.sock",
-                    controlSocketPath: try authenticatedControlSocket(state: state),
-                    graphicsSelection: try graphicsSelection(
-                        plan: plan,
-                        operationID: operationID
-                    ),
-                    guestBooted: true,
-                    toolsConnected: true,
-                    desktopVisible: true,
-                    workloadReady: true,
-                    detail: "initial ARM hardware-3D ready"
-                ),
+                ready: initialReady,
                 fileDescriptors: []
             )
             let runningDeadline = Date().addingTimeInterval(5)
@@ -828,15 +920,30 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 previousRendererGeneration: 1,
                 requestedRendererGeneration: 2,
                 guestProducerFenceProofSHA256: digest("9"),
-                outcomePath: renewalOutcomeFile
+                readyTemplate: initialReady,
+                outcomePath: renewalOutcomeFile,
+                detail: "replacement renderer ready",
+                provisionalAckPath: provisionalAckFile
             )
             try JSONEncoder().encode(instruction).write(
                 to: URL(fileURLWithPath: renewalFile),
                 options: .atomic
             )
 
-            let renewalDeadline = Date().addingTimeInterval(5)
+            let provisionalDeadline = Date().addingTimeInterval(5)
             while manager.status(id: "dev")?.runtimeGraphicsSelection?.rendererGeneration != 2,
+                  Date() < provisionalDeadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            let provisional = try #require(manager.status(id: "dev"))
+            #expect(provisional.runtimeGraphicsSelection?.verificationState == .provisional)
+            #expect(provisional.runtimeGraphicsSelection?.guestProducerFenceProofSHA256 == nil)
+            try Data("admitted".utf8).write(
+                to: URL(fileURLWithPath: provisionalAckFile), options: .atomic
+            )
+            let renewalDeadline = Date().addingTimeInterval(5)
+            while manager.status(id: "dev")?.runtimeGraphicsSelection?.verificationState
+                    != .verified,
                   Date() < renewalDeadline {
                 Thread.sleep(forTimeInterval: 0.01)
             }
@@ -994,9 +1101,11 @@ struct MachineManagerResolvedPlanIntegrationTests {
     func resolvedHardware3DReadinessRenewsRendererGenerationThroughManager() throws {
         let renewalFile = "/private/tmp/dory-rg-renewal-\(UUID().uuidString).json"
         let renewalOutcomeFile = renewalFile + ".outcome"
+        let provisionalAckFile = renewalFile + ".provisional-ack"
         defer {
             try? FileManager.default.removeItem(atPath: renewalFile)
             try? FileManager.default.removeItem(atPath: renewalOutcomeFile)
+            try? FileManager.default.removeItem(atPath: provisionalAckFile)
         }
         try withHarness(
             "resolved-renderer-renewal",
@@ -1063,27 +1172,28 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 plan: plan,
                 operationID: operationID
             )
+            let initialReady = VmmReadyMessage(
+                machineID: "dev",
+                operationID: operationID,
+                agentBuild: "dory-agent/renderer-generation-renewal",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [
+                    DoryAgentCapability(id: "renderer-generation-renewal", version: 1),
+                ],
+                agentSocketPath: "/run/dory-agent.sock",
+                dockerdSocketPath: "/run/dockerd.sock",
+                shellSocketPath: "/run/dory-shell.sock",
+                controlSocketPath: try authenticatedControlSocket(state: state),
+                graphicsSelection: initialSelection,
+                guestBooted: true,
+                toolsConnected: true,
+                desktopVisible: true,
+                workloadReady: true,
+                detail: "initial hardware-3D ready"
+            )
             try sendVmmHandoff(
                 path: try #require(starting.handoffSocketPath),
-                ready: VmmReadyMessage(
-                    machineID: "dev",
-                    operationID: operationID,
-                    agentBuild: "dory-agent/renderer-generation-renewal",
-                    agentProtocolVersion: DoryCore.protocolVersion(),
-                    agentCapabilities: [
-                        DoryAgentCapability(id: "renderer-generation-renewal", version: 1),
-                    ],
-                    agentSocketPath: "/run/dory-agent.sock",
-                    dockerdSocketPath: "/run/dockerd.sock",
-                    shellSocketPath: "/run/dory-shell.sock",
-                    controlSocketPath: try authenticatedControlSocket(state: state),
-                    graphicsSelection: initialSelection,
-                    guestBooted: true,
-                    toolsConnected: true,
-                    desktopVisible: true,
-                    workloadReady: true,
-                    detail: "initial hardware-3D ready"
-                ),
+                ready: initialReady,
                 fileDescriptors: []
             )
             let runningDeadline = Date().addingTimeInterval(5)
@@ -1123,18 +1233,38 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 previousRendererGeneration: 1,
                 requestedRendererGeneration: 2,
                 guestProducerFenceProofSHA256: digest("9"),
-                outcomePath: renewalOutcomeFile
+                readyTemplate: initialReady,
+                outcomePath: renewalOutcomeFile,
+                detail: "replacement renderer ready",
+                provisionalAckPath: provisionalAckFile
             )
             try JSONEncoder().encode(instruction).write(
                 to: URL(fileURLWithPath: renewalFile),
                 options: .atomic
             )
 
+            let provisionalDeadline = Date().addingTimeInterval(5)
+            var provisionalStatus: DoryMachineStatus?
+            while Date() < provisionalDeadline {
+                let status = manager.status(id: "dev")
+                if status?.runtimeGraphicsSelection?.rendererGeneration == 2 {
+                    provisionalStatus = status
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            let provisional = try #require(provisionalStatus)
+            #expect(provisional.runtimeGraphicsSelection?.verificationState == .provisional)
+            #expect(provisional.runtimeGraphicsSelection?.guestProducerFenceProofSHA256 == nil)
+            try Data("admitted".utf8).write(
+                to: URL(fileURLWithPath: provisionalAckFile), options: .atomic
+            )
             let renewalDeadline = Date().addingTimeInterval(5)
             var renewedStatus: DoryMachineStatus?
             while Date() < renewalDeadline {
                 let status = manager.status(id: "dev")
-                if status?.runtimeGraphicsSelection?.rendererGeneration == 2 {
+                if status?.runtimeGraphicsSelection?.verificationState == .verified,
+                   status?.runtimeGraphicsSelection?.rendererGeneration == 2 {
                     renewedStatus = status
                     break
                 }
@@ -1156,12 +1286,14 @@ struct MachineManagerResolvedPlanIntegrationTests {
             #expect(renewed.readiness.toolsConnected)
             #expect(renewed.readiness.desktopVisible)
             #expect(renewed.readiness.workloadReady)
+            #expect(renewed.runtimeDetail == "replacement renderer ready")
 
             let record = try DoryRuntimeReconnectRecordStore(root: state).read(machineID: "dev")
             let ready = try #require(record.readiness)
             #expect(ready.graphicsSelection == renewed.runtimeGraphicsSelection)
             #expect(ready.agentBuild == "dory-agent/renderer-generation-renewal")
             #expect(ready.agentSocketPath == "/run/dory-agent.sock")
+            #expect(ready.detail == "replacement renderer ready")
 
             try sendVmmHandoff(
                 path: try #require(starting.handoffSocketPath),
@@ -2259,7 +2391,11 @@ struct MachineManagerResolvedPlanIntegrationTests {
             bootMode: .efi,
             memoryMB: 4_096,
             cpuCount: 4,
-            displayMode: .desktop
+            displayMode: .desktop,
+            environment: [
+                DoryDesktopGraphicsPreference.environmentKey:
+                    DoryDesktopGraphicsPreference.software.rawValue,
+            ]
         ))
         let state = root + "/machines/installed"
         let directKernel = state + "/direct-kernel"
@@ -3894,10 +4030,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                     to: URL(fileURLWithPath: path)
                 )
             } else {
-                var installerBytes = Data(repeating: 0, count: 512)
-                let marker = Array("EFI/BOOT/BOOTX64.EFI".utf8)
-                installerBytes.replaceSubrange(0..<marker.count, with: marker)
-                try installerBytes.write(to: URL(fileURLWithPath: path))
+                try makePortableX86InstallerISO().write(to: URL(fileURLWithPath: path))
             }
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600],
@@ -3920,7 +4053,10 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 cpuCount: cpuCount ?? 2,
                 displayMode: .desktop,
                 shares: shares,
-                environment: initialEnvironment
+                environment: launchPolicy == .requireResolvedPlan && initialEnvironment.isEmpty
+                    ? [DoryDesktopGraphicsPreference.environmentKey:
+                        DoryDesktopGraphicsPreference.software.rawValue]
+                    : initialEnvironment
             ),
             typedSettings: typedSettings
         )
@@ -4027,7 +4163,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         rendererReleaseIdentity: DoryRendererReleaseIdentityV1? = nil,
         pcRendererQualificationOverride: DoryVerifiedRendererBootstrapQualification? = nil,
         firmwareOverride: DoryFirmwareArtifactManifest? = nil,
-        graphics: DoryGraphicsAccelerationLevel = .hostAcceleratedDisplay
+        graphics: DoryGraphicsAccelerationLevel = .software
     ) throws -> DoryDaemonVirtualMachineLaunchPlanResolution {
         let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(
             for: request.definition
@@ -4403,6 +4539,105 @@ struct MachineManagerResolvedPlanIntegrationTests {
               info.st_mode & S_IFMT == S_IFDIR else {
             throw MachineManagerError.persistence("missing or invalid \(label): \(path)")
         }
+    }
+
+    private func makePortableX86InstallerISO() -> Data {
+        let sectorBytes = 512
+        let partitionSectors = 2_880
+        let partitionOffset = sectorBytes
+        var image = Data(repeating: 0, count: (partitionSectors + 1) * sectorBytes)
+        var loader = Data(repeating: 0, count: 512)
+        loader[0] = 0x4d
+        loader[1] = 0x5a
+        writeLittleEndianUInt32(0x80, into: &loader, at: 0x3c)
+        loader.replaceSubrange(0x80..<0x84, with: Data([0x50, 0x45, 0, 0]))
+        loader[0x84] = 0x64
+        loader[0x85] = 0x86
+        loader[0x86] = 1
+        loader[0x94] = 0xf0
+        loader[0x96] = 2
+        loader[0x98] = 0x0b
+        loader[0x99] = 0x02
+        writeLittleEndianUInt32(64, into: &loader, at: 0x9c)
+        writeLittleEndianUInt32(0x1c0, into: &loader, at: 0xa8)
+        writeLittleEndianUInt32(0x1c0, into: &loader, at: 0xac)
+        writeLittleEndianUInt32(0x20, into: &loader, at: 0xb8)
+        writeLittleEndianUInt32(0x20, into: &loader, at: 0xbc)
+        writeLittleEndianUInt32(0x200, into: &loader, at: 0xd0)
+        writeLittleEndianUInt32(0x1c0, into: &loader, at: 0xd4)
+        loader[0xdc] = 10
+        writeLittleEndianUInt32(16, into: &loader, at: 0x104)
+        loader.replaceSubrange(0x188..<0x18d, with: Data(".text".utf8))
+        writeLittleEndianUInt32(64, into: &loader, at: 0x190)
+        writeLittleEndianUInt32(0x1c0, into: &loader, at: 0x194)
+        writeLittleEndianUInt32(64, into: &loader, at: 0x198)
+        writeLittleEndianUInt32(0x1c0, into: &loader, at: 0x19c)
+        writeLittleEndianUInt32(0x6000_0020, into: &loader, at: 0x1ac)
+        loader[0x1c0] = 0xc3
+
+        func put16(_ value: UInt16, into bytes: inout Data, at offset: Int) {
+            bytes[offset] = UInt8(truncatingIfNeeded: value)
+            bytes[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        }
+        func shortEntry(_ name: String, ext: String, directory: Bool, cluster: UInt16,
+                        byteCount: UInt32) -> Data {
+            var entry = Data(repeating: 0, count: 32)
+            let base = Array(name.utf8)
+            let suffix = Array(ext.utf8)
+            entry.replaceSubrange(0..<8, with: Data(base + Array(repeating: 0x20, count: 8 - base.count)))
+            entry.replaceSubrange(8..<11, with: Data(suffix + Array(repeating: 0x20, count: 3 - suffix.count)))
+            entry[11] = directory ? 0x10 : 0x20
+            put16(cluster, into: &entry, at: 26)
+            writeLittleEndianUInt32(byteCount, into: &entry, at: 28)
+            return entry
+        }
+        image[446 + 4] = 0xef
+        writeLittleEndianUInt32(1, into: &image, at: 446 + 8)
+        writeLittleEndianUInt32(UInt32(partitionSectors), into: &image, at: 446 + 12)
+        image[510] = 0x55
+        image[511] = 0xaa
+        var boot = Data(repeating: 0, count: sectorBytes)
+        boot.replaceSubrange(0..<3, with: Data([0xeb, 0x3c, 0x90]))
+        put16(UInt16(sectorBytes), into: &boot, at: 11)
+        boot[13] = 1
+        put16(1, into: &boot, at: 14)
+        boot[16] = 2
+        put16(224, into: &boot, at: 17)
+        put16(UInt16(partitionSectors), into: &boot, at: 19)
+        boot[21] = 0xf0
+        put16(9, into: &boot, at: 22)
+        boot[510] = 0x55
+        boot[511] = 0xaa
+        image.replaceSubrange(partitionOffset..<(partitionOffset + sectorBytes), with: boot)
+        var fat = Data(repeating: 0, count: 9 * sectorBytes)
+        fat[0] = 0xf0
+        fat[1] = 0xff
+        fat[2] = 0xff
+        for cluster in [2, 3, 4] {
+            let offset = cluster + cluster / 2
+            if cluster.isMultiple(of: 2) {
+                fat[offset] = 0xff
+                fat[offset + 1] = (fat[offset + 1] & 0xf0) | 0x0f
+            } else {
+                fat[offset] = (fat[offset] & 0x0f) | 0xf0
+                fat[offset + 1] = 0xff
+            }
+        }
+        let firstFATOffset = partitionOffset + sectorBytes
+        image.replaceSubrange(firstFATOffset..<(firstFATOffset + fat.count), with: fat)
+        image.replaceSubrange((firstFATOffset + fat.count)..<(firstFATOffset + 2 * fat.count), with: fat)
+        let rootOffset = partitionOffset + 19 * sectorBytes
+        image.replaceSubrange(rootOffset..<(rootOffset + 32), with:
+            shortEntry("EFI", ext: "", directory: true, cluster: 2, byteCount: 0))
+        let dataOffset = partitionOffset + 33 * sectorBytes
+        image.replaceSubrange(dataOffset..<(dataOffset + 32), with:
+            shortEntry("BOOT", ext: "", directory: true, cluster: 3, byteCount: 0))
+        image.replaceSubrange((dataOffset + sectorBytes)..<(dataOffset + sectorBytes + 32), with:
+            shortEntry("BOOTX64", ext: "EFI", directory: false, cluster: 4,
+                       byteCount: UInt32(loader.count)))
+        image.replaceSubrange((dataOffset + 2 * sectorBytes)..<(dataOffset + 2 * sectorBytes + loader.count),
+                              with: loader)
+        return image
     }
 
     private func makeMBRWrappedEFIMedia(

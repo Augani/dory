@@ -3160,7 +3160,7 @@ final class DorydServiceTests: XCTestCase {
             baseArguments: ["30"],
             passMachineArguments: false,
             requiresReadyHandoff: false
-        ))
+        ), allowsQualificationBootstrapLaunches: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
         let service = DorydService(
             socketPath: "/tmp/doryd-test.sock",
@@ -3229,7 +3229,7 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertNil(manager.status(id: "desktop-sandbox"))
     }
 
-    func testMachineCreateRequiresProductionPlannerBeforeEFIImport() throws {
+    func testMachineCreateRejectsNonPortableEFIImportBeforeProductionPlanning() throws {
         let base = "/tmp/doryd-service-efi-preflight-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
@@ -3265,7 +3265,7 @@ final class DorydServiceTests: XCTestCase {
             "displayMode": "desktop",
         ]) { ok, _, message in
             XCTAssertFalse(ok)
-            XCTAssertTrue(message.contains("production planning authority"), message)
+            XCTAssertTrue(message.contains("notPortableEFIBootable"), message)
             reply.fulfill()
         }
         wait(for: [reply], timeout: 5)
@@ -3312,7 +3312,8 @@ final class DorydServiceTests: XCTestCase {
                 passMachineArguments: false,
                 requiresReadyHandoff: false
             ),
-            launchPolicy: .perWorkspaceAuthority
+            launchPolicy: .perWorkspaceAuthority,
+            allowsQualificationBootstrapLaunches: true
         )
         let controller = ServiceRejectingProductionPlanningController()
         let service = DorydService(

@@ -135,6 +135,17 @@ nonisolated enum DoryDisplayQualificationInputFiles {
         at path: String,
         machineID: String
     ) throws -> DoryDisplayQualificationLoadedInput {
+        let data = try loadDirectData(
+            at: path,
+            maximumByteCount: DoryDisplayQualificationInputScript.maximumEncodedByteCount
+        )
+        return DoryDisplayQualificationLoadedInput(
+            script: try DoryDisplayQualificationInputScript.decode(data, machineID: machineID),
+            sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        )
+    }
+
+    static func loadDirectData(at path: String, maximumByteCount: Int) throws -> Data {
         guard DoryDisplayQualificationLaunch.validAbsolutePath(path) else {
             throw DoryDisplayQualificationInputError.invalidScriptPath
         }
@@ -148,7 +159,7 @@ nonisolated enum DoryDisplayQualificationInputFiles {
         guard fstat(descriptor, &before) == 0,
               before.st_mode & S_IFMT == S_IFREG,
               before.st_size > 0,
-              before.st_size <= DoryDisplayQualificationInputScript.maximumEncodedByteCount else {
+              maximumByteCount > 0, before.st_size <= maximumByteCount else {
             throw DoryDisplayQualificationInputError.scriptUnavailable
         }
         let expectedCount = Int(before.st_size)
@@ -178,13 +189,7 @@ nonisolated enum DoryDisplayQualificationInputFiles {
               before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec else {
             throw DoryDisplayQualificationInputError.scriptChanged
         }
-        return DoryDisplayQualificationLoadedInput(
-            script: try DoryDisplayQualificationInputScript.decode(
-                data,
-                machineID: machineID
-            ),
-            sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        )
+        return data
     }
 
     static func writeReceipt<T: Encodable>(_ receipt: T, at path: String) throws {

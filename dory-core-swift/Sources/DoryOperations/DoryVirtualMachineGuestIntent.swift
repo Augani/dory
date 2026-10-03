@@ -44,6 +44,12 @@ public struct DoryVMClipboardPolicy: Codable, Sendable, Equatable, Hashable {
     public var isEnabled: Bool {
         text != .off || image != .off || files != .off
     }
+
+    /// Apple's SPICE clipboard device is one all-or-nothing text/image bridge. File transfer
+    /// and selective directions cannot be represented by that device.
+    public var isSupportedByVZMacSPICE: Bool {
+        self == .disabled || self == .legacyDesktop(.bidirectional)
+    }
 }
 
 /// Non-secret account provisioning intent. This is not a credential and never contains a

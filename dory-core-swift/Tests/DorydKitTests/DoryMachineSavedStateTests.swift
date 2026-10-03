@@ -1,10 +1,119 @@
 import Darwin
 import Foundation
 import Testing
+import DoryVZMacCore
 @testable import DorydKit
 
 @Suite("Durable machine saved-state authority", .serialized)
 struct DoryMachineSavedStateTests {
+    @Test("empty and already retired RAM wrappers require an owned drive-flush barrier")
+    func emptyAndAbsentRetirementRejectUnsafeMachineBarriers() throws {
+        for hasDirectory in [false, true] {
+            for unsafe in ["missing", "symlink", "hardlink", "world-writable"] {
+                try withStore { store, root in
+                    let parent = root + "/dev.one"
+                    let machinePath = parent + "/machine.json"
+                    if hasDirectory {
+                        try FileManager.default.createDirectory(
+                            atPath: parent + "/" + DoryMachineSavedStateStore.directoryName,
+                            withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]
+                        )
+                    }
+                    if unsafe == "world-writable" {
+                        #expect(chmod(machinePath, 0o666) == 0)
+                    } else if unsafe == "hardlink" {
+                        #expect(link(machinePath, parent + "/retained-link") == 0)
+                    } else {
+                        #expect(unlink(machinePath) == 0)
+                        if unsafe == "symlink" {
+                            try writePrivate(Data("not a barrier".utf8), to: parent + "/retained-target")
+                            #expect(symlink(parent + "/retained-target", machinePath) == 0)
+                        }
+                    }
+                    let before = try FileManager.default.contentsOfDirectory(atPath: parent).sorted()
+                    #expect(throws: DoryMachineSavedStateError.self) { try store.remove(machineID: "dev.one") }
+                    #expect(try FileManager.default.contentsOfDirectory(atPath: parent).sorted() == before)
+                }
+            }
+        }
+    }
+
+    @Test("consumed payload cannot resume but exact live authority can retire its wrapper")
+    func consumedPayloadDeniesReplayAndAllowsOnlyLiveCleanup() throws {
+        try withStore { store, root in
+            let configuration = Data("configuration".utf8)
+            let identity = DoryMachineRuntimeIdentity.legacyCompatibility(virtualHardwareABIVersion: 1)
+            let temporary = try store.temporaryStatePath(machineID: "dev.one")
+            let original = Data("saved RAM".utf8)
+            try writePrivate(original, to: temporary)
+            let manifest = try store.publish(
+                temporaryStatePath: temporary, machineID: "dev.one",
+                authoritativeConfigurationData: configuration, runtimeIdentity: identity
+            )
+            let stateURL = URL(fileURLWithPath: store.statePath(machineID: "dev.one"))
+            let orphan = root + "/dev.one/" + DoryMachineSavedStateStore.directoryName
+                + "/.dory-metadata-AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE.tmp"
+            try writePrivate(Data(), to: orphan)
+            try DoryVZSavedStateConsumption.consume(stateURL: stateURL)
+            for _ in 0..<2 {
+                guard case .invalid(let detail) = store.inspect(
+                    machineID: "dev.one", authoritativeConfigurationData: configuration,
+                    runtimeIdentity: identity
+                ) else { Issue.record("consumed RAM must never be resumable"); return }
+                #expect(detail.contains("consumed"))
+                #expect(store.inspectForLiveRestoreCleanup(
+                    machineID: "dev.one", authoritativeConfigurationData: configuration,
+                    runtimeIdentity: identity
+                ) == .valid(manifest))
+                #expect(try Data(contentsOf: stateURL) == original)
+            }
+            try store.remove(machineID: "dev.one")
+            #expect(store.inspect(
+                machineID: "dev.one", authoritativeConfigurationData: configuration,
+                runtimeIdentity: identity
+            ) == .absent)
+            #expect(!FileManager.default.fileExists(atPath: orphan))
+        }
+    }
+
+    @Test("interrupted discard never removes the consumption fence before durable invalidation")
+    func interruptedConsumedDiscardCannotRearmSnapshot() throws {
+        for point in [DoryMachineSavedStateStore.RemovalCheckpoint.validated,
+            .manifestInvalidated, .invalidationDurable, .artifactsRemoved, .directoryRemoved, .completed]
+        {
+            try withStore { store, root in
+                let configuration = Data("configuration".utf8)
+                let identity = DoryMachineRuntimeIdentity.legacyCompatibility(virtualHardwareABIVersion: 1)
+                let temporary = try store.temporaryStatePath(machineID: "dev.one")
+                try writePrivate(Data("saved RAM".utf8), to: temporary)
+                _ = try store.publish(
+                    temporaryStatePath: temporary, machineID: "dev.one",
+                    authoritativeConfigurationData: configuration, runtimeIdentity: identity
+                )
+                let stateURL = URL(fileURLWithPath: store.statePath(machineID: "dev.one"))
+                try DoryVZSavedStateConsumption.consume(stateURL: stateURL)
+                #expect(throws: InjectedDiscardFailure.self) {
+                    try store.remove(machineID: "dev.one", checkpoint: {
+                        if $0 == point { throw InjectedDiscardFailure.interrupted }
+                    })
+                }
+                if case .valid = store.inspect(
+                    machineID: "dev.one", authoritativeConfigurationData: configuration,
+                    runtimeIdentity: identity
+                ) { Issue.record("interrupted discard rearmed RAM at \(point)") }
+                if point == .validated || point == .manifestInvalidated || point == .invalidationDurable {
+                    #expect(try DoryVZSavedStateConsumption.isConsumed(stateURL: stateURL))
+                }
+                // Retrying cleanup is idempotent, including after the whole directory vanished.
+                try store.remove(machineID: "dev.one")
+                #expect(!FileManager.default.fileExists(atPath:
+                    root + "/dev.one/" + DoryMachineSavedStateStore.directoryName))
+            }
+        }
+    }
+
+    private enum InjectedDiscardFailure: Error { case interrupted }
+
     @Test("saved-state migration preserves source bytes and rejects incomplete current authority",
           arguments: [
             "legacy-canonical", "legacy-vz", "legacy-vz-mac", "legacy-framework",
@@ -88,7 +197,7 @@ struct DoryMachineSavedStateTests {
                     runtimeIdentity: identity
                 )
             }
-            #expect(try FileManager.default.contentsOfDirectory(atPath: machineDirectory) == ["retained-payload"])
+            #expect(try FileManager.default.contentsOfDirectory(atPath: machineDirectory).sorted() == ["machine.json", "retained-payload"])
             #expect(try Data(contentsOf: URL(fileURLWithPath: payloadPath)) == bytes)
             let manifest = DoryMachineSavedStateManifest(
                 machineID: "replanning",
@@ -332,6 +441,7 @@ struct DoryMachineSavedStateTests {
             attributes: [.posixPermissions: 0o700]
         )
         defer { try? FileManager.default.removeItem(atPath: root) }
+        try writePrivate(Data("owned machine metadata".utf8), to: root + "/" + machineID + "/machine.json")
         try body(DoryMachineSavedStateStore(root: root), root)
     }
 

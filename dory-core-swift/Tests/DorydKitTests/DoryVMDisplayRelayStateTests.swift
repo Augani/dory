@@ -58,6 +58,117 @@ final class DoryVMDisplayRelayStateTests: XCTestCase {
         }
     }
 
+    func testGuestResetRetiresCPUFramesButPreservesRendererAndSequence() throws {
+        var state = DoryVMDisplayRelayState<String>()
+        let deliveredCPU = try cpuFrame(sequence: 1)
+        let queuedCPU = try cpuFrame(sequence: 2)
+        let renderer = try frame(sequence: 3, scanoutID: 1)
+        _ = try state.publish(frame: deliveredCPU, authority: "delivered-cpu")
+        XCTAssertNotNil(try state.nextFrame(machineID: "ubuntu", scanoutID: 0, afterSequence: 0))
+        _ = try state.publish(frame: queuedCPU, authority: "queued-cpu")
+        _ = try state.publish(frame: renderer, authority: "renderer")
+
+        let retired = try state.retireCPUFrames(
+            machineID: "ubuntu",
+            operationID: deliveredCPU.operationID
+        )
+        XCTAssertEqual(retired.queued.map(\.authority), ["queued-cpu"])
+        XCTAssertEqual(retired.delivered.map(\.authority), ["delivered-cpu"])
+        XCTAssertEqual(try state.nextFrame(
+            machineID: "ubuntu", scanoutID: 1, afterSequence: 0
+        )?.authority, "renderer")
+        XCTAssertThrowsError(try state.acknowledgeFrame(
+            machineID: "ubuntu", leaseID: deliveredCPU.leaseID.rawValue
+        ))
+        XCTAssertThrowsError(try state.publish(
+            frame: cpuFrame(sequence: 2), authority: "stale-cpu"
+        )) { error in
+            XCTAssertEqual(error as? DoryVMDisplayRelayError, .retiredFrame)
+        }
+        _ = try state.publish(frame: cpuFrame(sequence: 4, cpuEpoch: 2), authority: "new-cpu")
+    }
+
+    func testCPUFrameCannotClaimFutureResetEpoch() throws {
+        var state = DoryVMDisplayRelayState<String>()
+        let current = try cpuFrame(sequence: 1)
+        _ = try state.publish(frame: current, authority: "current")
+        XCTAssertThrowsError(try state.publish(
+            frame: cpuFrame(sequence: 2, cpuEpoch: 2), authority: "future"
+        )) { error in
+            XCTAssertEqual(error as? DoryVMDisplayRelayError, .retiredFrame)
+        }
+        _ = try state.retireCPUFrames(
+            machineID: "ubuntu", operationID: current.operationID)
+        _ = try state.publish(
+            frame: cpuFrame(sequence: 2, cpuEpoch: 2), authority: "after-reset")
+    }
+
+    func testRetireCPUResourcePreservesOtherIncarnationsAndScanouts() throws {
+        var state = DoryVMDisplayRelayState<String>()
+        let old = try cpuFrame(sequence: 1, resourceID: 7, resourceGeneration: 3)
+        let replacement = try cpuFrame(sequence: 2, resourceID: 7, resourceGeneration: 4)
+        let other = try cpuFrame(
+            sequence: 1, scanoutID: 1, resourceID: 8, resourceGeneration: 1)
+        _ = try state.publish(frame: old, authority: "old")
+        XCTAssertNotNil(try state.nextFrame(machineID: "ubuntu", scanoutID: 0,
+            afterSequence: 0))
+        _ = try state.publish(frame: replacement, authority: "replacement")
+        _ = try state.publish(frame: other, authority: "other")
+
+        let retired = try state.retireCPUResource(
+            machineID: "ubuntu", operationID: old.operationID,
+            resourceID: 7, throughGeneration: 3)
+        XCTAssertTrue(retired.queued.isEmpty)
+        XCTAssertEqual(retired.delivered.map(\.authority), ["old"])
+        XCTAssertThrowsError(try state.publish(
+            frame: cpuFrame(sequence: 3, resourceID: 7, resourceGeneration: 3),
+            authority: "stale")) { error in
+            XCTAssertEqual(error as? DoryVMDisplayRelayError, .retiredFrame)
+        }
+        XCTAssertEqual(try state.nextFrame(machineID: "ubuntu", scanoutID: 0,
+            afterSequence: 0)?.authority, "replacement")
+        XCTAssertEqual(try state.nextFrame(machineID: "ubuntu", scanoutID: 1,
+            afterSequence: 0)?.authority, "other")
+    }
+
+    func testAppliedTopologyRetiresRemovedScanoutAndRejectsLateFrames() throws {
+        var state = DoryVMDisplayRelayState<String>()
+        let delivered = try frame(sequence: 1, scanoutID: 2)
+        let queued = try frame(sequence: 2, scanoutID: 2)
+        let remaining = try frame(sequence: 1, scanoutID: 1)
+        _ = try state.publish(frame: delivered, authority: "delivered")
+        XCTAssertNotNil(try state.nextFrame(
+            machineID: "ubuntu", scanoutID: 2, afterSequence: 0
+        ))
+        _ = try state.publish(frame: queued, authority: "queued")
+        _ = try state.publish(frame: remaining, authority: "remaining")
+
+        let retired = try state.applyTopology(
+            machineID: "ubuntu",
+            operationID: delivered.operationID,
+            activeScanoutCount: 2
+        )
+        XCTAssertEqual(retired.queuedRetired.map(\.authority), ["queued"])
+        XCTAssertEqual(retired.deliveredToRevoke.map(\.authority), ["delivered"])
+        XCTAssertEqual(try state.acknowledgeFrame(
+            machineID: "ubuntu", leaseID: delivered.leaseID.rawValue
+        ).authority, "delivered")
+        XCTAssertEqual(try state.nextFrame(
+            machineID: "ubuntu", scanoutID: 1, afterSequence: 0
+        )?.authority, "remaining")
+        XCTAssertThrowsError(try state.publish(
+            frame: frame(sequence: 3, scanoutID: 2), authority: "late"
+        )) { error in
+            XCTAssertEqual(error as? DoryVMDisplayRelayError, .inactiveScanout)
+        }
+        _ = try state.applyTopology(
+            machineID: "ubuntu",
+            operationID: delivered.operationID,
+            activeScanoutCount: 3
+        )
+        _ = try state.publish(frame: frame(sequence: 3, scanoutID: 2), authority: "reconnected")
+    }
+
     func testCommandsAreOrderedToActiveRunnerAndRetiredWithFrames() throws {
         var state = DoryVMDisplayRelayState<String>()
         _ = try state.publish(frame: frame(sequence: 1), authority: "frame")
@@ -97,7 +208,8 @@ final class DoryVMDisplayRelayStateTests: XCTestCase {
 
     private func frame(
         sequence: UInt64,
-        operationID: UUID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        operationID: UUID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!,
+        scanoutID: UInt32 = 0
     ) throws -> DoryVMDisplayFrame {
         let lease = try DoryRendererScanoutLease(
             workerGeneration: .init(rawValue: 1),
@@ -121,13 +233,47 @@ final class DoryVMDisplayRelayStateTests: XCTestCase {
         return try DoryVMDisplayFrame(
             machineID: "ubuntu",
             operationID: operationID,
-            scanoutID: 0,
+            scanoutID: scanoutID,
             sequence: sequence,
             displayResourceGeneration: sequence,
             transport: .sharedMemory,
             leasePayload: DoryRendererScanoutLeaseCodec.encode(lease),
             sourceRect: .init(x: 0, y: 0, width: 1_920, height: 1_080),
             dirtyRect: .init(x: 0, y: 0, width: 1_920, height: 1_080)
+        )
+    }
+
+    private func cpuFrame(
+        sequence: UInt64,
+        scanoutID: UInt32 = 0,
+        resourceID: UInt32 = 1,
+        resourceGeneration: UInt64? = nil,
+        cpuEpoch: UInt64 = 1
+    ) throws -> DoryVMDisplayFrame {
+        let generation = resourceGeneration ?? sequence
+        let lease = try DoryVMDisplayCPUFrameLease(
+            leaseID: UUID(),
+            releaseToken: UUID(),
+            resourceID: resourceID,
+            resourceGeneration: generation,
+            cpuEpoch: cpuEpoch,
+            pixelFormat: DoryRendererScanoutPixelFormat.bgra8Unorm.rawValue,
+            yOriginTop: true,
+            width: 64,
+            height: 64,
+            stride: 256,
+            declaredFileSize: 16_384
+        )
+        return try DoryVMDisplayFrame(
+            machineID: "ubuntu",
+            operationID: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!,
+            scanoutID: scanoutID,
+            sequence: sequence,
+            displayResourceGeneration: generation,
+            transport: .cpuCopy,
+            leasePayload: DoryVMDisplayCPUFrameLeaseCodec.encode(lease),
+            sourceRect: .init(x: 0, y: 0, width: 64, height: 64),
+            dirtyRect: .init(x: 0, y: 0, width: 64, height: 64)
         )
     }
 }

@@ -16,6 +16,15 @@ public enum DoryDaemonVirtualMachinePreSpawnAuthorizationError:
 enum DoryDaemonVirtualMachinePreSpawnLaunchAuthority: Sendable, Equatable {
     case noRendererReleaseIdentityRequired
     case rendererReleaseIdentity(DoryRendererReleaseIdentityV1)
+    case candidateCampaignFaults(
+        rendererIdentity: DoryRendererReleaseIdentityV1?,
+        faultAuthority: DoryRuntimeQualificationFaultAuthority
+    )
+
+    var qualificationFaultAuthority: DoryRuntimeQualificationFaultAuthority? {
+        if case .candidateCampaignFaults(_, let authority) = self { return authority }
+        return nil
+    }
 }
 
 /// Single-use daemon authorization for the last possible trust check before MachineManager reads
@@ -26,14 +35,14 @@ public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sen
     private var consumed = false
     private let purpose: DoryDaemonVirtualMachineLaunchValidationPurpose
     private let resolveLaunchAuthority:
-        @Sendable () throws -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
+        @Sendable (UUID?) throws -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
 
     init(
         purpose: DoryDaemonVirtualMachineLaunchValidationPurpose = .start,
         revalidate: @escaping @Sendable () throws -> Void
     ) {
         self.purpose = purpose
-        resolveLaunchAuthority = {
+        resolveLaunchAuthority = { _ in
             try revalidate()
             return .noRendererReleaseIdentityRequired
         }
@@ -42,7 +51,7 @@ public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sen
     private init(
         purpose: DoryDaemonVirtualMachineLaunchValidationPurpose,
         resolveLaunchAuthority:
-            @escaping @Sendable () throws -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
+            @escaping @Sendable (UUID?) throws -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
     ) {
         self.purpose = purpose
         self.resolveLaunchAuthority = resolveLaunchAuthority
@@ -55,18 +64,25 @@ public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sen
     ) -> DoryDaemonVirtualMachinePreSpawnAuthorization {
         DoryDaemonVirtualMachinePreSpawnAuthorization(
             purpose: purpose,
-            resolveLaunchAuthority: resolve
+            resolveLaunchAuthority: { _ in try resolve() }
         )
+    }
+
+    static func resolvingRuntimeLaunchAuthority(
+        purpose: DoryDaemonVirtualMachineLaunchValidationPurpose,
+        _ resolve: @escaping @Sendable (UUID?) throws -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
+    ) -> DoryDaemonVirtualMachinePreSpawnAuthorization {
+        DoryDaemonVirtualMachinePreSpawnAuthorization(purpose: purpose, resolveLaunchAuthority: resolve)
     }
 
     public func authorize() throws {
         _ = try authorizeResolvedLaunch()
     }
 
-    func authorizeResolvedLaunch() throws
+    func authorizeResolvedLaunch(operationID: UUID? = nil) throws
         -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
     {
-        try consume(for: .start)
+        try consume(for: .start, operationID: operationID)
     }
 
     func authorizeRestartPreflight() throws {
@@ -77,7 +93,10 @@ public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sen
         _ = try consume(for: .stoppedPreflight)
     }
 
-    private func consume(for expectedPurpose: DoryDaemonVirtualMachineLaunchValidationPurpose) throws
+    private func consume(
+        for expectedPurpose: DoryDaemonVirtualMachineLaunchValidationPurpose,
+        operationID: UUID? = nil
+    ) throws
         -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
     {
         lock.lock()
@@ -90,7 +109,7 @@ public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sen
         guard purpose == expectedPurpose else {
             throw DoryDaemonVirtualMachinePreSpawnAuthorizationError.revalidationFailed
         }
-        do { return try resolveLaunchAuthority() }
+        do { return try resolveLaunchAuthority(operationID) }
         catch {
             throw DoryDaemonVirtualMachinePreSpawnAuthorizationError.revalidationFailure(
                 String(describing: error)

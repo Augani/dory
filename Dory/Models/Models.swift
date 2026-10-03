@@ -361,18 +361,24 @@ struct Machine: Identifiable, Hashable, Sendable {
     var guestToolsMediaAttached: Bool = false
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
     var runtimeGraphicsSelection: DorydMachineRuntimeGraphicsSelection? = nil
+    var runtimeDetail: String? = nil
+    var nativeMacDisplayRepair: DorydMacDisplayRepairSummary? = nil
     var cloneReceipt: DorydMachineCloneReceipt? = nil
     var agentBuild: String? = nil
     var agentProtocolVersion: UInt32? = nil
     var agentCapabilities: [DorydAgentCapability] = []
     var integrationHealth: DoryGuestIntegrationHealth? = nil
+    var macGuestTools: DorydMacGuestToolsHealth? = nil
     var fileTransferPolicy: DoryVMClipboardDirection = .bidirectional
     var mounts: [MountPair] = []
     var id: String { name }
 
     var badgeColor: Color { Color(hex: badgeHex) }
     var actionLabel: String {
-        switch status {
+        if nativeMacDisplayRepair != nil { return "Display Repair Required" }
+        if pendingSavedStateRecoveryOperationID != nil { return "Retry Recovery…" }
+        if requiresSavedStateRecovery { return "Recover…" }
+        return switch status {
         case .running, .starting, .installing: "Stop"
         case .paused: "Resume"
         case .suspended: "Restore"
@@ -380,12 +386,58 @@ struct Machine: Identifiable, Hashable, Sendable {
         case .absent, .defined, .created, .stopped, .failed: "Start"
         }
     }
+    var requiresSavedStateRecovery: Bool {
+        if nativeMacDisplayRepair != nil { return false }
+        return (status == .failed && failure?.code == .savedStateInvalid)
+            || pendingSavedStateRecoveryOperationID != nil
+    }
+
+    var pendingSavedStateRecoveryOperationID: UUID? {
+        guard status == .recovering, processID == nil,
+              failure?.code == .lifecycleRecoveryRequired,
+              activeOperation?.kind == .stopping,
+              let operationID = activeOperation?.operationID else { return nil }
+        return UUID(uuidString: operationID)
+    }
+
+    var canDiscardSavedState: Bool {
+        if nativeMacDisplayRepair != nil { return false }
+        if pendingSavedStateRecoveryOperationID != nil { return true }
+        return (status == .suspended || requiresSavedStateRecovery)
+            && processID == nil && activeOperation == nil
+    }
+    var pendingNativeMacDisplayRepairOperationID: UUID? {
+        guard nativeMacDisplayRepair != nil, status == .recovering, processID == nil,
+              activeOperation?.kind == .repairing, let raw = activeOperation?.operationID else { return nil }
+        return UUID(uuidString: raw)
+    }
+    var canRepairNativeMacDisplay: Bool {
+        guard nativeMacDisplayRepair != nil, processID == nil else { return false }
+        return (status == .failed && activeOperation == nil) || pendingNativeMacDisplayRepairOperationID != nil
+    }
     var isEmulated: Bool { !arch.isEmpty && arch != MachineArch.host.rawValue }
 
+    var supportsRuntimeDisplayReconfiguration: Bool {
+        guard status == .running,
+              guestFamily == "linux",
+              displayMode == .desktop,
+              runtimeIdentity.mode == "resolved-plan",
+              let integrationHealth,
+              integrationHealth.isValid,
+              integrationHealth.runtimeAuthority == .resolvedPlan else { return false }
+        return integrationHealth.features.contains {
+            $0.id == .displayResize
+                && $0.provider == .resolvedRuntime
+                && $0.state == .active
+        }
+    }
+
     var readinessDetail: String {
-        readinessObservations.map {
+        let observations = readinessObservations.map {
             "\($0.label): \($0.observed ? "observed" : "not observed")"
         }.joined(separator: "\n")
+        guard let runtimeDetail, !runtimeDetail.isEmpty else { return observations }
+        return observations + "\nRuntime note: " + runtimeDetail
     }
 
     var readinessObservations: [MachineReadinessObservation] {
@@ -408,6 +460,11 @@ struct Machine: Identifiable, Hashable, Sendable {
 
     var runtimeEvidence: [MachineRuntimeEvidence] {
         var evidence: [MachineRuntimeEvidence] = []
+        if let repair = nativeMacDisplayRepair {
+            evidence.append(MachineRuntimeEvidence(id: "display-repair", label: "Mac display repair required",
+                systemImage: "display.trianglebadge.exclamationmark", tone: .warning,
+                detail: "This persisted Mac has \(repair.displays.count) displays; macOS virtualization supports one. An explicit cold repair is required. Disks, identity, and incompatible saved RAM are preserved; this is not a resumable or running machine."))
+        }
         if let failure {
             evidence.append(MachineRuntimeEvidence(
                 id: "failure",
@@ -600,6 +657,34 @@ struct Machine: Identifiable, Hashable, Sendable {
     }
 
     private var toolsRuntimeEvidence: MachineRuntimeEvidence {
+        if guestFamily == "macos" {
+            guard status == .running else {
+                return MachineRuntimeEvidence(
+                    id: "tools", label: "Mac tools inactive",
+                    systemImage: "wrench.and.screwdriver", tone: .standard,
+                    detail: "Integration checks resume when the Mac is running"
+                )
+            }
+            if macGuestTools?.state == .handshaking {
+                return MachineRuntimeEvidence(
+                    id: "tools", label: "Mac Guest Tools connecting",
+                    systemImage: "arrow.triangle.2.circlepath", tone: .standard,
+                    detail: macGuestToolsDiagnostic
+                )
+            }
+            guard let macGuestTools, macGuestTools.state == .healthy else {
+                return MachineRuntimeEvidence(
+                    id: "tools", label: "Mac Guest Tools unavailable",
+                    systemImage: "wrench.and.screwdriver", tone: .warning,
+                    detail: macGuestToolsDiagnostic
+                )
+            }
+            return MachineRuntimeEvidence(
+                id: "tools", label: "Mac Guest Tools connected",
+                systemImage: "wrench.and.screwdriver.fill", tone: .positive,
+                detail: "Version \(macGuestTools.toolsVersion ?? "unknown") · \(macGuestTools.grantedCapabilities.joined(separator: ", "))"
+            )
+        }
         let health = integrationHealthProjection
         switch health.state {
         case .inactive:
@@ -655,6 +740,26 @@ struct Machine: Identifiable, Hashable, Sendable {
                 tone: .positive,
                 detail: "\(health.agentBuild ?? "Dory Tools") · \(health.features.filter { $0.state == .active }.count) active integrations"
             )
+        }
+    }
+
+    var macGuestToolsDiagnostic: String {
+        if macGuestTools?.state == .handshaking {
+            return "The guest connection is negotiating its machine-bound protocol"
+        }
+        switch macGuestTools?.lastErrorCode {
+        case "protocol-rejected", "invalid-frame":
+            return "The guest protocol is incompatible or malformed; update the signed Guest Tools package"
+        case "timeout":
+            return "The Guest Tools connection timed out; check the guest login agent"
+        case "disconnected", "transport-error":
+            return "Guest Tools disconnected; check the guest login agent and restart the guest session"
+        case "teardown-timeout":
+            return "Guest Tools did not close within the recovery deadline; restart the guest session"
+        case "invalid-health":
+            return "Guest Tools returned invalid health data; update or reinstall the signed package"
+        default:
+            return "No fresh machine-bound Guest Tools response; install the signed package and log in to the guest"
         }
     }
 

@@ -25,4 +25,15 @@ struct DoryDesktopClipboardPolicyTests {
         #expect(DoryDesktopClipboardPolicy.hostToGuest.virtualMachinePolicy
             == .legacyDesktop(.hostToGuest))
     }
+
+    @Test("VZMac SPICE accepts only disabled or full bidirectional text/image")
+    func macSPICEPolicy() {
+        #expect(DoryVMClipboardPolicy.disabled.isSupportedByVZMacSPICE)
+        #expect(DoryVMClipboardPolicy.legacyDesktop(.bidirectional).isSupportedByVZMacSPICE)
+        #expect(!DoryVMClipboardPolicy.legacyDesktop(.hostToGuest).isSupportedByVZMacSPICE)
+        #expect(!DoryVMClipboardPolicy.legacyDesktop(.guestToHost).isSupportedByVZMacSPICE)
+        #expect(!DoryVMClipboardPolicy(
+            text: .bidirectional, image: .bidirectional, files: .bidirectional
+        ).isSupportedByVZMacSPICE)
+    }
 }

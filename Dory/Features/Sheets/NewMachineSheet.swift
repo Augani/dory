@@ -20,12 +20,21 @@ struct NewMachineSheet: View {
     @State private var installerISOCheck: InstallerISOCheck = .none
     @State private var macOSRestoreImagePath = ""
     @State private var macOSRestoreCheck: MacOSRestoreCheck = .none
+    @State private var restoreDownloadTask: Task<Void, Never>?
+    @State private var restoreDownloadRequest: DoryRestoreImageDownloadRequest?
+    @State private var restoreDownloadProgress: DoryRestoreImageDownloadProgress?
+    @State private var restoreDownloadMessage: String?
+    @State private var restoreDownloadStore: DoryRestoreImageDownloadStore?
     @State private var diskSizeGB = 64
     @State private var networkMode = DoryVMNetworkMode.sharedNAT
     @State private var portForwardRows: [MachinePortForwardDraft] = []
     @State private var audioInputEnabled = false
     @State private var audioOutputEnabled = true
+    @State private var macTextClipboardDirection = DoryVMClipboardDirection.bidirectional
+    @State private var macImageClipboardDirection = DoryVMClipboardDirection.bidirectional
     @State private var cameraEnabled = false
+    @State private var hostCameras: [HostCameraChoice] = []
+    @State private var cameraDeviceUniqueID = ""
     @State private var gpuAccelerationEnabled = true
     @State private var displayDensity = DoryVMDisplayDensity.retinaResolution
     @State private var hostDisplays: [HostDisplayChoice] = []
@@ -86,8 +95,15 @@ struct NewMachineSheet: View {
             }
             return DoryReleaseSupportPolicy.availability(
                 hostArchitecture: .current,
-                guest: guest
+                guest: guest,
+                qualificationBootstrapEnabled: AppInfo.vmQualificationBootstrapEnabled
             )
+        }
+        var availabilityHint: String {
+            if releaseAvailability.supportTier == .experimental {
+                return "Qualification candidate only; not supported in the public release."
+            }
+            return releaseAvailability.reason?.message ?? "Select this guest platform"
         }
     }
 
@@ -136,7 +152,12 @@ struct NewMachineSheet: View {
         }
         .frame(width: 600, height: 600)
         .background(p.bgWindow)
-        .onAppear { hostDisplays = HostDisplayChoice.connectedDisplays() }
+        .onAppear {
+            hostDisplays = HostDisplayChoice.connectedDisplays()
+            hostCameras = HostCameraChoice.connectedCameras()
+        }
+        .onDisappear { restoreDownloadTask?.cancel() }
+        .onChange(of: guestPlatform) { _, _ in restoreDownloadTask?.cancel() }
     }
 
     private var formScreen: some View {
@@ -158,6 +179,7 @@ struct NewMachineSheet: View {
                         )
                         desktopGraphicsBlock
                         audioBlock
+                        macClipboardBlock
                         displayAssignmentBlock
                         optionsRow
                         advancedSection
@@ -350,6 +372,7 @@ struct NewMachineSheet: View {
                         guard platform.releaseAvailability.isUsable else { return }
                         guestPlatform = platform
                         cameraEnabled = false
+                        cameraDeviceUniqueID = ""
                         installerISOPath = ""
                         installerISOCheck = .none
                         macOSRestoreImagePath = ""
@@ -370,6 +393,11 @@ struct NewMachineSheet: View {
                                 Text(platform.architecture)
                                     .font(.system(size: 10.5))
                                     .foregroundStyle(p.text3)
+                                if platform.releaseAvailability.supportTier == .experimental {
+                                    Text("QUALIFICATION CANDIDATE")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(p.amber)
+                                }
                                 if let reason = platform.releaseAvailability.reason?.message {
                                     Text(reason)
                                         .font(.system(size: 9.5))
@@ -396,7 +424,7 @@ struct NewMachineSheet: View {
                     .disabled(!platform.releaseAvailability.isUsable)
                     .accessibilityIdentifier("guest-platform-\(platform.rawValue)")
                     .accessibilityLabel("\(platform.title) \(platform.architecture)")
-                    .accessibilityHint(platform.releaseAvailability.reason?.message ?? "Select this guest platform")
+                    .accessibilityHint(platform.availabilityHint)
                 }
             }
         }
@@ -433,7 +461,32 @@ struct NewMachineSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(p.border))
             }
             .buttonStyle(.plain)
+            .disabled(restoreDownloadTask != nil)
             .accessibilityIdentifier("macos-ipsw-picker")
+
+            HStack(spacing: 12) {
+                Button(restoreDownloadRequest == nil ? "Download or resume from Apple…" : "Resume Apple download") {
+                    downloadMacOSRestoreImage()
+                }
+                .disabled(restoreDownloadTask != nil)
+                .accessibilityIdentifier("macos-ipsw-download")
+                if restoreDownloadTask != nil {
+                    Button("Cancel download") { restoreDownloadTask?.cancel() }
+                        .accessibilityIdentifier("macos-ipsw-download-cancel")
+                } else if restoreDownloadRequest != nil {
+                    Button("Start download over") { downloadMacOSRestoreImage(startOver: true) }
+                        .accessibilityIdentifier("macos-ipsw-download-restart")
+                }
+            }
+            .font(.system(size: 11, weight: .medium))
+            if let progress = restoreDownloadProgress, restoreDownloadTask != nil {
+                ProgressView(value: Double(progress.completedBytes), total: Double(progress.totalBytes))
+                Text("\(ByteCountFormatter.string(fromByteCount: Int64(progress.completedBytes), countStyle: .file)) of \(ByteCountFormatter.string(fromByteCount: Int64(progress.totalBytes), countStyle: .file))")
+                    .font(.mono(10.5)).foregroundStyle(p.text2)
+            }
+            if let message = restoreDownloadMessage {
+                Text(message).font(.system(size: 11)).foregroundStyle(p.text2)
+            }
 
             macOSRestoreStatus
 
@@ -731,18 +784,35 @@ struct NewMachineSheet: View {
                         .toggleStyle(.switch)
                         .tint(p.accent)
                         .accessibilityIdentifier("new-machine-camera")
-                        .disabled(customISOInstall || guestPlatform.isMacOS)
+                        .disabled(customISOInstall && !guestPlatform.isMacOS)
                     Spacer(minLength: 0)
                 }
                 .font(.system(size: 12.5))
                 .foregroundStyle(p.text)
                 Text(guestPlatform.isMacOS
-                     ? "Audio uses Apple virtual devices. Camera sharing is not yet available for macOS guests."
+                     ? "Audio uses Apple virtual devices. Camera sharing requires a selected host camera, macOS permission, and Dory Camera in Guest Tools."
                      : customISOInstall
                         ? "Speakers and microphone use standard VirtIO audio. Camera sharing is currently unavailable for custom Linux ISO compatibility guests."
                         : "Enabled devices are attached explicitly. Camera sharing appears in Linux as a standard UVC webcam and follows macOS camera permission.")
                     .font(.system(size: 11))
                     .foregroundStyle(p.text3)
+                if guestPlatform.isMacOS, cameraEnabled {
+                    Picker("Host camera", selection: $cameraDeviceUniqueID) {
+                        Text("Choose a camera").tag("")
+                        ForEach(hostCameras) { camera in
+                            Text(camera.name).tag(camera.id)
+                        }
+                    }
+                    .accessibilityIdentifier("new-machine-host-camera")
+                    Button("Refresh cameras") {
+                        hostCameras = HostCameraChoice.connectedCameras()
+                    }
+                    .buttonStyle(.link)
+                    if cameraDeviceUniqueID.isEmpty {
+                        Text("Select the exact host camera to grant to this machine.")
+                            .font(.system(size: 11)).foregroundStyle(p.red)
+                    }
+                }
             }
         }
     }
@@ -769,6 +839,33 @@ struct NewMachineSheet: View {
                     .foregroundStyle(p.text3)
             }
         }
+    }
+
+    @ViewBuilder private var macClipboardBlock: some View {
+        if displayMode == .desktop, guestPlatform.isMacOS {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel("CLIPBOARD SHARING")
+                Picker("Text", selection: $macTextClipboardDirection) {
+                    macClipboardDirectionChoices
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("new-machine-mac-text-clipboard-policy")
+                Picker("Images", selection: $macImageClipboardDirection) {
+                    macClipboardDirectionChoices
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("new-machine-mac-image-clipboard-policy")
+                Text("Choosing Both for text and images uses the Mac clipboard device. Other combinations need Dory Guest Tools after guest login. Clipboard file transfer is unavailable.")
+                    .font(.system(size: 11)).foregroundStyle(p.text3)
+            }
+        }
+    }
+
+    @ViewBuilder private var macClipboardDirectionChoices: some View {
+        Text("Off").tag(DoryVMClipboardDirection.off)
+        Text("To Guest").tag(DoryVMClipboardDirection.hostToGuest)
+        Text("To Host").tag(DoryVMClipboardDirection.guestToHost)
+        Text("Both").tag(DoryVMClipboardDirection.bidirectional)
     }
 
     @ViewBuilder private var displayAssignmentBlock: some View {
@@ -1051,6 +1148,9 @@ struct NewMachineSheet: View {
             || (!guestPlatform.isMacOS && customISOInstall && installerISOCheckBlocksCreate)
             || (guestPlatform.isMacOS && macOSRestoreImagePath.isEmpty)
             || (guestPlatform.isMacOS && macOSRestoreCheckBlocksCreate)
+            || (guestPlatform.isMacOS && restoreDownloadTask != nil)
+            || (guestPlatform.isMacOS && cameraEnabled
+                && !hostCameras.contains(where: { $0.id == cameraDeviceUniqueID }))
             || store.machineBusy
             || !engineReady
             || mountsOutsideHome
@@ -1192,6 +1292,72 @@ struct NewMachineSheet: View {
         }
     }
 
+    private func downloadMacOSRestoreImage(startOver: Bool = false) {
+        guard restoreDownloadTask == nil else { return }
+        restoreDownloadMessage = "Finding an Apple restore image supported by this Mac…"
+        restoreDownloadProgress = nil
+        // Keep the transfer in an actor, not on SwiftUI's main actor. The published path is
+        // used only after VZ independently validates the exact build/version/support tuple.
+        restoreDownloadTask = Task { @MainActor in
+            defer { restoreDownloadTask = nil }
+            do {
+                let downloader: DoryRestoreImageDownloadStore
+                if let existing = restoreDownloadStore {
+                    downloader = existing
+                } else {
+                    let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                             appropriateFor: nil, create: true)
+                    downloader = DoryRestoreImageDownloadStore(directory: support
+                        .appendingPathComponent("Dory/RestoreImages", isDirectory: true).standardizedFileURL)
+                    restoreDownloadStore = downloader
+                }
+                let request: DoryRestoreImageDownloadRequest
+                if let existing = restoreDownloadRequest {
+                    request = existing
+                } else if let pending = try await downloader.pendingRequest() {
+                    request = pending
+                    restoreDownloadRequest = pending
+                } else {
+                    let image = try await VZMacOSRestoreImage.latestSupported
+                    try Task.checkCancellation()
+                    guard image.isSupported, image.mostFeaturefulSupportedConfiguration != nil else {
+                        throw DoryRestoreImageDownloadError.invalidSource
+                    }
+                    let version = image.operatingSystemVersion
+                    request = try DoryRestoreImageDownloadRequest(sourceURL: image.url, build: image.buildVersion,
+                        version: "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)")
+                    restoreDownloadRequest = request
+                }
+                if startOver { try await downloader.discardPartial(request) }
+                restoreDownloadMessage = "Downloading macOS \(request.version) (\(request.build)). Cancel keeps a verified partial file for resume."
+                let url = try await downloader.download(request) { update in
+                    Task { @MainActor in restoreDownloadProgress = update }
+                }
+                try Task.checkCancellation()
+                restoreDownloadMessage = "Checking the downloaded restore image with Virtualization.framework…"
+                let image = try await VZMacOSRestoreImage.image(from: url)
+                try Task.checkCancellation()
+                let version = image.operatingSystemVersion
+                let versionString = "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+                guard image.isSupported, image.mostFeaturefulSupportedConfiguration != nil,
+                      image.buildVersion == request.build, versionString == request.version else {
+                    throw DoryRestoreImageDownloadError.changedSource
+                }
+                guard guestPlatform.isMacOS else { return }
+                macOSRestoreImagePath = url.path
+                macOSRestoreCheck = .compatible(version: versionString, build: image.buildVersion)
+                restoreDownloadMessage = "Apple restore image downloaded and supported by this Mac."
+                restoreDownloadRequest = nil
+            } catch is CancellationError {
+                restoreDownloadMessage = "Download cancelled. Its verified partial file is retained for resume."
+            } catch {
+                restoreDownloadMessage = Task.isCancelled
+                    ? "Download cancelled. Its verified partial file is retained for resume."
+                    : error.localizedDescription
+            }
+        }
+    }
+
     private var installerISOCheckBlocksCreate: Bool {
         switch installerISOCheck {
         case .compatible:
@@ -1239,6 +1405,7 @@ struct NewMachineSheet: View {
         audioInputEnabled: Bool = false,
         audioOutputEnabled: Bool = true,
         cameraEnabled: Bool = false,
+        cameraDeviceUniqueID: String? = nil,
         gpuAccelerationEnabled: Bool = true,
         displayDensity: DoryVMDisplayDensity = .retinaResolution
     ) -> MachineSettings {
@@ -1271,7 +1438,10 @@ struct NewMachineSheet: View {
                     inputEnabled: audioInputEnabled,
                     outputEnabled: audioOutputEnabled
                 ),
-                cameraConfiguration: DoryVMCameraConfiguration(enabled: cameraEnabled)
+                cameraConfiguration: DoryVMCameraConfiguration(
+                    enabled: cameraEnabled,
+                    hostDeviceUniqueID: cameraDeviceUniqueID
+                )
             )
         } else {
             typedSettings = DorydMachineTypedSettings(
@@ -1327,6 +1497,7 @@ struct NewMachineSheet: View {
             audioInputEnabled: audioInputEnabled,
             audioOutputEnabled: audioOutputEnabled,
             cameraEnabled: cameraEnabled && !customISOInstall,
+            cameraDeviceUniqueID: nil,
             gpuAccelerationEnabled: gpuAccelerationEnabled,
             displayDensity: displayDensity
         )
@@ -1340,13 +1511,21 @@ struct NewMachineSheet: View {
                 settings.macOSRestoreImagePath = macOSRestoreImagePath
                 settings.mounts = []
                 settings.virtualMachineSettings = DorydMachineTypedSettings(
+                    clipboardPolicy: DoryVMClipboardPolicy(
+                        text: macTextClipboardDirection,
+                        image: macImageClipboardDirection,
+                        files: .off
+                    ),
                     networkMode: networkMode,
                     portForwards: resolvedPortForwards ?? [],
                     audioConfiguration: DoryVMAudioConfiguration(
                         inputEnabled: audioInputEnabled,
                         outputEnabled: audioOutputEnabled
                     ),
-                    cameraConfiguration: DoryVMCameraConfiguration(enabled: false)
+                    cameraConfiguration: DoryVMCameraConfiguration(
+                        enabled: cameraEnabled,
+                        hostDeviceUniqueID: cameraEnabled ? cameraDeviceUniqueID : nil
+                    )
                 )
             } else {
                 settings.bootMode = .efi

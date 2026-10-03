@@ -29,9 +29,13 @@ nonisolated enum AppInfo {
     /// Candidate-only bridge for booting exact desktop bytes while schema-2 qualification
     /// evidence is collected. Normal builds omit the key and stay fail-closed.
     static var vmQualificationBootstrapEnabled: Bool {
+        #if DEBUG
         explicitBuildFlagBundleValue(
             Bundle.main.object(forInfoDictionaryKey: "DoryVMQualificationBootstrap")
         )
+        #else
+        false
+        #endif
     }
 
     static func componentAvailable(_ id: DoryComponentID) -> Bool {

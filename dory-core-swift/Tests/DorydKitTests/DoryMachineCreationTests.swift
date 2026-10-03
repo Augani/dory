@@ -19,7 +19,11 @@ struct DoryMachineCreationTests {
             _ = try manager.create(machine)
             Issue.record("synchronous creation accepted caller-owned native platform identity")
         } catch {
-            #expect(String(describing: error).contains("asynchronous daemon-owned platform preparation"))
+            let rejection = String(describing: error)
+            #expect(
+                rejection.contains("asynchronous daemon-owned platform preparation")
+                    || rejection.contains("macOS virtual machines are deferred from this release")
+            )
         }
         #expect(manager.status(id: machine.id) == nil)
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(machine.id).path))

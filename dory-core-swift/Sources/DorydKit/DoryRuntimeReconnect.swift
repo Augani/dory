@@ -140,6 +140,47 @@ public struct DoryRuntimeReconnectLaunchIdentity: Codable, Sendable, Equatable {
         )
     }
 
+    /// The daemon issues this per-launch camera grant only for a camera ID present in the
+    /// resolved plan. The helper verifies it using the private inherited identity descriptor;
+    /// argv alone cannot invent or redirect a managed host-camera capture.
+    public func cameraGrantProof(deviceUniqueID: String) throws -> String {
+        guard isValid,
+              DoryVMCameraConfiguration.isValidHostDeviceUniqueID(deviceUniqueID) else {
+            throw DoryRuntimeReconnectError.invalidIdentity
+        }
+        let key = SymmetricKey(data: Data(Self.hexBytes(secret)))
+        return HMAC<SHA256>.authenticationCode(
+            for: Data(cameraGrantInput(deviceUniqueID: deviceUniqueID).utf8),
+            using: key
+        ).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public func verifiesCameraGrant(
+        _ proof: String,
+        deviceUniqueID: String
+    ) -> Bool {
+        guard isValid,
+              DoryVMCameraConfiguration.isValidHostDeviceUniqueID(deviceUniqueID),
+              Self.isLowercaseHex(proof, count: 64) else { return false }
+        let key = SymmetricKey(data: Data(Self.hexBytes(secret)))
+        return HMAC<SHA256>.isValidAuthenticationCode(
+            Data(Self.hexBytes(proof)),
+            authenticating: Data(cameraGrantInput(deviceUniqueID: deviceUniqueID).utf8),
+            using: key
+        )
+    }
+
+    private func cameraGrantInput(deviceUniqueID: String) -> String {
+        [
+            "dory-vzmac-camera-grant-v1",
+            machineID,
+            operationID,
+            resolvedPlanSHA256,
+            String(planRevision),
+            deviceUniqueID,
+        ].joined(separator: "\n")
+    }
+
     private func authenticationInput(
         challenge: String,
         processIdentity: DoryHostProcessIdentity,
@@ -374,8 +415,9 @@ public final class DoryRuntimeReconnectRecordStore: @unchecked Sendable {
         }
     }
 
-    /// Persist a renderer renewal after the caller authenticates the live runtime and admits
-    /// the daemon-issued worker generation. This cannot change launch or endpoint authority.
+    /// Persist a renderer, guest-reboot status, or bounded diagnostic renewal after the caller
+    /// authenticates the live runtime and admits the daemon-issued worker generation. This
+    /// cannot change launch or endpoint authority.
     public func renewLiveReadiness(
         machineID: String,
         launchIdentity: DoryRuntimeReconnectLaunchIdentity,
@@ -398,14 +440,53 @@ public final class DoryRuntimeReconnectRecordStore: @unchecked Sendable {
                   previous.operationID == launchIdentity.operationID,
                   previous.resolvedPlanSHA256 == launchIdentity.resolvedPlanSHA256,
                   previous.planRevision == launchIdentity.planRevision,
-                  Self.acceptsGraphicsRenewal(
-                    previous: previous,
-                    replacement: replacement
+                  previousReady != readiness,
+                  readiness.detail.map({
+                    !$0.utf8.contains(0) && $0.utf8.count <= 2_048
+                  }) ?? true,
+                  previous == replacement || Self.acceptsGraphicsRenewal(
+                    previous: previous, replacement: replacement
                   ) else {
                 throw DoryRuntimeReconnectError.invalidIdentity
             }
             var expectedReadiness = previousReady
             expectedReadiness.graphicsSelection = replacement
+            expectedReadiness.detail = readiness.detail
+            if previousReady.guestBooted != readiness.guestBooted
+                || previousReady.toolsConnected != readiness.toolsConnected
+                || previousReady.desktopVisible != readiness.desktopVisible
+                || previousReady.workloadReady != readiness.workloadReady
+                || previousReady.agentBuild != readiness.agentBuild
+                || previousReady.agentProtocolVersion != readiness.agentProtocolVersion
+                || previousReady.agentCapabilities != readiness.agentCapabilities {
+                if previousReady.guestBooted, !readiness.guestBooted,
+                   !readiness.toolsConnected, !readiness.desktopVisible,
+                   !readiness.workloadReady,
+                   previousReady.agentBuild == readiness.agentBuild,
+                   previousReady.agentProtocolVersion == readiness.agentProtocolVersion,
+                   previousReady.agentCapabilities == readiness.agentCapabilities {
+                    // A full guest reboot revokes the previous boot's live observations,
+                    // but cannot change process, launch, endpoint or agent authority.
+                    expectedReadiness.guestBooted = false
+                    expectedReadiness.toolsConnected = false
+                    expectedReadiness.desktopVisible = false
+                    expectedReadiness.workloadReady = false
+                } else if !previousReady.guestBooted, readiness.guestBooted,
+                          readiness.desktopVisible, readiness.workloadReady,
+                          readiness.hasValidOperationIdentity {
+                    // The same authenticated runner may report a freshly booted guest and
+                    // updated guest-tools version after an in-guest package upgrade.
+                    expectedReadiness.guestBooted = true
+                    expectedReadiness.toolsConnected = readiness.toolsConnected
+                    expectedReadiness.desktopVisible = true
+                    expectedReadiness.workloadReady = true
+                    expectedReadiness.agentBuild = readiness.agentBuild
+                    expectedReadiness.agentProtocolVersion = readiness.agentProtocolVersion
+                    expectedReadiness.agentCapabilities = readiness.agentCapabilities
+                } else {
+                    throw DoryRuntimeReconnectError.invalidIdentity
+                }
+            }
             guard readiness == expectedReadiness else {
                 throw DoryRuntimeReconnectError.invalidIdentity
             }
@@ -425,34 +506,52 @@ public final class DoryRuntimeReconnectRecordStore: @unchecked Sendable {
               previous.resolvedPlanSHA256 == replacement.resolvedPlanSHA256,
               previous.planRevision == replacement.planRevision,
               previous.requestedGraphics == replacement.requestedGraphics,
-              previous.admittedGraphics == replacement.admittedGraphics,
-              observationDoesNotRegress(
+              previous.admittedGraphics == replacement.admittedGraphics else {
+            return false
+        }
+
+        // A signed runner may keep the same pristine worker across a whole-guest reboot, but
+        // the previous boot's fence and presentation are not observations of the new boot.
+        // Admit only this exact revocation; no launch, backend, receipt, or device policy field
+        // can change at the same time.
+        if previous.rendererGeneration == replacement.rendererGeneration {
+            var reset = previous
+            reset.firstShaderCompletedAtUnixMilliseconds = nil
+            reset.firstPresentationCompletedAtUnixMilliseconds = nil
+            if reset.accelerationLevel == .hardwareAccelerated3D {
+                reset.verificationState = .provisional
+                reset.guestProducerFenceProofSHA256 = nil
+            }
+            if replacement == reset { return true }
+        }
+
+        if let oldGeneration = previous.rendererGeneration,
+           let newGeneration = replacement.rendererGeneration,
+           newGeneration > oldGeneration {
+            guard previous.accelerationLevel == .hardwareAccelerated3D,
+                  replacement.verificationState == .provisional else { return false }
+            var expected = previous
+            expected.rendererGeneration = newGeneration
+            expected.rendererWorkerReceiptSHA256 = replacement.rendererWorkerReceiptSHA256
+            expected.verificationState = .provisional
+            expected.guestProducerFenceProofSHA256 = nil
+            expected.firstShaderCompletedAtUnixMilliseconds = nil
+            expected.firstPresentationCompletedAtUnixMilliseconds = nil
+            return replacement == expected
+        }
+
+        guard observationDoesNotRegress(
                 previous.firstShaderCompletedAtUnixMilliseconds,
                 replacement.firstShaderCompletedAtUnixMilliseconds
               ),
               observationDoesNotRegress(
                 previous.firstPresentationCompletedAtUnixMilliseconds,
                 replacement.firstPresentationCompletedAtUnixMilliseconds
-              ) else {
-            return false
-        }
-
-        if let oldGeneration = previous.rendererGeneration,
-           let newGeneration = replacement.rendererGeneration,
-           newGeneration > oldGeneration {
-            var expected = previous
-            expected.rendererGeneration = newGeneration
-            expected.rendererWorkerReceiptSHA256 = replacement.rendererWorkerReceiptSHA256
-            expected.guestProducerFenceProofSHA256 = replacement.guestProducerFenceProofSHA256
-            expected.firstShaderCompletedAtUnixMilliseconds =
-                replacement.firstShaderCompletedAtUnixMilliseconds
-            expected.firstPresentationCompletedAtUnixMilliseconds =
-                replacement.firstPresentationCompletedAtUnixMilliseconds
-            return replacement == expected
-        }
+              ) else { return false }
 
         switch (previous.verificationState, replacement.verificationState) {
-        case (.provisional, .provisional), (.verified, .verified):
+        case (.provisional, .provisional), (.verified, .verified),
+             (.notRequired, .notRequired):
             var expected = previous
             expected.firstShaderCompletedAtUnixMilliseconds =
                 replacement.firstShaderCompletedAtUnixMilliseconds

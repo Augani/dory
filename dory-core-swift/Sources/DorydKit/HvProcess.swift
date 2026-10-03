@@ -275,6 +275,11 @@ public final class RuntimeLaunchEnvelopeAuthority: @unchecked Sendable {
         try envelope.encodedArgument()
     }
 
+    func matchesQualificationFaultAuthority(_ authority: DoryRuntimeQualificationFaultAuthority) -> Bool {
+        envelope.machineID == authority.machineID && envelope.operationID == authority.operationID
+            && envelope.resolvedPlanSHA256 == authority.resolvedPlanSHA256
+    }
+
     fileprivate func inheritedDescriptorSlots() -> [(String, Int32)] {
         envelope.inheritedFileDescriptors.map { ($0.name, $0.descriptor) }
             + envelope.inheritedDirectoryDescriptors.map { ($0.name, $0.descriptor) }
@@ -312,6 +317,12 @@ public final class DoryPCRuntimeLaunchEnvelopeAuthority: @unchecked Sendable {
         try envelope.encodedArgument()
     }
 
+    func matchesQualificationFaultAuthority(_ authority: DoryRuntimeQualificationFaultAuthority) -> Bool {
+        envelope.machineID == authority.machineID && envelope.operationID == authority.operationID
+            && envelope.resolvedPlanSHA256 == authority.resolvedPlanSHA256
+            && envelope.graphics == .hardwareAccelerated3D && authority.policy.isRendererCrashOnly
+    }
+
     fileprivate func inheritedDescriptorSlots() -> [(String, Int32)] {
         envelope.inheritedFileDescriptors.map { ($0.name, $0.descriptor) }
             + envelope.inheritedDirectoryDescriptors.map { ($0.name, $0.descriptor) }
@@ -337,6 +348,8 @@ public struct HvProcessConfiguration: Sendable {
     var rendererReleaseIdentity: DoryRendererReleaseIdentityV1?
     var containerRendererAuthority: DoryContainerRendererLaunchAuthority?
     var rendererGenerationHandoffServer: DoryRendererGenerationHandoffServer?
+    var qualificationFaultAuthority: DoryRuntimeQualificationFaultAuthority?
+    var qualificationFaultChannel: DoryRuntimeQualificationFaultChannel?
 
     public init(
         executablePath: String,
@@ -923,6 +936,19 @@ public final class HvProcess: @unchecked Sendable {
                 arguments: launchArguments,
                 environment: launchEnvironment
             )
+            var applicationLaunchAccepted = false
+            defer {
+                // Cover every prepublication failure, including a missing application object
+                // or a failed process monitor after descriptor acknowledgement. A queued or
+                // in-flight LaunchServices completion must not be left without an owner.
+                if !applicationLaunchAccepted, let application = launchRequest.cancel() {
+                    if terminalRetirement == nil {
+                        beginTerminalRetirement(application: application)
+                    } else {
+                        DoryApplicationTerminalRetirement.begin(application: application)
+                    }
+                }
+            }
             let peerIdentity: DoryApplicationLaunchPeerIdentity
             do {
                 peerIdentity = try handoff.transfer(
@@ -940,9 +966,7 @@ public final class HvProcess: @unchecked Sendable {
                 }
             } catch {
                 handoff.cleanup()
-                if let applicationLaunch = try? launchRequest.finish(
-                    timeout: Self.applicationLaunchCleanupTimeoutSeconds
-                ) {
+                if let applicationLaunch = launchRequest.cancel() {
                     _ = applicationLaunch.forceTerminate()
                     beginTerminalRetirement(application: applicationLaunch)
                 }
@@ -1019,6 +1043,7 @@ public final class HvProcess: @unchecked Sendable {
                 applicationLaunch: applicationLaunch,
                 applicationAuditToken: peerIdentity.auditToken
             )
+            applicationLaunchAccepted = true
         }
 
         // Do not publish the PID until the exact live code object has passed validation and the
@@ -1155,6 +1180,7 @@ public final class HvProcess: @unchecked Sendable {
     private func validateDescriptorEnvelope(mappings: [InheritedDescriptorMapping]) throws {
         let dockerDiskIndex = try validatedDockerDataDiskDescriptorIndex(mappings: mappings)
         let reconnectIndex = try validatedRuntimeReconnectDescriptorIndex(mappings: mappings)
+        let faultIndex = try validatedQualificationFaultDescriptorIndex(mappings: mappings)
         let containerRendererIndex = try validatedContainerRendererDescriptorIndex(mappings: mappings)
         guard configuration.runtimeLaunchEnvelopeAuthority == nil
                 || configuration.pcRuntimeLaunchEnvelopeAuthority == nil else {
@@ -1176,7 +1202,7 @@ public final class HvProcess: @unchecked Sendable {
         }
         let envelopeAuthorities = configuration.inheritedFileDescriptors.enumerated().compactMap {
             index, authority in
-            index == dockerDiskIndex || index == reconnectIndex ? nil : authority
+            index == dockerDiskIndex || index == reconnectIndex || index == faultIndex ? nil : authority
         }
         guard slots.count == envelopeAuthorities.count,
               zip(slots, envelopeAuthorities).allSatisfy({ slot, authority in
@@ -1252,6 +1278,44 @@ public final class HvProcess: @unchecked Sendable {
         guard authority.name == name,
               authority.childDescriptor == childDescriptor,
               mappings[index].childDescriptor == childDescriptor else {
+            throw ProcessError.descriptorEnvelopeMismatch
+        }
+        return index
+    }
+
+    private func validatedQualificationFaultDescriptorIndex(
+        mappings: [InheritedDescriptorMapping]
+    ) throws -> Int? {
+        let name = DoryRuntimeQualificationFaultHandoff.descriptorName
+        let descriptor = DoryRuntimeQualificationFaultHandoff.childDescriptor
+        let flag = DoryRuntimeQualificationFaultHandoff.descriptorArgument
+        let candidates = configuration.inheritedFileDescriptors.indices.filter {
+            configuration.inheritedFileDescriptors[$0].name == name
+                || configuration.inheritedFileDescriptors[$0].childDescriptor == descriptor
+        }
+        let flags = configuration.arguments.indices.filter { configuration.arguments[$0] == flag }
+        let inline = configuration.arguments.contains { $0.hasPrefix(flag + "=") }
+        guard !candidates.isEmpty || !flags.isEmpty || inline else {
+            guard configuration.qualificationFaultAuthority == nil else {
+                throw ProcessError.descriptorEnvelopeMismatch
+            }
+            return nil
+        }
+        guard !inline, candidates.count == 1, flags.count == 1,
+              let index = candidates.first, let argument = flags.first,
+              configuration.arguments.indices.contains(argument + 1),
+              configuration.arguments[argument + 1] == String(descriptor),
+              mappings.indices.contains(index),
+              configuration.inheritedFileDescriptors[index].name == name,
+              configuration.inheritedFileDescriptors[index].childDescriptor == descriptor,
+              mappings[index].childDescriptor == descriptor,
+              let faultAuthority = configuration.qualificationFaultAuthority,
+              ((configuration.pcRuntimeLaunchEnvelopeAuthority == nil
+                  && configuration.runtimeLaunchEnvelopeAuthority?.matchesQualificationFaultAuthority(faultAuthority) == true)
+                || (configuration.runtimeLaunchEnvelopeAuthority == nil
+                  && configuration.pcRuntimeLaunchEnvelopeAuthority?.matchesQualificationFaultAuthority(faultAuthority) == true)),
+              configuration.arguments.first == "desktop",
+              configuration.restartPolicy == .none else {
             throw ProcessError.descriptorEnvelopeMismatch
         }
         return index

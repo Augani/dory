@@ -344,6 +344,20 @@ public struct DorydEnvironment: Sendable {
            ) {
             baseArguments.append(contentsOf: ["--gvproxy", gvproxy])
         }
+        let legacyDefaultTools = existingPath(firstOf: ["DORYD_GUEST_TOOLS_ISO"])
+        var toolsByArchitecture: [DoryGuestArchitecture: String] = [:]
+        if let armTools = existingPath(firstOf: ["DORYD_GUEST_TOOLS_ISO_ARM64"])
+            ?? (hostGuestArch == "arm64" ? legacyDefaultTools : nil)
+            ?? bundledResource(named: ["dory-guest-tools-arm64.iso"]) {
+            toolsByArchitecture[.arm64] = armTools
+        }
+        if let pcTools = existingPath(firstOf: ["DORYD_GUEST_TOOLS_ISO_X86_64"])
+            ?? (hostGuestArch == "amd64" ? legacyDefaultTools : nil)
+            ?? bundledResource(named: [
+                "dory-guest-tools-x86_64.iso", "dory-guest-tools-amd64.iso"
+            ]) {
+            toolsByArchitecture[.x86_64] = pcTools
+        }
         return MachineManagerConfiguration(
             vmmExecutablePath: helper,
             acceleratedDesktopExecutablePath: acceleratedDesktop?.executablePath,
@@ -355,8 +369,14 @@ public struct DorydEnvironment: Sendable {
                 environmentKey: "DORYD_PC_FIRMWARE_BUNDLE",
                 resourceName: "dory-pc-firmware"
             ),
-            guestToolsISOPath: existingPath(firstOf: ["DORYD_GUEST_TOOLS_ISO"])
+            guestToolsISOPath: legacyDefaultTools
                 ?? bundledResource(named: ["dory-guest-tools-\(hostGuestArch).iso"]),
+            guestToolsISOPathsByArchitecture: toolsByArchitecture,
+            macOSGuestToolsDirectoryPath: bundleResourcesDirectory.flatMap { resources in
+                let path = URL(fileURLWithPath: resources, isDirectory: true)
+                    .appendingPathComponent("DoryMacGuestTools", isDirectory: true).path
+                return FileManager.default.fileExists(atPath: path) ? path : nil
+            },
             stateDirectory: stateDirectory,
             runtimeDirectory: string("DORYD_MACHINE_RUNTIME_DIR") ?? "\(home)/.dory/machines",
             // The journal store derives `Library/Application Support/Dory/operations` from a

@@ -8,13 +8,14 @@ struct DoryMachineDiagnosticOverrideTests {
         let overrides = DoryMachineDiagnosticOverride.configured(in: [
             "DORY_GPU_TRACE_RESOURCES": "1",
             "DORY_GPU_TRACE_GRAPHICS": "1",
+            "DORY_PC_PROFILE_EXECUTION": "1",
             "DORY_VIRGL_SYNC_MODE": "CLIENT-WAIT",
             "DORY_VIRGLRENDERER_PATH": "/private/renderer.dylib",
             "DORY_MOLTENVK_ICD": "",
             "PRIVATE_TOKEN": "opaque",
         ])
 
-        #expect(overrides == [.gpuGraphicsTracing, .gpuResourceTracing])
+        #expect(overrides == [.gpuGraphicsTracing, .gpuResourceTracing, .pcExecutionProfiling])
         #expect(overrides.map(\.rawValue).joined().contains("/private") == false)
         #expect(overrides.map(\.rawValue).joined().contains("opaque") == false)
     }
@@ -24,6 +25,7 @@ struct DoryMachineDiagnosticOverrideTests {
         #expect(DoryMachineDiagnosticOverride.configured(in: [
             "DORY_GPU_TRACE_RESOURCES": "true",
             "DORY_GPU_TRACE_GRAPHICS": "true",
+            "DORY_PC_PROFILE_EXECUTION": "true",
             "DORY_VIRGL_SYNC_MODE": "invented",
         ]).isEmpty)
     }

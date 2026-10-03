@@ -1,10 +1,138 @@
 import Darwin
 import Foundation
 import DoryOperations
+import DoryVZMacCore
 import XCTest
 @testable import DorydKit
 
 final class MachineManagerSavedStateIntegrationTests: XCTestCase {
+    func testInvalidSavedStateColdStopUsesCallerJournalAndNeverRelaunchesOnReplay() throws {
+        let fixture = try SavedStateMachineFixture(name: #function)
+        defer { fixture.remove() }
+        let controller = RecordingSavedStateController(exitMarker: fixture.exitMarker)
+        var initial: MachineManager? = fixture.manager(controller: controller)
+        _ = try startAndAcceptHandoff(try XCTUnwrap(initial), fixture: fixture)
+        _ = try XCTUnwrap(initial).suspend(id: fixture.machineID)
+        initial = nil
+        try DoryVZSavedStateConsumption.consume(stateURL: URL(fileURLWithPath: fixture.savedStatePath))
+        let manager = fixture.manager(controller: controller)
+        let arguments = try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog))
+        let operationID = UUID()
+        let journal = try DoryOperationJournalStore(home: fixture.base + "/journal")
+        XCTAssertEqual(try manager.stop(id: fixture.machineID, operationID: operationID).state, .stopped)
+        let committed = try journal.read(operationID)
+        XCTAssertEqual(committed.plan.kind, .workspaceStop)
+        XCTAssertEqual(committed.state.status, .completed)
+        let operation = try journal.acquire(operationID).readWorkspaceLifecycleOperation()
+        XCTAssertEqual(operation.source.state, .failed)
+        XCTAssertEqual(operation.target.state, .stopped)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.savedStateDirectory))
+        for _ in 0..<2 {
+            XCTAssertEqual(try manager.stop(id: fixture.machineID, operationID: operationID).state, .stopped)
+            XCTAssertEqual(try journal.read(operationID), committed)
+        }
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog)), arguments)
+        try manager.delete(id: fixture.machineID)
+    }
+
+    func testColdStopRetriesEveryRAMRetirementBoundaryWithoutAnotherOperation() throws {
+        for point in DoryMachineSavedStateStore.RemovalCheckpoint.allCases {
+            let fixture = try SavedStateMachineFixture(name: #function + "-\(point)")
+            defer { fixture.remove() }
+            let controller = RecordingSavedStateController(exitMarker: fixture.exitMarker)
+            let manager = fixture.manager(controller: controller)
+            _ = try startAndAcceptHandoff(manager, fixture: fixture)
+            _ = try manager.suspend(id: fixture.machineID)
+            let arguments = try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog))
+            let operationID = UUID()
+            manager.installLifecycleFaultInjectorForTesting {
+                if $0 == .savedStateColdStopRetirement(point) { throw ColdStopTestFailure.interrupted }
+            }
+            XCTAssertThrowsError(try manager.stop(id: fixture.machineID, operationID: operationID))
+            let pending = try XCTUnwrap(manager.status(id: fixture.machineID))
+            XCTAssertEqual(pending.state, .recovering)
+            XCTAssertEqual(pending.activeOperationID, operationID.uuidString.lowercased())
+            XCTAssertNil(pending.pid)
+            XCTAssertThrowsError(try manager.start(id: fixture.machineID))
+            XCTAssertThrowsError(try manager.stop(id: fixture.machineID, operationID: UUID()))
+            manager.installLifecycleFaultInjectorForTesting { _ in }
+            XCTAssertEqual(try manager.stop(id: fixture.machineID, operationID: operationID).state, .stopped)
+            let journal = try DoryOperationJournalStore(home: fixture.base + "/journal")
+            XCTAssertEqual(try journal.read(operationID).state.status, .completed)
+            XCTAssertEqual(try journal.list().filter { $0.plan.kind == .workspaceStop }.map(\.plan.id), [operationID])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.savedStateDirectory))
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog)), arguments)
+            try manager.delete(id: fixture.machineID)
+        }
+    }
+
+    func testInterruptedInvalidRAMColdStopRollsForwardAfterDaemonRestart() throws {
+        for point in DoryMachineSavedStateStore.RemovalCheckpoint.allCases {
+            let fixture = try SavedStateMachineFixture(name: #function + "-\(point)")
+            defer { fixture.remove() }
+            let controller = RecordingSavedStateController(exitMarker: fixture.exitMarker)
+            var initial: MachineManager? = fixture.manager(controller: controller)
+            _ = try startAndAcceptHandoff(try XCTUnwrap(initial), fixture: fixture)
+            _ = try XCTUnwrap(initial).suspend(id: fixture.machineID)
+            initial = nil
+            try DoryVZSavedStateConsumption.consume(stateURL: URL(fileURLWithPath: fixture.savedStatePath))
+            var manager: MachineManager? = fixture.manager(controller: controller)
+            let operationID = UUID()
+            let arguments = try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog))
+            try XCTUnwrap(manager).installLifecycleFaultInjectorForTesting {
+                if $0 == .savedStateColdStopRetirement(point) { throw ColdStopTestFailure.interrupted }
+            }
+            XCTAssertThrowsError(try XCTUnwrap(manager).stop(id: fixture.machineID, operationID: operationID))
+            XCTAssertEqual(manager?.status(id: fixture.machineID)?.state, .recovering)
+            manager = nil
+            let recovered = fixture.manager(controller: controller)
+            XCTAssertEqual(recovered.status(id: fixture.machineID)?.state, .stopped)
+            XCTAssertNil(recovered.status(id: fixture.machineID)?.failure)
+            let journal = try DoryOperationJournalStore(home: fixture.base + "/journal")
+            XCTAssertEqual(try journal.read(operationID).state.status, .completed)
+            XCTAssertEqual(try recovered.stop(id: fixture.machineID, operationID: operationID).state, .stopped)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.savedStateDirectory))
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog)), arguments)
+            try recovered.delete(id: fixture.machineID)
+        }
+    }
+
+    private enum ColdStopTestFailure: Error { case interrupted }
+
+    func testConsumedPayloadAfterHelperDeathCannotReplayAfterDaemonRestart() throws {
+        let fixture = try SavedStateMachineFixture(name: #function)
+        defer { fixture.remove() }
+        let controller = RecordingSavedStateController(exitMarker: fixture.exitMarker)
+        var manager: MachineManager? = fixture.manager(controller: controller)
+        _ = try startAndAcceptHandoff(try XCTUnwrap(manager), fixture: fixture)
+        _ = try XCTUnwrap(manager).suspend(id: fixture.machineID)
+        manager = nil
+        let stateURL = URL(fileURLWithPath: fixture.savedStatePath)
+        let original = try Data(contentsOf: stateURL)
+        let arguments = try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog))
+        // Model the helper's durable consume followed by death before readiness publication.
+        // This fixture never creates a Virtualization.framework VM or changes a guest disk.
+        try DoryVZSavedStateConsumption.consume(stateURL: stateURL)
+        let recovered = fixture.manager(controller: controller)
+        let status = try XCTUnwrap(recovered.status(id: fixture.machineID))
+        XCTAssertEqual(status.state, .failed)
+        XCTAssertEqual(status.failure?.code, .savedStateInvalid)
+        XCTAssertTrue(status.lastError?.contains("consumed") == true)
+        XCTAssertNil(status.pid)
+        XCTAssertThrowsError(try recovered.resume(id: fixture.machineID))
+        XCTAssertThrowsError(try recovered.start(id: fixture.machineID))
+        XCTAssertEqual(try Data(contentsOf: stateURL), original)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog)), arguments)
+        // The ordinary Stop action is explicit cold recovery. It retires only the unusable
+        // saved RAM, not the machine's disks, and does not spawn a replacement helper.
+        let stopped = try recovered.stop(id: fixture.machineID)
+        XCTAssertEqual(stopped.state, .stopped)
+        XCTAssertNil(stopped.failure)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.savedStateDirectory))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog)), arguments)
+        try recovered.delete(id: fixture.machineID)
+    }
+
     func testUpgradedSavedStateAccountsRetainOriginalsUntilValidatedResume() throws {
         let cases: [(backend: String?, schema: Int, hasFormat: Bool, accepted: Bool)] = [
             (nil, 1, false, true),

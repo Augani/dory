@@ -87,6 +87,20 @@ struct DoryVirtualMachineDefinitionTests {
             "camera.enabled",
             in: definition.validate()
         ))
+
+        var macDefinition = installerDefinition(family: .macOS)
+        macDefinition.camera.enabled = true
+        #expect(has(
+            .invalidCameraDeviceIdentity,
+            "camera.hostDeviceUniqueID",
+            in: macDefinition.validate()
+        ))
+        macDefinition.camera.hostDeviceUniqueID = "selected-host-camera"
+        #expect(!has(
+            .invalidCameraDeviceIdentity,
+            "camera.hostDeviceUniqueID",
+            in: macDefinition.validate()
+        ))
     }
 
     @Test("pre-release schemas are rejected instead of migrated")

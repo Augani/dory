@@ -152,7 +152,8 @@ public enum DoryReleaseSupportPolicy {
 
     public static func availability(
         hostArchitecture: DoryHostArchitecture,
-        guest: DoryGuestPlatform
+        guest: DoryGuestPlatform,
+        qualificationBootstrapEnabled: Bool = false
     ) -> DoryCapabilityAvailability {
         switch DoryVirtualizationProductPolicy.cell(
             hostArchitecture: hostArchitecture,
@@ -167,6 +168,10 @@ public enum DoryReleaseSupportPolicy {
                     message: "This guest configuration is unavailable: \(error.reasonCode.rawValue)."
                 )
             )
+        case .success where qualificationBootstrapEnabled:
+            // An explicitly admitted development/candidate launch may exercise the implemented
+            // product cells. This is experimental admission, not release qualification.
+            return DoryCapabilityAvailability(supportTier: .experimental, state: .available)
         case .success(.linuxARM64Native):
             return DoryCapabilityAvailability(supportTier: .supported, state: .available)
         case .success(.linuxX86_64Translated):

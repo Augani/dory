@@ -1,7 +1,21 @@
 import AppKit
+import AVFoundation
 import Darwin
 import DoryOperations
 import SwiftUI
+
+struct HostCameraChoice: Identifiable, Hashable {
+    let id: String
+    let name: String
+
+    static func connectedCameras() -> [Self] {
+        AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera],
+            mediaType: .video,
+            position: .unspecified
+        ).devices.map { Self(id: $0.uniqueID, name: $0.localizedName) }
+    }
+}
 
 struct MachinesView: View {
     @Environment(AppStore.self) private var store
@@ -128,6 +142,8 @@ private struct MachineCard: View {
     let machine: Machine
     @State private var confirmingDelete = false
     @State private var confirmingToolsRepair = false
+    @State private var confirmingSavedStateDiscard = false
+    @State private var confirmingMacDisplayRepair = false
     @State private var confirmingInstallerMediaChange = false
     @State private var confirmingGuestToolsMediaChange = false
     @State private var showingIntegrationHealth = false
@@ -221,12 +237,18 @@ private struct MachineCard: View {
 
             HStack(spacing: 10) {
                 actionButton(
-                    [.running, .starting, .installing].contains(machine.status) ? "stop.fill" : "play.fill",
+                    machine.nativeMacDisplayRepair != nil ? "display.trianglebadge.exclamationmark"
+                        : machine.requiresSavedStateRecovery ? "arrow.counterclockwise"
+                        : [.running, .starting, .installing].contains(machine.status) ? "stop.fill" : "play.fill",
                     machine.actionLabel,
                     prominent: !isRunning,
-                    enabled: machine.status.acceptsPrimaryAction
+                    enabled: machine.nativeMacDisplayRepair != nil ? machine.canRepairNativeMacDisplay
+                        : (machine.status.acceptsPrimaryAction || machine.requiresSavedStateRecovery)
+                            && (!machine.requiresSavedStateRecovery || machine.canDiscardSavedState)
                 ) {
-                    store.toggleMachine(machine)
+                    if machine.nativeMacDisplayRepair != nil { confirmingMacDisplayRepair = true }
+                    else if machine.requiresSavedStateRecovery { confirmingSavedStateDiscard = true }
+                    else { store.toggleMachine(machine) }
                 }
                 if isRunning {
                     actionButton("pause.fill", "Pause", prominent: false) {
@@ -306,6 +328,33 @@ private struct MachineCard: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This permanently deletes the Linux machine and its disk. This cannot be undone.")
+        }
+        .confirmationDialog(
+            "Discard saved state for \(machine.name)?",
+            isPresented: $confirmingSavedStateDiscard,
+            titleVisibility: .visible
+        ) {
+            Button("Discard Saved State", role: .destructive) {
+                store.discardMachineSavedState(machine)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes saved RAM and unsaved application state. Your disks, installed system, files, machine identity, and shared folders are preserved. The machine stays stopped; choose Start afterwards for a cold boot.")
+        }
+        .confirmationDialog("Repair the Mac display in \(machine.name)?",
+            isPresented: $confirmingMacDisplayRepair, titleVisibility: .visible) {
+            if let repair = machine.nativeMacDisplayRepair {
+                ForEach(Array(repair.displays.enumerated()), id: \.offset) { index, display in
+                    if repair.pendingSelectedDisplayIndex == nil || repair.pendingSelectedDisplayIndex == index {
+                        Button("Keep Display \(index + 1): \(display.widthPixels) × \(display.heightPixels)") {
+                            store.repairNativeMacDisplay(machine, keepingDisplayAt: index)
+                        }
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("macOS supports one virtual display. Choose which display to keep. Your disks, files, and machine identity are preserved. Saved RAM is kept as an incompatible backup and cannot be resumed after this change. The machine stays stopped; choose Start afterwards for a cold boot.")
         }
         .confirmationDialog(
             "Repair Dory Tools in \(machine.name)?",
@@ -575,6 +624,13 @@ private struct MachineCard: View {
 
     private var overflowMenu: some View {
         Menu {
+            if machine.canDiscardSavedState {
+                Button(role: .destructive) { confirmingSavedStateDiscard = true } label: {
+                    Label("Discard Saved State…", systemImage: "arrow.counterclockwise")
+                }
+                .disabled(store.isMachineBusy(machine.name))
+                Divider()
+            }
             if isActive {
                 Button { store.suspendMachine(machine) } label: {
                     Label("Suspend", systemImage: "moon.zzz")
@@ -812,6 +868,14 @@ private struct MachineCard: View {
                 }
                 .font(.system(size: 12))
                 .accessibilityElement(children: .combine)
+            }
+            if let runtimeDetail = machine.runtimeDetail, !runtimeDetail.isEmpty {
+                Divider()
+                Text(runtimeDetail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(p.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
         }
         .padding(16)
@@ -1164,24 +1228,28 @@ private struct MachineIntegrationHealthSheet: View {
 
             Divider().overlay(p.border)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    healthSummary
+            if machine.guestFamily == "macos" {
+                macHealthSummary
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        healthSummary
 
-                    VStack(alignment: .leading, spacing: 9) {
-                        Text("INTEGRATIONS")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(p.text3)
-                            .tracking(0.7)
-                        ForEach(health.features, id: \.id) { feature in
-                            featureRow(feature)
+                        VStack(alignment: .leading, spacing: 9) {
+                            Text("INTEGRATIONS")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(p.text3)
+                                .tracking(0.7)
+                            ForEach(health.features, id: \.id) { feature in
+                                featureRow(feature)
+                            }
                         }
                     }
+                    .padding(20)
                 }
-                .padding(20)
             }
 
-            if store.canRepairMachineTools(machine) {
+            if machine.guestFamily != "macos" && store.canRepairMachineTools(machine) {
                 Divider().overlay(p.border)
                 HStack {
                     Text("Repair reinstalls the active signed Dory Tools payload with rollback.")
@@ -1209,6 +1277,41 @@ private struct MachineIntegrationHealthSheet: View {
         } message: {
             Text("Dory will create a last-good snapshot, reinstall the active signed desktop and tools payload, restart the machine, and roll back automatically if verification fails.")
         }
+    }
+
+    private var macHealthSummary: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(machine.macGuestTools?.state == .healthy
+                 ? "Mac Guest Tools connected"
+                 : (machine.macGuestTools?.state == .handshaking
+                    ? "Mac Guest Tools connecting" : "Mac Guest Tools not connected"))
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(machine.macGuestTools?.state == .healthy ? p.green : p.amber)
+            Text(machine.status == .running
+                 ? "The selected Mac must report fresh, machine-bound health over its VM-local channel. URL opening and one-shot text copy from the guest require separate grants; health alone grants neither. Guest Tools file transfer, shutdown and camera are unavailable; configured shared folders are separate."
+                 : "Live Guest Tools health is available while this Mac is running.")
+                .font(.system(size: 12))
+                .foregroundStyle(p.text2)
+            if let tools = machine.macGuestTools, tools.state == .healthy {
+                summaryValue("TOOLS VERSION", tools.toolsVersion ?? "—")
+                summaryValue("TOOLS BUILD", tools.toolsBuild ?? "—")
+                summaryValue("GUEST OS", tools.guestOSVersion ?? "—")
+                if let guestTime = tools.guestTimeUnixMilliseconds {
+                    summaryValue("GUEST TIME (MS)", String(guestTime))
+                }
+                summaryValue("GRANTED", tools.grantedCapabilities.joined(separator: ", "))
+            } else if machine.status == .running {
+                Text(machine.macGuestToolsDiagnostic)
+                    .font(.system(size: 12))
+                    .foregroundStyle(p.text2)
+                Text("To install the signed tools in a release build, open the read-only “Dory Guest Tools” shared folder inside the Mac guest, run the installer package, then log out and back in.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(p.text2)
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(20)
     }
 
     private var healthSummary: some View {
@@ -1315,7 +1418,11 @@ private struct MachineIntegrationHealthSheet: View {
     }
 
     private var healthIcon: String {
-        switch health.state {
+        if machine.guestFamily == "macos" {
+            return machine.macGuestTools?.state == .healthy
+                ? "checkmark.seal.fill" : "exclamationmark.triangle.fill"
+        }
+        return switch health.state {
         case .healthy: "checkmark.seal.fill"
         case .inactive: "pause.circle.fill"
         case .compatibility: "arrow.triangle.2.circlepath"
@@ -1324,7 +1431,10 @@ private struct MachineIntegrationHealthSheet: View {
     }
 
     private var healthColor: Color {
-        switch health.state {
+        if machine.guestFamily == "macos" {
+            return machine.macGuestTools?.state == .healthy ? p.green : p.amber
+        }
+        return switch health.state {
         case .healthy: p.green
         case .inactive, .compatibility: p.text2
         default: p.amber
@@ -1332,7 +1442,10 @@ private struct MachineIntegrationHealthSheet: View {
     }
 
     private var healthBackground: Color {
-        switch health.state {
+        if machine.guestFamily == "macos" {
+            return machine.macGuestTools?.state == .healthy ? p.greenWeak : p.amberWeak
+        }
+        return switch health.state {
         case .healthy: p.greenWeak
         case .inactive, .compatibility: p.pill
         default: p.amberWeak
@@ -1441,7 +1554,10 @@ private struct MachineEditSheet: View {
     @State private var fileTransferPolicy = DoryVMClipboardDirection.bidirectional
     @State private var initialClipboardPicker = DoryDesktopClipboardPolicy.bidirectional
     @State private var initialFileTransferPolicy = DoryVMClipboardDirection.bidirectional
+    @State private var macTextClipboardDirection = DoryVMClipboardDirection.bidirectional
+    @State private var macImageClipboardDirection = DoryVMClipboardDirection.bidirectional
     @State private var originalClipboardPolicy: DoryVMClipboardPolicy?
+    @State private var unsupportedMacClipboardFilePolicy = false
     @State private var runtimePreference = DoryDesktopVMMPreference.automatic
     @State private var graphicsPreference = DoryDesktopGraphicsPreference.automatic
     @State private var displayDensity = DoryVMDisplayDensity.retinaResolution
@@ -1454,6 +1570,8 @@ private struct MachineEditSheet: View {
     @State private var audioOutputEnabled = true
     @State private var originalAudioConfiguration: DoryVMAudioConfiguration?
     @State private var cameraEnabled = false
+    @State private var hostCameras: [HostCameraChoice] = []
+    @State private var cameraDeviceUniqueID = ""
     @State private var intelApplicationTranslationEnabled = false
     @State private var typedSettings = DorydMachineTypedSettings()
 
@@ -1519,11 +1637,20 @@ private struct MachineEditSheet: View {
             ?? typedSettings.guestIdentityIntent.account?.username
             ?? "dory"
         originalClipboardPolicy = typedSettings.clipboardPolicy
-        clipboardPolicy = typedSettings.clipboardPolicy.flatMap {
-            guard $0.text == $0.image else { return nil }
-            return DoryDesktopClipboardPolicy(rawValue: $0.text.rawValue)
-        } ?? .bidirectional
-        fileTransferPolicy = typedSettings.clipboardPolicy?.files ?? .bidirectional
+        if machine.guestFamily == "macos" {
+            let savedClipboard = typedSettings.clipboardPolicy
+                ?? .legacyDesktop(.bidirectional)
+            macTextClipboardDirection = savedClipboard.text
+            macImageClipboardDirection = savedClipboard.image
+            unsupportedMacClipboardFilePolicy = savedClipboard.files != .off
+            fileTransferPolicy = .off
+        } else {
+            clipboardPolicy = typedSettings.clipboardPolicy.flatMap {
+                guard $0.text == $0.image else { return nil }
+                return DoryDesktopClipboardPolicy(rawValue: $0.text.rawValue)
+            } ?? .bidirectional
+            fileTransferPolicy = typedSettings.clipboardPolicy?.files ?? .bidirectional
+        }
         initialClipboardPicker = clipboardPolicy
         initialFileTransferPolicy = fileTransferPolicy
         runtimePreference = typedSettings.runtimePreference ?? .automatic
@@ -1543,6 +1670,8 @@ private struct MachineEditSheet: View {
         audioInputEnabled = typedSettings.audioConfiguration?.inputEnabled ?? true
         audioOutputEnabled = typedSettings.audioConfiguration?.outputEnabled ?? true
         cameraEnabled = typedSettings.cameraConfiguration?.enabled ?? false
+        cameraDeviceUniqueID = typedSettings.cameraConfiguration?.hostDeviceUniqueID ?? ""
+        hostCameras = HostCameraChoice.connectedCameras()
         intelApplicationTranslationEnabled = typedSettings
             .intelApplicationTranslationEnabled ?? false
         mountRows = settings.mounts.map {
@@ -1698,13 +1827,34 @@ private struct MachineEditSheet: View {
                 .disabled(!audioPolicyEditable)
                 Text(audioPolicyEditable
                      ? (machine.guestFamily == "macos"
-                        ? "Audio uses Apple virtual devices. Camera access uses Dory Camera and follows host macOS privacy permission."
+                        ? "Audio uses Apple virtual devices. Camera sharing requires a selected host camera, macOS permission, and Dory Camera in Guest Tools."
                         : machine.bootMode == .efi
                         ? "Speakers and microphone use standard VirtIO audio. Camera sharing is currently available on Dory-managed accelerated desktops, not custom ISO compatibility guests."
                         : "Enabled devices are attached explicitly. Camera sharing appears in Linux as a standard UVC webcam and follows macOS camera permission.")
                      : "This compatibility machine keeps its historical combined audio device. Replan it into the resolved runtime before changing audio policy.")
                     .font(.system(size: 11))
                     .foregroundStyle(p.text3)
+                if machine.guestFamily == "macos", cameraEnabled {
+                    Picker("Host camera", selection: $cameraDeviceUniqueID) {
+                        Text("Choose a camera").tag("")
+                        ForEach(hostCameras) { camera in
+                            Text(camera.name).tag(camera.id)
+                        }
+                        if !cameraDeviceUniqueID.isEmpty,
+                           !hostCameras.contains(where: { $0.id == cameraDeviceUniqueID }) {
+                            Text("Selected camera is disconnected").tag(cameraDeviceUniqueID)
+                        }
+                    }
+                    .accessibilityIdentifier("edit-machine-host-camera")
+                    Button("Refresh cameras") {
+                        hostCameras = HostCameraChoice.connectedCameras()
+                    }
+                    .buttonStyle(.link)
+                    if cameraDeviceUniqueID.isEmpty {
+                        Text("Select the exact host camera to grant to this machine.")
+                            .font(.system(size: 11)).foregroundStyle(p.red)
+                    }
+                }
             }
         }
     }
@@ -1713,30 +1863,53 @@ private struct MachineEditSheet: View {
         if displayMode == .desktop, machine.bootMode != .efi {
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel("CLIPBOARD SHARING")
-                Picker("Clipboard sharing", selection: $clipboardPolicy) {
-                    ForEach(DoryDesktopClipboardPolicy.allCases, id: \.self) { policy in
-                        Text(policy.displayName).tag(policy)
+                if machine.guestFamily == "macos" {
+                    Picker("Text", selection: $macTextClipboardDirection) {
+                        clipboardDirectionChoices
                     }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("edit-machine-mac-text-clipboard-policy")
+                    Picker("Images", selection: $macImageClipboardDirection) {
+                        clipboardDirectionChoices
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("edit-machine-mac-image-clipboard-policy")
+                    Text("Choosing Both for text and images uses the Mac clipboard device. Other combinations use Dory Guest Tools in the logged-in guest session.")
+                        .font(.system(size: 11)).foregroundStyle(p.text3)
+                    if unsupportedMacClipboardFilePolicy {
+                        Text("This machine has a saved clipboard-file policy that Mac guests cannot use. Applying will turn off that file policy.")
+                            .font(.system(size: 11)).foregroundStyle(p.red)
+                    }
+                    Text("Clipboard-backed file transfer is not available for Mac guests.")
+                        .font(.system(size: 11)).foregroundStyle(p.text3)
+                } else {
+                    Picker("Clipboard sharing", selection: $clipboardPolicy) {
+                        ForEach(DoryDesktopClipboardPolicy.allCases, id: \.self) { policy in
+                            Text(policy.displayName).tag(policy)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("edit-machine-clipboard-policy")
+                    Text("Control whether text and images can move between this Linux desktop and your Mac.")
+                        .font(.system(size: 11)).foregroundStyle(p.text3)
+                    Picker("File transfer", selection: $fileTransferPolicy) {
+                        clipboardDirectionChoices
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("edit-machine-file-transfer-policy")
+                    Text("File and folder drag/drop uses Dory Tools and follows this direction independently of text and images.")
+                        .font(.system(size: 11)).foregroundStyle(p.text3)
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("edit-machine-clipboard-policy")
-                Text(machine.guestFamily == "macos"
-                     ? "Control whether text and images can move between this virtual Mac and the host Mac."
-                     : "Control whether text and images can move between this Linux desktop and your Mac.")
-                    .font(.system(size: 11)).foregroundStyle(p.text3)
-                Picker("File transfer", selection: $fileTransferPolicy) {
-                    Text("Off").tag(DoryVMClipboardDirection.off)
-                    Text("To Guest").tag(DoryVMClipboardDirection.hostToGuest)
-                    Text("To Host").tag(DoryVMClipboardDirection.guestToHost)
-                    Text("Both").tag(DoryVMClipboardDirection.bidirectional)
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("edit-machine-file-transfer-policy")
-                Text("File and folder drag/drop uses Dory Tools and follows this direction independently of text and images.")
-                    .font(.system(size: 11)).foregroundStyle(p.text3)
             }
         }
+    }
+
+    @ViewBuilder private var clipboardDirectionChoices: some View {
+        Text("Off").tag(DoryVMClipboardDirection.off)
+        Text("To Guest").tag(DoryVMClipboardDirection.hostToGuest)
+        Text("To Host").tag(DoryVMClipboardDirection.guestToHost)
+        Text("Both").tag(DoryVMClipboardDirection.bidirectional)
     }
 
     @ViewBuilder private var runtimeBlock: some View {
@@ -1889,6 +2062,8 @@ private struct MachineEditSheet: View {
                     || guestUsernameInvalid
                     || resolvedPortForwards == nil
                     || intelApplicationTranslationRuntimeConflict
+                    || (machine.guestFamily == "macos" && cameraEnabled
+                        && !hostCameras.contains(where: { $0.id == cameraDeviceUniqueID }))
             )
         }
         .padding(.horizontal, 18).padding(.vertical, 13)
@@ -1979,46 +2154,56 @@ private struct MachineEditSheet: View {
             )
             if machine.bootMode != .efi {
                 typedSettings.cameraConfiguration = DoryVMCameraConfiguration(
-                    enabled: cameraEnabled
+                    enabled: cameraEnabled,
+                    hostDeviceUniqueID: machine.guestFamily == "macos"
+                        && !cameraDeviceUniqueID.isEmpty ? cameraDeviceUniqueID : nil
                 )
             }
         }
         if displayMode == .desktop, machine.bootMode != .efi {
-            let previousUsername = typedSettings.guestIdentityIntent.account?.username ?? "dory"
-            if previousUsername != normalizedGuestUsername {
-                let previousHome = "/home/\(previousUsername)"
-                let updatedHome = "/home/\(normalizedGuestUsername)"
-                mounts = mounts.map { mount in
-                    guard mount.guest == previousHome || mount.guest.hasPrefix(previousHome + "/") else {
-                        return mount
+            if machine.guestFamily == "macos" {
+                typedSettings.clipboardPolicy = DoryVMClipboardPolicy(
+                    text: macTextClipboardDirection,
+                    image: macImageClipboardDirection,
+                    files: .off
+                )
+            } else {
+                let previousUsername = typedSettings.guestIdentityIntent.account?.username ?? "dory"
+                if previousUsername != normalizedGuestUsername {
+                    let previousHome = "/home/\(previousUsername)"
+                    let updatedHome = "/home/\(normalizedGuestUsername)"
+                    mounts = mounts.map { mount in
+                        guard mount.guest == previousHome || mount.guest.hasPrefix(previousHome + "/") else {
+                            return mount
+                        }
+                        return MountPair(
+                            host: mount.host,
+                            guest: updatedHome + String(mount.guest.dropFirst(previousHome.count)),
+                            readOnly: mount.readOnly,
+                            shareTag: mount.shareTag
+                        )
                     }
-                    return MountPair(
-                        host: mount.host,
-                        guest: updatedHome + String(mount.guest.dropFirst(previousHome.count)),
-                        readOnly: mount.readOnly,
-                        shareTag: mount.shareTag
-                    )
                 }
-            }
-            typedSettings.guestIdentityIntent.account = DoryVMGuestAccountIntent(
-                username: normalizedGuestUsername,
-                numericUserID: typedSettings.guestIdentityIntent.account?.numericUserID
-            )
-            if originalClipboardPolicy != nil
-                || clipboardPolicy != initialClipboardPicker
-                || fileTransferPolicy != initialFileTransferPolicy {
-                var exactPolicy = originalClipboardPolicy ?? .disabled
-                if clipboardPolicy != initialClipboardPicker {
-                    let direction = DoryVMClipboardDirection(
-                        rawValue: clipboardPolicy.rawValue
-                    ) ?? .bidirectional
-                    exactPolicy.text = direction
-                    exactPolicy.image = direction
+                typedSettings.guestIdentityIntent.account = DoryVMGuestAccountIntent(
+                    username: normalizedGuestUsername,
+                    numericUserID: typedSettings.guestIdentityIntent.account?.numericUserID
+                )
+                if originalClipboardPolicy != nil
+                    || clipboardPolicy != initialClipboardPicker
+                    || fileTransferPolicy != initialFileTransferPolicy {
+                    var exactPolicy = originalClipboardPolicy ?? .disabled
+                    if clipboardPolicy != initialClipboardPicker {
+                        let direction = DoryVMClipboardDirection(
+                            rawValue: clipboardPolicy.rawValue
+                        ) ?? .bidirectional
+                        exactPolicy.text = direction
+                        exactPolicy.image = direction
+                    }
+                    if fileTransferPolicy != initialFileTransferPolicy {
+                        exactPolicy.files = fileTransferPolicy
+                    }
+                    typedSettings.clipboardPolicy = exactPolicy
                 }
-                if fileTransferPolicy != initialFileTransferPolicy {
-                    exactPolicy.files = fileTransferPolicy
-                }
-                typedSettings.clipboardPolicy = exactPolicy
             }
             if typedSettings.runtimePreference != nil || runtimePreference != .automatic {
                 typedSettings.runtimePreference = runtimePreference

@@ -244,6 +244,15 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
 
     @Test("native Mac saved-state replan renews mutable disk provenance through production authority")
     func nativeMacSavedStateReplanRenewsMutableDiskProvenance() throws {
+        // This fixture retains several complete plans and saved-state manifests at once. Use
+        // the same owned test stack as other full production-composition fixtures rather than
+        // overflow Swift Testing's small cooperative worker stack during nested decoding.
+        try withProductionIntegrationTestStack {
+            try self.runNativeMacSavedStateReplanRenewsMutableDiskProvenance()
+        }
+    }
+
+    private func runNativeMacSavedStateReplanRenewsMutableDiskProvenance() throws {
         let machineID = "native-mac-saved-state"
         let fixture = try CompositionFixture(ids: [])
         let native = try fixture.nativeMacPreparedRequest(id: machineID)
@@ -1706,7 +1715,7 @@ private struct NativeMacManagerHelper {
         controller = NativeMacManagerHelperController(exitMarkerPath: exitMarkerPath)
         let testBundle = Bundle(for: DoryRuntimeReconnectTests.self).bundlePath
         let developerDirectory = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
-            ?? "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer"
+            ?? "/Applications/Xcode.app/Contents/Developer"
         let script = """
         #!/bin/sh
         log='\(root)/fake-vzmac-arguments.log'

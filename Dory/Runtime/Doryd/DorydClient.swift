@@ -1,6 +1,7 @@
 @preconcurrency import Foundation
 @preconcurrency import Security
 import DoryOperations
+import DorydKit
 
 @objc(DorydHealthControl)
 nonisolated protocol DorydControlXPC {
@@ -1225,6 +1226,7 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var agentProtocolVersion: UInt32? = nil
     var agentCapabilities: [DorydAgentCapability] = []
     var integrationHealth: DoryGuestIntegrationHealth? = nil
+    var macGuestTools: DorydMacGuestToolsHealth? = nil
     var agentSocketPath: String?
     var dockerdSocketPath: String?
     var shellSocketPath: String?
@@ -1247,9 +1249,36 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var displayPresentation: DoryMachineDisplayPresentation = .windowed
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
     var runtimeGraphicsSelection: DorydMachineRuntimeGraphicsSelection? = nil
+    var runtimeDetail: String? = nil
     var installedDesktopPayloadReceipt: DorydInstalledDesktopPayloadReceipt? = nil
     var cloneReceipt: DorydMachineCloneReceipt? = nil
     var savedState: DorydMachineSavedStateSummary? = nil
+    var nativeMacDisplayRepair: DorydMacDisplayRepairSummary? = nil
+}
+
+nonisolated struct DorydMacDisplayRepairSummary: Sendable, Equatable, Hashable {
+    struct Display: Sendable, Equatable, Hashable {
+        var widthPixels: Int
+        var heightPixels: Int
+        var pixelsPerInch: Int
+    }
+    var originalManifestSHA256: String
+    var displays: [Display]
+    var pendingSelectedDisplayIndex: Int?
+    var preservesSavedState: Bool
+    var bundleRepairCompleted: Bool
+}
+
+nonisolated struct DorydMacGuestToolsHealth: Sendable, Equatable, Hashable {
+    enum State: String, Sendable, Equatable, Hashable { case disconnected, handshaking, healthy }
+    var state: State
+    var runtimeGeneration: UInt64
+    var toolsVersion: String?
+    var toolsBuild: String?
+    var guestOSVersion: String?
+    var grantedCapabilities: [String]
+    var guestTimeUnixMilliseconds: UInt64?
+    var lastErrorCode: String?
 }
 
 nonisolated struct DorydMachineCloneReceipt: Sendable, Equatable, Hashable {
@@ -2285,6 +2314,24 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
+    func machineRepairNativeMacDisplay(
+        _ machineID: String, originalManifestSHA256: String, selectedDisplayIndex: Int,
+        operationID: UUID
+    ) async throws -> DorydMachineStatus {
+        guard originalManifestSHA256.count == 64,
+              originalManifestSHA256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+              operationID.uuidString != "00000000-0000-0000-0000-000000000000",
+              (0..<8).contains(selectedDisplayIndex) else {
+            throw DorydClientError.daemon("invalid confirmed display repair choice")
+        }
+        let config: NSDictionary = ["operationID": operationID.uuidString.lowercased(),
+            "nativeMacDisplayRepair": ["schemaVersion": 1,
+                "originalManifestSHA256": originalManifestSHA256, "selectedDisplayIndex": selectedDisplayIndex]]
+        return try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
+            proxy.machineUpdate(machineID, config: config, reply: reply)
+        } decode: { Self.machineStatus(from: $0) }
+    }
+
     func machineDisplayPresentationSet(
         _ machineID: String,
         presentation: DoryMachineDisplayPresentation
@@ -3204,6 +3251,86 @@ nonisolated final class DorydClient: @unchecked Sendable {
         ) else {
             return nil
         }
+        var macGuestTools: DorydMacGuestToolsHealth?
+        if let rawTools = dictionary["macGuestTools"] {
+            guard let tools = rawTools as? [String: Any],
+                  tools["machineID"] as? String == id,
+                  let stateRaw = tools["state"] as? String,
+                  let toolsState = DorydMacGuestToolsHealth.State(rawValue: stateRaw),
+                  let runtimeGeneration = uint64(tools["runtimeGeneration"]),
+                  runtimeGeneration != 0,
+                  let capabilities = tools["grantedCapabilities"] as? [String],
+                  capabilities == capabilities.sorted(),
+                  Set(capabilities).count == capabilities.count,
+                  Set(capabilities).isSubset(of: DoryMacGuestToolsHealth.implementedCapabilities)
+            else { return nil }
+            let version = nonEmptyString(tools["toolsVersion"])
+            let build = nonEmptyString(tools["toolsBuild"])
+            let guestOS = nonEmptyString(tools["guestOSVersion"])
+            let errorCode = nonEmptyString(tools["lastErrorCode"])
+            if toolsState == .healthy {
+                guard version != nil, build != nil, guestOS != nil,
+                      capabilities.contains("health"),
+                      uint64(tools["lastHealthAtUnixMilliseconds"]) != nil,
+                      tools["guestTimeUnixMilliseconds"] == nil
+                        || (capabilities.contains("guest-time")
+                            && uint64(tools["guestTimeUnixMilliseconds"]) != nil),
+                      errorCode == nil
+                else { return nil }
+            } else {
+                guard version == nil, build == nil, guestOS == nil,
+                      capabilities.isEmpty,
+                      tools["lastHealthAtUnixMilliseconds"] == nil,
+                      tools["guestTimeUnixMilliseconds"] == nil,
+                      (errorCode.map { code in
+                          toolsState == .disconnected && [
+                              "protocol-rejected", "invalid-frame", "disconnected",
+                              "timeout", "transport-error", "invalid-health",
+                              "teardown-timeout",
+                          ].contains(code)
+                      } ?? true)
+                else { return nil }
+            }
+            macGuestTools = DorydMacGuestToolsHealth(
+                state: toolsState, runtimeGeneration: runtimeGeneration,
+                toolsVersion: version, toolsBuild: build,
+                guestOSVersion: guestOS, grantedCapabilities: capabilities,
+                guestTimeUnixMilliseconds: uint64(tools["guestTimeUnixMilliseconds"]),
+                lastErrorCode: errorCode
+            )
+        }
+        let nativeMacDisplayRepair: DorydMacDisplayRepairSummary?
+        if let raw = dictionary["nativeMacDisplayRepair"] {
+            guard let value = raw as? NSDictionary, Self.strictUInt64(value["schema"]) == 1,
+                  let digest = value["originalManifestSHA256"] as? String,
+                  digest.utf8.count == 64, digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+                  let choices = value["displays"] as? [NSDictionary], (2...8).contains(choices.count),
+                  let preserves = value["preservesSavedState"] as? Bool,
+                  let completed = value["bundleRepairCompleted"] as? Bool,
+                  dictionary["guestFamily"] as? String == "macos",
+                  runtimeIdentity.mode == "requires-replanning",
+                  ["failed", "recovering"].contains(state), dictionary["pid"] == nil,
+                  savedState.value == nil else { return nil }
+            let keys = Set(value.allKeys.compactMap { $0 as? String })
+            let requiredKeys: Set<String> = ["schema", "originalManifestSHA256", "displays", "preservesSavedState", "bundleRepairCompleted"]
+            guard keys.count == value.count, keys == requiredKeys || keys == requiredKeys.union(["pendingSelectedDisplayIndex"]) else { return nil }
+            var displays: [DorydMacDisplayRepairSummary.Display] = []
+            for choice in choices {
+                guard Set(choice.allKeys.compactMap { $0 as? String }) == ["widthPixels", "heightPixels", "pixelsPerInch"], choice.count == 3 else { return nil }
+                guard let width = Self.strictUInt64(choice["widthPixels"]), (1...UInt64(Int.max)).contains(width),
+                      let height = Self.strictUInt64(choice["heightPixels"]), (1...UInt64(Int.max)).contains(height),
+                      let ppi = Self.strictUInt64(choice["pixelsPerInch"]), (1...UInt64(Int.max)).contains(ppi) else { return nil }
+                displays.append(.init(widthPixels: Int(width), heightPixels: Int(height), pixelsPerInch: Int(ppi)))
+            }
+            let index: Int?
+            if let rawIndex = value["pendingSelectedDisplayIndex"] {
+                guard let number = Self.strictUInt64(rawIndex), number < UInt64(displays.count) else { return nil }
+                index = Int(number)
+            } else { index = nil }
+            guard !completed || index != nil else { return nil }
+            nativeMacDisplayRepair = .init(originalManifestSHA256: digest, displays: displays,
+                pendingSelectedDisplayIndex: index, preservesSavedState: preserves, bundleRepairCompleted: completed)
+        } else { nativeMacDisplayRepair = nil }
         return DorydMachineStatus(
             id: id,
             guestFamily: nonEmptyString(dictionary["guestFamily"]) ?? "linux",
@@ -3221,6 +3348,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
             agentProtocolVersion: agentHandshake.protocolVersion,
             agentCapabilities: agentHandshake.capabilities,
             integrationHealth: integrationHealth.value,
+            macGuestTools: macGuestTools,
             agentSocketPath: nonEmptyString(dictionary["agentSocketPath"]),
             dockerdSocketPath: nonEmptyString(dictionary["dockerdSocketPath"]),
             shellSocketPath: nonEmptyString(dictionary["shellSocketPath"]),
@@ -3247,9 +3375,11 @@ nonisolated final class DorydClient: @unchecked Sendable {
             displayPresentation: displayPresentation,
             runtimeIdentity: runtimeIdentity,
             runtimeGraphicsSelection: runtimeGraphicsSelection.value,
+            runtimeDetail: nonEmptyString(dictionary["runtimeDetail"]),
             installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value,
             cloneReceipt: cloneReceipt.value,
-            savedState: savedState.value
+            savedState: savedState.value,
+            nativeMacDisplayRepair: nativeMacDisplayRepair
         )
     }
 

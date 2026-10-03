@@ -369,14 +369,23 @@ public struct DoryVMAudioConfiguration: Codable, Sendable, Equatable {
     }
 }
 
-/// Host-camera sharing policy. The runtime exposes an enabled camera as a standard UVC device, so
-/// Linux applications use the normal `uvcvideo`/V4L2 stack instead of a Dory-specific API.
+/// Host-camera sharing policy. Linux exposes an enabled camera as UVC/V4L2; macOS uses the
+/// Dory Camera guest extension. Native Mac launches require an exact selected host device.
 public struct DoryVMCameraConfiguration: Codable, Sendable, Equatable {
     public static let legacyEnabledEnvironmentKey = "DORY_DESKTOP_CAMERA"
     public var enabled: Bool
+    /// Stable AVFoundation device identity explicitly selected for this machine. A missing or
+    /// unplugged selection is never replaced with the host's current default camera.
+    public var hostDeviceUniqueID: String?
 
-    public init(enabled: Bool = false) {
+    public init(enabled: Bool = false, hostDeviceUniqueID: String? = nil) {
         self.enabled = enabled
+        self.hostDeviceUniqueID = hostDeviceUniqueID
+    }
+
+    public static func isValidHostDeviceUniqueID(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 512
+            && value.utf8.allSatisfy { $0 >= 0x20 && $0 != 0x7f }
     }
 }
 
@@ -508,6 +517,7 @@ public enum DoryVMDefinitionValidationCode: String, Codable, Sendable, CaseItera
     case unsafeGuestMountPath = "unsafe-guest-mount-path"
     case duplicateIntegration = "duplicate-integration"
     case integrationRequiresDisplay = "integration-requires-display"
+    case invalidCameraDeviceIdentity = "invalid-camera-device-identity"
     case invalidGuestIdentityIntent = "invalid-guest-identity-intent"
     case guestIdentityIncompatibleWithGuest = "guest-identity-incompatible-with-guest"
     case clipboardPolicyRequiresIntegration = "clipboard-policy-requires-integration"
@@ -1037,6 +1047,13 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         }
         if !display.enabled, camera.enabled {
             issues.append(issue(.integrationRequiresDisplay, "camera.enabled"))
+        }
+        if let hostDeviceUniqueID = camera.hostDeviceUniqueID,
+            !DoryVMCameraConfiguration.isValidHostDeviceUniqueID(hostDeviceUniqueID) {
+            issues.append(issue(.invalidCameraDeviceIdentity, "camera.hostDeviceUniqueID"))
+        }
+        if guest.family == .macOS, camera.enabled, camera.hostDeviceUniqueID == nil {
+            issues.append(issue(.invalidCameraDeviceIdentity, "camera.hostDeviceUniqueID"))
         }
     }
 

@@ -283,6 +283,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             audioInputEnabled: update(audioConfiguration?.inputEnabled),
             audioOutputEnabled: update(audioConfiguration?.outputEnabled),
             cameraEnabled: update(cameraConfiguration?.enabled),
+            cameraDeviceUniqueID: update(cameraConfiguration?.hostDeviceUniqueID),
             intelApplicationTranslationEnabled: update(
                 intelApplicationTranslationEnabled
             )
@@ -320,6 +321,9 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             audioInputEnabled: update(audioConfiguration?.inputEnabled),
             audioOutputEnabled: update(audioConfiguration?.outputEnabled),
             cameraEnabled: update(cameraConfiguration?.enabled),
+            cameraDeviceUniqueID: cameraConfiguration.map {
+                replacement($0.hostDeviceUniqueID)
+            } ?? .unchanged,
             intelApplicationTranslationEnabled: update(
                 intelApplicationTranslationEnabled
             )
@@ -344,6 +348,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         hasher.combine(audioConfiguration?.inputEnabled)
         hasher.combine(audioConfiguration?.outputEnabled)
         hasher.combine(cameraConfiguration?.enabled)
+        hasher.combine(cameraConfiguration?.hostDeviceUniqueID)
         hasher.combine(intelApplicationTranslationEnabled)
     }
 
@@ -381,7 +386,62 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
     public var audioInputEnabled: DoryMachineTypedSettingUpdate<Bool>
     public var audioOutputEnabled: DoryMachineTypedSettingUpdate<Bool>
     public var cameraEnabled: DoryMachineTypedSettingUpdate<Bool>
+    public var cameraDeviceUniqueID: DoryMachineTypedSettingUpdate<String>
     public var intelApplicationTranslationEnabled: DoryMachineTypedSettingUpdate<Bool>
+
+    private enum CodingKeys: String, CodingKey {
+        case guestUsername, guestNumericUserID, desktopDistributionIdentifier
+        case desktopDisplayName, desktopVersion, desktopEnvironment
+        case clipboardPolicy, runtimePreference, graphicsPreference, displayDensity
+        case networkMode, portForwards, audioInputEnabled, audioOutputEnabled
+        case cameraEnabled, cameraDeviceUniqueID, intelApplicationTranslationEnabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            guestUsername: values.decode(DoryMachineTypedSettingUpdate<String>.self, forKey: .guestUsername),
+            guestNumericUserID: values.decode(DoryMachineTypedSettingUpdate<UInt32>.self, forKey: .guestNumericUserID),
+            desktopDistributionIdentifier: values.decode(DoryMachineTypedSettingUpdate<String>.self, forKey: .desktopDistributionIdentifier),
+            desktopDisplayName: values.decode(DoryMachineTypedSettingUpdate<String>.self, forKey: .desktopDisplayName),
+            desktopVersion: values.decode(DoryMachineTypedSettingUpdate<String>.self, forKey: .desktopVersion),
+            desktopEnvironment: values.decode(DoryMachineTypedSettingUpdate<String>.self, forKey: .desktopEnvironment),
+            clipboardPolicy: values.decode(DoryMachineTypedSettingUpdate<DoryVMClipboardPolicy>.self, forKey: .clipboardPolicy),
+            runtimePreference: values.decode(DoryMachineTypedSettingUpdate<DoryDesktopVMMPreference>.self, forKey: .runtimePreference),
+            graphicsPreference: values.decode(DoryMachineTypedSettingUpdate<DoryDesktopGraphicsPreference>.self, forKey: .graphicsPreference),
+            displayDensity: values.decode(DoryMachineTypedSettingUpdate<DoryVMDisplayDensity>.self, forKey: .displayDensity),
+            networkMode: values.decode(DoryMachineTypedSettingUpdate<DoryVMNetworkMode>.self, forKey: .networkMode),
+            portForwards: values.decode(DoryMachineTypedSettingUpdate<[DoryVMPortForward]>.self, forKey: .portForwards),
+            audioInputEnabled: values.decode(DoryMachineTypedSettingUpdate<Bool>.self, forKey: .audioInputEnabled),
+            audioOutputEnabled: values.decode(DoryMachineTypedSettingUpdate<Bool>.self, forKey: .audioOutputEnabled),
+            cameraEnabled: values.decode(DoryMachineTypedSettingUpdate<Bool>.self, forKey: .cameraEnabled),
+            cameraDeviceUniqueID: values.decodeIfPresent(DoryMachineTypedSettingUpdate<String>.self, forKey: .cameraDeviceUniqueID) ?? .unchanged,
+            intelApplicationTranslationEnabled: values.decode(DoryMachineTypedSettingUpdate<Bool>.self, forKey: .intelApplicationTranslationEnabled)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(guestUsername, forKey: .guestUsername)
+        try values.encode(guestNumericUserID, forKey: .guestNumericUserID)
+        try values.encode(desktopDistributionIdentifier, forKey: .desktopDistributionIdentifier)
+        try values.encode(desktopDisplayName, forKey: .desktopDisplayName)
+        try values.encode(desktopVersion, forKey: .desktopVersion)
+        try values.encode(desktopEnvironment, forKey: .desktopEnvironment)
+        try values.encode(clipboardPolicy, forKey: .clipboardPolicy)
+        try values.encode(runtimePreference, forKey: .runtimePreference)
+        try values.encode(graphicsPreference, forKey: .graphicsPreference)
+        try values.encode(displayDensity, forKey: .displayDensity)
+        try values.encode(networkMode, forKey: .networkMode)
+        try values.encode(portForwards, forKey: .portForwards)
+        try values.encode(audioInputEnabled, forKey: .audioInputEnabled)
+        try values.encode(audioOutputEnabled, forKey: .audioOutputEnabled)
+        try values.encode(cameraEnabled, forKey: .cameraEnabled)
+        if cameraDeviceUniqueID.isChanged {
+            try values.encode(cameraDeviceUniqueID, forKey: .cameraDeviceUniqueID)
+        }
+        try values.encode(intelApplicationTranslationEnabled, forKey: .intelApplicationTranslationEnabled)
+    }
 
     public init(
         guestUsername: DoryMachineTypedSettingUpdate<String> = .unchanged,
@@ -399,6 +459,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
         audioInputEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged,
         audioOutputEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged,
         cameraEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged,
+        cameraDeviceUniqueID: DoryMachineTypedSettingUpdate<String> = .unchanged,
         intelApplicationTranslationEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged
     ) {
         self.guestUsername = guestUsername
@@ -416,6 +477,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
         self.audioInputEnabled = audioInputEnabled
         self.audioOutputEnabled = audioOutputEnabled
         self.cameraEnabled = cameraEnabled
+        self.cameraDeviceUniqueID = cameraDeviceUniqueID
         self.intelApplicationTranslationEnabled = intelApplicationTranslationEnabled
     }
 
@@ -435,6 +497,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
             && !audioInputEnabled.isChanged
             && !audioOutputEnabled.isChanged
             && !cameraEnabled.isChanged
+            && !cameraDeviceUniqueID.isChanged
             && !intelApplicationTranslationEnabled.isChanged
     }
 
@@ -523,6 +586,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
         }
         if let raw = try takeOption("--camera", from: &arguments) {
             patch.cameraEnabled = .set(try cliBoolean(raw, option: "--camera"))
+        }
+        if let cameraID = try takeOption("--camera-device-id", from: &arguments) {
+            guard DoryVMCameraConfiguration.isValidHostDeviceUniqueID(cameraID) else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField("--camera-device-id")
+            }
+            patch.cameraDeviceUniqueID = .set(cameraID)
         }
         if let raw = try takeOption("--intel-application-translation", from: &arguments) {
             patch.intelApplicationTranslationEnabled = .set(try cliBoolean(
@@ -623,10 +692,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
             patch.audioOutputEnabled = .clear
         }
         if clearsCamera {
-            guard !patch.cameraEnabled.isChanged else {
+            guard !patch.cameraEnabled.isChanged,
+                  !patch.cameraDeviceUniqueID.isChanged else {
                 throw DoryMachineTypedWriteAuthorityError.invalidField("--clear-camera")
             }
             patch.cameraEnabled = .clear
+            patch.cameraDeviceUniqueID = .clear
         }
         if clearsIntelApplicationTranslation {
             guard !patch.intelApplicationTranslationEnabled.isChanged else {
@@ -693,6 +764,13 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
             key: "cameraEnabled",
             field: "cameraEnabled",
             allowsClears: allowsClears
+        )
+        cameraDeviceUniqueID = try Self.decodeString(
+            dictionary,
+            key: "cameraDeviceUniqueID",
+            field: "cameraDeviceUniqueID",
+            allowsClears: allowsClears,
+            validator: DoryVMCameraConfiguration.isValidHostDeviceUniqueID
         )
         intelApplicationTranslationEnabled = try Self.decodeBool(
             dictionary,
@@ -767,6 +845,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
             }
         }
         Self.encode(cameraEnabled, key: "cameraEnabled", into: &result)
+        Self.encode(cameraDeviceUniqueID, key: "cameraDeviceUniqueID", into: &result)
         Self.encode(
             intelApplicationTranslationEnabled,
             key: "intelApplicationTranslationEnabled",
@@ -883,6 +962,11 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
             )
         case .set(true):
             environment[DoryVMCameraConfiguration.legacyEnabledEnvironmentKey] = "1"
+        }
+        if case .set = cameraDeviceUniqueID {
+            throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+                "cameraDeviceUniqueID"
+            )
         }
         guard !intelApplicationTranslationEnabled.isChanged else {
             throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
@@ -1031,6 +1115,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
         case .set(true):
             definition.camera.enabled = true
         }
+        Self.apply(cameraDeviceUniqueID, to: &definition.camera.hostDeviceUniqueID)
         switch intelApplicationTranslationEnabled {
         case .unchanged:
             break
@@ -1345,7 +1430,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
            displayMode != .desktop {
             throw DoryMachineTypedWriteAuthorityError.unsupportedForDisplay("audio")
         }
-        if cameraEnabled.isChanged, displayMode != .desktop {
+        if (cameraEnabled.isChanged || cameraDeviceUniqueID.isChanged), displayMode != .desktop {
             throw DoryMachineTypedWriteAuthorityError.unsupportedForDisplay("cameraEnabled")
         }
         if case .set(true) = intelApplicationTranslationEnabled,

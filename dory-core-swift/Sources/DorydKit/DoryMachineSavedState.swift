@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import DoryOperations
+import DoryVZMacCore
 import Foundation
 
 public struct DoryMachineSavedStateManifest: Codable, Sendable, Equatable {
@@ -259,7 +260,8 @@ public struct DoryMachineSavedStateStore: Sendable {
         }
         let statePath = directory + "/" + DoryMachineSavedStateManifest.stateFileName
         let manifestPath = directory + "/" + Self.manifestFileName
-        guard !Self.pathExists(statePath), !Self.pathExists(manifestPath) else {
+        guard !Self.pathExists(statePath), !Self.pathExists(manifestPath),
+              !Self.pathExists(directory + "/" + DoryVZSavedStateConsumption.markerName) else {
             throw DoryMachineSavedStateError.alreadyPublished
         }
         guard rename(canonicalTemporary, statePath) == 0 else {
@@ -277,6 +279,7 @@ public struct DoryMachineSavedStateStore: Sendable {
                 throw DoryMachineSavedStateError.system("rename manifest", errno)
             }
             try Self.syncDirectory(directory)
+            try Self.syncFile(manifestPath)
             return manifest
         } catch {
             _ = unlink(manifestPath)
@@ -291,6 +294,31 @@ public struct DoryMachineSavedStateStore: Sendable {
         authoritativeConfigurationData: Data,
         runtimeIdentity: DoryMachineRuntimeIdentity
     ) -> DoryMachineSavedStateInspection {
+        inspect(
+            machineID: machineID, authoritativeConfigurationData: authoritativeConfigurationData,
+            runtimeIdentity: runtimeIdentity, allowConsumedForLiveCleanup: false
+        )
+    }
+
+    /// Only the manager's already-authenticated live-runtime completion path uses this. The
+    /// result may authorize wrapper cleanup, never a new launch or replay of the RAM payload.
+    func inspectForLiveRestoreCleanup(
+        machineID: String,
+        authoritativeConfigurationData: Data,
+        runtimeIdentity: DoryMachineRuntimeIdentity
+    ) -> DoryMachineSavedStateInspection {
+        inspect(
+            machineID: machineID, authoritativeConfigurationData: authoritativeConfigurationData,
+            runtimeIdentity: runtimeIdentity, allowConsumedForLiveCleanup: true
+        )
+    }
+
+    private func inspect(
+        machineID: String,
+        authoritativeConfigurationData: Data,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        allowConsumedForLiveCleanup: Bool
+    ) -> DoryMachineSavedStateInspection {
         guard Self.isMachineID(machineID) else {
             return .invalid("saved-state machine identity is invalid")
         }
@@ -299,6 +327,16 @@ public struct DoryMachineSavedStateStore: Sendable {
         let manifestPath = directory + "/" + Self.manifestFileName
         let hasState = Self.pathExists(statePath)
         let hasManifest = Self.pathExists(manifestPath)
+        if Self.pathExists(directory) {
+            do {
+                if try DoryVZSavedStateConsumption.isConsumed(stateURL: URL(fileURLWithPath: statePath)),
+                   !allowConsumedForLiveCleanup {
+                    return .invalid("saved-state payload was consumed before guest resume; discard it and cold boot")
+                }
+            } catch {
+                return .invalid("saved-state consumption authority cannot be verified")
+            }
+        }
         guard hasState || hasManifest else { return .absent }
         guard Self.isPrivateDirectory(directory),
               hasState, hasManifest,
@@ -325,6 +363,10 @@ public struct DoryMachineSavedStateStore: Sendable {
                   snapshot.byteCount == manifest.stateFileByteCount else {
                 return .invalid("saved-state bytes do not match their manifest")
             }
+            if !allowConsumedForLiveCleanup,
+               try DoryVZSavedStateConsumption.isConsumed(stateURL: URL(fileURLWithPath: statePath)) {
+                return .invalid("saved-state payload was consumed while its authority was being verified")
+            }
             return .valid(manifest)
         } catch {
             return .invalid("saved-state bytes cannot be verified")
@@ -336,11 +378,28 @@ public struct DoryMachineSavedStateStore: Sendable {
     }
 
     public func remove(machineID: String) throws {
+        try remove(machineID: machineID, checkpoint: { _ in })
+    }
+
+    enum RemovalCheckpoint: Sendable, Equatable, CaseIterable { case validated, manifestInvalidated, invalidationDurable, artifactsRemoved, directoryRemoved, completed }
+
+    func remove(machineID: String, checkpoint: (RemovalCheckpoint) throws -> Void) throws {
         guard Self.isMachineID(machineID) else {
             throw DoryMachineSavedStateError.invalidMachineID
         }
+        guard Self.isPrivateDirectory(root + "/" + machineID) else {
+            throw DoryMachineSavedStateError.invalidDirectory
+        }
         let directory = directoryPath(machineID: machineID)
-        guard Self.pathExists(directory) else { return }
+        guard Self.pathExists(directory) else {
+            // A previous attempt may have unlinked the directory before its final drive
+            // barrier failed. Absence is not proof that retirement is already durable.
+            let barrier = try Self.openRetirementBarrier(root + "/" + machineID + "/machine.json")
+            defer { close(barrier) }
+            try Self.syncDirectory(root + "/" + machineID)
+            try Self.fullSync(barrier)
+            return
+        }
         guard Self.isPrivateDirectory(directory) else {
             throw DoryMachineSavedStateError.invalidDirectory
         }
@@ -348,8 +407,13 @@ public struct DoryMachineSavedStateStore: Sendable {
         // Validate the whole directory before deleting any payload. Unknown future-schema
         // artifacts must leave the original saved state intact when discard is rejected.
         for entry in entries {
+            let abandonedMetadata = try DoryVZSavedStateConsumption.isAbandonedMetadataFile(
+                at: URL(fileURLWithPath: directory + "/" + entry)
+            )
             guard entry == Self.manifestFileName
                     || entry == DoryMachineSavedStateManifest.stateFileName
+                    || entry == DoryVZSavedStateConsumption.markerName
+                    || abandonedMetadata
                     || entry.hasPrefix(Self.temporaryStatePrefix)
                     || entry.hasPrefix(".manifest.tmp-") else {
                 throw DoryMachineSavedStateError.invalidDirectory
@@ -359,16 +423,62 @@ public struct DoryMachineSavedStateStore: Sendable {
                 throw DoryMachineSavedStateError.invalidDirectory
             }
         }
+        // Pin a file on this volume through cleanup, even after unlink, for full drive flushes.
+        // Invalidate the manifest durably BEFORE retiring the deny-only consumption marker:
+        // otherwise an interrupted discard could resurrect a valid, unconsumed RAM image.
+        let barrierFD: Int32
+        if let entry = entries.first {
+            barrierFD = try Self.openRetirementBarrier(directory + "/" + entry)
+        } else {
+            barrierFD = try Self.openRetirementBarrier(root + "/" + machineID + "/machine.json")
+        }
+        defer { if barrierFD >= 0 { close(barrierFD) } }
+        if barrierFD >= 0 {
+            var info = stat()
+            guard fstat(barrierFD, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+                  info.st_uid == getuid(), info.st_nlink == 1, info.st_mode & 0o077 == 0 else {
+                throw DoryMachineSavedStateError.invalidDirectory
+            }
+        }
+        try checkpoint(.validated)
+        if entries.contains(Self.manifestFileName) {
+            guard unlink(directory + "/" + Self.manifestFileName) == 0 else {
+                throw DoryMachineSavedStateError.system("invalidate manifest", errno)
+            }
+        }
+        try checkpoint(.manifestInvalidated)
+        try Self.syncDirectory(directory)
+        if barrierFD >= 0 { try Self.fullSync(barrierFD) }
+        try checkpoint(.invalidationDurable)
         for entry in entries {
+            if entry == Self.manifestFileName { continue }
             let path = directory + "/" + entry
             guard unlink(path) == 0 || errno == ENOENT else {
                 throw DoryMachineSavedStateError.system("unlink", errno)
             }
         }
+        try checkpoint(.artifactsRemoved)
         guard rmdir(directory) == 0 || errno == ENOENT else {
             throw DoryMachineSavedStateError.system("rmdir", errno)
         }
+        try checkpoint(.directoryRemoved)
         try Self.syncDirectory(root + "/" + machineID)
+        if barrierFD >= 0 { try Self.fullSync(barrierFD) }
+        try checkpoint(.completed)
+    }
+
+    private static func openRetirementBarrier(_ path: String) throws -> Int32 {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else {
+            throw DoryMachineSavedStateError.system("open removal barrier", errno)
+        }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == getuid(), info.st_nlink == 1, info.st_mode & 0o077 == 0 else {
+            close(descriptor)
+            throw DoryMachineSavedStateError.invalidDirectory
+        }
+        return descriptor
     }
 
     private func prepareDirectory(machineID: String) throws -> String {
@@ -507,10 +617,11 @@ public struct DoryMachineSavedStateStore: Sendable {
         guard fsync(fd) == 0 else {
             throw DoryMachineSavedStateError.system("fsync", errno)
         }
+        try fullSync(fd)
     }
 
     private static func syncDirectory(_ path: String) throws {
-        let fd = open(path, O_RDONLY | O_CLOEXEC | O_DIRECTORY)
+        let fd = open(path, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW)
         guard fd >= 0 else { throw DoryMachineSavedStateError.system("open directory", errno) }
         defer { close(fd) }
         guard fsync(fd) == 0 else {
@@ -531,9 +642,9 @@ public struct DoryMachineSavedStateStore: Sendable {
             var offset = 0
             while offset < raw.count {
                 let count = write(fd, base.advanced(by: offset), raw.count - offset)
-                if count < 0 {
-                    if errno == EINTR { continue }
-                    throw DoryMachineSavedStateError.system("write", errno)
+                if count <= 0 {
+                    if count < 0 && errno == EINTR { continue }
+                    throw DoryMachineSavedStateError.system("write", count < 0 ? errno : EIO)
                 }
                 offset += count
             }
@@ -541,7 +652,15 @@ public struct DoryMachineSavedStateStore: Sendable {
         guard fsync(fd) == 0 else {
             throw DoryMachineSavedStateError.system("fsync", errno)
         }
+        try fullSync(fd)
         success = true
+    }
+
+    private static func fullSync(_ fd: Int32) throws {
+        while fcntl(fd, F_FULLFSYNC) != 0 {
+            if errno == EINTR { continue }
+            throw DoryMachineSavedStateError.system("fullfsync", errno)
+        }
     }
 }
 

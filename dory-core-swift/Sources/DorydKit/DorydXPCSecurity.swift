@@ -1,6 +1,7 @@
 import Darwin
 import DoryRendererWorkerWireContracts
 import Foundation
+import DoryOperations
 import Security
 
 public enum DoryVMDisplayPeerRole: Equatable, Sendable {
@@ -20,8 +21,7 @@ public enum DorydXPCSecurity {
         "anchor apple generic and certificate leaf[subject.OU] = \"\(productionTeamID)\" "
         + "and (identifier \"com.pythonxi.Dory\" or identifier \"dorydctl\")"
     public static let productionDaemonRequirement =
-        "anchor apple generic and certificate leaf[subject.OU] = \"\(productionTeamID)\" "
-        + "and identifier \"doryd\""
+        DoryRuntimeQualificationFaultHandoff.productionDaemonRequirement
     public static let productionDisplayApplicationRequirement =
         "anchor apple generic and certificate leaf[subject.OU] = \"\(productionTeamID)\" "
         + "and identifier \"com.pythonxi.Dory\""

@@ -16,7 +16,10 @@ struct RendererGenerationRenewalFixtureInstruction: Codable {
     var previousRendererGeneration: UInt64
     var requestedRendererGeneration: UInt64
     var guestProducerFenceProofSHA256: String
+    var readyTemplate: VmmReadyMessage
     var outcomePath: String?
+    var detail: String? = nil
+    var provisionalAckPath: String? = nil
 }
 
 final class DoryRuntimeReconnectTests: XCTestCase {
@@ -51,6 +54,23 @@ final class DoryRuntimeReconnectTests: XCTestCase {
             runtimeState: .paused
         )
         XCTAssertTrue(paused.matches(identity, challenge: challenge))
+    }
+
+    func testCameraGrantBindsSelectedDeviceAndResolvedPlan() throws {
+        let identity = makeIdentity()
+        let proof = try identity.cameraGrantProof(deviceUniqueID: "selected-host-camera")
+        XCTAssertTrue(identity.verifiesCameraGrant(proof, deviceUniqueID: "selected-host-camera"))
+        XCTAssertFalse(identity.verifiesCameraGrant(proof, deviceUniqueID: "other-host-camera"))
+        var differentPlan = identity
+        differentPlan.resolvedPlanSHA256 = String(repeating: "c", count: 64)
+        XCTAssertFalse(differentPlan.verifiesCameraGrant(
+            proof, deviceUniqueID: "selected-host-camera"
+        ))
+        var differentOperation = identity
+        differentOperation.operationID = "11111111-2222-4333-8444-555555555555"
+        XCTAssertFalse(differentOperation.verifiesCameraGrant(
+            proof, deviceUniqueID: "selected-host-camera"
+        ))
     }
 
     func testControlSocketAuthenticatesExactPrivateLaunchIdentity() throws {
@@ -149,7 +169,9 @@ final class DoryRuntimeReconnectTests: XCTestCase {
                 planRevision: identity.planRevision, accelerationLevel: .hardwareAccelerated3D,
                 backend: .virgl, rendererGeneration: 1,
                 rendererWorkerReceiptSHA256: String(repeating: "a", count: 64),
-                guestProducerFenceProofSHA256: String(repeating: "b", count: 64)))
+                guestProducerFenceProofSHA256: String(repeating: "b", count: 64),
+                firstShaderCompletedAtUnixMilliseconds: 10,
+                firstPresentationCompletedAtUnixMilliseconds: 11))
         try store.publishPending(identity: identity, backend: .doryHypervisor, executablePath: "/bin/sleep")
         XCTAssertThrowsError(try store.renewLiveReadiness(
             machineID: identity.machineID, launchIdentity: identity,
@@ -159,6 +181,11 @@ final class DoryRuntimeReconnectTests: XCTestCase {
             processIdentifier: process.processIdentifier, readiness: ready)
         ready.graphicsSelection?.rendererGeneration = 2
         ready.graphicsSelection?.rendererWorkerReceiptSHA256 = String(repeating: "c", count: 64)
+        ready.graphicsSelection?.verificationState = .provisional
+        ready.graphicsSelection?.guestProducerFenceProofSHA256 = nil
+        ready.graphicsSelection?.firstShaderCompletedAtUnixMilliseconds = nil
+        ready.graphicsSelection?.firstPresentationCompletedAtUnixMilliseconds = nil
+        ready.detail = "replacement renderer ready"
         let renewed = try store.renewLiveReadiness(
             machineID: identity.machineID, launchIdentity: identity,
             processIdentity: process, readiness: ready)
@@ -195,6 +222,144 @@ final class DoryRuntimeReconnectTests: XCTestCase {
                 processIdentity: process, readiness: rejected))
             XCTAssertEqual(try store.read(machineID: identity.machineID), renewed)
         }
+    }
+
+    func testAuthenticatedDiagnosticRenewalPreservesRuntimeAuthority() throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let identity = makeIdentity()
+        let store = DoryRuntimeReconnectRecordStore(root: root)
+        let process = try DoryHostProcessIdentity.capture()
+        let operationID = try XCTUnwrap(UUID(uuidString: identity.operationID))
+        let ready = VmmReadyMessage(
+            machineID: identity.machineID,
+            operationID: identity.operationID,
+            controlSocketPath: root + "/control.sock",
+            graphicsSelection: .resolvedSoftware(
+                operationID: operationID,
+                resolvedPlanSHA256: identity.resolvedPlanSHA256,
+                planRevision: identity.planRevision
+            ),
+            detail: "Firmware is running"
+        )
+        try store.publishPending(
+            identity: identity,
+            backend: .doryHypervisor,
+            executablePath: "/bin/sleep"
+        )
+        _ = try store.publishLive(
+            machineID: identity.machineID,
+            operationID: operationID,
+            processIdentifier: process.processIdentifier,
+            readiness: ready
+        )
+
+        var diagnostic = ready
+        diagnostic.detail = "Graphics renderer stopped; VM is still running"
+        let renewed = try store.renewLiveReadiness(
+            machineID: identity.machineID,
+            launchIdentity: identity,
+            processIdentity: process,
+            readiness: diagnostic
+        )
+        XCTAssertEqual(renewed.readiness, diagnostic)
+        XCTAssertEqual(renewed.launchIdentity, identity)
+        XCTAssertEqual(renewed.processIdentity, process)
+        XCTAssertThrowsError(try store.renewLiveReadiness(
+            machineID: identity.machineID,
+            launchIdentity: identity,
+            processIdentity: process,
+            readiness: diagnostic
+        ))
+
+        var wrongEndpoint = diagnostic
+        wrongEndpoint.controlSocketPath = root + "/replacement.sock"
+        wrongEndpoint.detail = "Another update"
+        var oversized = diagnostic
+        oversized.detail = String(repeating: "x", count: 2_049)
+        for rejected in [wrongEndpoint, oversized] {
+            XCTAssertThrowsError(try store.renewLiveReadiness(
+                machineID: identity.machineID,
+                launchIdentity: identity,
+                processIdentity: process,
+                readiness: rejected
+            ))
+        }
+        XCTAssertEqual(try store.read(machineID: identity.machineID), renewed)
+    }
+
+    func testGuestRebootRevokesLiveStatusAndReadmitsFreshBoot() throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let identity = makeIdentity()
+        let store = DoryRuntimeReconnectRecordStore(root: root)
+        let process = try DoryHostProcessIdentity.capture()
+        let operationID = try XCTUnwrap(UUID(uuidString: identity.operationID))
+        var graphics = DoryRuntimeGraphicsSelection.resolvedSoftware(
+            operationID: operationID,
+            resolvedPlanSHA256: identity.resolvedPlanSHA256,
+            planRevision: identity.planRevision
+        )
+        graphics.firstPresentationCompletedAtUnixMilliseconds = 10
+        let ready = VmmReadyMessage(
+            machineID: identity.machineID,
+            operationID: identity.operationID,
+            agentBuild: "old-agent",
+            controlSocketPath: root + "/control.sock",
+            graphicsSelection: graphics,
+            guestBooted: true,
+            toolsConnected: true,
+            desktopVisible: true,
+            workloadReady: true,
+            detail: "first boot ready"
+        )
+        try store.publishPending(
+            identity: identity, backend: .doryHypervisor, executablePath: "/bin/sleep"
+        )
+        _ = try store.publishLive(
+            machineID: identity.machineID,
+            operationID: operationID,
+            processIdentifier: process.processIdentifier,
+            readiness: ready
+        )
+
+        var rebooting = ready
+        rebooting.graphicsSelection?.firstPresentationCompletedAtUnixMilliseconds = nil
+        rebooting.guestBooted = false
+        rebooting.toolsConnected = false
+        rebooting.desktopVisible = false
+        rebooting.workloadReady = false
+        rebooting.detail = "Guest rebooting; waiting for a new desktop presentation."
+        XCTAssertEqual(try store.renewLiveReadiness(
+            machineID: identity.machineID,
+            launchIdentity: identity,
+            processIdentity: process,
+            readiness: rebooting
+        ).readiness, rebooting)
+
+        var secondBoot = rebooting
+        secondBoot.graphicsSelection?.firstPresentationCompletedAtUnixMilliseconds = 20
+        secondBoot.agentBuild = "updated-agent"
+        secondBoot.guestBooted = true
+        secondBoot.toolsConnected = true
+        secondBoot.desktopVisible = true
+        secondBoot.workloadReady = true
+        secondBoot.detail = "second boot ready"
+        XCTAssertEqual(try store.renewLiveReadiness(
+            machineID: identity.machineID,
+            launchIdentity: identity,
+            processIdentity: process,
+            readiness: secondBoot
+        ).readiness, secondBoot)
+
+        var tampered = secondBoot
+        tampered.controlSocketPath = root + "/different.sock"
+        XCTAssertThrowsError(try store.renewLiveReadiness(
+            machineID: identity.machineID,
+            launchIdentity: identity,
+            processIdentity: process,
+            readiness: tampered
+        ))
     }
 
     func testRendererRenewalAcceptsOnlyMonotonicStockObservationTransitions() {
@@ -246,6 +411,86 @@ final class DoryRuntimeReconnectTests: XCTestCase {
         XCTAssertFalse(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
             previous: verified,
             replacement: downgraded
+        ))
+    }
+
+    func testRendererReplacementRequiresFreshProvisionalGenerationAndObservations() {
+        var verified = DoryRuntimeGraphicsSelection(
+            operationID: UUID().uuidString.lowercased(),
+            resolvedPlanSHA256: String(repeating: "a", count: 64),
+            planRevision: 1,
+            accelerationLevel: .hardwareAccelerated3D,
+            backend: .virglVenus,
+            rendererGeneration: 9,
+            rendererWorkerReceiptSHA256: String(repeating: "b", count: 64),
+            guestProducerFenceProofSHA256: String(repeating: "c", count: 64),
+            firstShaderCompletedAtUnixMilliseconds: 10,
+            firstPresentationCompletedAtUnixMilliseconds: 11
+        )
+        XCTAssertTrue(verified.isValid)
+
+        var replacement = verified
+        replacement.rendererGeneration = 10
+        replacement.rendererWorkerReceiptSHA256 = String(repeating: "d", count: 64)
+        replacement.verificationState = .provisional
+        replacement.guestProducerFenceProofSHA256 = nil
+        replacement.firstShaderCompletedAtUnixMilliseconds = nil
+        replacement.firstPresentationCompletedAtUnixMilliseconds = nil
+        XCTAssertTrue(replacement.isValid)
+        XCTAssertTrue(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: verified, replacement: replacement))
+
+        var staleProof = replacement
+        staleProof.verificationState = .verified
+        staleProof.guestProducerFenceProofSHA256 = verified.guestProducerFenceProofSHA256
+        XCTAssertFalse(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: verified, replacement: staleProof))
+        var staleFrame = replacement
+        staleFrame.firstPresentationCompletedAtUnixMilliseconds = 11
+        XCTAssertFalse(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: verified, replacement: staleFrame))
+        var changedBackend = replacement
+        changedBackend.backend = .virgl
+        changedBackend.guestDriver = .virgl
+        XCTAssertFalse(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: verified, replacement: changedBackend))
+        verified.rendererGeneration = 10
+        XCTAssertFalse(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: verified, replacement: replacement))
+    }
+
+    func testGuestMachineResetMayRevokeOnlyObservedGraphicsInSameGeneration() {
+        let verified = DoryRuntimeGraphicsSelection(
+            operationID: UUID().uuidString.lowercased(),
+            resolvedPlanSHA256: String(repeating: "a", count: 64),
+            planRevision: 1,
+            accelerationLevel: .hardwareAccelerated3D,
+            backend: .virglVenus,
+            rendererGeneration: 9,
+            rendererWorkerReceiptSHA256: String(repeating: "b", count: 64),
+            guestProducerFenceProofSHA256: String(repeating: "c", count: 64),
+            firstShaderCompletedAtUnixMilliseconds: 10,
+            firstPresentationCompletedAtUnixMilliseconds: 11
+        )
+        var reset = verified
+        reset.verificationState = .provisional
+        reset.guestProducerFenceProofSHA256 = nil
+        reset.firstShaderCompletedAtUnixMilliseconds = nil
+        reset.firstPresentationCompletedAtUnixMilliseconds = nil
+        XCTAssertTrue(reset.isValid)
+        XCTAssertTrue(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: verified, replacement: reset
+        ))
+
+        var changedReceipt = reset
+        changedReceipt.rendererWorkerReceiptSHA256 = String(repeating: "d", count: 64)
+        XCTAssertFalse(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: verified, replacement: changedReceipt
+        ))
+        var retainedFrame = reset
+        retainedFrame.firstPresentationCompletedAtUnixMilliseconds = 11
+        XCTAssertFalse(DoryRuntimeReconnectRecordStore.acceptsGraphicsRenewal(
+            previous: verified, replacement: retainedFrame
         ))
     }
 
@@ -371,23 +616,50 @@ final class DoryRuntimeReconnectTests: XCTestCase {
                         return
                     }
                     writeOutcome("generation-handoff-ok")
+                    guard instruction.readyTemplate.machineID == instruction.machineID,
+                          instruction.readyTemplate.operationID == instruction.operationID,
+                          instruction.readyTemplate.controlSocketPath == socket else {
+                        throw DoryRuntimeReconnectError.invalidIdentity
+                    }
+                    var selection = DoryRuntimeGraphicsSelection(
+                        operationID: instruction.operationID,
+                        resolvedPlanSHA256: instruction.resolvedPlanSHA256,
+                        planRevision: instruction.planRevision,
+                        accelerationLevel: .hardwareAccelerated3D,
+                        backend: .virgl,
+                        rendererGeneration: instruction.requestedRendererGeneration,
+                        rendererWorkerReceiptSHA256: rendererReceipt,
+                        requestedGraphics: .hardwareAccelerated3D,
+                        admittedGraphics: .hardwareAccelerated3D,
+                        verificationState: .provisional
+                    )
+                    var renewedReady = instruction.readyTemplate
+                    renewedReady.graphicsSelection = selection
+                    renewedReady.detail = "replacement renderer admitted"
                     try VmmHandoffClient.send(
                         path: instruction.readinessHandoffPath,
-                        ready: VmmReadyMessage(
-                            machineID: instruction.machineID,
-                            operationID: instruction.operationID,
-                            controlSocketPath: socket,
-                            graphicsSelection: DoryRuntimeGraphicsSelection(
-                                operationID: instruction.operationID,
-                                resolvedPlanSHA256: instruction.resolvedPlanSHA256,
-                                planRevision: instruction.planRevision,
-                                accelerationLevel: .hardwareAccelerated3D,
-                                backend: .virgl,
-                                rendererGeneration: instruction.requestedRendererGeneration,
-                                rendererWorkerReceiptSHA256: rendererReceipt,
-                                guestProducerFenceProofSHA256: instruction.guestProducerFenceProofSHA256
-                            )
-                        ),
+                        ready: renewedReady,
+                        fileDescriptors: []
+                    )
+                    writeOutcome("provisional-handoff-ok")
+                    if let ackPath = instruction.provisionalAckPath {
+                        let deadline = Date().addingTimeInterval(5)
+                        while !FileManager.default.fileExists(atPath: ackPath),
+                              Date() < deadline {
+                            Thread.sleep(forTimeInterval: 0.01)
+                        }
+                        guard FileManager.default.fileExists(atPath: ackPath) else {
+                            throw DoryRuntimeReconnectError.invalidIdentity
+                        }
+                    }
+                    selection.verificationState = .verified
+                    selection.guestProducerFenceProofSHA256 =
+                        instruction.guestProducerFenceProofSHA256
+                    renewedReady.graphicsSelection = selection
+                    renewedReady.detail = instruction.detail
+                    try VmmHandoffClient.send(
+                        path: instruction.readinessHandoffPath,
+                        ready: renewedReady,
                         fileDescriptors: []
                     )
                     writeOutcome("readiness-handoff-ok")

@@ -621,11 +621,23 @@ struct DorydLaunchAgentTests {
                 "DORYD_VM_QUALIFICATION_BOOTSTRAP"
             ] == "0"
         )
+        #expect(try environment(DorydLaunchAgent.Configuration())[
+            "DORY_GRAPHICS_ADMISSION_OVERRIDE"
+        ] == nil)
         #expect(
             try environment(DorydLaunchAgent.Configuration(
                 vmQualificationBootstrapEnabled: true
             ))["DORYD_VM_QUALIFICATION_BOOTSTRAP"] == "1"
         )
+        #if DEBUG
+        #expect(try environment(DorydLaunchAgent.Configuration(
+            vmQualificationBootstrapEnabled: true
+        ))["DORY_GRAPHICS_ADMISSION_OVERRIDE"] == "unsafe-development")
+        #else
+        #expect(try environment(DorydLaunchAgent.Configuration(
+            vmQualificationBootstrapEnabled: true
+        ))["DORY_GRAPHICS_ADMISSION_OVERRIDE"] == nil)
+        #endif
     }
 
     @Test func launchAgentBindsRawHVToNestedRunnerApplication() throws {

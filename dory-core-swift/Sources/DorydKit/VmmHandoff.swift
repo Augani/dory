@@ -1,6 +1,7 @@
 import Darwin
 import DoryCore
 import DoryOperations
+import DoryRendererWorkerWireContracts
 import Foundation
 
 /// Canonical textual form used when a durable lifecycle UUID crosses process or guest boundaries.
@@ -264,6 +265,18 @@ public struct DoryRuntimeGraphicsSelection: Codable, Sendable, Equatable, Hashab
             && resolvedPlanSHA256 == planSHA256
             && planRevision == expectedPlanRevision
             && requestedGraphics == expectedAccelerationLevel
+    }
+
+    func matchesPCProducerFenceContract(
+        _ contract: DoryRendererProducerFenceContract?
+    ) -> Bool {
+        switch (contract, backend) {
+        case (.doryPCX8664LinuxVirGL2PrepareFBV1, .virgl),
+             (.doryPCX8664LinuxVenusPrepareFBV1, .virglVenus):
+            return true
+        default:
+            return false
+        }
     }
 
     private static func isLowercaseSHA256(_ value: String) -> Bool {

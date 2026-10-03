@@ -3051,7 +3051,9 @@ final class MachineManagerTests: XCTestCase {
 
     func testNativeSandboxPolicyPersistsWithoutEnvironmentAndSurvivesSnapshotRestore() throws {
         try withProductionIntegrationTestStack {
-            let fixture = try makeStoppedProductionTrustFixture()
+            let fixture = try makeStoppedProductionTrustFixture(
+                allowsQualificationBootstrapLaunches: true
+            )
             defer { fixture.cleanup() }
             func activate() throws -> DoryDaemonVirtualMachineProductionActivationContext {
                 let result = fixture.factory.activate(
@@ -4273,10 +4275,11 @@ final class MachineManagerTests: XCTestCase {
         let broker = try DoryMachineStateBroker(canonicalStateRootPath: state)
         let manager = MachineManager(
             diagnosticConfiguration: MachineManagerConfiguration(
-                vmmExecutablePath: "/bin/false",
+                vmmExecutablePath: "/usr/bin/false",
                 acceleratedDesktopExecutablePath: helper,
                 pcFirmwareBundlePath: firmware,
                 stateDirectory: state,
+                displayRelayServiceName: "dev.dory.test.display-relay",
                 requiresReadyHandoff: false,
                 guestArchitecture: "arm64"
             ),
@@ -4342,6 +4345,8 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertFalse(arguments.contains("--kernel"))
         XCTAssertFalse(arguments.contains("--rootfs"))
         XCTAssertFalse(arguments.contains("--installer-iso"))
+        let relayIndex = try XCTUnwrap(arguments.firstIndex(of: "--display-relay-service"))
+        XCTAssertEqual(arguments[relayIndex + 1], "dev.dory.test.display-relay")
         _ = try manager.stop(id: "linux")
         try manager.delete(id: "linux")
     }
@@ -4541,6 +4546,24 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertTrue(restored.installerMediaAttached)
         XCTAssertNotEqual(restored.state, .running)
         XCTAssertEqual(starter.attemptCount, 1)
+    }
+
+    func testGuestToolsMediaSelectionNeverUsesARMDefaultForX86Guest() {
+        let configuration = MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/false",
+            guestToolsISOPath: "/tools/arm64.iso",
+            guestToolsISOPathsByArchitecture: [.x86_64: "/tools/x86_64.iso"],
+            stateDirectory: "/tmp/dory-guest-tools-selection",
+            guestArchitecture: "arm64"
+        )
+        XCTAssertEqual(configuration.resolvedGuestToolsISOPath(
+            for: .arm64, defaultGuestArchitecture: .arm64), "/tools/arm64.iso")
+        XCTAssertEqual(configuration.resolvedGuestToolsISOPath(
+            for: .x86_64, defaultGuestArchitecture: .arm64), "/tools/x86_64.iso")
+        var missingX86 = configuration
+        missingX86.guestToolsISOPathsByArchitecture.removeValue(forKey: .x86_64)
+        XCTAssertNil(missingX86.resolvedGuestToolsISOPath(
+            for: .x86_64, defaultGuestArchitecture: .arm64))
     }
 
     func testGuestToolsMediaSwitchPreservesManagedInstallerAndReportsDistinctStatus() throws {
@@ -6515,13 +6538,26 @@ final class MachineManagerTests: XCTestCase {
                 "DORY_TEST_MARKER": "kept",
             ],
             stripsLegacyDesktopLaunchAuthority: true,
-            enablesQualificationGraphicsTrace: true
+            enablesQualificationGraphicsTrace: true,
+            enablesQualificationPCExecutionProfile: true
         )
 
         XCTAssertEqual(environment, [
             "DORY_GPU_TRACE_GRAPHICS": "1",
+            "DORY_PC_PROFILE_EXECUTION": "1",
             "DORY_TEST_MARKER": "kept",
         ])
+    }
+
+    func testQualificationPCSoftwareDesktopStillProfilesExecution() {
+        let environment = MachineManager.helperLaunchEnvironment(
+            ["DORY_PC_PROFILE_EXECUTION": "0"],
+            stripsLegacyDesktopLaunchAuthority: true,
+            enablesQualificationGraphicsTrace: false,
+            enablesQualificationPCExecutionProfile: true
+        )
+
+        XCTAssertEqual(environment, ["DORY_PC_PROFILE_EXECUTION": "1"])
     }
 
     func testOrdinaryLaunchDoesNotEnableQualificationGraphicsTrace() {

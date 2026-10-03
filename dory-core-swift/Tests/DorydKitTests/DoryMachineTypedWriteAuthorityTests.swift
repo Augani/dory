@@ -643,6 +643,24 @@ struct DoryMachineTypedWriteAuthorityTests {
         )
         #expect(patch.cameraEnabled == .set(true))
         #expect(patch.xpcDictionary["cameraEnabled"] as? Bool == true)
+        let selected = try DoryMachineTypedSettingsPatch(
+            xpcDictionary: [
+                "cameraEnabled": true,
+                "cameraDeviceUniqueID": "selected-host-camera",
+            ],
+            allowsClears: true
+        )
+        #expect(selected.cameraDeviceUniqueID == .set("selected-host-camera"))
+        #expect(selected.xpcDictionary["cameraDeviceUniqueID"] as? String
+            == "selected-host-camera")
+        #expect(throws: DoryMachineTypedWriteAuthorityError.invalidField(
+            "cameraDeviceUniqueID"
+        )) {
+            try DoryMachineTypedSettingsPatch(
+                xpcDictionary: ["cameraDeviceUniqueID": "bad\nidentifier"],
+                allowsClears: true
+            )
+        }
 
         for raw: Any in [1, "true", NSArray()] {
             #expect(throws: DoryMachineTypedWriteAuthorityError.invalidField(
@@ -668,11 +686,27 @@ struct DoryMachineTypedWriteAuthorityTests {
             allowsClears: true
         )
         #expect(reset.cameraEnabled == .clear)
+        let resetSelection = try DoryMachineTypedSettingsPatch(
+            xpcDictionary: ["cameraDeviceUniqueID": NSNull()],
+            allowsClears: true
+        )
+        #expect(resetSelection.cameraDeviceUniqueID == .clear)
         #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedForDisplay(
             "cameraEnabled"
         )) {
             try patch.applying(to: [:], displayMode: .headless)
         }
+    }
+
+    @Test("historical typed patches decode without a camera selection and retain their digest")
+    func historicalPatchCameraSelectionCompatibility() throws {
+        let current = DoryMachineTypedSettingsPatch(cameraEnabled: .set(true))
+        let encoded = try JSONEncoder().encode(current)
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["cameraDeviceUniqueID"] == nil)
+        let decoded = try JSONDecoder().decode(DoryMachineTypedSettingsPatch.self, from: encoded)
+        #expect(decoded == current)
+        #expect(decoded.cameraDeviceUniqueID == .unchanged)
     }
 
     @Test("CLI consumes typed persistence options and leaves raw env unconsumed")

@@ -66,6 +66,7 @@ public struct DoryCandidateCampaignCell: Codable, Sendable, Equatable, Hashable 
     public var backendRuntimeBuildIdentifier: String
     public var components: [DoryVirtualMachineQualifiedComponent]
     public var resources: DoryCandidateCampaignResourceLimit
+    public var faultPolicy: DoryCandidateCampaignFaultPolicy?
 
     public init(
         cellIdentifier: String,
@@ -73,7 +74,8 @@ public struct DoryCandidateCampaignCell: Codable, Sendable, Equatable, Hashable 
         backendImplementationIdentifier: String,
         backendRuntimeBuildIdentifier: String,
         components: [DoryVirtualMachineQualifiedComponent],
-        resources: DoryCandidateCampaignResourceLimit
+        resources: DoryCandidateCampaignResourceLimit,
+        faultPolicy: DoryCandidateCampaignFaultPolicy? = nil
     ) {
         self.cellIdentifier = cellIdentifier
         self.capability = capability
@@ -81,6 +83,7 @@ public struct DoryCandidateCampaignCell: Codable, Sendable, Equatable, Hashable 
         self.backendRuntimeBuildIdentifier = backendRuntimeBuildIdentifier
         self.components = components.sorted { $0.componentIdentifier < $1.componentIdentifier }
         self.resources = resources
+        self.faultPolicy = faultPolicy
     }
 }
 
@@ -295,6 +298,41 @@ public struct DoryVerifiedVirtualMachineCandidateCampaignAuthority: Sendable {
     public func activateReplayFloor() throws {
         try DoryCandidateCampaignReplayFloor.activate(authority: self)
     }
+
+    /// Called after exact-cell admission and immediately before configuring the live backend.
+    /// Structural preview evidence is insufficient: the policy must exist in this signed
+    /// manifest, match its supported RawHV Linux fault scope, and remain within its lifetime.
+    public func authorizeRuntimeFaults(
+        cell: DoryResolvedCandidateCampaignCell,
+        machineID: String,
+        operationID: UUID,
+        resolvedPlanSHA256: String,
+        now: Date = Date()
+    ) throws -> DoryRuntimeQualificationFaultAuthority {
+        guard cell.manifestSHA256 == manifestSHA256,
+              cell.campaignIdentifier == campaignIdentifier,
+              cell.signingKeyID == signingKeyID,
+              manifest.cells.contains(cell.cell),
+              let policy = cell.cell.faultPolicy, policy.supportsRuntime(cell.cell.capability) else {
+            throw DoryRuntimeQualificationFaultError.unauthorized
+        }
+        guard machineID.hasPrefix(manifest.machineIDPrefix),
+              machineID.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9_.-]{0,62}/) != nil,
+              operationID != UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+              resolvedPlanSHA256.wholeMatch(of: /[0-9a-f]{64}/) != nil else {
+            throw DoryRuntimeQualificationFaultError.invalidIdentity
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let issued = formatter.date(from: manifest.issuedAt) ?? ISO8601DateFormatter().date(from: manifest.issuedAt)
+        let expiry = formatter.date(from: expiresAt) ?? ISO8601DateFormatter().date(from: expiresAt)
+        guard let issued, now >= issued else { throw DoryRuntimeQualificationFaultError.unauthorized }
+        guard let expiry, now < expiry else { throw DoryRuntimeQualificationFaultError.expired }
+        return DoryRuntimeQualificationFaultAuthority(
+            machineID: machineID, operationID: operationID, resolvedPlanSHA256: resolvedPlanSHA256,
+            campaignManifestSHA256: manifestSHA256, expiresAt: expiry, policy: policy
+        )
+    }
 }
 
 public struct DoryResolvedCandidateCampaignCell: Sendable, Equatable {
@@ -455,6 +493,14 @@ public enum DoryVirtualMachineCandidateCampaignAuthorityResolver {
               manifest.cells.allSatisfy(validCell) else {
             throw DoryCandidateCampaignAuthorizationError.manifestInvalid(
                 "campaign cells are empty, duplicated, unordered, or invalid"
+            )
+        }
+        guard manifest.cells.allSatisfy({ cell in
+            guard let policy = cell.faultPolicy else { return true }
+            return policy.supportsRuntime(cell.capability)
+        }) else {
+            throw DoryCandidateCampaignAuthorizationError.manifestInvalid(
+                "fault policy is invalid or belongs to an unsupported runtime"
             )
         }
         let roles = manifest.artifacts.map(\.role)

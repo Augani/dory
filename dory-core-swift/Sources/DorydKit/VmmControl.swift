@@ -1,5 +1,6 @@
 import Darwin
 import DoryCore
+import DoryMacGuestIntegrationWire
 import DoryOperations
 import Foundation
 
@@ -39,6 +40,7 @@ public struct VmmControlRequest: Sendable, Equatable, Codable {
     public var operationID: String?
     public var directoryShares: [VmmDirectoryShareReplacement]?
     public var reconnectChallenge: String?
+    public var qualificationFault: DoryRuntimeQualificationFaultRequest?
 
     public init(
         command: String,
@@ -47,7 +49,8 @@ public struct VmmControlRequest: Sendable, Equatable, Codable {
         lifecycleAction: DoryLifecycleReceiptAction? = nil,
         operationID: String? = nil,
         directoryShares: [VmmDirectoryShareReplacement]? = nil,
-        reconnectChallenge: String? = nil
+        reconnectChallenge: String? = nil,
+        qualificationFault: DoryRuntimeQualificationFaultRequest? = nil
     ) {
         self.command = command
         self.targetMB = targetMB
@@ -56,6 +59,7 @@ public struct VmmControlRequest: Sendable, Equatable, Codable {
         self.operationID = operationID
         self.directoryShares = directoryShares
         self.reconnectChallenge = reconnectChallenge
+        self.qualificationFault = qualificationFault
     }
 
     public static func setBalloonTarget(_ targetMB: UInt64) -> VmmControlRequest {
@@ -112,6 +116,8 @@ public struct VmmControlResponse: Sendable, Equatable, Codable {
     public var operationID: String?
     public var deviceTelemetry: DoryDeviceTelemetrySnapshot?
     public var reconnect: DoryRuntimeReconnectResponse?
+    public var macGuestTools: DoryMacGuestToolsHealth?
+    public var qualificationFault: DoryRuntimeQualificationFaultObservation?
 
     public init(
         ok: Bool,
@@ -120,7 +126,9 @@ public struct VmmControlResponse: Sendable, Equatable, Codable {
         lifecycleAction: DoryLifecycleReceiptAction? = nil,
         operationID: String? = nil,
         deviceTelemetry: DoryDeviceTelemetrySnapshot? = nil,
-        reconnect: DoryRuntimeReconnectResponse? = nil
+        reconnect: DoryRuntimeReconnectResponse? = nil,
+        macGuestTools: DoryMacGuestToolsHealth? = nil,
+        qualificationFault: DoryRuntimeQualificationFaultObservation? = nil
     ) {
         self.ok = ok
         self.message = message
@@ -129,6 +137,84 @@ public struct VmmControlResponse: Sendable, Equatable, Codable {
         self.operationID = operationID
         self.deviceTelemetry = deviceTelemetry
         self.reconnect = reconnect
+        self.macGuestTools = macGuestTools
+        self.qualificationFault = qualificationFault
+    }
+}
+
+/// A live observation from the selected VZMac helper, separate from the Linux agent contract.
+/// Reporting a negotiated capability does not itself grant the daemon permission to invoke it.
+/// File transfer, automatic clipboard synchronization, camera and privileged guest
+/// capabilities remain unavailable here. A one-shot text read is granted only for VMs
+/// whose clipboard policy permits it and requires an explicit host user action.
+public struct DoryMacGuestToolsHealth: Sendable, Equatable, Codable {
+    public static let implementedCapabilities = Set(
+        DoryMacGuestIntegrationWire.implementedCapabilitiesV2.map(\.rawValue)
+    )
+
+    public enum State: String, Sendable, Equatable, Codable {
+        case disconnected, handshaking, healthy
+    }
+
+    public let machineID: String
+    public let state: State
+    public let runtimeGeneration: UInt64
+    public let toolsVersion: String?
+    public let toolsBuild: String?
+    public let guestOSVersion: String?
+    public let grantedCapabilities: [String]
+    public let lastHealthAtUnixMilliseconds: UInt64?
+    public let guestTimeUnixMilliseconds: UInt64?
+    public let lastErrorCode: String?
+
+    public init(
+        machineID: String, state: State, runtimeGeneration: UInt64,
+        toolsVersion: String? = nil, toolsBuild: String? = nil,
+        guestOSVersion: String? = nil, grantedCapabilities: [String] = [],
+        lastHealthAtUnixMilliseconds: UInt64? = nil,
+        guestTimeUnixMilliseconds: UInt64? = nil,
+        lastErrorCode: String? = nil
+    ) {
+        self.machineID = machineID
+        self.state = state
+        self.runtimeGeneration = runtimeGeneration
+        self.toolsVersion = toolsVersion
+        self.toolsBuild = toolsBuild
+        self.guestOSVersion = guestOSVersion
+        self.grantedCapabilities = grantedCapabilities
+        self.lastHealthAtUnixMilliseconds = lastHealthAtUnixMilliseconds
+        self.guestTimeUnixMilliseconds = guestTimeUnixMilliseconds
+        self.lastErrorCode = lastErrorCode
+    }
+
+    public func isFresh(for expectedMachineID: String, now: Date = Date()) -> Bool {
+        guard machineID == expectedMachineID, runtimeGeneration != 0,
+            grantedCapabilities == grantedCapabilities.sorted(),
+            Set(grantedCapabilities).count == grantedCapabilities.count,
+            Set(grantedCapabilities).isSubset(of: Self.implementedCapabilities)
+        else { return false }
+        guard state == .healthy else {
+            return toolsVersion == nil && toolsBuild == nil && guestOSVersion == nil
+                && grantedCapabilities.isEmpty && lastHealthAtUnixMilliseconds == nil
+                && guestTimeUnixMilliseconds == nil
+                && (lastErrorCode.map { code in
+                    state == .disconnected && [
+                        "protocol-rejected", "invalid-frame", "disconnected",
+                        "timeout", "transport-error", "invalid-health",
+                        "teardown-timeout",
+                    ].contains(code)
+                } ?? true)
+        }
+        guard let toolsVersion, let toolsBuild, let guestOSVersion,
+            !toolsVersion.isEmpty, !toolsBuild.isEmpty, !guestOSVersion.isEmpty,
+            grantedCapabilities.contains("health"),
+            let lastHealthAtUnixMilliseconds,
+            guestTimeUnixMilliseconds == nil || grantedCapabilities.contains("guest-time"),
+            guestTimeUnixMilliseconds.map({ $0 > 0 }) ?? true,
+            lastErrorCode == nil
+        else { return false }
+        let age = now.timeIntervalSince1970 * 1_000 - Double(lastHealthAtUnixMilliseconds)
+        return age >= -2_000 && age <= 15_000
     }
 }
 
@@ -370,6 +456,29 @@ public enum VmmControlClient {
         request: VmmControlRequest,
         timeoutSeconds: TimeInterval = 5
     ) throws -> VmmControlResponse {
+        try send(socketPath: socketPath, request: request, timeoutSeconds: timeoutSeconds,
+                 authenticatePeer: nil)
+    }
+
+    static func sendAuthenticatingPeer(
+        socketPath: String, request: VmmControlRequest,
+        expectedPeer: DoryApplicationLaunchPeerIdentity
+    ) throws -> VmmControlResponse {
+        try send(socketPath: socketPath, request: request, timeoutSeconds: 5) { fd in
+            let actual = try DoryApplicationLaunchHandoffProtocol.peerIdentity(descriptor: fd)
+            let actualBytes = withUnsafeBytes(of: actual.auditToken) { Data($0) }
+            let expectedBytes = withUnsafeBytes(of: expectedPeer.auditToken) { Data($0) }
+            guard actual.uid == geteuid(), actual.pid == expectedPeer.processIdentifier,
+                  actualBytes == expectedBytes else {
+                throw VmmControlError.rejected("control socket does not belong to the exact launched helper")
+            }
+        }
+    }
+
+    private static func send(
+        socketPath: String, request: VmmControlRequest, timeoutSeconds: TimeInterval,
+        authenticatePeer: ((Int32) throws -> Void)?
+    ) throws -> VmmControlResponse {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw VmmControlError.syscall("socket", errno) }
         defer { close(fd) }
@@ -378,6 +487,7 @@ public enum VmmControlClient {
         let deadline = try VmmControlSocketIO.deadline(after: timeoutSeconds)
         var address = try unixAddress(path: socketPath)
         try VmmControlSocketIO.connect(fd, address: &address, deadline: deadline)
+        try authenticatePeer?(fd)
         let payload = try JSONEncoder().encode(request)
         try VmmControlSocketIO.writeData(payload, to: fd, deadline: deadline)
         guard shutdown(fd, SHUT_WR) == 0 else {
@@ -426,6 +536,8 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
     private let reconnectIdentity: DoryRuntimeReconnectLaunchIdentity?
     private let executionStateProvider: @Sendable () -> DoryVirtualMachineState
     private let executionLifecycleHandler: (@Sendable (DoryLifecycleReceiptAction) throws -> Void)?
+    private let qualificationFaultHandler:
+        (@Sendable (DoryRuntimeQualificationFaultRequest) throws -> DoryRuntimeQualificationFaultObservation)?
 
     public init(
         socketPath: String,
@@ -433,7 +545,9 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
         lifecycleHandler: (@Sendable (DoryLifecycleReceiptAction) throws -> Void)? = nil,
         reconnectIdentity: DoryRuntimeReconnectLaunchIdentity? = nil,
         executionStateProvider: @escaping @Sendable () -> DoryVirtualMachineState = { .running },
-        executionLifecycleHandler: (@Sendable (DoryLifecycleReceiptAction) throws -> Void)? = nil
+        executionLifecycleHandler: (@Sendable (DoryLifecycleReceiptAction) throws -> Void)? = nil,
+        qualificationFaultHandler:
+            (@Sendable (DoryRuntimeQualificationFaultRequest) throws -> DoryRuntimeQualificationFaultObservation)? = nil
     ) {
         self.socketPath = socketPath
         self.deviceTelemetryProvider = deviceTelemetryProvider
@@ -441,6 +555,7 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
         self.reconnectIdentity = reconnectIdentity
         self.executionStateProvider = executionStateProvider
         self.executionLifecycleHandler = executionLifecycleHandler
+        self.qualificationFaultHandler = qualificationFaultHandler
     }
 
     public func start() throws {
@@ -496,6 +611,24 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
         do {
             let data = try VmmControlSocketIO.readRequestData(from: clientFD)
             let request = try JSONDecoder().decode(VmmControlRequest.self, from: data)
+            if request.command == "qualificationFault" {
+                guard let fault = request.qualificationFault, let qualificationFaultHandler,
+                      request.targetMB == nil, request.statePath == nil,
+                      request.lifecycleAction == nil, request.operationID == nil,
+                      request.directoryShares == nil, request.reconnectChallenge == nil else {
+                    throw VmmControlError.rejected("invalid or unauthorized qualification fault request")
+                }
+                try DoryRuntimeQualificationFaultHandoff.authenticateDaemon(descriptor: clientFD)
+                let observation = try qualificationFaultHandler(fault)
+                response = VmmControlResponse(ok: true, qualificationFault: observation)
+                if let encoded = try? JSONEncoder().encode(response) {
+                    try? VmmControlSocketIO.writeResponseData(encoded, to: clientFD)
+                }
+                return
+            }
+            guard request.qualificationFault == nil else {
+                throw VmmControlError.rejected("qualification fault fields on ordinary control request")
+            }
             if request.command == "authenticateRuntime" {
                 guard request.targetMB == nil,
                       request.statePath == nil,

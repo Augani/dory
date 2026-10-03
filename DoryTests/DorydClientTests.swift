@@ -43,6 +43,42 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func macGuestToolsTeardownTimeoutRemainsVisibleInMachineStatus() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        service.setMacGuestTools("dev", [
+            "machineID": "dev",
+            "state": "disconnected",
+            "runtimeGeneration": UInt64(1),
+            "grantedCapabilities": [] as [String],
+            "lastErrorCode": "teardown-timeout",
+        ])
+
+        let client = DorydClient(endpoint: listener.endpoint)
+        let status = try #require((try await client.machineList()).first { $0.id == "dev" })
+        #expect(status.macGuestTools?.lastErrorCode == "teardown-timeout")
+        let machine = AppStore.machine(fromDoryd: status)
+        let tools = try #require(machine.runtimeEvidence.first { $0.id == "tools" })
+        #expect(tools.label == "Mac Guest Tools unavailable")
+        #expect(tools.detail.contains("recovery deadline"))
+
+        service.setMacGuestTools("dev", [
+            "machineID": "dev",
+            "state": "disconnected",
+            "runtimeGeneration": UInt64(1),
+            "grantedCapabilities": [] as [String],
+            "lastErrorCode": "unrecognized-error",
+        ])
+        await #expect(throws: DorydClientError.self) {
+            _ = try await client.machineList()
+        }
+    }
+
+    @MainActor
     @Test func allLifecycleOperationsAndPhasesSurviveStatusAndAppProjection() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -155,8 +191,21 @@ struct DorydClientTests {
 
     @MainActor
     @Test func machineDisplayTopologyRoundTripsAndPreservesScanoutOrder() async throws {
+        let base = "/tmp/dory-display-topology-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
         let listener = NSXPCListener.anonymous()
-        let service = FakeDorydService()
+        let service = FakeDorydService(
+            socketPath: socketPath,
+            runtimeIdentityOverride: validResolvedRuntimeIdentity()
+        )
         let delegate = FakeDorydListenerDelegate(service: service)
         listener.delegate = delegate
         listener.resume()
@@ -178,18 +227,64 @@ struct DorydClientTests {
         let status = try #require(try await client.machineList().first)
         #expect(status.displays.map(\.id) == ["display-primary", "display-secondary"])
         #expect(status.displays.map(\.widthPixels) == [2_560, 1_920])
-        let machine = AppStore.machine(fromDoryd: status)
+        var machine = AppStore.machine(fromDoryd: status)
         #expect(machine.displays == status.displays)
         #expect(machine.displays.indices.map(UInt32.init) == [0, 1])
 
         let store = AppStore(dorydClient: client, useDorydEngine: true)
+        store.routeDockerCLI = false
         store.machines = [machine]
+        #expect(store.runtimeLinuxDisplayTopologyOverride(for: machine.name) == nil)
+        #expect(!store.canReconfigureRuntimeLinuxDisplays(machineID: machine.name))
+        #expect(store.addRuntimeLinuxDisplay(machineID: machine.name) == nil)
+        #expect(store.removeRuntimeLinuxDisplay(machineID: machine.name) == nil)
+
+        machine.integrationHealth = DoryGuestIntegrationHealth.evaluate(
+            machineIsRunning: true,
+            runtimeAuthority: .resolvedPlan,
+            desktopIntegrationsExpected: true,
+            clipboardTextExpected: false,
+            clipboardImageExpected: false,
+            sharedFoldersExpected: false,
+            qualifiedRuntimeFeatures: [.displayResize],
+            agentBuild: nil,
+            agentProtocolVersion: nil,
+            agentCapabilities: []
+        )
+        store.machines = [machine]
+        #expect(machine.supportsRuntimeDisplayReconfiguration)
+        // Runtime qualification does not grant an unattached app daemon ownership.
+        #expect(!store.canReconfigureRuntimeLinuxDisplays(machineID: machine.name))
+        await store.connectBackend()
+        #expect(store.loadState == .ready)
+        #expect(store.runtimeKind == .sharedVM)
+        store.machines = [machine]
+        #expect(store.canReconfigureRuntimeLinuxDisplays(machineID: machine.name))
         let added = try #require(store.addRuntimeLinuxDisplay(machineID: machine.name))
         #expect(added.scanoutID == 2)
         #expect(store.runtimeLinuxDisplayTopology(for: machine.name).count == 3)
+        #expect(store.runtimeLinuxDisplayTopologyOverride(for: machine.name)?.count == 3)
         let removed = try #require(store.removeRuntimeLinuxDisplay(machineID: machine.name))
         #expect(removed == added)
         #expect(store.runtimeLinuxDisplayTopology(for: machine.name).count == 2)
+        #expect(store.runtimeLinuxDisplayTopologyOverride(for: machine.name)?.count == 2)
+
+        machine.integrationHealth = DoryGuestIntegrationHealth.evaluate(
+            machineIsRunning: true,
+            runtimeAuthority: .resolvedPlan,
+            desktopIntegrationsExpected: true,
+            clipboardTextExpected: false,
+            clipboardImageExpected: false,
+            sharedFoldersExpected: false,
+            qualifiedRuntimeFeatures: [],
+            agentBuild: nil,
+            agentProtocolVersion: nil,
+            agentCapabilities: []
+        )
+        store.machines = [machine]
+        #expect(!store.canReconfigureRuntimeLinuxDisplays(machineID: machine.name))
+        #expect(store.addRuntimeLinuxDisplay(machineID: machine.name) == nil)
+        #expect(store.removeRuntimeLinuxDisplay(machineID: machine.name) == nil)
     }
 
     @MainActor
@@ -211,6 +306,68 @@ struct DorydClientTests {
         await #expect(throws: (any Error).self) { _ = try await client.machineList() }
         service.setMachineDisplays("dev", displayMode: "desktop", displays: [])
         await #expect(throws: (any Error).self) { _ = try await client.machineList() }
+    }
+
+    @MainActor
+    @Test func machineListKeepsMacDisplayRepairDiagnosticSeparateFromLaunchAndSavedState() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+        let repair: NSDictionary = ["schema": 1, "originalManifestSHA256": String(repeating: "a", count: 64),
+            "displays": [["widthPixels": 2560, "heightPixels": 1600, "pixelsPerInch": 220],
+                         ["widthPixels": 1920, "heightPixels": 1080, "pixelsPerInch": 144]],
+            "preservesSavedState": true, "bundleRepairCompleted": false, "pendingSelectedDisplayIndex": 1]
+        service.setNativeMacDisplayRepair("dev", repair)
+        let status = try #require(try await client.machineList().first)
+        #expect(status.state == "failed")
+        #expect(status.pid == nil && status.savedState == nil)
+        #expect(status.runtimeIdentity.mode == "requires-replanning")
+        #expect(status.nativeMacDisplayRepair?.displays.count == 2)
+        #expect(status.nativeMacDisplayRepair?.pendingSelectedDisplayIndex == 1)
+        #expect(status.nativeMacDisplayRepair?.preservesSavedState == true)
+        #expect(service.machineStartCount == 0 && service.machineStopCount == 0)
+        for kind in ["hash", "index", "geometry", "future", "unknown", "running", "family", "pid"] {
+            let invalid = NSMutableDictionary(dictionary: repair)
+            if kind == "hash" { invalid["originalManifestSHA256"] = String(repeating: "A", count: 64) }
+            if kind == "index" { invalid["pendingSelectedDisplayIndex"] = 2 }
+            if kind == "geometry" { invalid["displays"] = [["widthPixels": 0, "heightPixels": 1080, "pixelsPerInch": 144],
+                                                           ["widthPixels": 1920, "heightPixels": 1080, "pixelsPerInch": 144]] }
+            if kind == "future" { invalid["schema"] = 2 }
+            if kind == "unknown" { invalid["unboundPath"] = "/other-machine" }
+            service.setNativeMacDisplayRepair("dev", invalid,
+                state: kind == "running" ? "running" : "failed",
+                family: kind == "family" ? "linux" : "macos", pid: kind == "pid" ? 123 : nil)
+            await #expect(throws: (any Error).self) { _ = try await client.machineList() }
+        }
+    }
+
+    @MainActor
+    @Test func machineDisplayRepairUsesOnlyBoundUpdateRequestAndNeverStartOrStop() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate; listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint), id = UUID()
+        let digest = String(repeating: "a", count: 64)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineRepairNativeMacDisplay("dev", originalManifestSHA256: digest.uppercased(), selectedDisplayIndex: 1, operationID: id)
+        }
+        #expect(service.machineUpdateCount == 0)
+        let status = try await client.machineRepairNativeMacDisplay("dev", originalManifestSHA256: digest, selectedDisplayIndex: 1, operationID: id)
+        #expect(status.state == "stopped")
+        #expect(service.machineUpdateCount == 1)
+        #expect(service.machineStartCount == 0 && service.machineStopCount == 0 && service.machineResumeCount == 0)
+        let request = try #require(service.latestMachineUpdateConfig)
+        #expect(Set(request.allKeys.compactMap { $0 as? String }) == ["operationID", "nativeMacDisplayRepair"])
+        #expect(request["operationID"] as? String == id.uuidString.lowercased())
+        let repair = try #require(request["nativeMacDisplayRepair"] as? NSDictionary)
+        #expect(repair["originalManifestSHA256"] as? String == digest)
+        #expect(repair["selectedDisplayIndex"] as? Int == 1)
     }
 
     @MainActor
@@ -3263,6 +3420,124 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test(arguments: ["invalid", "suspended", "pending"])
+    func appStoreColdRecoveryUsesOnlyConfirmedStopAndRetainsPendingOperation(caseName: String) async throws {
+        let base = "/tmp/dory-cold-ui-\(UUID().uuidString)"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        // Only the fake control surface is exercised; no guest VM or disk is created.
+        service.machineSuspend("dev", reply: { _, _, _ in })
+        let operationID = UUID()
+        if caseName != "suspended" {
+            service.setMachineState("dev", caseName == "pending" ? "recovering" : "failed")
+            service.setMachineSavedState("dev", nil)
+            service.setMachineFailure("dev", [
+                "schemaVersion": 1,
+                "code": caseName == "pending" ? "lifecycle-recovery-required" : "saved-state-invalid",
+                "occurredAtUnixMilliseconds": 1_000,
+                "operationID": operationID.uuidString.lowercased(),
+                "causalChain": ["journal"], "recoveryDisposition": "repair",
+                "evidenceReferences": [] as [String],
+            ] as NSDictionary, activeOperation: caseName == "pending" ? [
+                "operationID": operationID.uuidString.lowercased(), "kind": "stopping", "phase": "publishing",
+            ] as NSDictionary : nil)
+        }
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let store = AppStore(dorydClient: DorydClient(endpoint: listener.endpoint), useDorydEngine: true)
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        if let refresh = store.loadMachines() { await refresh.value }
+        let machine = try #require(store.machines.first { $0.name == "dev" })
+        #expect(machine.canDiscardSavedState)
+        if caseName != "suspended" {
+            store.toggleMachine(machine)
+            #expect(!store.isMachineBusy("dev"))
+            #expect(service.machineStartCount == 0)
+            #expect(service.machineStopCount == 0)
+        }
+        if caseName == "pending" {
+            store.discardMachineSavedState(machine, operationID: UUID())
+            #expect(!store.isMachineBusy("dev"))
+            #expect(service.machineStopCount == 0)
+            store.discardMachineSavedState(machine)
+        } else {
+            store.discardMachineSavedState(machine, operationID: operationID)
+        }
+        store.discardMachineSavedState(machine, operationID: operationID)
+        try await waitUntil("confirmed saved-state cold recovery") {
+            store.machines.first { $0.name == "dev" }?.status == .stopped && !store.isMachineBusy("dev")
+        }
+        #expect(service.machineStopCount == 1)
+        #expect(service.latestMachineStopOperationID == operationID.uuidString.lowercased())
+        #expect(service.machineStartCount == 0)
+        #expect(service.machineResumeCount == 0)
+        // A stale confirmed row cannot discard again after another refresh.
+        store.discardMachineSavedState(machine, operationID: operationID)
+        #expect(!store.isMachineBusy("dev"))
+        #expect(service.machineStopCount == 1)
+    }
+
+    @MainActor
+    @Test(arguments: [false, true])
+    func appStoreDisplayRepairRequiresConfirmationAndRetainsPendingChoiceAndUUID(pending: Bool) async throws {
+        let base = "/tmp/dory-display-repair-ui-\(UUID().uuidString)", socket = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let shim = DockerShim(runtime: MockRuntime())
+        let server = ShimHTTPServer(socketPath: socket) { await shim.handle($0) }
+        try server.start(); defer { server.stop() }
+        let listener = NSXPCListener.anonymous(), service = FakeDorydService(socketPath: socket)
+        let id = UUID(), digest = String(repeating: "a", count: 64)
+        let repair = NSMutableDictionary(dictionary: ["schema": 1, "originalManifestSHA256": digest,
+            "displays": [["widthPixels": 2560, "heightPixels": 1600, "pixelsPerInch": 220],
+                         ["widthPixels": 1920, "heightPixels": 1080, "pixelsPerInch": 144]],
+            "preservesSavedState": true, "bundleRepairCompleted": false])
+        if pending { repair["pendingSelectedDisplayIndex"] = 1 }
+        service.setNativeMacDisplayRepair("dev", repair, state: pending ? "recovering" : "failed")
+        if pending {
+            service.setMachineFailure("dev", ["schemaVersion": 1, "code": "lifecycle-recovery-required",
+                "occurredAtUnixMilliseconds": 1000, "operationID": id.uuidString.lowercased(),
+                "causalChain": ["journal"], "recoveryDisposition": "repair", "evidenceReferences": [] as [String]] as NSDictionary,
+                activeOperation: ["operationID": id.uuidString.lowercased(), "kind": "repairing", "phase": "publishing"] as NSDictionary)
+        }
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate; listener.resume(); defer { listener.invalidate() }
+        let store = AppStore(dorydClient: DorydClient(endpoint: listener.endpoint), useDorydEngine: true)
+        store.routeDockerCLI = false; await store.connectBackend()
+        if let refresh = store.loadMachines() { await refresh.value }
+        let machine = try #require(store.machines.first { $0.name == "dev" })
+        #expect(machine.canRepairNativeMacDisplay && !machine.canDiscardSavedState)
+        store.toggleMachine(machine); store.discardMachineSavedState(machine)
+        #expect(service.machineStartCount == 0 && service.machineStopCount == 0)
+        #expect(service.machineUpdateCount == 0)
+        if pending {
+            store.repairNativeMacDisplay(machine, keepingDisplayAt: 0)
+            store.repairNativeMacDisplay(machine, keepingDisplayAt: 1, operationID: UUID())
+            #expect(service.machineUpdateCount == 0 && !store.isMachineBusy("dev"))
+            store.repairNativeMacDisplay(machine, keepingDisplayAt: 1)
+        } else { store.repairNativeMacDisplay(machine, keepingDisplayAt: 1, operationID: id) }
+        store.repairNativeMacDisplay(machine, keepingDisplayAt: 1, operationID: id)
+        try await waitUntil("confirmed cold display repair") {
+            store.machines.first { $0.name == "dev" }?.status == .stopped && !store.isMachineBusy("dev")
+        }
+        #expect(service.machineUpdateCount == 1)
+        #expect(service.latestMachineUpdateConfig?["operationID"] as? String == id.uuidString.lowercased())
+        #expect(service.machineStartCount == 0 && service.machineStopCount == 0 && service.machineResumeCount == 0)
+        store.repairNativeMacDisplay(machine, keepingDisplayAt: 1, operationID: id)
+        #expect(service.machineUpdateCount == 1 && !store.isMachineBusy("dev"))
+    }
+
+    @MainActor
     @Test func appStoreRoutesMachineLifecycleToDorydVMs() async throws {
         let base = "/tmp/dam-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let socketPath = base + "/doryd.sock"
@@ -3336,6 +3611,11 @@ struct DorydClientTests {
         #expect(store.canTransferFiles(to: machine))
         #expect(store.canTransferFolders(to: machine))
         #expect(store.canExportGuestFiles(from: machine))
+        var staleMacCapabilities = machine
+        staleMacCapabilities.guestFamily = "macos"
+        #expect(!store.canTransferFiles(to: staleMacCapabilities))
+        #expect(!store.canTransferFolders(to: staleMacCapabilities))
+        #expect(!store.canExportGuestFiles(from: staleMacCapabilities))
         #expect(store.canRepairMachineTools(machine))
 
         var customInstaller = machine
@@ -5661,6 +5941,15 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         machines[machineID] = row.copy() as? NSDictionary
     }
 
+    func setMacGuestTools(_ machineID: String, _ tools: NSDictionary) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let row = machines[machineID]?.mutableCopy() as? NSMutableDictionary else { return }
+        row["guestFamily"] = "macos"
+        row["macGuestTools"] = tools
+        machines[machineID] = row.copy() as? NSDictionary
+    }
+
     func setMachineSavedState(_ machineID: String, _ savedState: Any?) {
         lock.lock()
         defer { lock.unlock() }
@@ -5673,6 +5962,23 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             current.removeObject(forKey: "savedState")
         }
         machines[machineID] = current.copy() as? NSDictionary
+    }
+
+    func setNativeMacDisplayRepair(_ machineID: String, _ repair: NSDictionary,
+                                  state: String = "failed", family: String = "macos", pid: Int? = nil) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let row = machines[machineID]?.mutableCopy() as? NSMutableDictionary else { return }
+        row["guestFamily"] = family
+        row["state"] = state
+        if let pid { row["pid"] = pid } else { row.removeObject(forKey: "pid") }
+        row["runtimeIdentity"] = ["schemaVersion": 1, "mode": "requires-replanning",
+                                  "virtualHardwareABIVersion": 1, "invalidationReason": "plan-recovery-failed"]
+        row["nativeMacDisplayRepair"] = repair
+        row.removeObject(forKey: "runtimeGraphicsSelection")
+        row.removeObject(forKey: "integrationHealth")
+        row.removeObject(forKey: "savedState")
+        machines[machineID] = row.copy() as? NSDictionary
     }
 
     func setMachineCloneReceipt(_ machineID: String, _ receipt: Any?) {
@@ -6313,6 +6619,17 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         _machineUpdateCount += 1
         _latestMachineUpdateConfig = config
         let current = machines[machineID] ?? Self.machineRow(id: machineID, state: "stopped")
+        if config["nativeMacDisplayRepair"] != nil {
+            let row = NSMutableDictionary(dictionary: current)
+            row["state"] = "stopped"
+            for key in ["nativeMacDisplayRepair", "failure", "activeOperation", "savedState", "pid", "integrationHealth"] {
+                row.removeObject(forKey: key)
+            }
+            machines[machineID] = row
+            lock.unlock()
+            reply(true, row, "")
+            return
+        }
         let memoryMB = (config["memoryMB"] as? NSNumber)?.uint64Value
             ?? config["memoryMB"] as? UInt64
             ?? (current["memoryMB"] as? NSNumber)?.uint64Value

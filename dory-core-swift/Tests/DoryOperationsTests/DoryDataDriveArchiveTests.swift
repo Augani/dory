@@ -277,6 +277,222 @@ final class DoryDataDriveArchiveTests: XCTestCase {
         XCTAssertEqual(record.state.status, .completed)
     }
 
+    func testBackupValidatingFailurePreservesPublishedSnapshotForSameJournalRecovery() throws {
+        let fixture = try makeDriveFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.base) }
+        let payload = fixture.drive.engineDirectory + "/snapshot.txt"
+        let publishedData = Data("snapshot-at-publication".utf8)
+        try publishedData.write(to: URL(fileURLWithPath: payload))
+        let archive = fixture.base + "/PostPublicationFailure.dorybackup"
+        let plan = try DoryDataDriveTransaction.backupPlan(
+            drive: fixture.drive,
+            manifest: fixture.drive.readManifest(),
+            destination: archive
+        )
+        let operationID: UUID
+        let published: DoryDataDriveArchiveVerification
+        let publishedInode: ino_t
+        do {
+            let lease = try DoryOperationJournalStore(home: fixture.base).begin(plan)
+            operationID = lease.operationID
+            XCTAssertThrowsError(try DoryDataDriveArchive.createBackupPayload(
+                from: fixture.drive,
+                to: archive,
+                operationID: operationID,
+                phase: { phase in
+                    if phase == .validating { throw InjectedFailure.validating }
+                    try self.advanceLease(lease, to: phase)
+                }
+            )) {
+                XCTAssertEqual($0 as? InjectedFailure, .validating)
+            }
+            published = try DoryDataDriveArchive.verifyBackup(at: archive)
+            publishedInode = try inode(at: archive)
+            XCTAssertEqual(published.backupOperationID, operationID)
+            XCTAssertFalse(FileManager.default.fileExists(atPath:
+                DoryDataDriveArchive.operationPartialPath(
+                    destination: archive,
+                    operationID: operationID
+                )
+            ))
+            try markNeedsRecovery(lease)
+        }
+
+        // Recovery must use the committed snapshot, not silently replace it with newer source data.
+        try Data("source-changed-after-publication".utf8).write(to: URL(fileURLWithPath: payload))
+        XCTAssertEqual(
+            try DoryDataDriveTransaction.backup(from: fixture.drive, to: archive),
+            published
+        )
+        XCTAssertEqual(try inode(at: archive), publishedInode)
+        let store = try DoryOperationJournalStore(home: fixture.base)
+        XCTAssertEqual(try store.list().count, 1)
+        let recovered = try store.read(operationID)
+        XCTAssertEqual(recovered.state.phase, .completed)
+        XCTAssertEqual(recovered.state.status, .completed)
+
+        let target = try restoredDrive(home: fixture.base, name: "CommittedSnapshot")
+        _ = try DoryDataDriveTransaction.restore(at: archive, to: target)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: target.engineDirectory + "/snapshot.txt")),
+            publishedData
+        )
+    }
+
+    func testRestoreValidatingFailureRetainsOwnerAndExternalReferencesForSameJournalRecovery() throws {
+        let fixture = try makeDriveFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.base) }
+        let externalISO = fixture.base + "/original.iso"
+        let originalData = Data("external-media-must-remain-untouched".utf8)
+        try originalData.write(to: URL(fileURLWithPath: externalISO))
+        let externalInode = try inode(at: externalISO)
+        let sourceReference = fixture.drive.engineDirectory + "/original-media"
+        try FileManager.default.createSymbolicLink(
+            atPath: sourceReference,
+            withDestinationPath: externalISO
+        )
+        let archive = fixture.base + "/RestorePostPublicationFailure.dorybackup"
+        let backup = try DoryDataDriveTransaction.backup(from: fixture.drive, to: archive)
+        let archiveInode = try inode(at: archive)
+        let target = try restoredDrive(home: fixture.base, name: "RestoreFailureRecovery")
+        let plan = try DoryDataDriveTransaction.restorePlan(
+            archive: archive,
+            verification: backup,
+            drive: target
+        )
+        let operationID: UUID
+        let publishedInode: ino_t
+        do {
+            let lease = try DoryOperationJournalStore(home: fixture.base).begin(plan)
+            operationID = lease.operationID
+            XCTAssertThrowsError(try DoryDataDriveArchive.restoreBackupPayload(
+                at: archive,
+                to: target,
+                operationID: operationID,
+                phase: { phase in
+                    if phase == .validating { throw InjectedFailure.validating }
+                    try self.advanceLease(lease, to: phase)
+                }
+            )) {
+                XCTAssertEqual($0 as? InjectedFailure, .validating)
+            }
+            XCTAssertEqual(try target.inspect(), .ready)
+            publishedInode = try inode(at: target.root)
+            XCTAssertTrue(DoryDataDriveArchive.restoreOwnerMatches(
+                drive: target,
+                operationID: operationID,
+                archiveManifestDigest: backup.archiveManifestDigest
+            ))
+            XCTAssertFalse(FileManager.default.fileExists(atPath:
+                DoryDataDriveArchive.operationPartialPath(
+                    destination: target.root,
+                    operationID: operationID
+                )
+            ))
+            try markNeedsRecovery(lease)
+        }
+
+        XCTAssertEqual(try DoryDataDriveTransaction.restore(at: archive, to: target), backup)
+        XCTAssertEqual(try inode(at: target.root), publishedInode)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: target.root + "/.dory-restore-owner.json"
+        ))
+        let store = try DoryOperationJournalStore(home: fixture.base)
+        XCTAssertEqual(try store.list().filter { $0.plan.kind == .driveRestore }.count, 1)
+        let recovered = try store.read(operationID)
+        XCTAssertEqual(recovered.state.phase, .completed)
+        XCTAssertEqual(recovered.state.status, .completed)
+        XCTAssertEqual(try DoryDataDriveArchive.verifyBackup(at: archive), backup)
+        XCTAssertEqual(try inode(at: archive), archiveInode)
+        XCTAssertEqual(try inode(at: externalISO), externalInode)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: externalISO)), originalData)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: sourceReference),
+            externalISO
+        )
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: target.engineDirectory + "/original-media"
+            ),
+            externalISO
+        )
+    }
+
+    func testPrePublicationFailuresCleanOnlyPartialsAndPreserveLastGoodArchive() throws {
+        let fixture = try makeDriveFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.base) }
+        let lastGood = fixture.base + "/LastGood.dorybackup"
+        let backup = try DoryDataDriveTransaction.backup(from: fixture.drive, to: lastGood)
+        let lastGoodInode = try inode(at: lastGood)
+        let failedArchive = fixture.base + "/NotPublished.dorybackup"
+        let backupID = UUID()
+        XCTAssertThrowsError(try DoryDataDriveArchive.createBackupPayload(
+            from: fixture.drive,
+            to: failedArchive,
+            operationID: backupID,
+            phase: { if $0 == .readyToPublish { throw InjectedFailure.readyToPublish } }
+        )) {
+            XCTAssertEqual($0 as? InjectedFailure, .readyToPublish)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: failedArchive))
+        XCTAssertFalse(FileManager.default.fileExists(atPath:
+            DoryDataDriveArchive.operationPartialPath(destination: failedArchive, operationID: backupID)
+        ))
+
+        let target = try restoredDrive(home: fixture.base, name: "NotPublished")
+        let restoreID = UUID()
+        XCTAssertThrowsError(try DoryDataDriveArchive.restoreBackupPayload(
+            at: lastGood,
+            to: target,
+            operationID: restoreID,
+            phase: { if $0 == .readyToPublish { throw InjectedFailure.readyToPublish } }
+        )) {
+            XCTAssertEqual($0 as? InjectedFailure, .readyToPublish)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.root))
+        XCTAssertFalse(FileManager.default.fileExists(atPath:
+            DoryDataDriveArchive.operationPartialPath(destination: target.root, operationID: restoreID)
+        ))
+        XCTAssertEqual(try DoryDataDriveArchive.verifyBackup(at: lastGood), backup)
+        XCTAssertEqual(try inode(at: lastGood), lastGoodInode)
+    }
+
+    private enum InjectedFailure: Error, Equatable {
+        case validating
+        case readyToPublish
+    }
+
+    private func inode(at path: String) throws -> ino_t {
+        var value = stat()
+        guard lstat(path, &value) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return value.st_ino
+    }
+
+    private func advanceLease(_ lease: DoryOperationLease, to phase: DoryOperationPhase) throws {
+        let record = try lease.read()
+        _ = try lease.transition(
+            to: phase,
+            status: .running,
+            expectedRevision: record.state.revision,
+            stepID: "test.\(phase.rawValue)"
+        )
+    }
+
+    private func markNeedsRecovery(_ lease: DoryOperationLease) throws {
+        let record = try lease.read()
+        XCTAssertEqual(record.state.phase, .publishing)
+        _ = try lease.transition(
+            to: record.state.phase,
+            status: .needsRecovery,
+            expectedRevision: record.state.revision,
+            stepID: "test.post-publication-failure",
+            recoveryAction: "resume-same-operation"
+        )
+        XCTAssertEqual(try lease.read().state.status, .needsRecovery)
+    }
+
     private func makeDriveFixture() throws -> (base: String, drive: DoryDataDrive) {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("dory-drive-archive-\(UUID().uuidString)", isDirectory: true)
