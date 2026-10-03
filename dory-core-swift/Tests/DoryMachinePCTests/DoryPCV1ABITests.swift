@@ -1,7 +1,7 @@
+import DoryExecutionContracts
 import Foundation
 import Testing
 
-import DoryExecutionContracts
 @testable import DoryMachinePC
 
 @Suite struct DoryPCV1ABITests {
@@ -43,10 +43,23 @@ import DoryExecutionContracts
   @Test func selectsTheSmallestAdmittedPowerOfTwoGuestPhysicalSpace() {
     #expect(DoryPCV1ABI.guestPhysicalAddressBits(memoryBytes: 512 << 20) == 36)
     #expect(DoryPCV1ABI.guestPhysicalAddressSpaceBytes(memoryBytes: 512 << 20) == 64 << 30)
-    #expect(DoryPCV1ABI.guestPhysicalAddressBits(memoryBytes: 60 << 30) == 36)
+    #expect(DoryPCV1ABI.guestPhysicalAddressBits(memoryBytes: 60 << 30) == 37)
     #expect(DoryPCV1ABI.guestPhysicalAddressBits(memoryBytes: 64 << 30) == 37)
     #expect(DoryPCV1ABI.guestPhysicalAddressBits(memoryBytes: 512 << 30) == 40)
     #expect(DoryPCV1ABI.guestPhysicalAddressSpaceBytes(memoryBytes: 512 << 30) == 1 << 40)
+    for memoryBytes: UInt64 in [512 << 20, 4 << 30, 64 << 30, 512 << 30] {
+      let highRAMBytes =
+        memoryBytes > DoryPCV1ABI.mmioHoleStart
+        ? memoryBytes - DoryPCV1ABI.mmioHoleStart : 0
+      let highRAMEnd = DoryPCV1ABI.above4GRAMStart + highRAMBytes
+      let aperture = DoryPCV1ABI.pcie64MMIOBase(memoryBytes: memoryBytes)
+      #expect(aperture >= highRAMEnd)
+      #expect(aperture.isMultiple(of: DoryPCV1ABI.pcie64MMIOBytes))
+      #expect(
+        aperture + DoryPCV1ABI.pcie64MMIOBytes
+          <= DoryPCV1ABI.guestPhysicalAddressSpaceBytes(memoryBytes: memoryBytes)
+      )
+    }
   }
 
   @Test func checkedInABIProjectionMatchesSource() throws {

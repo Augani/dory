@@ -1,4 +1,4 @@
-import DoryMachinePC
+@testable import DoryMachinePC
 import DoryVirtio
 import Testing
 
@@ -82,7 +82,7 @@ import Testing
           let transport = try DoryPCVirtioPCITransport(queueCount: 1, maximumQueueSize: 8,
             offeredFeatures: [.eventIndex])
           let counter = AvailableEventRequestCounter()
-          transport.connectQueueProcessor(memory: machine.physicalMemory,
+          transport.connectQueueProcessor(memory: machine.qualificationDMAMemory,
             canProcess: { _ in !receiveBlocked }) { _, _, _ in
               counter.increment()
               return 1
@@ -128,7 +128,7 @@ import Testing
     let transport = try DoryPCVirtioPCITransport(queueCount: 1, maximumQueueSize: 8,
       offeredFeatures: [.eventIndex])
     let counter = AvailableEventRequestCounter()
-    transport.connectQueueProcessor(memory: machine.physicalMemory) { _, _, _ in
+    transport.connectQueueProcessor(memory: machine.qualificationDMAMemory) { _, _, _ in
       counter.increment()
       return 1
     }
@@ -149,7 +149,7 @@ import Testing
       let transport = try DoryPCVirtioPCITransport(queueCount: 1, maximumQueueSize: 8,
         offeredFeatures: [.eventIndex])
       let counter = AvailableEventRequestCounter()
-      transport.connectQueueProcessor(memory: machine.physicalMemory) { _, _, _ in
+      transport.connectQueueProcessor(memory: machine.qualificationDMAMemory) { _, _, _ in
         counter.increment()
         return 1
       }

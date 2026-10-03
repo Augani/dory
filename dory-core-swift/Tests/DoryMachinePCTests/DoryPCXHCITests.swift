@@ -356,6 +356,79 @@ import Testing
     #expect(try read32(machine, 0x20C8) >> 24 == 1)
   }
 
+  @Test(arguments: [UInt8(5), UInt8(6)], [false, true])
+  func rejectsDataTRBFromTheWrongEndpointFamily(
+    endpointType: UInt8, wrongIsFirst: Bool
+  ) throws {
+    let xhci = try DoryPCXHCIController()
+    let usbDevice = DoryPCUSBRecordingDevice(speed: .high)
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024, pciFunctions: [xhci]
+    )
+    let bar = DoryPCV1ABI.xhciBARAddress
+    try xhci.writeConfiguration(offset: 4, bytes: [2, 0])
+    try xhci.connect(port: 1, device: usbDevice)
+    try machine.physicalMemory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x2000)) + littleEndian(UInt32(16)) + [0, 0, 0, 0]
+    )
+    try machine.physicalMemory.write(at: 0x4008, bytes: littleEndian(UInt64(0x6000)))
+    var addressInput = [UInt8](repeating: 0, count: 96)
+    addressInput.replaceSubrange(4..<8, with: littleEndian(UInt32(3)))
+    addressInput.replaceSubrange(32..<36, with: littleEndian(UInt32(1 << 27 | 3 << 20)))
+    addressInput.replaceSubrange(36..<40, with: littleEndian(UInt32(1 << 16)))
+    addressInput.replaceSubrange(68..<72, with: littleEndian(UInt32(64 << 16 | 4 << 3)))
+    addressInput.replaceSubrange(72..<80, with: littleEndian(UInt64(0x7001)))
+    try machine.physicalMemory.write(at: 0x5000, bytes: addressInput)
+    var configureInput = [UInt8](repeating: 0, count: 1_056)
+    configureInput.replaceSubrange(4..<8, with: littleEndian(UInt32(1 << 3)))
+    configureInput.replaceSubrange(
+      132..<136,
+      with: littleEndian(UInt32(512 << 16) | UInt32(endpointType) << 3)
+    )
+    configureInput.replaceSubrange(136..<144, with: littleEndian(UInt64(0x9001)))
+    try machine.physicalMemory.write(at: 0x8000, bytes: configureInput)
+    let enable = [UInt8](repeating: 0, count: 12) + littleEndian(UInt32(9 << 10 | 1))
+    let address = littleEndian(UInt64(0x5000)) + [UInt8](repeating: 0, count: 4)
+      + littleEndian(UInt32(1 << 24 | 11 << 10 | 1))
+    let configure = littleEndian(UInt64(0x8000)) + [UInt8](repeating: 0, count: 4)
+      + littleEndian(UInt32(1 << 24 | 12 << 10 | 1))
+    try machine.physicalMemory.write(at: 0x3000, bytes: enable + address + configure)
+    try write32(machine, bar + 0x1028, 1)
+    try write64(machine, bar + 0x1030, 0x1000)
+    try write64(machine, bar + 0x1038, 0x2000)
+    try write64(machine, bar + 0x58, 0x3001)
+    try write64(machine, bar + 0x70, 0x4000)
+    try write32(machine, bar + 0x78, 8)
+    try write32(machine, bar + 0x40, 1)
+    try write32(machine, bar + 0x2000, 0)
+    #expect(try read32(machine, 0x6060) & 0x7 == 1)
+
+    let wrongTRBType: UInt32 = endpointType == 5 ? 1 : 5
+    let expectedTRBType: UInt32 = endpointType == 5 ? 5 : 1
+    try machine.physicalMemory.write(at: 0xA000, bytes: [0xCC, 0xCC, 0xCC, 0xCC])
+    try machine.physicalMemory.write(
+      at: 0x9000,
+      bytes: littleEndian(UInt64(0xA000)) + littleEndian(UInt32(4))
+        + littleEndian(
+          UInt32((wrongIsFirst ? wrongTRBType : expectedTRBType) << 10
+            | (wrongIsFirst ? 1 << 5 : 1 << 4) | 1)
+        )
+    )
+    if !wrongIsFirst {
+      try machine.physicalMemory.write(
+        at: 0x9010,
+        bytes: littleEndian(UInt64(0xA004)) + littleEndian(UInt32(4))
+          + littleEndian(UInt32(1 << 5 | wrongTRBType << 10 | 1))
+      )
+    }
+    try write32(machine, bar + 0x2004, 3)
+    #expect(usbDevice.transfers.isEmpty)
+    #expect(try machine.physicalMemory.read(at: 0xA000, byteCount: 4) == [0xCC, 0xCC, 0xCC, 0xCC])
+    let completionCode = try read32(machine, 0x2048) >> 24
+    #expect(completionCode == 5)
+  }
+
   @Test func disconnectTerminatesActiveEndpointsOnlyOnce() throws {
     let xhci = try DoryPCXHCIController()
     let disconnectedDevice = DoryPCUSBRecordingDevice(speed: .high)

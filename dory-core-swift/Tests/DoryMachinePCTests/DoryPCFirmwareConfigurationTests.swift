@@ -8,12 +8,13 @@ import Testing
     let device = DoryPCFirmwareConfiguration(
       totalRAMBytes: totalRAM,
       processorCount: 8,
-      flags: [.qualificationBootProbe]
+      flags: [.qualificationBootProbe],
+      hostVisibleGPURegionID: 1
     )
 
     #expect(try read(UInt64.self, device, at: 0) == DoryPCFirmwareConfiguration.ABI.magic)
-    #expect(try read(UInt32.self, device, at: 8) == 1)
-    #expect(try read(UInt32.self, device, at: 12) == 144)
+    #expect(try read(UInt32.self, device, at: 8) == 2)
+    #expect(try read(UInt32.self, device, at: 12) == 168)
     #expect(
       try read(UInt32.self, device, at: 20)
         == DoryPCFirmwareConfiguration.Flags.qualificationBootProbe.rawValue
@@ -27,6 +28,12 @@ import Testing
     #expect(try read(UInt64.self, device, at: 96) == DoryPCV1ABI.smbiosBase)
     #expect(try read(UInt64.self, device, at: 104) == DoryPCV1ABI.firmwareVariableBase)
     #expect(try read(UInt64.self, device, at: 136) == DoryPCV1ABI.above4GRAMStart)
+    #expect(
+      try read(UInt64.self, device, at: 144)
+        == DoryPCV1ABI.pcie64MMIOBase(memoryBytes: totalRAM)
+    )
+    #expect(try read(UInt64.self, device, at: 152) == DoryPCV1ABI.pcie64MMIOBytes)
+    #expect(try read(UInt32.self, device, at: 160) == 1)
   }
 
   @Test func isReadOnlyAndInstalledByMachine() throws {

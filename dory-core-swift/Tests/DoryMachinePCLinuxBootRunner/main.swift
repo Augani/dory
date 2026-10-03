@@ -180,7 +180,8 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
       baselineJITTier1Enabled: configuration.effectiveTier1Enabled,
       baselineJITRawTargetPredictionOptions: configuration.rawTargetPrediction.options,
       jitWriteCoherencePolicy: configuration.jitWriteCoherencePolicy,
-      clockSource: .deterministic)
+      clockSource: .deterministic,
+      instrumentationEnabled: configuration.diagnostics != nil)
     try machine.load(
       kernel: kernel.data, initrd: Array(initrd.data), commandLine: configuration.commandLine)
     record.stage = "running"
@@ -218,6 +219,9 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
       if record.lastExits.count > 16 { record.lastExits.removeFirst(record.lastExits.count - 16) }
       record.state = state
       record.executionStatistics = machine.executionStatistics
+      if configuration.diagnostics != nil {
+        record.hostExecutionDiagnostics = machine.hostExecutionDiagnostics
+      }
       let outcome = PVHRunOutcome.terminal(stop: stop, receiptSeen: console.receipt != nil)
       if configuration.diagnostics != nil {
         record.timerInterruptState = try PVHTimerInterruptSnapshot(machine: machine)

@@ -14,10 +14,25 @@ import Foundation
 /// DMA while a guest access may still be waiting for that work to complete.
 final class DoryPCDeviceAccessCoordinator: @unchecked Sendable {
   private let lock = NSRecursiveLock()
+  private let threadDepthKey = "DoryPCDeviceAccessCoordinator.\(UUID().uuidString)"
+
+  var isActiveOnCurrentThread: Bool {
+    (Thread.current.threadDictionary[threadDepthKey] as? Int ?? 0) > 0
+  }
 
   func withAccess<Result>(_ body: () throws -> Result) rethrows -> Result {
     lock.lock()
-    defer { lock.unlock() }
+    let threadDictionary = Thread.current.threadDictionary
+    let depth = (threadDictionary[threadDepthKey] as? Int ?? 0) + 1
+    threadDictionary[threadDepthKey] = depth
+    defer {
+      if depth == 1 {
+        threadDictionary.removeObject(forKey: threadDepthKey)
+      } else {
+        threadDictionary[threadDepthKey] = depth - 1
+      }
+      lock.unlock()
+    }
     return try body()
   }
 }

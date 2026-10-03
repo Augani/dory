@@ -974,6 +974,7 @@ struct PVHDiagnosticRecord: Codable, Sendable {
   var lastExits: [PVHStopSnapshot] = []
   var state: DoryX86ArchitecturalState?
   var executionStatistics: DoryPCExecutionStatistics?
+  var hostExecutionDiagnostics: DoryPCHostExecutionDiagnostics?
   var jitDiagnostics: PVHJITDiagnosticSample?
   var stressIO: PVHStressIOSnapshot?
   var timerInterruptState: PVHTimerInterruptSnapshot?
@@ -996,7 +997,8 @@ struct PVHDiagnosticRecord: Codable, Sendable {
   private enum CodingKeys: String, CodingKey {
     case schemaVersion, kind, releaseQualified, configuration, hostOS, guestClock, observationScope
     case stage, fixtureManifest, runnerExecutable, kernel, initrd, symbols, retiredInstructions
-    case elapsedNanoseconds, lastExits, state, executionStatistics, jitDiagnostics, stressIO
+    case elapsedNanoseconds, lastExits, state, executionStatistics, hostExecutionDiagnostics
+    case jitDiagnostics, stressIO
     case timerInterruptState, consoleTail, consoleBytes, guestReceipt, outcome, error
   }
 
@@ -1051,6 +1053,8 @@ struct PVHDiagnosticRecord: Codable, Sendable {
     state = try container.decodeIfPresent(DoryX86ArchitecturalState.self, forKey: .state)
     executionStatistics = try container.decodeIfPresent(
       DoryPCExecutionStatistics.self, forKey: .executionStatistics)
+    hostExecutionDiagnostics = try container.decodeIfPresent(
+      DoryPCHostExecutionDiagnostics.self, forKey: .hostExecutionDiagnostics)
     jitDiagnostics = try container.decodeIfPresent(
       PVHJITDiagnosticSample.self, forKey: .jitDiagnostics)
     stressIO = try container.decodeIfPresent(PVHStressIOSnapshot.self, forKey: .stressIO)

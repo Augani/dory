@@ -75,13 +75,59 @@ public protocol DoryPCPCIINTxControllable: DoryPCPCIFunction {
 public protocol DoryPCPCIBARMemoryDevice: AnyObject, Sendable {
   var configurationFunction: DoryPCPCIConfigurationFunction { get }
   var barIndex: Int { get }
+  var barIndices: [Int] { get }
+  func barAccessSnapshot(at index: Int) throws -> DoryPCPCIBARAccessSnapshot
   func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8]
+  func readBAR(index: Int, offset: UInt64, byteCount: Int) throws -> [UInt8]
   func validateBARRead(offset: UInt64, byteCount: Int) throws
+  func validateBARRead(index: Int, offset: UInt64, byteCount: Int) throws
   func writeBAR(offset: UInt64, bytes: [UInt8]) throws
+  func writeBAR(index: Int, offset: UInt64, bytes: [UInt8]) throws
   func validateBARWrite(offset: UInt64, byteCount: Int) throws
+  func validateBARWrite(index: Int, offset: UInt64, byteCount: Int) throws
+  func allowsBARDMA(index: Int, offset: UInt64, byteCount: Int, write: Bool) -> Bool
+}
+
+public struct DoryPCPCIBARAccessSnapshot: Sendable {
+  public let memoryEnabled: Bool
+  public let bar: DoryPCPCIBARDescriptor?
+  public let apertureGeneration: UInt64?
+
+  public init(
+    memoryEnabled: Bool,
+    bar: DoryPCPCIBARDescriptor?,
+    apertureGeneration: UInt64? = nil
+  ) {
+    self.memoryEnabled = memoryEnabled
+    self.bar = bar
+    self.apertureGeneration = apertureGeneration
+  }
 }
 
 extension DoryPCPCIBARMemoryDevice {
+  public var barIndices: [Int] { [barIndex] }
+
+  public func barAccessSnapshot(at index: Int) throws -> DoryPCPCIBARAccessSnapshot {
+    .init(
+      memoryEnabled: configurationFunction.command & 2 != 0,
+      bar: try configurationFunction.bar(at: index)
+    )
+  }
+
+  public func readBAR(index: Int, offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    guard index == barIndex else {
+      throw DoryPCPCIError.invalidBAR(index: index)
+    }
+    return try readBAR(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeBAR(index: Int, offset: UInt64, bytes: [UInt8]) throws {
+    guard index == barIndex else {
+      throw DoryPCPCIError.invalidBAR(index: index)
+    }
+    try writeBAR(offset: offset, bytes: bytes)
+  }
+
   public func validateBARRead(offset: UInt64, byteCount: Int) throws {
     guard let bar = try configurationFunction.bar(at: barIndex),
       byteCount > 0,
@@ -94,6 +140,11 @@ extension DoryPCPCIBARMemoryDevice {
         write: false
       )
     }
+  }
+
+  public func validateBARRead(index: Int, offset: UInt64, byteCount: Int) throws {
+    guard index == barIndex else { throw DoryPCPCIError.invalidBAR(index: index) }
+    try validateBARRead(offset: offset, byteCount: byteCount)
   }
 
   public func validateBARWrite(offset: UInt64, byteCount: Int) throws {
@@ -109,6 +160,18 @@ extension DoryPCPCIBARMemoryDevice {
       )
     }
   }
+
+  public func validateBARWrite(index: Int, offset: UInt64, byteCount: Int) throws {
+    guard index == barIndex else { throw DoryPCPCIError.invalidBAR(index: index) }
+    try validateBARWrite(offset: offset, byteCount: byteCount)
+  }
+
+  public func allowsBARDMA(
+    index: Int,
+    offset: UInt64,
+    byteCount: Int,
+    write: Bool
+  ) -> Bool { false }
 }
 
 extension DoryPCPCIINTxControllable where Self: DoryPCPCIBARMemoryDevice {
@@ -884,6 +947,8 @@ public final class DoryPCPCIExpressECAM: DoryPCMMIODevice, @unchecked Sendable {
 
 /// Frozen DoryPC PCI MMIO aperture. Routing is resolved from live BAR registers on every access,
 /// so firmware and the OS may size and relocate devices without mutating the sealed physical bus.
+/// GPU BAR4 also carries an aperture epoch from that routing snapshot through the actual access;
+/// relocation/reset cannot turn an already-resolved old address into a new blob alias.
 public final class DoryPCPCIBARWindow: DoryPCMMIODevice, @unchecked Sendable {
   public let baseAddress: UInt64
   public let byteCount: UInt64
@@ -912,29 +977,213 @@ public final class DoryPCPCIBARWindow: DoryPCMMIODevice, @unchecked Sendable {
 
   public func read(offset: UInt64, byteCount: Int) throws -> [UInt8] {
     let resolved = try resolve(offset: offset, byteCount: byteCount, write: false)
-    return try resolved.device.readBAR(offset: resolved.barOffset, byteCount: byteCount)
+    if let generation = resolved.apertureGeneration,
+      let gpu = resolved.device as? DoryPCVirtioGPUPCIDevice
+    {
+      return try gpu.withHostVisibleBARAccess(
+        expectedBARAddress: baseAddress + offset - resolved.barOffset
+      ) { aperture in
+        try aperture.read(
+          offset: resolved.barOffset,
+          byteCount: byteCount,
+          expectedApertureGeneration: generation
+        )
+      }
+    }
+    return try resolved.device.readBAR(
+      index: resolved.barIndex,
+      offset: resolved.barOffset,
+      byteCount: byteCount
+    )
+  }
+
+  /// Device DMA may touch only the generation-bound GPU arena. Resolve the live BAR once:
+  /// preflighting and then calling the ordinary read path would re-resolve a movable BAR.
+  func readDMA(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    let resolved = try resolve(offset: offset, byteCount: byteCount, write: false)
+    guard let generation = resolved.apertureGeneration,
+      let gpu = resolved.device as? DoryPCVirtioGPUPCIDevice,
+      resolved.barIndex == 4
+    else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset, byteCount: byteCount, write: false)
+    }
+    return try gpu.withHostVisibleBARAccess(
+      expectedBARAddress: baseAddress + offset - resolved.barOffset
+    ) { aperture in
+      try aperture.read(
+        offset: resolved.barOffset,
+        byteCount: byteCount,
+        expectedApertureGeneration: generation
+      )
+    }
   }
 
   public func validateRead(offset: UInt64, byteCount: Int) throws {
     let resolved = try resolve(offset: offset, byteCount: byteCount, write: false)
-    try resolved.device.validateBARRead(offset: resolved.barOffset, byteCount: byteCount)
+    if let generation = resolved.apertureGeneration,
+      let gpu = resolved.device as? DoryPCVirtioGPUPCIDevice
+    {
+      try gpu.withHostVisibleBARAccess(
+        expectedBARAddress: baseAddress + offset - resolved.barOffset
+      ) { aperture in
+        try aperture.validateRead(
+          offset: resolved.barOffset,
+          byteCount: byteCount,
+          expectedApertureGeneration: generation
+        )
+      }
+      return
+    }
+    try resolved.device.validateBARRead(
+      index: resolved.barIndex,
+      offset: resolved.barOffset,
+      byteCount: byteCount
+    )
   }
 
   public func write(offset: UInt64, bytes: [UInt8]) throws {
     let resolved = try resolve(offset: offset, byteCount: bytes.count, write: true)
-    try resolved.device.writeBAR(offset: resolved.barOffset, bytes: bytes)
+    if let generation = resolved.apertureGeneration,
+      let gpu = resolved.device as? DoryPCVirtioGPUPCIDevice
+    {
+      try gpu.withHostVisibleBARAccess(
+        expectedBARAddress: baseAddress + offset - resolved.barOffset
+      ) { aperture in
+        try aperture.write(
+          offset: resolved.barOffset,
+          bytes: bytes,
+          expectedApertureGeneration: generation
+        )
+      }
+      return
+    }
+    try resolved.device.writeBAR(
+      index: resolved.barIndex,
+      offset: resolved.barOffset,
+      bytes: bytes
+    )
+  }
+
+  func writeDMA(offset: UInt64, bytes: [UInt8]) throws {
+    let resolved = try resolve(offset: offset, byteCount: bytes.count, write: true)
+    guard let generation = resolved.apertureGeneration,
+      let gpu = resolved.device as? DoryPCVirtioGPUPCIDevice,
+      resolved.barIndex == 4
+    else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset, byteCount: bytes.count, write: true)
+    }
+    try gpu.withHostVisibleBARAccess(
+      expectedBARAddress: baseAddress + offset - resolved.barOffset
+    ) { aperture in
+      try aperture.write(
+        offset: resolved.barOffset,
+        bytes: bytes,
+        expectedApertureGeneration: generation
+      )
+    }
+  }
+
+  public func compareExchangeScalar(
+    offset: UInt64, expected: UInt64, desired: UInt64, byteCount: Int
+  ) throws -> UInt64? {
+    let resolved = try resolve(offset: offset, byteCount: byteCount, write: true)
+    guard let generation = resolved.apertureGeneration,
+      let gpu = resolved.device as? DoryPCVirtioGPUPCIDevice
+    else { return nil }
+    return try gpu.withHostVisibleBARAccess(
+      expectedBARAddress: baseAddress + offset - resolved.barOffset
+    ) { aperture in
+      try aperture.compareExchange(
+        offset: resolved.barOffset, expected: expected, desired: desired,
+        byteCount: byteCount, expectedApertureGeneration: generation
+      )
+    }
   }
 
   public func validateWrite(offset: UInt64, byteCount: Int) throws {
     let resolved = try resolve(offset: offset, byteCount: byteCount, write: true)
-    try resolved.device.validateBARWrite(offset: resolved.barOffset, byteCount: byteCount)
+    if let generation = resolved.apertureGeneration,
+      let gpu = resolved.device as? DoryPCVirtioGPUPCIDevice
+    {
+      try gpu.withHostVisibleBARAccess(
+        expectedBARAddress: baseAddress + offset - resolved.barOffset
+      ) { aperture in
+        try aperture.validateWrite(
+          offset: resolved.barOffset,
+          byteCount: byteCount,
+          expectedApertureGeneration: generation
+        )
+      }
+      return
+    }
+    try resolved.device.validateBARWrite(
+      index: resolved.barIndex,
+      offset: resolved.barOffset,
+      byteCount: byteCount
+    )
+  }
+
+  public func allowsDMAAccess(offset: UInt64, byteCount: Int, write: Bool) -> Bool {
+    guard let resolved = try? resolve(offset: offset, byteCount: byteCount, write: write)
+    else { return false }
+    if let generation = resolved.apertureGeneration,
+      let gpu = resolved.device as? DoryPCVirtioGPUPCIDevice
+    {
+      do {
+        try gpu.withHostVisibleBARAccess(
+          expectedBARAddress: baseAddress + offset - resolved.barOffset
+        ) { aperture in
+          if write {
+            try aperture.validateWrite(
+              offset: resolved.barOffset,
+              byteCount: byteCount,
+              expectedApertureGeneration: generation
+            )
+          } else {
+            try aperture.validateRead(
+              offset: resolved.barOffset,
+              byteCount: byteCount,
+              expectedApertureGeneration: generation
+            )
+          }
+        }
+        return true
+      } catch {
+        return false
+      }
+    }
+    return resolved.device.allowsBARDMA(
+      index: resolved.barIndex,
+      offset: resolved.barOffset,
+      byteCount: byteCount,
+      write: write
+    )
+  }
+
+  public func synchronize() {
+    let snapshot = lock.withLock { devices }
+    var synchronized = Set<ObjectIdentifier>()
+    for device in snapshot {
+      let identifier = ObjectIdentifier(device)
+      guard synchronized.insert(identifier).inserted else { continue }
+      if let gpu = device as? DoryPCVirtioGPUPCIDevice {
+        gpu.hostVisibleAperture?.synchronize()
+      }
+    }
   }
 
   private func resolve(
     offset: UInt64,
     byteCount: Int,
     write: Bool
-  ) throws -> (device: any DoryPCPCIBARMemoryDevice, barOffset: UInt64) {
+  ) throws -> (
+    device: any DoryPCPCIBARMemoryDevice,
+    barIndex: Int,
+    barOffset: UInt64,
+    apertureGeneration: UInt64?
+  ) {
     guard byteCount > 0, offset <= self.byteCount, UInt64(byteCount) <= self.byteCount - offset
     else {
       throw DoryPCPhysicalMemoryError.unsupportedAccess(
@@ -953,15 +1202,21 @@ public final class DoryPCPCIBARWindow: DoryPCMMIODevice, @unchecked Sendable {
       )
     }
     let snapshot = lock.withLock { devices }
-    let matches = try snapshot.compactMap { device -> (any DoryPCPCIBARMemoryDevice, UInt64)? in
-      guard device.configurationFunction.command & 2 != 0,
-        let bar = try device.configurationFunction.bar(at: device.barIndex),
-        bar.address >= baseAddress,
-        bar.address < baseAddress + self.byteCount
-      else { return nil }
-      let (barEnd, overflow) = bar.address.addingReportingOverflow(bar.size)
-      guard !overflow, address >= bar.address, accessEnd <= barEnd else { return nil }
-      return (device, address - bar.address)
+    let matches = try snapshot.flatMap { device in
+      try device.barIndices.compactMap {
+        barIndex -> (any DoryPCPCIBARMemoryDevice, Int, UInt64, UInt64?)? in
+        let access = try device.barAccessSnapshot(at: barIndex)
+        guard access.memoryEnabled,
+          let bar = access.bar,
+          bar.address >= baseAddress,
+          bar.address < baseAddress + self.byteCount
+        else { return nil }
+        let (barEnd, overflow) = bar.address.addingReportingOverflow(bar.size)
+        guard !overflow, address >= bar.address, accessEnd <= barEnd else { return nil }
+        guard !(device is DoryPCVirtioGPUPCIDevice && barIndex == 4
+          && access.apertureGeneration == nil) else { return nil }
+        return (device, barIndex, address - bar.address, access.apertureGeneration)
+      }
     }
     guard matches.count == 1, let match = matches.first else {
       throw DoryPCPhysicalMemoryError.unsupportedAccess(
@@ -970,7 +1225,7 @@ public final class DoryPCPCIBARWindow: DoryPCMMIODevice, @unchecked Sendable {
         write: write
       )
     }
-    return match
+    return (match.0, match.1, match.2, match.3)
   }
 }
 

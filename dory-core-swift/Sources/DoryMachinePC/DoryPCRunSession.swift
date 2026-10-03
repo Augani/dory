@@ -159,6 +159,9 @@ final class DoryPCRunSession: @unchecked Sendable {
   private var mergedWorkerCounters: WorkerCounters = .zero
   private var terminationReason: TerminationReason?
   private var changeGeneration: UInt64 = 0
+  #if DEBUG
+    var beforeChangeWaitForTesting: (@Sendable () -> Void)?
+  #endif
 
   init(
     processorCount: Int,
@@ -546,11 +549,20 @@ final class DoryPCRunSession: @unchecked Sendable {
     return true
   }
 
-  /// Waits for any session metadata change without permitting an early signal to be lost.
+  /// Signals only a coordinator wake edge after a host-worker completion has been published.
+  /// This does not fabricate a result, consume a directive, or replace the caller's actual join.
+  func notifyWorkerCompletion() {
+    condition.withLock { changedLocked() }
+  }
+
+  /// Waits for any session metadata/completion change without permitting an early signal to be lost.
   func waitForChange(after observed: UInt64, until deadline: Date) -> Snapshot {
     condition.lock()
     defer { condition.unlock() }
     while changeGeneration == observed {
+      #if DEBUG
+        beforeChangeWaitForTesting?()
+      #endif
       if !condition.wait(until: deadline) { break }
     }
     return snapshotLocked()

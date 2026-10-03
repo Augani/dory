@@ -97,6 +97,21 @@ import Testing
     #expect(diagnostics.mmioReadExits == 3)
     #expect(diagnostics.mmioWriteExits == 2)
     #expect(diagnostics.totalMMIOExits == 6)
+    #expect(diagnostics.mmioDeviceWallNanoseconds > 0)
+    #expect(diagnostics.mmioDeviceThreadCPUNanoseconds > 0)
+  }
+
+  @Test func disabledDiagnosticsDoNotSampleMMIODeviceTime() throws {
+    let ram = try DoryX86ByteArrayMemory(validatingByteCount: 0x4000)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram, diagnosticsEnabled: false)
+    try bus.attach(TestMMIODevice(baseAddress: 0x1000, byteCount: 0x100))
+    bus.seal()
+    try bus.write(at: 0x1000, bytes: [7])
+    #expect(try bus.read(at: 0x1000, byteCount: 1) == [7])
+    bus.publishDiagnostics()
+    #expect(bus.diagnostics.totalMMIOExits == 0)
+    #expect(bus.diagnostics.mmioDeviceWallNanoseconds == 0)
+    #expect(bus.diagnostics.mmioDeviceThreadCPUNanoseconds == 0)
   }
 
   @Test(arguments: [false, true]) func codeGenerationsCoverOnlyOrdinaryRAMPages(mmap: Bool) throws {
@@ -325,20 +340,55 @@ import Testing
       try bus.validateDMA(at: 0x1000, byteCount: 1, deviceWillWrite: true)
     }
   }
+
+  @Test func aRacedDMAWriteCannotFallThroughToRegisterMMIO() throws {
+    let ram = try DoryX86MmapMemory(byteCount: 0x4000)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
+    let register = TestMMIODevice(
+      baseAddress: 0x2000, byteCount: 0x100, allowsDMA: true)
+    try bus.attach(register)
+    bus.seal()
+
+    // Model a device that passes the generic admission check, such as a relocated GPU BAR.
+    // The access boundary must still refuse ordinary register-MMIO read and write callbacks.
+    try bus.validateDMA(at: 0x2000, byteCount: 1, deviceWillWrite: false)
+    try bus.validateDMA(at: 0x2000, byteCount: 1, deviceWillWrite: true)
+    #expect(throws: DoryPCPhysicalMemoryError.unsupportedAccess(
+      offset: 0x2000, byteCount: 1, write: false
+    )) {
+      _ = try bus.readDMA(at: 0x2000, byteCount: 1)
+    }
+    #expect(throws: DoryPCPhysicalMemoryError.unsupportedAccess(
+      offset: 0x2000, byteCount: 1, write: true
+    )) {
+      _ = try bus.writeClassifyingPageTableMutation(
+        at: 0x2000, bytes: [0xA5], allowTrackedWrite: false)
+    }
+    #expect(try register.read(offset: 0, byteCount: 1) == [0])
+  }
 }
 
 private final class TestMMIODevice: DoryPCMMIODevice, @unchecked Sendable {
   let baseAddress: UInt64
   let byteCount: UInt64
   let allowsInstructionFetch: Bool
+  let allowsDMA: Bool
   private var storage: [UInt8]
 
-  init(baseAddress: UInt64, byteCount: UInt64, allowsInstructionFetch: Bool = false) {
+  init(
+    baseAddress: UInt64,
+    byteCount: UInt64,
+    allowsInstructionFetch: Bool = false,
+    allowsDMA: Bool = false
+  ) {
     self.baseAddress = baseAddress
     self.byteCount = byteCount
     self.allowsInstructionFetch = allowsInstructionFetch
+    self.allowsDMA = allowsDMA
     storage = Array(repeating: 0, count: Int(byteCount))
   }
+
+  func allowsDMAAccess(offset: UInt64, byteCount: Int, write: Bool) -> Bool { allowsDMA }
 
   func read(offset: UInt64, byteCount: Int) throws -> [UInt8] {
     let lower = Int(offset)

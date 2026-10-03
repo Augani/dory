@@ -200,7 +200,15 @@ public struct DoryX86DifferentialHarness: Sendable {
         try jitMemory.instructionBytes(at: initialState.rip, maximumCount: bytes.count) == bytes
       else { throw DoryX86DifferentialError.instructionBytesDoNotMatchMemory }
       let block = try translator.translate(bytes, at: initialState.rip, mode: mode)
-      let compiled = emitter.compile(block)
+      guard mode != .protected32
+        || (initialState.cs.base == 0 && initialState.cs.limit == .max)
+      else { throw DoryX86DifferentialError.requiresBaselineJIT }
+      let compiled = emitter.compile(
+        block,
+        executionMode: mode,
+        flatProtected32DS: mode == .protected32
+          && DoryARM64BaselineExecutor.hasFlatProtected32DataSegment(initialState.ds)
+      )
       guard compiled.tier == .baseline else {
         throw DoryX86DifferentialError.requiresBaselineJIT
       }

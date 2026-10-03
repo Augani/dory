@@ -430,14 +430,22 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   public init() {}
 
+  /// `flatProtected32DS` is a caller-supplied compile assumption, not a runtime segment check.
+  /// The executor verifies it again before every entry because cached code survives DS changes.
   public func compile(
     _ block: DoryIRBasicBlock,
     tier: DoryARM64CompilationTier = .baseline,
-    executionMode: DoryX86ExecutionMode? = nil
+    executionMode: DoryX86ExecutionMode? = nil,
+    flatProtected32DS: Bool = false
   ) -> DoryARM64CompiledBlock {
     precondition(tier != .interpreterFallback)
-    if containsFSOrGSMemoryAddress(block) {
+    if containsSegmentMemoryAddress(block, matching: ["fs", "gs"]) {
       guard executionMode == .long64 else { return fallback(block) }
+    }
+    if containsSegmentMemoryAddress(block, matching: ["ds"]) {
+      guard executionMode == .long64
+        || (executionMode == .protected32 && flatProtected32DS)
+      else { return fallback(block) }
     }
     // Fences cannot be rolled back, and division guards return without unwinding a
     // memory-callback prologue. Require the translator's isolated shape even for
@@ -1064,58 +1072,61 @@ public struct DoryARM64BaselineEmitter: Sendable {
     }
   }
 
-  private func containsFSOrGSMemoryAddress(_ block: DoryIRBasicBlock) -> Bool {
-    func isFSOrGS(_ operand: DoryIROperand) -> Bool {
+  private func containsSegmentMemoryAddress(
+    _ block: DoryIRBasicBlock,
+    matching segments: Set<String>
+  ) -> Bool {
+    func matches(_ operand: DoryIROperand) -> Bool {
       guard case .memory(let address, _) = operand else { return false }
-      return address.segment == "fs" || address.segment == "gs"
+      return address.segment.map(segments.contains) ?? false
     }
-    return block.statements.contains { statement in
+    if block.statements.contains(where: { statement in
       switch statement {
       case .copy(let destination, let source):
-        return isFSOrGS(destination) || isFSOrGS(source)
+        return matches(destination) || matches(source)
       case .binary(_, let destination, let source, _):
-        return isFSOrGS(destination) || isFSOrGS(source)
+        return matches(destination) || matches(source)
       case .atomicBinary(_, let destination, let source):
-        return isFSOrGS(destination) || isFSOrGS(source)
+        return matches(destination) || matches(source)
       case .unary(_, let operand), .shift(_, let operand, _), .byteSwap(let operand),
         .stackPush(let operand), .stackPop(let operand):
-        return isFSOrGS(operand)
+        return matches(operand)
       case .atomicUnary(_, let operand):
-        return isFSOrGS(operand)
+        return matches(operand)
       case .conditionalMove(_, let destination, let source):
-        return isFSOrGS(destination) || isFSOrGS(source)
+        return matches(destination) || matches(source)
       case .setCondition(_, let destination):
-        return isFSOrGS(destination)
+        return matches(destination)
       case .bitTestMemoryImmediate(_, let base, _):
-        return isFSOrGS(base)
+        return matches(base)
       case .bitTestMemoryRegister(_, let base, _):
-        return isFSOrGS(base)
+        return matches(base)
       case .atomicBitTestMemory(_, let base, _):
-        return isFSOrGS(base)
+        return matches(base)
       case .bitTestRegister:
         return false
       case .bitScan(_, let destination, let source), .extendMove(let destination, let source, _):
-        return isFSOrGS(destination) || isFSOrGS(source)
+        return matches(destination) || matches(source)
       case .exchangeRegisters:
         return false
       case .signedMultiply(let destination, let lhs, let rhs):
-        return isFSOrGS(destination) || isFSOrGS(lhs) || isFSOrGS(rhs)
+        return matches(destination) || matches(lhs) || matches(rhs)
       case .unsignedAccumulatorMultiply(let source), .unsignedAccumulatorDivide(let source),
         .signedAccumulatorDivide(let source):
-        return isFSOrGS(source)
+        return matches(source)
       case .doubleShiftRightCL(let destination, let source),
         .doubleShiftRightImmediate(let destination, let source, _):
-        return isFSOrGS(destination) || isFSOrGS(source)
+        return matches(destination) || matches(source)
       case .compareExchange(let destination, let source):
-        return isFSOrGS(destination) || isFSOrGS(source)
+        return matches(destination) || matches(source)
       case .compareExchangePair(let destination, _):
-        return isFSOrGS(destination)
+        return matches(destination)
       case .exchangeMemory(let destination, _):
-        return isFSOrGS(destination)
+        return matches(destination)
       case .exchangeAddMemory(let destination, _):
-        return isFSOrGS(destination)
+        return matches(destination)
       case .readSegment(_, let destination):
-        return isFSOrGS(destination)
+        return matches(destination)
       case .effectiveAddress:
         return false
       case .stackPushFlags, .loadFlagsIntoAH, .storeAHIntoFlags, .setCarryFlag,
@@ -1124,6 +1135,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
         .memoryFence, .helper:
         return false
       }
+    }) { return true }
+    switch block.terminator {
+    case .indirectCall(let target, _), .indirect(let target):
+      return matches(target)
+    default:
+      return false
     }
   }
 
@@ -4282,7 +4299,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
     includeSegmentBase: Bool = true,
     words: inout [UInt32]
   ) -> Bool {
-    guard address.segment == nil || address.segment == "fs" || address.segment == "gs",
+    guard
+      address.segment == nil || address.segment == "ds" || address.segment == "fs"
+        || address.segment == "gs",
       address.addressWidth == .i32 || address.addressWidth == .i64,
       address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8
     else { return false }
@@ -4328,7 +4347,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
           destination: resultRegister
         ))
     }
-    if includeSegmentBase, let segment = address.segment {
+    if includeSegmentBase, let segment = address.segment,
+      segment == "fs" || segment == "gs"
+    {
       let offset = segment == "fs" ? Self.fsBaseOffset : Self.gsBaseOffset
       words.append(encodeLoad64(register: 10, base: 0, byteOffset: offset))
       words.append(
@@ -5250,6 +5271,7 @@ private func doryJITInvalidatePageTableWrite(
   _ context: UnsafeMutablePointer<DoryJITMemoryCallbackContext>
 ) {
   guard let translatedMemory = context.pointee.capabilities.memory as? DoryX86TranslatedMemory,
+    !translatedMemory.jitPageTableWritesRequireInterpreter,
     translatedMemory.consumePendingPageTableWrite()
   else { return }
   translatedMemory.translationUnit.invalidateAll()
@@ -5359,6 +5381,13 @@ private let doryJITMemoryWrite: dory_jit_memory_write_function = {
   let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
   guard !context.pointee.failed else { return }
   do {
+    if let translatedMemory = context.pointee.capabilities.memory as? DoryX86TranslatedMemory,
+      translatedMemory.jitPageTableWritesRequireInterpreter
+    {
+      try translatedMemory.writeScalarFromMachineJIT(
+        at: address, value: value, byteCount: Int(byteCount))
+      return
+    }
     if let scalarMemory = context.pointee.capabilities.scalarMemory {
       try scalarMemory.writeScalar(at: address, value: value, byteCount: Int(byteCount))
       doryJITInvalidatePageTableWrite(context)
@@ -5381,6 +5410,15 @@ private let doryJITMemoryCompareExchange: dory_jit_memory_compare_exchange_funct
   let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
   guard !context.pointee.failed, let atomicMemory = context.pointee.capabilities.atomicScalarMemory
   else {
+    doryJITRecordMemoryFailure(context)
+    return 0
+  }
+  // The callback path is already a slow/unaligned atomic fallback. Machine-owned execution
+  // must let the interpreter perform it at an instruction boundary; a speculative check here
+  // could race page-table registration before compare-exchange commits.
+  if (context.pointee.capabilities.memory as? DoryX86TranslatedMemory)?
+    .jitPageTableWritesRequireInterpreter == true
+  {
     doryJITRecordMemoryFailure(context)
     return 0
   }
@@ -6838,6 +6876,16 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }
   }
 
+  /// A protected-mode DS access may omit its base and bounds checks only for a present, writable,
+  /// non-expand-down flat data descriptor. Check on every entry because segment loads can change
+  /// the descriptor without changing the code-cache key, including across already-linked blocks.
+  static func hasFlatProtected32DataSegment(_ segment: DoryX86SegmentState) -> Bool {
+    let access = segment.attributes & 0xFF
+    return segment.selector & 0xFFF8 != 0 && segment.base == 0 && segment.limit == .max
+      && segment.attributes & 0x4000 != 0
+      && access & 0x9E == 0x92  // present, data, writable, non-expand-down
+  }
+
   /// Runs consecutive resident basic blocks while the machine's interrupt deadline permits it.
   /// The execution context crosses block boundaries without round-tripping all architectural
   /// registers through Swift. System, port-I/O, halt, and restartable-memory exits still return at
@@ -6852,15 +6900,45 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     maximumInstructions: Int,
     state: inout DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)? = nil,
+    // The PC frozen-instruction path can execute a single, already checked register-only
+    // instruction without a flat DS. Keep this exception byte-bound and memoryless: a general
+    // native block must still prove the flat data-segment contract before entering JIT code.
+    frozenRegisterOnlyBytes: [UInt8]? = nil,
     // Reports a Tier1 decline (including validated negative-cache hits) before any native work.
     // Called under the executor lock; consumers must only copy the value and must not reenter.
     onCompilationDecline: ((DoryARM64InterpreterFallbackSite) -> Void)? = nil
   ) throws -> DoryARM64ExecutionSummary? {
+    let frozenRegisterOnly: [UInt8]?
+    if let frozenRegisterOnlyBytes {
+      let codeAccess = UInt8(truncatingIfNeeded: state.cs.attributes)
+      guard memory == nil, mode == .protected32, maximumInstructions == 1,
+        state.rip == guestStart,
+        state.control.cr0 & 1 != 0, state.control.cr0 & (1 << 31) == 0,
+        !state.rflags.contains(.trap),
+        state.cs.selector & 0xFFF8 != 0, state.cs.attributes & 0x4000 != 0,
+        codeAccess & 0x98 == 0x98,
+        (frozenRegisterOnlyBytes.count == 1 && frozenRegisterOnlyBytes[0] == 0x90)
+          || (frozenRegisterOnlyBytes.count == 5
+            && (0xB8...0xBF).contains(frozenRegisterOnlyBytes[0]))
+      else { return nil }
+      frozenRegisterOnly = frozenRegisterOnlyBytes
+    } else {
+      frozenRegisterOnly = nil
+    }
+    func admittedByteProvider(_ address: UInt64, _ count: Int) throws -> [UInt8] {
+      guard let frozenRegisterOnly else { return try byteProvider(address, count) }
+      guard address == guestStart, count > 0 else { return [] }
+      let expected = Array(frozenRegisterOnly.prefix(count))
+      guard try byteProvider(address, count) == expected else { return [] }
+      return expected
+    }
     guard maximumInstructions > 0, state.interruptShadow == nil,
       !state.rflags.contains(.virtual8086),
       !state.rflags.contains(.resume),
       !DoryX86AlignmentPolicy.isEnabled(state: state),
-      mode == .long64 || (mode == .protected32 && state.cs.base == 0 && state.cs.limit == .max)
+      mode == .long64
+        || (mode == .protected32 && state.cs.base == 0 && state.cs.limit == .max
+          && (Self.hasFlatProtected32DataSegment(state.ds) || frozenRegisterOnly != nil))
     else { return nil }
     // Fall back before fetch, optimized copies or native state publication. The interpreter
     // reports the precise fault for a malformed/missing legacy PAE latch.
@@ -6872,7 +6950,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       chainedRequestedInstructionCount &+= UInt64(maximumInstructions)
       guard !hasPendingWork else { return nil }
       switch try executeQwordCopyLoop(
-        byteProvider: byteProvider,
+        byteProvider: admittedByteProvider,
         guestStart: guestStart,
         mode: mode,
         maximumInstructions: maximumInstructions,
@@ -6977,7 +7055,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               remaining, Self.maximumResidentInstructionBudget)
             guard
               let resident = try resolveResident(
-                byteProvider: { try byteProvider(currentRIP, $0) },
+                byteProvider: { try admittedByteProvider(currentRIP, $0) },
                 codeGenerationProvider: codeGenerationProvider.map { provider in
                   { try provider(currentRIP, $0) }
                 },
@@ -7082,7 +7160,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             if codeProtectionState(for: memory) == nil {
               validateDirectChainTargets(
                 reachableFrom: resident,
-                byteProvider: byteProvider,
+                byteProvider: admittedByteProvider,
                 codeGenerationProvider: codeGenerationProvider,
                 mode: mode,
                 memory: memory
@@ -7459,6 +7537,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           memory: memory
         )
       else { return nil }
+
+      // The single-block API can still run register-only protected32 blocks with a non-flat DS.
+      // Any memory-capable resident must instead leave segment translation to the interpreter.
+      if mode == .protected32 && !Self.hasFlatProtected32DataSegment(state.ds)
+        && resident.block.requiresMemoryCallbacks
+      {
+        return nil
+      }
 
       return try executionContextStorage.withBuffer { context in
         let translationGeneration = selectTLBAddressSpace(
@@ -7856,12 +7942,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     } else {
       tier1Compiled = nil
     }
+    // Compile under a flat-DS assumption, but validate it at execution. Declining to compile
+    // for today's non-flat DS would poison the segment-agnostic negative cache.
     let compiled =
       tier1Compiled
       ?? emitter.compile(
         block,
         tier: optimization == .optimizing ? .optimizing : .baseline,
-        executionMode: mode
+        executionMode: mode,
+        flatProtected32DS: mode == .protected32
       )
     if compiled.tier == .interpreterFallback {
       let declineReason = Self.compilationDeclineReason(for: block)

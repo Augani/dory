@@ -133,6 +133,48 @@ import Testing
     #expect(try machine.physicalMemory.read(at: 0x400C, byteCount: freshFrame.count) == freshFrame)
   }
 
+  @Test func retirementJoinsTransmitUsedRingCompletionBeforeReturning() throws {
+    let backend = DoryVirtioInMemoryNetworkBackend()
+    let network = try DoryPCVirtioNetworkPCIDevice(
+      address: .init(bus: 0, device: 4, function: 0), initialBARAddress: 0xD000_2000,
+      backend: backend, macAddress: [0x02, 1, 2, 3, 4, 5]
+    )
+    let memory = NetworkCompletionBlockingMemory()
+    network.connectGuestMemory(memory)
+    let transport = network.transport
+    try transport.writeBAR(offset: 0x08, bytes: littleEndian(UInt32(1)))
+    try transport.writeBAR(offset: 0x0C, bytes: littleEndian(UInt32(1)))
+    try transport.writeBAR(offset: 0x14, bytes: [0x0F])
+    try transport.writeBAR(offset: 0x16, bytes: littleEndian(UInt16(1)))
+    try transport.writeBAR(offset: 0x18, bytes: littleEndian(UInt16(8)))
+    try transport.writeBAR(offset: 0x20, bytes: littleEndian(UInt64(0x1000)))
+    try transport.writeBAR(offset: 0x28, bytes: littleEndian(UInt64(0x2000)))
+    try transport.writeBAR(offset: 0x30, bytes: littleEndian(UInt64(0x3000)))
+    try transport.writeBAR(offset: 0x1C, bytes: littleEndian(UInt16(1)))
+    let frame = ethernetFrame(count: 64)
+    try memory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(12 + frame.count))
+        + littleEndian(UInt16(0)) + littleEndian(UInt16(0))
+    )
+    try memory.write(at: 0x4000, bytes: [UInt8](repeating: 0, count: 12) + frame)
+    try memory.write(at: 0x2000, bytes: [0, 0, 1, 0, 0, 0])
+    let transmitted = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async { transport.processQueue(1); transmitted.signal() }
+    defer { memory.release.signal() }
+    #expect(memory.entered.wait(timeout: .now() + 1) == .success)
+    #expect(backend.transmittedFrames == [frame])
+    let retired = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async { network.networkDevice.stop(); retired.signal() }
+    #expect(retired.wait(timeout: .now() + 0.02) == .timedOut)
+    memory.release.signal()
+    #expect(transmitted.wait(timeout: .now() + 1) == .success)
+    #expect(retired.wait(timeout: .now() + 1) == .success)
+    #expect(read16(try memory.read(at: 0x3002, byteCount: 2)) == 1)
+    #expect(transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    #expect(try transport.readBAR(offset: 0x306, byteCount: 2) == [0, 0])
+  }
+
   private func ethernetFrame(count: Int) -> [UInt8] {
     [
       0x02, 0xD0, 0x52, 0, 0, 1,
@@ -172,6 +214,34 @@ import Testing
   ) throws {
     try machine.physicalMemory.write(at: address, bytes: littleEndian(value))
   }
+}
+
+private final class NetworkCompletionBlockingMemory: DoryVirtioGuestMemory, @unchecked Sendable {
+  private let lock = NSLock()
+  private var bytes = [UInt8](repeating: 0, count: 0x10_000)
+  let entered = DispatchSemaphore(value: 0)
+  let release = DispatchSemaphore(value: 0)
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    try validate(at: address, byteCount: byteCount, deviceWillWrite: false)
+    return lock.withLock { Array(bytes[Int(address)..<(Int(address) + byteCount)]) }
+  }
+  func validate(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
+    guard byteCount >= 0, address <= UInt64(bytes.count),
+      UInt64(byteCount) <= UInt64(bytes.count) - address else {
+      throw DoryVirtioNetworkError.invalidFrameLength(byteCount)
+    }
+  }
+  func write(at address: UInt64, bytes value: [UInt8]) throws {
+    try validate(at: address, byteCount: value.count, deviceWillWrite: true)
+    if address == 0x3004 {
+      entered.signal()
+      guard release.wait(timeout: .now() + 2) == .success else {
+        throw DoryVirtioNetworkError.malformedHeader
+      }
+    }
+    lock.withLock { bytes.replaceSubrange(Int(address)..<(Int(address) + value.count), with: value) }
+  }
+  func synchronize() {}
 }
 
 private func read16(_ bytes: [UInt8]) -> UInt16 {

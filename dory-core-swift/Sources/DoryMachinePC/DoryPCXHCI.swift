@@ -1,6 +1,12 @@
 import DoryVirtio
 import Foundation
 
+/// Internal provider capability for device-domain-before-controller lock ordering. Public
+/// guest-memory implementations remain valid; production physical DMA supplies this guard.
+protocol DoryPCGuestMemoryDeviceExecutionGuard: DoryVirtioGuestMemory {
+  func withDeviceExecutionGuard(_ body: () -> Void)
+}
+
 public enum DoryPCXHCIError: Error, Sendable, Equatable {
   case invalidPort(Int)
   case portAlreadyConnected(Int)
@@ -59,6 +65,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       var dequeueAddress: UInt64
       var cycle: Bool
       var state: State
+      var generation = UUID()
     }
 
     var addressed = false
@@ -66,6 +73,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     var deviceAddress: UInt8 = 0
     var outputContextAddress: UInt64 = 0
     var endpoints: [UInt8: Endpoint] = [:]
+    var generation = UUID()
   }
 
   private struct TransferSegment {
@@ -91,6 +99,34 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       segments.contains { $0.control & (1 << 2) != 0 }
     }
     var eventPointer: UInt64 { eventData ?? segments.last?.trbAddress ?? 0 }
+  }
+
+  /// Captured with the original port transition, never reconstructed after a platform call.
+  private struct PortStatusReceipt {
+    let port: Int
+    let portGeneration: UUID
+    let memoryGeneration: UUID
+  }
+
+  private struct CommandReceipt {
+    let owner: UUID
+    let memoryGeneration: UUID
+    let dequeueAddress: UInt64
+    let cycle: Bool
+  }
+
+  private struct SlotCommandReceipt {
+    let command: CommandReceipt
+    let slotID: UInt8
+    let slotGeneration: UUID
+    let rootPort: UInt8
+    let portGenerations: [UUID]
+  }
+
+  private enum CommandDrainDisposition {
+    case stop
+    case retry
+    case schedule(UUID)
   }
 
   public static let barBytes: UInt64 = 0x4000
@@ -122,7 +158,11 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     portConnectChange | portEnableChange | portWarmResetChange | portResetChange | (0xF << 20)
 
   private let lock = NSLock()
+  /// Serialize readiness-handler installation/removal without holding controller ownership
+  /// while calling a device. Cancellation and transfers never hold this short-lived gate.
+  private let deviceNotificationLock = NSRecursiveLock()
   private var guestMemory: (any DoryVirtioGuestMemory)?
+  private var guestMemoryGeneration = UUID()
   private var usbCommand: UInt32 = 0
   private var usbStatus: UInt32 = usbStatusHalted
   private var deviceNotificationControl: UInt32 = 0
@@ -142,9 +182,18 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   private var eventRingEnqueueIndex: UInt32 = 0
   private var eventRingCycle = true
   private var ports = [UInt32](repeating: portPower, count: portCount)
+  private var portGenerations = (0..<portCount).map { _ in UUID() }
   private var devices: [Int: any DoryPCUSBDevice] = [:]
+  private var deviceGenerations: [Int: UUID] = [:]
   private var slots: [UInt8: Slot] = [:]
-  private var processingEndpoints: Set<UInt16> = []
+  private var processingEndpoints: [UInt16: UUID] = [:]
+  private var processingCommandRing: UUID?
+  private var commandKickPending = false
+  private let commandContinuationQueue = DispatchQueue(label: "DoryPC.xHCI.command-continuation")
+  private var commandContinuationOwner: UUID?
+  /// This bit follows the actual queued callback, even after its authority is retired.
+  /// A new generation records its own pending owner without adding another queued callback.
+  private var commandContinuationEnqueued = false
 
   public init(
     address: DoryPCPCIAddress = DoryPCV1ABI.xhciPCIAddress,
@@ -173,88 +222,122 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   }
 
   public func connectGuestMemory(_ memory: any DoryVirtioGuestMemory) {
-    lock.withLock { guestMemory = memory }
+    lock.withLock {
+      guestMemory = memory
+      guestMemoryGeneration = UUID()
+      processingCommandRing = nil
+      commandKickPending = false
+      commandContinuationOwner = nil
+    }
   }
 
   public func connect(port: Int, speed: DoryPCXHCIPortSpeed) throws {
-    let shouldSignal = try lock.withLock {
+    let receipt = try lock.withLock { () -> PortStatusReceipt? in
       let index = try portIndex(port)
       let old = ports[index]
       var value = old & Self.portChangeMask
       value |= Self.portPower | Self.portConnectStatus | Self.portConnectChange
       value |= UInt32(speed.rawValue) << 10
       ports[index] = value
-      return old & Self.portConnectStatus == 0
+      portGenerations[index] = UUID()
+      return old & Self.portConnectStatus == 0 ? portStatusReceiptLocked(port: port) : nil
     }
-    if shouldSignal { postPortStatusChange(port: port) }
+    if let receipt { postPortStatusChange(receipt) }
   }
 
   public func connect(port: Int, device: any DoryPCUSBDevice) throws {
-    try lock.withLock {
-      let index = try portIndex(port)
-      guard devices[index] == nil else { throw DoryPCXHCIError.portAlreadyConnected(port) }
-      devices[index] = device
-    }
-    do {
-      try connect(port: port, speed: device.speed)
+    let generation = UUID()
+    let receipt = try deviceNotificationLock.withLock {
+      let receipt = try lock.withLock { () -> PortStatusReceipt? in
+        let index = try portIndex(port)
+        guard devices[index] == nil else { throw DoryPCXHCIError.portAlreadyConnected(port) }
+        devices[index] = device
+        deviceGenerations[index] = generation
+        portGenerations[index] = UUID()
+        let old = ports[index]
+        ports[index] = (old & Self.portChangeMask) | Self.portPower | Self.portConnectStatus
+          | Self.portConnectChange | UInt32(device.speed.rawValue) << 10
+        return old & Self.portConnectStatus == 0 ? portStatusReceiptLocked(port: port) : nil
+      }
       (device as? any DoryPCUSBTransferReadyNotifying)?.setTransferReadyHandler {
         [weak self] in
-        self?.wakeTransfers(port: port)
+        self?.wakeTransfers(port: port, generation: generation)
       }
-    } catch {
-      _ = lock.withLock { devices.removeValue(forKey: port - 1) }
-      (device as? any DoryPCUSBTransferReadyNotifying)?.setTransferReadyHandler(nil)
-      throw error
+      return receipt
     }
+    if let receipt { postPortStatusChange(receipt) }
   }
 
   public func disconnect(port: Int) throws {
-    let result = try lock.withLock {
-      let index = try portIndex(port)
-      let device = devices.removeValue(forKey: index)
-      var endpoints: [(slotID: UInt8, dci: UInt8, endpoint: Slot.Endpoint)] = []
-      for slotID in slots.keys.sorted() {
-        guard var slot = slots[slotID], slot.addressed, slot.rootPort == UInt8(port) else {
-          continue
+    let result = try deviceNotificationLock.withLock {
+      let result = try lock.withLock {
+        let index = try portIndex(port)
+        let device = devices.removeValue(forKey: index)
+        deviceGenerations.removeValue(forKey: index)
+        var endpoints: [(slotID: UInt8, dci: UInt8, endpoint: Slot.Endpoint)] = []
+        for slotID in slots.keys.sorted() {
+          guard var slot = slots[slotID], slot.addressed, slot.rootPort == UInt8(port) else {
+            continue
+          }
+          for dci in slot.endpoints.keys.sorted() {
+            guard var endpoint = slot.endpoints[dci],
+              endpoint.state != .halted, endpoint.state != .error
+            else { continue }
+            endpoint.state = .error
+            slot.endpoints[dci] = endpoint
+            endpoints.append((slotID, dci, endpoint))
+          }
+          slots[slotID] = slot
         }
-        for dci in slot.endpoints.keys.sorted() {
-          guard var endpoint = slot.endpoints[dci],
-            endpoint.state != .halted, endpoint.state != .error
-          else { continue }
-          endpoint.state = .error
-          slot.endpoints[dci] = endpoint
-          endpoints.append((slotID, dci, endpoint))
+        let old = ports[index]
+        var value = old & Self.portChangeMask
+        value |= Self.portPower | Self.portConnectChange
+        if old & Self.portEnabled != 0 { value |= Self.portEnableChange }
+        ports[index] = value
+        // Repeated no-op disconnects share the in-flight retirement, rather than suppressing
+        // its completion while a platform cancellation is still outside controller ownership.
+        if device != nil || old & Self.portConnectStatus != 0 {
+          portGenerations[index] = UUID()
         }
-        slots[slotID] = slot
-      }
-      let old = ports[index]
-      var value = old & Self.portChangeMask
-      value |= Self.portPower | Self.portConnectChange
-      if old & Self.portEnabled != 0 { value |= Self.portEnableChange }
-      ports[index] = value
-      return (old & Self.portConnectStatus != 0, device, endpoints, guestMemory)
-    }
-    (result.1 as? any DoryPCUSBTransferReadyNotifying)?.setTransferReadyHandler(nil)
-    result.1?.cancelAll()
-    for endpoint in result.2 {
-      if let memory = result.3 {
-        _ = updateEndpointContext(
-          slotID: endpoint.slotID,
-          dci: endpoint.dci,
-          endpoint: endpoint.endpoint,
-          expectedEndpoint: endpoint.endpoint,
-          memory: memory
+        return (
+          notifyPort: old & Self.portConnectStatus != 0, device: device,
+          endpoints: endpoints, memory: guestMemory, memoryGeneration: guestMemoryGeneration,
+          portGeneration: portGenerations[index], index: index
         )
       }
-      postTransferEvent(
-        trbAddress: endpoint.endpoint.dequeueAddress,
-        completionCode: 22,
-        residualBytes: 0,
-        slotID: endpoint.slotID,
-        dci: endpoint.dci
-      )
+      (result.device as? any DoryPCUSBTransferReadyNotifying)?.setTransferReadyHandler(nil)
+      return result
     }
-    if result.0 { postPortStatusChange(port: port) }
+    result.device?.cancelAll()
+    let admitted = lock.withLock {
+      guard guestMemoryGeneration == result.memoryGeneration,
+        portGenerations[result.index] == result.portGeneration,
+        devices[result.index] == nil
+      else { return false }
+      for endpoint in result.endpoints {
+        guard let memory = result.memory,
+          let slot = slots[endpoint.slotID], slot.rootPort == UInt8(port),
+          slot.endpoints[endpoint.dci] == endpoint.endpoint,
+          writeEndpointContext(
+            endpoint.endpoint,
+            at: slot.outputContextAddress + UInt64(endpoint.dci) * 32,
+            memory: memory
+          )
+        else { continue }
+        // Context and event share exact port, endpoint and memory ownership. No unlocked
+        // cancellation return may publish old USB completions into a successor event ring.
+        try? writeEventLocked(transferEvent(
+          trbAddress: endpoint.endpoint.dequeueAddress, completionCode: 22,
+          residualBytes: 0, slotID: endpoint.slotID, dci: endpoint.dci
+        ))
+      }
+      if result.notifyPort {
+        usbStatus |= Self.usbStatusPortChange
+        try? writeEventLocked(portStatusChangeEvent(port: port))
+      }
+      return true
+    }
+    if admitted { updateInterruptLine() }
   }
 
   public func portState(_ port: Int) throws -> DoryPCXHCIPortState {
@@ -386,11 +469,11 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         usbStatus |= Self.usbStatusHalted
       }
       return ports.enumerated().compactMap { index, port in
-        port & Self.portChangeMask != 0 ? index + 1 : nil
+        port & Self.portChangeMask != 0 ? portStatusReceiptLocked(port: index + 1) : nil
       }
     }
     if value & 1 != 0 {
-      for port in pendingPorts { postPortStatusChange(port: port) }
+      for receipt in pendingPorts { postPortStatusChange(receipt) }
     }
     updateInterruptLine()
   }
@@ -435,6 +518,12 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       }
       switch base {
       case Self.operationalOffset + 0x18:
+        if commandRingDequeueAddress != (value & ~UInt64(0x3F))
+          || commandRingCycle != (value & 1 != 0) {
+          processingCommandRing = nil
+          commandKickPending = false
+          commandContinuationOwner = nil
+        }
         commandRingControl = value & ~UInt64(0x30)
         commandRingDequeueAddress = value & ~UInt64(0x3F)
         commandRingCycle = value & 1 != 0
@@ -460,17 +549,24 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       current &= ~(value & Self.portChangeMask)
       guard value & Self.portReset != 0 else {
         ports[index] = current
-        return (false, nil as (any DoryPCUSBDevice)?)
+        return (nil as PortStatusReceipt?, nil as (any DoryPCUSBDevice)?)
       }
+      portGenerations[index] = UUID()
       if current & Self.portConnectStatus != 0 {
         current |= Self.portEnabled | Self.portResetChange
       }
+      for slotID in slots.keys {
+        guard slots[slotID]?.rootPort == UInt8(port) else { continue }
+        for dci in slots[slotID]?.endpoints.keys.sorted() ?? [] {
+          slots[slotID]?.endpoints[dci]?.generation = UUID()
+        }
+      }
       current &= ~Self.portReset
       ports[index] = current
-      return (true, devices[index])
+      return (portStatusReceiptLocked(port: port) as PortStatusReceipt?, devices[index])
     }
     result.1?.reset()
-    if result.0 { postPortStatusChange(port: port) }
+    if let receipt = result.0 { postPortStatusChange(receipt) }
   }
 
   private func resetController() {
@@ -484,7 +580,11 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       deviceContextBaseAddress = 0
       configuredSlots = 0
       slots.removeAll(keepingCapacity: true)
+      guestMemoryGeneration = UUID()
       processingEndpoints.removeAll(keepingCapacity: true)
+      processingCommandRing = nil
+      commandKickPending = false
+      commandContinuationOwner = nil
       interrupterManagement = 0
       interrupterModeration = 4_000
       eventRingSegmentTableSize = 0
@@ -494,6 +594,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       for index in ports.indices {
         let attachment = ports[index] & (Self.portConnectStatus | (0xF << 10))
         ports[index] = Self.portPower | attachment
+        portGenerations[index] = UUID()
       }
       return Array(devices.values)
     }
@@ -501,43 +602,165 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     configurationFunction.setINTx(asserted: false)
   }
 
-  private func postPortStatusChange(port: Int) {
-    lock.withLock { usbStatus |= Self.usbStatusPortChange }
+  private func portStatusReceiptLocked(port: Int) -> PortStatusReceipt {
+    .init(port: port, portGeneration: portGenerations[port - 1],
+          memoryGeneration: guestMemoryGeneration)
+  }
+
+  private func postPortStatusChange(_ receipt: PortStatusReceipt) {
+    let admitted = lock.withLock {
+      guard guestMemoryGeneration == receipt.memoryGeneration,
+        portGenerations[receipt.port - 1] == receipt.portGeneration
+      else { return false }
+      usbStatus |= Self.usbStatusPortChange
+      try? writeEventLocked(portStatusChangeEvent(port: receipt.port))
+      return true
+    }
+    if admitted { updateInterruptLine() }
+  }
+
+  private func portStatusChangeEvent(port: Int) -> [UInt8] {
     var event = [UInt8](repeating: 0, count: 16)
     put(UInt32(port) << 24, at: 0, in: &event)
     put(UInt32(1) << 24, at: 8, in: &event)
     put(UInt32(34) << 10, at: 12, in: &event)
-    _ = try? postEvent(event)
+    return event
   }
 
   private func processCommandRing() {
+    let owner = UUID()
+    guard lock.withLock({
+      guard processingCommandRing == nil else {
+        commandKickPending = true
+        return false
+      }
+      processingCommandRing = owner
+      commandKickPending = false
+      return true
+    }) else { return }
+    drainCommandRing(owner: owner)
+  }
+
+  private func drainCommandRing(owner: UUID) {
+    let admission = lock.withLock { () -> ((any DoryVirtioGuestMemory)?, UUID)? in
+      guard processingCommandRing == owner else { return nil }
+      return (guestMemory, guestMemoryGeneration)
+    }
+    guard let admission else { return }
+    let execute = {
+      // Memory replacement retires this owner. Never execute a successor through a guard
+      // belonging to the captured old provider while waiting outside controller ownership.
+      guard self.lock.withLock({
+        self.processingCommandRing == owner && self.guestMemoryGeneration == admission.1
+      }) else { return }
+      self.drainCommandRingInExecutionDomain(owner: owner)
+    }
+    if let provider = admission.0 as? any DoryPCGuestMemoryDeviceExecutionGuard {
+      // Acquiring the shared CPU/DMA domain must NEVER happen under the xHCI lock.
+      provider.withDeviceExecutionGuard(execute)
+    } else {
+      execute()
+    }
+  }
+
+  private func drainCommandRingInExecutionDomain(owner: UUID) {
+    // Each synchronous turn is bounded. A pending kick beyond this budget retains the
+    // same owner for one asynchronous turn instead of discarding that kick at unwind.
+    for pass in 0..<2 {
+      processOwnedCommandRing(owner: owner)
+      let disposition = lock.withLock { () -> CommandDrainDisposition in
+        guard processingCommandRing == owner else { return .stop }
+        guard commandKickPending else {
+          // Release in the SAME decision as observing no kick. A later doorbell must
+          // acquire a new owner, rather than enqueue work that an old defer could erase.
+          processingCommandRing = nil
+          if commandContinuationOwner == owner { commandContinuationOwner = nil }
+          return .stop
+        }
+        commandKickPending = false
+        if pass == 0 { return .retry }
+        commandContinuationOwner = owner
+        guard !commandContinuationEnqueued else { return .stop }
+        commandContinuationEnqueued = true
+        return .schedule(owner)
+      }
+      switch disposition {
+      case .stop: return
+      case .retry: continue
+      case .schedule(let continuationOwner):
+        enqueueCommandContinuation(owner: continuationOwner)
+        return
+      }
+    }
+  }
+
+  private func enqueueCommandContinuation(owner: UUID) {
+    commandContinuationQueue.async { [weak self] in self?.runCommandContinuation(owner: owner) }
+  }
+
+  private func runCommandContinuation(owner: UUID) {
+    let disposition = lock.withLock { () -> CommandDrainDisposition in
+      commandContinuationEnqueued = false
+      guard let pendingOwner = commandContinuationOwner,
+        processingCommandRing == pendingOwner
+      else {
+        commandContinuationOwner = nil
+        return .stop
+      }
+      guard pendingOwner == owner else {
+        // A retired queued callback never reads or acquires a successor's authority.
+        // It only reserves a NEW callback carrying that successor's exact owner.
+        commandContinuationEnqueued = true
+        return .schedule(pendingOwner)
+      }
+      commandContinuationOwner = nil
+      return .retry
+    }
+    switch disposition {
+    case .stop: return
+    case .retry: drainCommandRing(owner: owner)
+    case .schedule(let successorOwner): enqueueCommandContinuation(owner: successorOwner)
+    }
+  }
+
+  private func processOwnedCommandRing(owner: UUID) {
     for _ in 0..<4_096 {
       let state = lock.withLock {
-        (guestMemory, commandRingDequeueAddress, commandRingCycle, usbCommand & 1 != 0)
+        (guestMemory, commandRingDequeueAddress, commandRingCycle,
+         usbCommand & 1 != 0 && processingCommandRing == owner,
+         guestMemoryGeneration)
       }
       guard state.3, let memory = state.0, state.1 != 0,
         let bytes = try? memory.read(at: state.1, byteCount: 16), bytes.count == 16
       else { return }
+      let receipt = CommandReceipt(
+        owner: owner, memoryGeneration: state.4, dequeueAddress: state.1, cycle: state.2
+      )
       let control = uint32(Array(bytes[12..<16]))
       guard control & 1 == (state.2 ? 1 : 0) else { return }
       let type = UInt8((control >> 10) & 0x3F)
       if type == 6 {
         let target = uint64(Array(bytes[0..<8])) & ~UInt64(0xF)
         guard target != 0 else { return }
-        lock.withLock {
+        let admitted = lock.withLock {
+          guard commandReceiptIsCurrentLocked(receipt) else { return false }
           commandRingDequeueAddress = target
           if control & 2 != 0 { commandRingCycle.toggle() }
+          return true
         }
+        guard admitted else { return }
         continue
       }
 
-      let result = executeCommand(
+      guard lock.withLock({ commandReceiptIsCurrentLocked(receipt) }) else { return }
+      guard let result = executeCommand(
         type: type,
         parameter: uint64(Array(bytes[0..<8])),
         status: uint32(Array(bytes[8..<12])),
         control: control,
-        memory: memory
-      )
+        memory: memory,
+        receipt: receipt
+      ) else { return }
       var event = [UInt8](repeating: 0, count: 16)
       put(state.1, at: 0, in: &event)
       put(UInt32(result.completionCode) << 24, at: 8, in: &event)
@@ -546,26 +769,50 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         at: 12,
         in: &event
       )
-      lock.withLock { commandRingDequeueAddress &+= 16 }
-      guard (try? postEvent(event)) != nil else { return }
+      let admitted = lock.withLock {
+        guard commandReceiptIsCurrentLocked(receipt) else { return false }
+        commandRingDequeueAddress &+= 16
+        return (try? writeEventLocked(event)) != nil
+      }
+      guard admitted else { return }
+      updateInterruptLine()
     }
+  }
+
+  private func commandReceiptIsCurrentLocked(_ receipt: CommandReceipt) -> Bool {
+    processingCommandRing == receipt.owner && guestMemoryGeneration == receipt.memoryGeneration
+      && commandRingDequeueAddress == receipt.dequeueAddress
+      && commandRingCycle == receipt.cycle && usbCommand & 1 != 0
   }
 
   private func processTransferRing(slotID: UInt8, dci: UInt8) {
     let executionKey = UInt16(slotID) << 8 | UInt16(dci)
-    guard lock.withLock({ processingEndpoints.insert(executionKey).inserted }) else { return }
-    defer { _ = lock.withLock { processingEndpoints.remove(executionKey) } }
+    let executionID = UUID()
+    guard lock.withLock({ () -> Bool in
+      guard processingEndpoints[executionKey] == nil else { return false }
+      processingEndpoints[executionKey] = executionID
+      return true
+    }) else { return }
+    defer {
+      lock.withLock {
+        if processingEndpoints[executionKey] == executionID {
+          processingEndpoints.removeValue(forKey: executionKey)
+        }
+      }
+    }
     for _ in 0..<4_096 {
       let state = lock.withLock {
         () -> (
           memory: (any DoryVirtioGuestMemory)?,
+          memoryGeneration: UUID,
           endpoint: Slot.Endpoint?,
           device: (any DoryPCUSBDevice)?
         ) in
-        guard let slot = slots[slotID], let endpoint = slot.endpoints[dci] else {
-          return (guestMemory, nil, nil)
+        guard processingEndpoints[executionKey] == executionID,
+          let slot = slots[slotID], let endpoint = slot.endpoints[dci] else {
+          return (guestMemory, guestMemoryGeneration, nil, nil)
         }
-        return (guestMemory, endpoint, devices[Int(slot.rootPort) - 1])
+        return (guestMemory, guestMemoryGeneration, endpoint, devices[Int(slot.rootPort) - 1])
       }
       guard let memory = state.memory, var endpoint = state.endpoint, let device = state.device,
         endpoint.state != .halted, endpoint.state != .error,
@@ -575,12 +822,15 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       if endpoint.state == .stopped {
         let expectedEndpoint = endpoint
         endpoint.state = .running
-        guard updateEndpointContext(
+        guard commitTransferResult(
           slotID: slotID,
           dci: dci,
           endpoint: endpoint,
           expectedEndpoint: expectedEndpoint,
-          memory: memory
+          device: device,
+          memory: memory,
+          memoryGeneration: state.memoryGeneration,
+          payloadWrites: [], event: nil
         )
         else { return }
       }
@@ -593,12 +843,15 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         guard target != 0 else { return }
         endpoint.dequeueAddress = target
         if control & 2 != 0 { endpoint.cycle.toggle() }
-        guard updateEndpointContext(
+        guard commitTransferResult(
           slotID: slotID,
           dci: dci,
           endpoint: endpoint,
           expectedEndpoint: expectedEndpoint,
-          memory: memory
+          device: device,
+          memory: memory,
+          memoryGeneration: state.memoryGeneration,
+          payloadWrites: [], event: nil
         ) else { return }
         continue
       }
@@ -609,17 +862,20 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
           endpoint: endpoint,
           device: device,
           memory: memory,
+          memoryGeneration: state.memoryGeneration,
           firstTRB: bytes
         )
         return
       }
-      guard trbType == 1 || trbType == 5 || trbType == 7 else {
+      let dataTRBType: UInt8 = endpoint.type == .isochronous ? 5 : 1
+      guard trbType == dataTRBType || trbType == 7 else {
         postTransferEvent(
           trbAddress: endpoint.dequeueAddress,
           completionCode: 5,
           residualBytes: 0,
           slotID: slotID,
-          dci: dci
+          dci: dci, expectedEndpoint: endpoint, device: device,
+          memoryGeneration: state.memoryGeneration
         )
         return
       }
@@ -627,7 +883,8 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         let descriptor = collectTransferDescriptor(
           endpoint: endpoint,
           memory: memory,
-          firstTRB: bytes
+          firstTRB: bytes,
+          dataTRBType: dataTRBType
         )
       else {
         postTransferEvent(
@@ -635,7 +892,8 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
           completionCode: 5,
           residualBytes: 0,
           slotID: slotID,
-          dci: dci
+          dci: dci, expectedEndpoint: endpoint, device: device,
+          memoryGeneration: state.memoryGeneration
         )
         return
       }
@@ -643,24 +901,23 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         let expectedEndpoint = endpoint
         endpoint.dequeueAddress = descriptor.nextDequeueAddress
         endpoint.cycle = descriptor.nextCycle
-        guard updateEndpointContext(
+        let event = descriptor.interruptOnCompletion ? transferEvent(
+          trbAddress: descriptor.eventPointer,
+          completionCode: 1, residualBytes: 0,
+          slotID: slotID, dci: dci, eventData: descriptor.eventData != nil
+        ) : nil
+        guard commitTransferResult(
           slotID: slotID,
           dci: dci,
           endpoint: endpoint,
           expectedEndpoint: expectedEndpoint,
-          memory: memory
+          device: device,
+          memory: memory,
+          memoryGeneration: state.memoryGeneration,
+          payloadWrites: [], event: event
         )
         else { return }
-        if descriptor.interruptOnCompletion {
-          postTransferEvent(
-            trbAddress: descriptor.eventPointer,
-            completionCode: 1,
-            residualBytes: 0,
-            slotID: slotID,
-            dci: dci,
-            eventData: descriptor.eventData != nil
-          )
-        }
+        if event != nil { updateInterruptLine() }
         continue
       }
       let requestedBytes = descriptor.requestedBytes
@@ -692,28 +949,18 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       let result = device.perform(transfer)
       if result.status == .notReady { return }
       let response = Array(result.payload.prefix(requestedBytes))
+      var writes: [(address: UInt64, bytes: [UInt8])] = []
       if endpoint.direction == .in, !response.isEmpty {
-        do {
-          var responseOffset = 0
-          var writes: [(address: UInt64, bytes: [UInt8])] = []
-          for segment in descriptor.segments where responseOffset < response.count {
-            let count = min(segment.byteCount, response.count - responseOffset)
-            writes.append(
-              (
-                segment.bufferAddress,
-                Array(response[responseOffset..<(responseOffset + count)])
-              )
+        var responseOffset = 0
+        for segment in descriptor.segments where responseOffset < response.count {
+          let count = min(segment.byteCount, response.count - responseOffset)
+          writes.append(
+            (
+              segment.bufferAddress,
+              Array(response[responseOffset..<(responseOffset + count)])
             )
-            responseOffset += count
-          }
-          for write in writes {
-            try memory.validate(
-              at: write.address, byteCount: write.bytes.count, deviceWillWrite: true)
-          }
-          for write in writes { try memory.write(at: write.address, bytes: write.bytes) }
-          memory.synchronize()
-        } catch {
-          return
+          )
+          responseOffset += count
         }
       }
       let halted = result.status == .stalled || result.status == .transactionError
@@ -723,39 +970,37 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         endpoint.dequeueAddress = descriptor.nextDequeueAddress
         endpoint.cycle = descriptor.nextCycle
       }
-      guard updateEndpointContext(
+      let shortResponse = endpoint.direction == .in && response.count < requestedBytes
+      let shouldPostEvent = halted || descriptor.interruptOnCompletion
+        || shortResponse && descriptor.interruptOnShortPacket
+      let residual = endpoint.direction == .in ? requestedBytes - response.count : 0
+      let transferred = endpoint.direction == .in ? response.count : (halted ? 0 : requestedBytes)
+      let event = shouldPostEvent ? transferEvent(
+        trbAddress: descriptor.eventPointer,
+        completionCode: completionCode(status: result.status, shortResponse: shortResponse),
+        residualBytes: descriptor.eventData == nil ? residual : transferred,
+        slotID: slotID, dci: dci, eventData: descriptor.eventData != nil
+      ) : nil
+      guard commitTransferResult(
         slotID: slotID,
         dci: dci,
         endpoint: endpoint,
         expectedEndpoint: expectedEndpoint,
-        memory: memory
+        device: device,
+        memory: memory,
+        memoryGeneration: state.memoryGeneration,
+        payloadWrites: writes,
+        event: event
       )
       else { return }
-      let shortResponse = endpoint.direction == .in && response.count < requestedBytes
-      guard
-        halted || descriptor.interruptOnCompletion
-          || shortResponse && descriptor.interruptOnShortPacket
-      else { continue }
-      let residual = endpoint.direction == .in ? requestedBytes - response.count : 0
-      let transferred = endpoint.direction == .in ? response.count : (halted ? 0 : requestedBytes)
-      let completion = completionCode(
-        status: result.status,
-        shortResponse: shortResponse
-      )
-      postTransferEvent(
-        trbAddress: descriptor.eventPointer,
-        completionCode: completion,
-        residualBytes: descriptor.eventData == nil ? residual : transferred,
-        slotID: slotID,
-        dci: dci,
-        eventData: descriptor.eventData != nil
-      )
+      if event != nil { updateInterruptLine() }
     }
   }
 
-  private func wakeTransfers(port: Int) {
+  private func wakeTransfers(port: Int, generation: UUID) {
     let targets: [(UInt8, UInt8)] = lock.withLock {
-      slots.compactMap { slotID, slot -> [(UInt8, UInt8)]? in
+      guard deviceGenerations[port - 1] == generation else { return [] }
+      return slots.compactMap { slotID, slot -> [(UInt8, UInt8)]? in
         guard slot.rootPort == UInt8(port) else { return nil }
         return slot.endpoints.keys.sorted().map { (slotID, $0) }
       }.flatMap { $0 }
@@ -769,6 +1014,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     endpoint: Slot.Endpoint,
     device: any DoryPCUSBDevice,
     memory: any DoryVirtioGuestMemory,
+    memoryGeneration: UUID,
     firstTRB: [UInt8]
   ) {
     let setupControl = uint32(Array(firstTRB[12..<16]))
@@ -780,7 +1026,8 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         completionCode: 5,
         residualBytes: 0,
         slotID: slotID,
-        dci: dci
+        dci: dci, expectedEndpoint: endpoint, device: device,
+        memoryGeneration: memoryGeneration
       )
       return
     }
@@ -803,7 +1050,8 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
           completionCode: 5,
           residualBytes: requestedBytes,
           slotID: slotID,
-          dci: dci
+          dci: dci, expectedEndpoint: endpoint, device: device,
+          memoryGeneration: memoryGeneration
         )
         return
       }
@@ -832,15 +1080,8 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     let result = device.perform(transfer)
     if result.status == .notReady { return }
     let response = Array(result.payload.prefix(requestedBytes))
-    if setup.direction == .in, !response.isEmpty {
-      do {
-        try memory.validate(at: dataAddress, byteCount: response.count, deviceWillWrite: true)
-        try memory.write(at: dataAddress, bytes: response)
-        memory.synchronize()
-      } catch {
-        return
-      }
-    }
+    let writes: [(address: UInt64, bytes: [UInt8])] = setup.direction == .in && !response.isEmpty
+      ? [(dataAddress, response)] : []
     var updated = endpoint
     let halted = result.status == .stalled || result.status == .transactionError
     if halted {
@@ -848,32 +1089,33 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     } else {
       updated.dequeueAddress = nextAddress + 16
     }
-    guard updateEndpointContext(
+    let residual = setup.direction == .in ? requestedBytes - response.count : 0
+    let event = halted || nextControl & (1 << 5) != 0 ? transferEvent(
+      trbAddress: nextAddress,
+      completionCode: completionCode(
+        status: result.status, shortResponse: setup.direction == .in && response.count < requestedBytes),
+      residualBytes: residual, slotID: slotID, dci: dci
+    ) : nil
+    guard commitTransferResult(
       slotID: slotID,
       dci: dci,
       endpoint: updated,
       expectedEndpoint: endpoint,
-      memory: memory
+      device: device,
+      memory: memory,
+      memoryGeneration: memoryGeneration,
+      payloadWrites: writes,
+      event: event
     )
     else { return }
-    guard halted || nextControl & (1 << 5) != 0 else { return }
-    let residual = setup.direction == .in ? requestedBytes - response.count : 0
-    postTransferEvent(
-      trbAddress: nextAddress,
-      completionCode: completionCode(
-        status: result.status,
-        shortResponse: setup.direction == .in && response.count < requestedBytes
-      ),
-      residualBytes: residual,
-      slotID: slotID,
-      dci: dci
-    )
+    if event != nil { updateInterruptLine() }
   }
 
   private func collectTransferDescriptor(
     endpoint: Slot.Endpoint,
     memory: any DoryVirtioGuestMemory,
-    firstTRB: [UInt8]
+    firstTRB: [UInt8],
+    dataTRBType: UInt8
   ) -> TransferDescriptor? {
     var address = endpoint.dequeueAddress
     var cycle = endpoint.cycle
@@ -909,7 +1151,9 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
           nextCycle: cycle
         )
       }
-      guard type == 1 || type == 5 else { return nil }
+      // An Isoch TRB is not a Normal TRB with different metadata. Never pass it to a bulk or
+      // interrupt device, and never treat a Normal TRB as an isochronous frame.
+      guard type == dataTRBType else { return nil }
       let byteCount = Int(uint32(Array(bytes[8..<12])) & 0x1_FFFF)
       guard totalBytes <= DoryPCUSBDeviceLimits.maximumTransferBytes - byteCount else { return nil }
       segments.append(
@@ -956,8 +1200,32 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     residualBytes: Int,
     slotID: UInt8,
     dci: UInt8,
-    eventData: Bool = false
+    expectedEndpoint: Slot.Endpoint,
+    device: any DoryPCUSBDevice,
+    memoryGeneration: UUID
   ) {
+    let admitted = lock.withLock {
+      guard guestMemoryGeneration == memoryGeneration,
+        let slot = slots[slotID], slot.endpoints[dci] == expectedEndpoint,
+        devices[Int(slot.rootPort) - 1] === device
+      else { return false }
+      try? writeEventLocked(transferEvent(
+        trbAddress: trbAddress, completionCode: completionCode, residualBytes: residualBytes,
+        slotID: slotID, dci: dci
+      ))
+      return true
+    }
+    if admitted { updateInterruptLine() }
+  }
+
+  private func transferEvent(
+    trbAddress: UInt64,
+    completionCode: UInt8,
+    residualBytes: Int,
+    slotID: UInt8,
+    dci: UInt8,
+    eventData: Bool = false
+  ) -> [UInt8] {
     var event = [UInt8](repeating: 0, count: 16)
     put(trbAddress, at: 0, in: &event)
     put(
@@ -971,7 +1239,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       at: 12,
       in: &event
     )
-    _ = try? postEvent(event)
+    return event
   }
 
   private func executeCommand(
@@ -979,11 +1247,13 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     parameter: UInt64,
     status: UInt32,
     control: UInt32,
-    memory: any DoryVirtioGuestMemory
-  ) -> (completionCode: UInt8, slotID: UInt8) {
+    memory: any DoryVirtioGuestMemory,
+    receipt: CommandReceipt
+  ) -> (completionCode: UInt8, slotID: UInt8)? {
     switch type {
     case 9:
       return lock.withLock {
+        guard commandReceiptIsCurrentLocked(receipt) else { return nil }
         let limit = UInt8(min(configuredSlots, UInt32(Self.maximumSlots)))
         guard limit > 0,
           let slot = (1...limit).first(where: { slots[$0] == nil })
@@ -994,6 +1264,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     case 10:
       let slot = UInt8(truncatingIfNeeded: control >> 24)
       return lock.withLock {
+        guard commandReceiptIsCurrentLocked(receipt) else { return nil }
         guard slots.removeValue(forKey: slot) != nil else { return (11, slot) }
         return (1, slot)
       }
@@ -1002,37 +1273,39 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         slotID: UInt8(truncatingIfNeeded: control >> 24),
         inputContextAddress: parameter & ~UInt64(0xF),
         blockSetAddressRequest: control & (1 << 9) != 0,
-        memory: memory
+        memory: memory, receipt: receipt
       )
     case 12:
       if control & (1 << 9) != 0 {
         return deconfigureEndpoints(
           slotID: UInt8(truncatingIfNeeded: control >> 24),
-          memory: memory
+          memory: memory, receipt: receipt
         )
       }
       return configureEndpoints(
         slotID: UInt8(truncatingIfNeeded: control >> 24),
         inputContextAddress: parameter & ~UInt64(0xF),
-        memory: memory
+        memory: memory, receipt: receipt
       )
     case 13:
       return evaluateContext(
         slotID: UInt8(truncatingIfNeeded: control >> 24),
         inputContextAddress: parameter & ~UInt64(0xF),
-        memory: memory
+        memory: memory, receipt: receipt
       )
     case 14:
       return resetEndpoint(
         slotID: UInt8(truncatingIfNeeded: control >> 24),
         dci: UInt8(truncatingIfNeeded: control >> 16),
-        memory: memory
+        memory: memory,
+        receipt: receipt
       )
     case 15:
       return stopEndpoint(
         slotID: UInt8(truncatingIfNeeded: control >> 24),
         dci: UInt8(truncatingIfNeeded: control >> 16),
-        memory: memory
+        memory: memory,
+        receipt: receipt
       )
     case 16:
       return setTransferRingDequeuePointer(
@@ -1040,12 +1313,13 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         dci: UInt8(truncatingIfNeeded: control >> 16),
         streamID: UInt16(truncatingIfNeeded: status >> 16),
         parameter: parameter,
-        memory: memory
+        memory: memory,
+        receipt: receipt
       )
     case 17:
       return resetDevice(
         slotID: UInt8(truncatingIfNeeded: control >> 24),
-        memory: memory
+        memory: memory, receipt: receipt
       )
     case 23:
       return (1, 0)
@@ -1058,14 +1332,17 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     slotID: UInt8,
     inputContextAddress: UInt64,
     blockSetAddressRequest: Bool,
-    memory: any DoryVirtioGuestMemory
-  ) -> (completionCode: UInt8, slotID: UInt8) {
-    let controller = lock.withLock { (slots[slotID], deviceContextBaseAddress) }
-    guard controller.0 != nil else { return (11, slotID) }
-    guard inputContextAddress != 0, controller.1 != 0,
+    memory: any DoryVirtioGuestMemory,
+    receipt: CommandReceipt
+  ) -> (completionCode: UInt8, slotID: UInt8)? {
+    guard let admission = captureSlotCommand(slotID: slotID, command: receipt) else {
+      return (11, slotID)
+    }
+    let contextBase = admission.contextBaseAddress
+    guard inputContextAddress != 0, contextBase != 0,
       let input = try? memory.read(at: inputContextAddress, byteCount: 96), input.count == 96,
       let dcbaaEntry = try? memory.read(
-        at: controller.1 + UInt64(slotID) * 8,
+        at: contextBase + UInt64(slotID) * 8,
         byteCount: 8
       ), dcbaaEntry.count == 8
     else { return (17, slotID) }
@@ -1079,9 +1356,24 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     guard addContextFlags & 3 == 3, slotContext0 >> 27 >= 1,
       (1...Self.portCount).contains(Int(rootPort)), outputContextAddress != 0
     else { return (17, slotID) }
-    let port = lock.withLock { ports[Int(rootPort) - 1] }
-    guard port & Self.portConnectStatus != 0, UInt8((port >> 10) & 0xF) == speed else {
-      return (22, slotID)
+    let portReceipt = lock.withLock { () -> PortStatusReceipt? in
+      guard slotCommandIsCurrentLocked(admission.receipt), deviceContextBaseAddress == contextBase,
+        portGenerations[Int(rootPort) - 1] == admission.receipt.portGenerations[Int(rootPort) - 1],
+        ports[Int(rootPort) - 1] & Self.portConnectStatus != 0,
+        UInt8((ports[Int(rootPort) - 1] >> 10) & 0xF) == speed
+      else { return nil }
+      return .init(
+        port: Int(rootPort), portGeneration: admission.receipt.portGenerations[Int(rootPort) - 1],
+        memoryGeneration: receipt.memoryGeneration
+      )
+    }
+    guard let portReceipt else {
+      return lock.withLock {
+        guard slotCommandIsCurrentLocked(admission.receipt),
+          portGenerations[Int(rootPort) - 1] == admission.receipt.portGenerations[Int(rootPort) - 1]
+        else { return nil }
+        return (22, slotID)
+      }
     }
 
     var output = [UInt8](repeating: 0, count: 64)
@@ -1095,16 +1387,8 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     var endpoint0 = uint32(Array(output[32..<36]))
     endpoint0 = (endpoint0 & ~UInt32(0x7)) | 1
     put(endpoint0, at: 32, in: &output)
-    do {
-      try memory.validate(at: outputContextAddress, byteCount: output.count, deviceWillWrite: true)
-      try memory.write(at: outputContextAddress, bytes: output)
-      memory.synchronize()
-    } catch {
-      return (17, slotID)
-    }
-    lock.withLock {
-      let endpoint0Pointer = uint64(Array(output[40..<48]))
-      slots[slotID] = .init(
+    let endpoint0Pointer = uint64(Array(output[40..<48]))
+    let replacement = Slot(
         addressed: !blockSetAddressRequest,
         rootPort: rootPort,
         deviceAddress: deviceAddress,
@@ -1119,28 +1403,37 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
             state: .running
           )
         ]
-      )
-    }
+    )
+    guard commitSlotCommand(
+      admission.receipt, memory: memory, targetPort: portReceipt, contextBase: contextBase,
+      prepareWrites: { _ in [(outputContextAddress, output)] },
+      mutate: { $0 = replacement }
+    ) else { return rejectedSlotCommandResult(admission.receipt) }
     return (1, slotID)
   }
 
   private func configureEndpoints(
     slotID: UInt8,
     inputContextAddress: UInt64,
-    memory: any DoryVirtioGuestMemory
-  ) -> (completionCode: UInt8, slotID: UInt8) {
-    guard let slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    memory: any DoryVirtioGuestMemory,
+    receipt: CommandReceipt
+  ) -> (completionCode: UInt8, slotID: UInt8)? {
+    guard let admission = captureSlotCommand(slotID: slotID, command: receipt) else {
+      return (11, slotID)
+    }
+    let slot = admission.slot
     guard slot.addressed else { return (19, slotID) }
     guard inputContextAddress != 0,
       let input = try? memory.read(at: inputContextAddress, byteCount: 1_056), input.count == 1_056
     else { return (17, slotID) }
     let dropFlags = uint32(Array(input[0..<4]))
     let addFlags = uint32(Array(input[4..<8]))
-    var endpoints = slot.endpoints
+    var addedEndpoints: [UInt8: Slot.Endpoint] = [:]
+    var droppedEndpoints: [UInt8] = []
     var writes: [(address: UInt64, bytes: [UInt8])] = []
     for dci in UInt8(2)...31 {
       let flag = UInt32(1) << UInt32(dci)
-      if dropFlags & flag != 0 { endpoints.removeValue(forKey: dci) }
+      if dropFlags & flag != 0 { droppedEndpoints.append(dci) }
       guard addFlags & flag != 0 else { continue }
       let offset = 32 + Int(dci) * 32
       var context = Array(input[offset..<(offset + 32)])
@@ -1153,7 +1446,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       var context0 = uint32(Array(context[0..<4]))
       context0 = (context0 & ~UInt32(0x7)) | 1
       put(context0, at: 0, in: &context)
-      endpoints[dci] = .init(
+      addedEndpoints[dci] = .init(
         type: decoded.type,
         direction: decoded.direction,
         number: dci / 2,
@@ -1163,26 +1456,28 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       )
       writes.append((slot.outputContextAddress + UInt64(dci) * 32, context))
     }
-    do {
-      for write in writes {
-        try memory.validate(at: write.address, byteCount: 32, deviceWillWrite: true)
+    guard commitSlotCommand(
+      admission.receipt, memory: memory, prepareWrites: { _ in writes },
+      mutate: { current in
+        for dci in droppedEndpoints { current.endpoints.removeValue(forKey: dci) }
+        for (dci, endpoint) in addedEndpoints { current.endpoints[dci] = endpoint }
       }
-      for write in writes { try memory.write(at: write.address, bytes: write.bytes) }
-      memory.synchronize()
-    } catch {
-      return (17, slotID)
-    }
-    lock.withLock { slots[slotID]?.endpoints = endpoints }
+    ) else { return rejectedSlotCommandResult(admission.receipt) }
     return (1, slotID)
   }
 
   private func deconfigureEndpoints(
     slotID: UInt8,
-    memory: any DoryVirtioGuestMemory
-  ) -> (completionCode: UInt8, slotID: UInt8) {
-    guard var slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    memory: any DoryVirtioGuestMemory,
+    receipt: CommandReceipt
+  ) -> (completionCode: UInt8, slotID: UInt8)? {
+    guard let admission = captureSlotCommand(slotID: slotID, command: receipt) else {
+      return (11, slotID)
+    }
+    let slot = admission.slot
     guard slot.addressed, var endpoint0 = slot.endpoints[1] else { return (19, slotID) }
     endpoint0.state = .stopped
+    endpoint0.generation = UUID()
     var slotContext: [UInt8]
     var endpoint0Context: [UInt8]
     do {
@@ -1195,31 +1490,30 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       var state = uint32(Array(slotContext[12..<16]))
       state = (state & 0x07FF_FFFF) | UInt32(2) << 27
       put(state, at: 12, in: &slotContext)
-      try memory.validate(at: slot.outputContextAddress, byteCount: 1_024, deviceWillWrite: true)
-      try memory.write(at: slot.outputContextAddress, bytes: slotContext)
-      try memory.write(
-        at: slot.outputContextAddress + 32,
-        bytes: endpointContextBytes(endpoint0, existing: endpoint0Context)
-      )
-      try memory.write(
-        at: slot.outputContextAddress + 64,
-        bytes: [UInt8](repeating: 0, count: 960)
-      )
-      memory.synchronize()
     } catch {
       return (17, slotID)
     }
-    slot.endpoints = [1: endpoint0]
-    lock.withLock { slots[slotID] = slot }
+    guard commitSlotCommand(
+      admission.receipt, memory: memory,
+      prepareWrites: { _ in [
+        (slot.outputContextAddress, slotContext),
+        (slot.outputContextAddress + 32, endpointContextBytes(endpoint0, existing: endpoint0Context)),
+        (slot.outputContextAddress + 64, [UInt8](repeating: 0, count: 960)),
+      ] }, mutate: { $0.endpoints = [1: endpoint0] }
+    ) else { return rejectedSlotCommandResult(admission.receipt) }
     return (1, slotID)
   }
 
   private func evaluateContext(
     slotID: UInt8,
     inputContextAddress: UInt64,
-    memory: any DoryVirtioGuestMemory
-  ) -> (completionCode: UInt8, slotID: UInt8) {
-    guard let slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    memory: any DoryVirtioGuestMemory,
+    receipt: CommandReceipt
+  ) -> (completionCode: UInt8, slotID: UInt8)? {
+    guard let admission = captureSlotCommand(slotID: slotID, command: receipt) else {
+      return (11, slotID)
+    }
+    let slot = admission.slot
     guard inputContextAddress != 0,
       let input = try? memory.read(at: inputContextAddress, byteCount: 1_056), input.count == 1_056,
       let output = try? memory.read(at: slot.outputContextAddress, byteCount: 1_024),
@@ -1228,7 +1522,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     let dropFlags = uint32(Array(input[0..<4]))
     let addFlags = uint32(Array(input[4..<8]))
     guard dropFlags == 0, addFlags != 0 else { return (17, slotID) }
-    var writes: [(UInt64, [UInt8])] = []
+    var contexts: [(id: UInt8, bytes: [UInt8])] = []
     for contextID in 0...31 where addFlags & (UInt32(1) << UInt32(contextID)) != 0 {
       if contextID > 0, slot.endpoints[UInt8(contextID)] == nil { return (12, slotID) }
       let inputOffset = 32 + contextID * 32
@@ -1246,45 +1540,71 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         put(state, at: 0, in: &context)
         context.replaceSubrange(8..<16, with: oldContext[8..<16])
       }
-      writes.append((slot.outputContextAddress + UInt64(outputOffset), context))
+      contexts.append((UInt8(contextID), context))
     }
-    do {
-      for write in writes {
-        try memory.validate(at: write.0, byteCount: 32, deviceWillWrite: true)
-      }
-      for write in writes { try memory.write(at: write.0, bytes: write.1) }
-      memory.synchronize()
-    } catch {
-      return (17, slotID)
-    }
+    guard commitSlotCommand(
+      admission.receipt, memory: memory,
+      prepareWrites: { current in
+        var writes: [(address: UInt64, bytes: [UInt8])] = []
+        for context in contexts {
+          let bytes: [UInt8]
+          if context.id == 0 {
+            bytes = context.bytes
+          } else {
+            guard let endpoint = current.endpoints[context.id] else { return nil }
+            bytes = endpointContextBytes(endpoint, existing: context.bytes)
+          }
+          writes.append((current.outputContextAddress + UInt64(context.id) * 32, bytes))
+        }
+        return writes
+      }, mutate: { _ in }
+    ) else { return rejectedSlotCommandResult(admission.receipt) }
     return (1, slotID)
   }
 
   private func resetEndpoint(
     slotID: UInt8,
     dci: UInt8,
-    memory: any DoryVirtioGuestMemory
-  ) -> (completionCode: UInt8, slotID: UInt8) {
-    guard let slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    memory: any DoryVirtioGuestMemory,
+    receipt: CommandReceipt
+  ) -> (completionCode: UInt8, slotID: UInt8)? {
+    guard let admission = captureSlotCommand(slotID: slotID, command: receipt) else {
+      return (11, slotID)
+    }
+    let slot = admission.slot
     guard var endpoint = slot.endpoints[dci] else { return (12, slotID) }
     guard endpoint.state == .halted else { return (19, slotID) }
+    let expectedEndpoint = endpoint
     endpoint.state = .stopped
-    guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
-    else { return (17, slotID) }
+    endpoint.generation = UUID()
+    guard updateEndpointContext(
+      admission.receipt, slot: slot, dci: dci, endpoint: endpoint,
+      expectedEndpoint: expectedEndpoint, memory: memory
+    )
+    else { return rejectedSlotCommandResult(admission.receipt) }
     return (1, slotID)
   }
 
   private func stopEndpoint(
     slotID: UInt8,
     dci: UInt8,
-    memory: any DoryVirtioGuestMemory
-  ) -> (completionCode: UInt8, slotID: UInt8) {
-    guard let slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    memory: any DoryVirtioGuestMemory,
+    receipt: CommandReceipt
+  ) -> (completionCode: UInt8, slotID: UInt8)? {
+    guard let admission = captureSlotCommand(slotID: slotID, command: receipt) else {
+      return (11, slotID)
+    }
+    let slot = admission.slot
     guard var endpoint = slot.endpoints[dci] else { return (12, slotID) }
     guard endpoint.state == .running || endpoint.state == .stopped else { return (19, slotID) }
+    let expectedEndpoint = endpoint
     endpoint.state = .stopped
-    guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
-    else { return (17, slotID) }
+    endpoint.generation = UUID()
+    guard updateEndpointContext(
+      admission.receipt, slot: slot, dci: dci, endpoint: endpoint,
+      expectedEndpoint: expectedEndpoint, memory: memory
+    )
+    else { return rejectedSlotCommandResult(admission.receipt) }
     return (1, slotID)
   }
 
@@ -1293,28 +1613,42 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     dci: UInt8,
     streamID: UInt16,
     parameter: UInt64,
-    memory: any DoryVirtioGuestMemory
-  ) -> (completionCode: UInt8, slotID: UInt8) {
-    guard let slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    memory: any DoryVirtioGuestMemory,
+    receipt: CommandReceipt
+  ) -> (completionCode: UInt8, slotID: UInt8)? {
+    guard let admission = captureSlotCommand(slotID: slotID, command: receipt) else {
+      return (11, slotID)
+    }
+    let slot = admission.slot
     guard var endpoint = slot.endpoints[dci] else { return (12, slotID) }
     guard streamID == 0, parameter & 0xE == 0, parameter & ~UInt64(0xF) != 0 else {
       return (17, slotID)
     }
     guard endpoint.state == .stopped || endpoint.state == .error else { return (19, slotID) }
+    let expectedEndpoint = endpoint
     endpoint.dequeueAddress = parameter & ~UInt64(0xF)
     endpoint.cycle = parameter & 1 != 0
-    guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
-    else { return (17, slotID) }
+    endpoint.generation = UUID()
+    guard updateEndpointContext(
+      admission.receipt, slot: slot, dci: dci, endpoint: endpoint,
+      expectedEndpoint: expectedEndpoint, memory: memory
+    )
+    else { return rejectedSlotCommandResult(admission.receipt) }
     return (1, slotID)
   }
 
   private func resetDevice(
     slotID: UInt8,
-    memory: any DoryVirtioGuestMemory
-  ) -> (completionCode: UInt8, slotID: UInt8) {
-    guard var slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    memory: any DoryVirtioGuestMemory,
+    receipt: CommandReceipt
+  ) -> (completionCode: UInt8, slotID: UInt8)? {
+    guard let admission = captureSlotCommand(slotID: slotID, command: receipt) else {
+      return (11, slotID)
+    }
+    let slot = admission.slot
     guard var endpoint0 = slot.endpoints[1] else { return (19, slotID) }
     endpoint0.state = .stopped
+    endpoint0.generation = UUID()
     var slotContext: [UInt8]
     var endpoint0Context: [UInt8]
     do {
@@ -1327,59 +1661,155 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       var state = uint32(Array(slotContext[12..<16]))
       state = (state & 0x07FF_FF00) | UInt32(1) << 27
       put(state, at: 12, in: &slotContext)
-      try memory.validate(at: slot.outputContextAddress, byteCount: 1_024, deviceWillWrite: true)
-      try memory.write(at: slot.outputContextAddress, bytes: slotContext)
-      try memory.write(
-        at: slot.outputContextAddress + 32,
-        bytes: endpointContextBytes(endpoint0, existing: endpoint0Context)
-      )
-      try memory.write(
-        at: slot.outputContextAddress + 64,
-        bytes: [UInt8](repeating: 0, count: 960)
-      )
-      memory.synchronize()
     } catch {
       return (17, slotID)
     }
-    slot.addressed = false
-    slot.deviceAddress = 0
-    slot.endpoints = [1: endpoint0]
-    lock.withLock { slots[slotID] = slot }
+    guard commitSlotCommand(
+      admission.receipt, memory: memory,
+      prepareWrites: { _ in [
+        (slot.outputContextAddress, slotContext),
+        (slot.outputContextAddress + 32, endpointContextBytes(endpoint0, existing: endpoint0Context)),
+        (slot.outputContextAddress + 64, [UInt8](repeating: 0, count: 960)),
+      ] }, mutate: { current in
+        current.addressed = false
+        current.deviceAddress = 0
+        current.endpoints = [1: endpoint0]
+      }
+    ) else { return rejectedSlotCommandResult(admission.receipt) }
     return (1, slotID)
   }
 
-  private func updateEndpointContext(
+  private func captureSlotCommand(
+    slotID: UInt8, command: CommandReceipt
+  ) -> (slot: Slot, receipt: SlotCommandReceipt, contextBaseAddress: UInt64)? {
+    lock.withLock {
+      guard commandReceiptIsCurrentLocked(command), let slot = slots[slotID] else { return nil }
+      return (slot, .init(
+        command: command, slotID: slotID, slotGeneration: slot.generation,
+        rootPort: slot.rootPort, portGenerations: portGenerations
+      ), deviceContextBaseAddress)
+    }
+  }
+
+  private func slotCommandIsCurrentLocked(_ receipt: SlotCommandReceipt) -> Bool {
+    guard commandReceiptIsCurrentLocked(receipt.command),
+      let slot = slots[receipt.slotID], slot.generation == receipt.slotGeneration
+    else { return false }
+    return receipt.rootPort == 0
+      || portGenerations[Int(receipt.rootPort) - 1]
+        == receipt.portGenerations[Int(receipt.rootPort) - 1]
+  }
+
+  private func rejectedSlotCommandResult(
+    _ receipt: SlotCommandReceipt
+  ) -> (completionCode: UInt8, slotID: UInt8)? {
+    lock.withLock {
+      guard slotCommandIsCurrentLocked(receipt) else { return nil }
+      return (17, receipt.slotID)
+    }
+  }
+
+  /// Context reads occur before this boundary. Admission, guest DMA and the corresponding
+  /// slot mutation commit together; reset/unplug cannot replace ownership between them.
+  private func commitSlotCommand(
+    _ receipt: SlotCommandReceipt,
+    memory: any DoryVirtioGuestMemory,
+    targetPort: PortStatusReceipt? = nil,
+    contextBase: UInt64? = nil,
+    prepareWrites: (Slot) -> [(address: UInt64, bytes: [UInt8])]?,
+    mutate: (inout Slot) -> Void
+  ) -> Bool {
+    lock.withLock {
+      guard slotCommandIsCurrentLocked(receipt), var slot = slots[receipt.slotID] else {
+        return false
+      }
+      if let targetPort {
+        guard guestMemoryGeneration == targetPort.memoryGeneration,
+          portGenerations[targetPort.port - 1] == targetPort.portGeneration
+        else { return false }
+      }
+      if let contextBase, deviceContextBaseAddress != contextBase { return false }
+      guard let writes = prepareWrites(slot) else { return false }
+      do {
+        for write in writes {
+          try memory.validate(at: write.address, byteCount: write.bytes.count, deviceWillWrite: true)
+        }
+        for write in writes { try memory.write(at: write.address, bytes: write.bytes) }
+        memory.synchronize()
+      } catch { return false }
+      mutate(&slot)
+      slot.generation = UUID()
+      slots[receipt.slotID] = slot
+      return true
+    }
+  }
+
+  /// The platform call runs without the controller lock. Its payload and endpoint writeback
+  /// acquire ownership together, so unplug, reset, or a replacement memory mapping cannot
+  /// publish a stale device's bytes before the ordinary endpoint comparison rejects it.
+  private func commitTransferResult(
     slotID: UInt8,
     dci: UInt8,
     endpoint: Slot.Endpoint,
-    expectedEndpoint: Slot.Endpoint? = nil,
-    memory: any DoryVirtioGuestMemory
+    expectedEndpoint: Slot.Endpoint,
+    device: any DoryPCUSBDevice,
+    memory: any DoryVirtioGuestMemory,
+    memoryGeneration: UUID,
+    payloadWrites: [(address: UInt64, bytes: [UInt8])],
+    event: [UInt8]?
   ) -> Bool {
-    guard let slot = lock.withLock({ slots[slotID] }) else { return false }
-    let address = slot.outputContextAddress + UInt64(dci) * 32
-    guard writeEndpointContext(endpoint, at: address, memory: memory) else { return false }
-    let committed = lock.withLock {
-      guard var currentSlot = slots[slotID], let current = currentSlot.endpoints[dci],
-        current.state != .error || endpoint.state == .error,
-        expectedEndpoint.map({ current == $0 }) ?? true
+    lock.withLock {
+      guard guestMemoryGeneration == memoryGeneration,
+        var slot = slots[slotID], slot.endpoints[dci] == expectedEndpoint,
+        devices[Int(slot.rootPort) - 1] === device
       else { return false }
-      currentSlot.endpoints[dci] = endpoint
-      slots[slotID] = currentSlot
+      let contextAddress = slot.outputContextAddress + UInt64(dci) * 32
+      do {
+        let existing = try memory.read(at: contextAddress, byteCount: 32)
+        guard existing.count == 32 else { return false }
+        try memory.validate(at: contextAddress, byteCount: 32, deviceWillWrite: true)
+        for write in payloadWrites {
+          try memory.validate(at: write.address, byteCount: write.bytes.count, deviceWillWrite: true)
+        }
+        for write in payloadWrites { try memory.write(at: write.address, bytes: write.bytes) }
+        try memory.write(at: contextAddress, bytes: endpointContextBytes(endpoint, existing: existing))
+        memory.synchronize()
+      } catch {
+        return false
+      }
+      slot.endpoints[dci] = endpoint
+      slots[slotID] = slot
+      if let event { try? writeEventLocked(event) }
       return true
     }
-    guard !committed else { return true }
+  }
 
-    // A terminal disconnect may have raced the guest-memory write above. Restore its current
-    // error context so a stale worker cannot leave the guest observing a revived endpoint.
-    if let terminal = lock.withLock({ () -> (Slot.Endpoint, UInt64)? in
-      guard let currentSlot = slots[slotID], let current = currentSlot.endpoints[dci],
-        current.state == .error
-      else { return nil }
-      return (current, currentSlot.outputContextAddress + UInt64(dci) * 32)
-    }) {
-      _ = writeEndpointContext(terminal.0, at: terminal.1, memory: memory)
+  private func updateEndpointContext(
+    _ receipt: SlotCommandReceipt,
+    slot: Slot,
+    dci: UInt8,
+    endpoint: Slot.Endpoint,
+    expectedEndpoint: Slot.Endpoint,
+    memory: any DoryVirtioGuestMemory
+  ) -> Bool {
+    let address = slot.outputContextAddress + UInt64(dci) * 32
+    guard let existing = try? memory.read(at: address, byteCount: 32), existing.count == 32 else {
+      return false
     }
-    return false
+    return lock.withLock {
+      guard slotCommandIsCurrentLocked(receipt),
+        var currentSlot = slots[receipt.slotID], currentSlot.endpoints[dci] == expectedEndpoint
+      else { return false }
+      do {
+        try memory.validate(at: address, byteCount: 32, deviceWillWrite: true)
+        try memory.write(at: address, bytes: endpointContextBytes(endpoint, existing: existing))
+        memory.synchronize()
+      } catch { return false }
+      currentSlot.endpoints[dci] = endpoint
+      currentSlot.generation = UUID()
+      slots[receipt.slotID] = currentSlot
+      return true
+    }
   }
 
   private func writeEndpointContext(
@@ -1427,9 +1857,9 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     return decoded
   }
 
-  private func postEvent(_ event: [UInt8]) throws {
-    let write: (memory: any DoryVirtioGuestMemory, address: UInt64, bytes: [UInt8]) =
-      try lock.withLock {
+  /// Called with controller ownership, including transfer completion publication. A reset or
+  /// memory replacement cannot swap the event ring between its reservation and DMA write.
+  private func writeEventLocked(_ event: [UInt8]) throws {
         guard usbCommand & 1 != 0, let guestMemory else {
           throw DoryPCXHCIError.eventRingUnavailable
         }
@@ -1438,6 +1868,9 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         var bytes = event
         if eventRingCycle { bytes[12] |= 1 } else { bytes[12] &= 0xFE }
         let address = eventRingEnqueueAddress
+        try guestMemory.validate(at: address, byteCount: 16, deviceWillWrite: true)
+        try guestMemory.write(at: address, bytes: bytes)
+        guestMemory.synchronize()
         eventRingEnqueueIndex += 1
         if eventRingEnqueueIndex == eventRingSegmentSize {
           eventRingEnqueueIndex = 0
@@ -1448,12 +1881,6 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         }
         usbStatus |= Self.usbStatusEventInterrupt
         interrupterManagement |= 1
-        return (guestMemory, address, bytes)
-      }
-    try write.memory.validate(at: write.address, byteCount: 16, deviceWillWrite: true)
-    try write.memory.write(at: write.address, bytes: write.bytes)
-    write.memory.synchronize()
-    updateInterruptLine()
   }
 
   private func configureEventRingLocked(memory: any DoryVirtioGuestMemory) throws {

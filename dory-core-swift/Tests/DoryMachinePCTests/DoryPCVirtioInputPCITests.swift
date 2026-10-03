@@ -51,6 +51,25 @@ import Testing
     #expect(read32(try machine.physicalMemory.read(at: 0x3008, byteCount: 4)) == 8)
     #expect(machine.localAPIC.snapshot().interruptRequest.contains(0x79))
     #expect(input.inputDevice.pendingEventCount == 1)
+
+    // Revocation occurs with the old frame's SYN still queued and no receive buffers. Cleanup
+    // must survive that pause and wake automatically when the guest later replenishes the ring.
+    input.releaseAllPressedKeys()
+    #expect(input.inputDevice.pendingEventCount == 0)
+    #expect(input.inputDevice.pendingReleaseEventCount == 2)
+    for index in UInt64(1)...2 {
+      try writeDescriptor(machine, at: 0x1000 + index * 16,
+        address: 0x4000 + index * 8, length: 8, flags: 2, next: 0)
+    }
+    try machine.physicalMemory.write(at: 0x2006, bytes: [1, 0, 2, 0])
+    try write16(machine, 0x2002, 3)
+    try write16(machine, bar + 0x100, 0)
+    #expect(read16(try machine.physicalMemory.read(at: 0x3002, byteCount: 2)) == 3)
+    #expect(try machine.physicalMemory.read(at: 0x4008, byteCount: 8)
+      == littleEndian(UInt16(1)) + littleEndian(UInt16(30)) + littleEndian(UInt32(0)))
+    #expect(try machine.physicalMemory.read(at: 0x4010, byteCount: 8)
+      == [UInt8](repeating: 0, count: 8))
+    #expect(!input.inputDevice.hasPendingEvent)
   }
 
   private func writeDescriptor(

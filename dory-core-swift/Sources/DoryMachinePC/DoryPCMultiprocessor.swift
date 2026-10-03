@@ -60,9 +60,18 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
   }
 
   public func handleInterruptCommand(sourceAPICID: UInt32, high: UInt32, low: UInt32) throws {
-    let targets = try resolvedTargets(sourceAPICID: sourceAPICID, high: high, low: low)
     let deliveryMode = UInt8(truncatingIfNeeded: low >> 8) & 0x7
     let vector = UInt8(truncatingIfNeeded: low)
+    // Fixed/lowest-priority IPI vectors 0...15 are APIC errors, not failures of the host
+    // memory callback. Reject them before destination lookup or any partial delivery.
+    if (deliveryMode == 0 || deliveryMode == 1), vector < 0x10 {
+      guard let source = apicsByID[sourceAPICID] else {
+        throw DoryPCMultiprocessorError.missingDestination(sourceAPICID)
+      }
+      source.recordError(.sendIllegalVector)
+      return
+    }
+    let targets = try resolvedTargets(sourceAPICID: sourceAPICID, high: high, low: low)
     switch deliveryMode {
     case 0:
       for target in targets { try target.inject(vector: vector) }

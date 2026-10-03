@@ -777,6 +777,8 @@ private func physicalMemoryDiagnostics(
     "mmioReadExits": diagnostics.mmioReadExits,
     "mmioWriteExits": diagnostics.mmioWriteExits,
     "totalMMIOExits": diagnostics.totalMMIOExits,
+    "mmioDeviceWallNanoseconds": diagnostics.mmioDeviceWallNanoseconds,
+    "mmioDeviceThreadCPUNanoseconds": diagnostics.mmioDeviceThreadCPUNanoseconds,
   ]
 }
 
@@ -806,6 +808,7 @@ private func hostTimeBreakdown(_ value: DoryPCHostTimeBreakdown) -> [String: Any
     "interruptDeliveryNanoseconds": value.interruptDeliveryNanoseconds,
     "processorExecutionNanoseconds": value.processorExecutionNanoseconds,
     "idleWaitNanoseconds": value.idleWaitNanoseconds,
+    "coordinatorWaitNanoseconds": value.coordinatorWaitNanoseconds,
     "attributedNanoseconds": value.attributedNanoseconds,
     "unattributedNanoseconds": value.unattributedNanoseconds,
     "attributedBasisPoints": value.attributedBasisPoints,
@@ -820,6 +823,40 @@ private func hostExecutionDiagnostics(
     "runCalls": diagnostics.runCalls,
     "wall": hostTimeBreakdown(diagnostics.wall),
     "threadCPU": hostTimeBreakdown(diagnostics.threadCPU),
+  ]
+}
+
+private func hostExecutionInterval(
+  from previous: DoryPCHostExecutionDiagnostics,
+  to current: DoryPCHostExecutionDiagnostics
+) -> [String: Any] {
+  func breakdown(
+    _ old: DoryPCHostTimeBreakdown,
+    _ new: DoryPCHostTimeBreakdown
+  ) -> [String: UInt64] {
+    func difference(_ first: UInt64, _ second: UInt64) -> UInt64 {
+      second >= first ? second - first : 0
+    }
+    return [
+      "totalNanoseconds": difference(old.totalNanoseconds, new.totalNanoseconds),
+      "processorEventNanoseconds": difference(
+        old.processorEventNanoseconds, new.processorEventNanoseconds),
+      "clockAdvancementNanoseconds": difference(
+        old.clockAdvancementNanoseconds, new.clockAdvancementNanoseconds),
+      "interruptDeliveryNanoseconds": difference(
+        old.interruptDeliveryNanoseconds, new.interruptDeliveryNanoseconds),
+      "processorExecutionNanoseconds": difference(
+        old.processorExecutionNanoseconds, new.processorExecutionNanoseconds),
+      "idleWaitNanoseconds": difference(old.idleWaitNanoseconds, new.idleWaitNanoseconds),
+      "coordinatorWaitNanoseconds": difference(
+        old.coordinatorWaitNanoseconds, new.coordinatorWaitNanoseconds),
+    ]
+  }
+  return [
+    "runCalls": current.runCalls >= previous.runCalls
+      ? current.runCalls - previous.runCalls : 0,
+    "wall": breakdown(previous.wall, current.wall),
+    "threadCPU": breakdown(previous.threadCPU, current.threadCPU),
   ]
 }
 
@@ -1099,9 +1136,51 @@ private func runWithProgress(
   bootTimeline: DoryPCBootTimeline?,
   inputBoundaryInstructions: [UInt64] = [],
   beforeInstructionBoundary: ((UInt64) throws -> Void)? = nil
-) throws -> (stop: DoryPCMachineStop, trace: [[String: Any]], traceStopReason: String?) {
+) throws -> (
+  stop: DoryPCMachineStop,
+  trace: [[String: Any]],
+  traceStopReason: String?,
+  bootPhaseCosts: [[String: Any]]
+) {
   var completed: UInt64 = 0
   var trace: [[String: Any]] = []
+  var bootPhaseCosts: [[String: Any]] = []
+  var sampledMilestones: Set<DoryPCBootTimeline.Milestone> = [.executionStarted]
+  var previousTiming = machine.hostExecutionDiagnostics
+  var previousSampleInstructions: UInt64 = 0
+
+  // UART markers can arrive within a run quantum. Preserve both the marker timestamp and the
+  // later timing-sample boundary so this diagnostic does not imply exact guest-phase costs.
+  func captureBootPhaseCosts(afterInstructions: UInt64, terminal: Bool = false) {
+    guard previousTiming.enabled, let timeline = bootTimeline else { return }
+    let snapshot = timeline.snapshot()
+    let newEvents = snapshot.events.filter { !sampledMilestones.contains($0.milestone) }
+    guard !newEvents.isEmpty || terminal else { return }
+    for event in newEvents { sampledMilestones.insert(event.milestone) }
+    let timing = machine.hostExecutionDiagnostics
+    let statistics = machine.executionStatistics
+    bootPhaseCosts.append([
+      "milestones": newEvents.map { event in
+        [
+          "name": event.milestone.rawValue,
+          "markerElapsedNanoseconds": event.elapsedNanoseconds,
+        ] as [String: Any]
+      },
+      "sampleElapsedNanoseconds": snapshot.elapsedNanoseconds,
+      "sampleStartInstructions": previousSampleInstructions,
+      "sampleEndInstructions": afterInstructions,
+      "terminal": terminal,
+      "intervalHostExecution": hostExecutionInterval(from: previousTiming, to: timing),
+      "cumulativeHostExecution": hostExecutionDiagnostics(timing),
+      "cumulativeExecutionInstructions": [
+        "interpreter": statistics.interpreterInstructions,
+        "baselineJIT": statistics.baselineJITInstructions,
+        "optimizingJIT": statistics.optimizingJITInstructions,
+      ],
+    ])
+    previousTiming = timing
+    previousSampleInstructions = afterInstructions
+  }
   while completed < maximumInstructions {
     try beforeInstructionBoundary?(completed)
     let tracing = traceAfterInstructions.map { completed >= $0 } ?? false
@@ -1127,7 +1206,10 @@ private func runWithProgress(
       ])
       if trace.count > traceCapacity { trace.removeFirst(trace.count - traceCapacity) }
       if let traceBreakRIPBelow, state.cs.base &+ state.rip < traceBreakRIPBelow {
-        return (.instructionBudget(completed), trace, "instruction-pointer-below-threshold")
+        captureBootPhaseCosts(afterInstructions: completed, terminal: true)
+        return (
+          .instructionBudget(completed), trace, "instruction-pointer-below-threshold",
+          bootPhaseCosts)
       }
     }
     let distanceToTrace = traceAfterInstructions.map { $0 > completed ? $0 - completed : 0 } ?? 0
@@ -1147,6 +1229,10 @@ private func runWithProgress(
       maximumInstructions - completed
     )
     let stop = try machine.run(maximumInstructions: chunk, exceptionPolicy: exceptionPolicy)
+    let runCount = completedInstructions(for: stop)
+    let isTerminal: Bool
+    if case .instructionBudget = stop { isTerminal = false } else { isTerminal = true }
+    captureBootPhaseCosts(afterInstructions: completed &+ runCount, terminal: isTerminal)
     switch stop {
     case .instructionBudget(let count):
       completed &+= count
@@ -1157,6 +1243,7 @@ private func runWithProgress(
         "bootTimeline": try bootTimeline.map {
           try JSONSerialization.jsonObject(with: JSONEncoder().encode($0.snapshot()))
         } ?? NSNull(),
+        "bootPhaseCosts": bootPhaseCosts,
         "completedInstructions": completed,
         "instructionPointer": state.map { hexadecimal($0.cs.base &+ $0.rip) } ?? "unavailable",
         "interpreterInstructions": statistics.interpreterInstructions,
@@ -1172,21 +1259,25 @@ private func runWithProgress(
       ]
       let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
       FileHandle.standardError.write(data + Data("\n".utf8))
-    case .halted(let count): return (.halted(instructionCount: completed &+ count), trace, nil)
+    case .halted(let count):
+      return (.halted(instructionCount: completed &+ count), trace, nil, bootPhaseCosts)
     case .exception(let exception, let count):
-      return (.exception(exception, instructionCount: completed &+ count), trace, nil)
+      return (.exception(exception, instructionCount: completed &+ count), trace, nil, bootPhaseCosts)
     case .tripleFault(let source, let count):
       return (
         .tripleFault(source: source, instructionCount: completed &+ count),
         trace,
-        nil
+        nil,
+        bootPhaseCosts
       )
     case .poweredOff(let count):
-      return (.poweredOff(instructionCount: completed &+ count), trace, nil)
-    case .reset(let count): return (.reset(instructionCount: completed &+ count), trace, nil)
+      return (.poweredOff(instructionCount: completed &+ count), trace, nil, bootPhaseCosts)
+    case .reset(let count):
+      return (.reset(instructionCount: completed &+ count), trace, nil, bootPhaseCosts)
     }
   }
-  return (.instructionBudget(completed), trace, nil)
+  captureBootPhaseCosts(afterInstructions: completed, terminal: true)
+  return (.instructionBudget(completed), trace, nil, bootPhaseCosts)
 }
 
 private func enqueueKeyboardInput(
@@ -1533,6 +1624,11 @@ private func run() throws {
     "bootTimeline": try bootTimeline.map {
       try JSONSerialization.jsonObject(with: JSONEncoder().encode($0.snapshot()))
     } ?? NSNull(),
+    "bootPhaseCosts": arguments.instrumentationEnabled && arguments.bootTimelineEnabled
+      ? execution.bootPhaseCosts as Any : NSNull(),
+    "bootPhaseCostObservationScope":
+      "Host wall/CPU counters are sampled after run quanta at the first observed UART marker; "
+      + "multiple markers in one quantum share a sample, and the terminal sample covers the tail.",
     "cpuProfileIdentifier": composed.machine.interpreter.profile.identifier,
     "cpuIdentity": composed.machine.interpreter.profile.identity.rawValue,
     "virtualTSCFrequencyHz": composed.machine.interpreter.profile.virtualTSCFrequencyHz,

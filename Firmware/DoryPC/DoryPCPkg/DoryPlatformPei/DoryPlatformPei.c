@@ -117,6 +117,8 @@ DoryPlatformPeiEntryPoint (
   UINT64     LowRam;
   UINT64     HighRam;
   UINT64     HighRamBase;
+  UINT64     Mmio64Base;
+  UINT64     Mmio64Size;
   UINT64     PeiMemoryBase;
   UINT64     PeiMemorySize;
 
@@ -131,8 +133,16 @@ DoryPlatformPeiEntryPoint (
   LowRam      = ConfigurationRead64 (DORY_PC_CONFIGURATION_LOW_RAM_OFFSET);
   HighRam     = ConfigurationRead64 (DORY_PC_CONFIGURATION_HIGH_RAM_OFFSET);
   HighRamBase = ConfigurationRead64 (DORY_PC_CONFIGURATION_HIGH_RAM_BASE);
+  Mmio64Base  = ConfigurationRead64 (DORY_PC_CONFIGURATION_MMIO64_BASE_OFFSET);
+  Mmio64Size  = ConfigurationRead64 (DORY_PC_CONFIGURATION_MMIO64_SIZE_OFFSET);
   if ((LowRam < SIZE_128MB) || (LowRam > ConfigurationRead64 (DORY_PC_CONFIGURATION_MMIO_BASE_OFFSET)) ||
-      (HighRamBase < BASE_4GB))
+      (HighRamBase < BASE_4GB) ||
+      (HighRam > MAX_UINT64 - HighRamBase) ||
+      (Mmio64Base < HighRamBase + HighRam) ||
+      (Mmio64Size == 0) || ((Mmio64Size & (Mmio64Size - 1)) != 0) ||
+      ((Mmio64Base & (Mmio64Size - 1)) != 0) ||
+      (Mmio64Base > MAX_UINT64 - Mmio64Size) ||
+      (MmioRead32 (mConfigurationBase + DORY_PC_CONFIGURATION_GPU_SHM_ID_OFFSET) > 1))
   {
     return EFI_COMPROMISED_DATA;
   }

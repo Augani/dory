@@ -1358,7 +1358,8 @@ import Testing
       wall: .init(
         totalNanoseconds: 1_000_000, processorEventNanoseconds: 100_000,
         clockAdvancementNanoseconds: 200_000, interruptDeliveryNanoseconds: 50_000,
-        processorExecutionNanoseconds: 600_000, idleWaitNanoseconds: 50_000),
+        processorExecutionNanoseconds: 600_000, idleWaitNanoseconds: 50_000,
+        coordinatorWaitNanoseconds: 420_000),
       threadCPU: .init(
         totalNanoseconds: 800_000, processorEventNanoseconds: 80_000,
         clockAdvancementNanoseconds: 160_000, interruptDeliveryNanoseconds: 40_000,
@@ -1369,7 +1370,19 @@ import Testing
     #expect(decoded.enabled == true)
     #expect(decoded.runCalls == 5)
     #expect(decoded.wall.totalNanoseconds == 1_000_000)
+    #expect(decoded.wall.coordinatorWaitNanoseconds == 420_000)
     #expect(decoded.threadCPU.processorExecutionNanoseconds == 480_000)
+    #expect(decoded.threadCPU.coordinatorWaitNanoseconds == 0)
+
+    // Receipts written before coordinator waits were measured must remain readable.
+    let legacy = Data("""
+      {"totalNanoseconds":100,"processorEventNanoseconds":10,
+       "clockAdvancementNanoseconds":10,"interruptDeliveryNanoseconds":10,
+       "processorExecutionNanoseconds":60,"idleWaitNanoseconds":10}
+      """.utf8)
+    let oldBreakdown = try! JSONDecoder().decode(
+      ISAEngineHostTimeBreakdownSnapshot.self, from: legacy)
+    #expect(oldBreakdown.coordinatorWaitNanoseconds == 0)
   }
 }
 

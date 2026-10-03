@@ -89,6 +89,41 @@ import Testing
     gate.close()
   }
 
+  @Test func failedParticipantReleasesPeersBeforeTheBatchCanEnterGuestCode() throws {
+    let gate = DoryPCRunConcurrentExecutionGate()
+    try gate.begin(batch: 21, participants: [0, 1, 2])
+    let finished = DispatchSemaphore(value: 0)
+    let outcome = ConcurrentGateLockedValue<
+      DoryPCRunConcurrentExecutionGate.GateError?
+    >(nil)
+
+    Thread.detachNewThread {
+      do { try gate.arriveAndWait(processor: 0, batch: 21) } catch let error
+        as DoryPCRunConcurrentExecutionGate.GateError
+      { outcome.set(error) } catch {}
+      finished.signal()
+    }
+    try #require(gate.waitUntilArrived(
+      processor: 0, batch: 21, until: Date(timeIntervalSinceNow: 5)
+    ))
+    gate.abort(batch: 21, processor: 2)
+    gate.abort(batch: 21, processor: 1)
+    #expect(finished.wait(timeout: .now() + 5) == .success)
+    #expect(outcome.value == .aborted(batch: 21, processor: 2))
+    #expect(gate.abortedProcessor(batch: 21) == 2)
+    #expect(throws: DoryPCRunConcurrentExecutionGate.GateError.aborted(
+      batch: 21, processor: 2
+    )) {
+      try gate.arriveAndWait(processor: 1, batch: 21)
+    }
+    #expect(throws: DoryPCRunConcurrentExecutionGate.GateError.aborted(
+      batch: 21, processor: 2
+    )) {
+      try gate.finish(batch: 21)
+    }
+    gate.close()
+  }
+
   @Test func admissionRejectsMalformedAndOverlappingBatches() throws {
     let gate = DoryPCRunConcurrentExecutionGate()
     #expect(throws: DoryPCRunConcurrentExecutionGate.GateError.invalidBatch(0)) {
@@ -104,6 +139,36 @@ import Testing
       try gate.begin(batch: 4, participants: [0, 1])
     }
     gate.close()
+  }
+
+  @Test func missingParticipantTimesOutAndReleasesEveryEarlyArrival() throws {
+    let gate = DoryPCRunConcurrentExecutionGate(arrivalTimeout: 0.2)
+    defer { gate.close() }
+    try gate.begin(batch: 31, participants: [0, 1, 2])
+    let firstFinished = DispatchSemaphore(value: 0)
+    let secondFinished = DispatchSemaphore(value: 0)
+    let outcomes = ConcurrentGateLockedValue<[
+      DoryPCRunConcurrentExecutionGate.GateError
+    ]>([])
+    for (processor, signal) in [(0, firstFinished), (1, secondFinished)] {
+      Thread.detachNewThread {
+        do { try gate.arriveAndWait(processor: processor, batch: 31) }
+        catch let error as DoryPCRunConcurrentExecutionGate.GateError {
+          outcomes.mutate { $0.append(error) }
+        } catch {}
+        signal.signal()
+      }
+    }
+    #expect(firstFinished.wait(timeout: .now() + 5) == .success)
+    #expect(secondFinished.wait(timeout: .now() + 5) == .success)
+    #expect(outcomes.value.count == 2)
+    #expect(outcomes.value.allSatisfy { $0 == .arrivalTimeout(31) })
+    #expect(throws: DoryPCRunConcurrentExecutionGate.GateError.arrivalTimeout(31)) {
+      try gate.arriveAndWait(processor: 2, batch: 31)
+    }
+    #expect(throws: DoryPCRunConcurrentExecutionGate.GateError.arrivalTimeout(31)) {
+      try gate.finish(batch: 31)
+    }
   }
 }
 

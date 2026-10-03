@@ -9758,6 +9758,50 @@ import XCTest
     #endif
   }
 
+  @Test func frozenRegisterOnlyJITAdmitsNonFlatDSButNeverAnUncheckedInstruction() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x2B80
+      let mov: [UInt8] = [0xB8, 0x34, 0x12, 0, 0]
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(
+        rip: base,
+        cs: .init(selector: 8, attributes: 0xC09B, limit: .max),
+        control: .init(cr0: 0x6000_0011)
+      )
+      #expect(state.ds.limit == 0xFFFF)
+      let before = state
+      #expect(try executor.executeChainedSummary(
+        byteProvider: { _, count in Array(mov.prefix(count)) },
+        at: base, mode: .protected32, addressSpaceID: 0,
+        maximumInstructions: 1, state: &state
+      ) == nil)
+      #expect(state == before)
+      #expect(try executor.executeChainedSummary(
+        byteProvider: { _, count in Array(mov.prefix(count)) },
+        at: base, mode: .protected32, addressSpaceID: 0,
+        maximumInstructions: 1, state: &state,
+        frozenRegisterOnlyBytes: [0xA1, 0, 0, 0, 0]
+      ) == nil)
+      #expect(state == before)
+      #expect(try executor.executeChainedSummary(
+        byteProvider: { _, count in Array([0x90].prefix(count)) },
+        at: base, mode: .protected32, addressSpaceID: 0,
+        maximumInstructions: 1, state: &state,
+        frozenRegisterOnlyBytes: mov
+      ) == nil)
+      #expect(state == before)
+      let summary = try #require(executor.executeChainedSummary(
+        byteProvider: { _, count in Array(mov.prefix(count)) },
+        at: base, mode: .protected32, addressSpaceID: 0,
+        maximumInstructions: 1, state: &state,
+        frozenRegisterOnlyBytes: mov
+      ))
+      #expect(summary.guestInstructionCount == 1)
+      #expect(state.registers.rax == 0x1234)
+      #expect(state.rip == base + 5)
+    #endif
+  }
+
   @Test func concurrentPendingWorkRequestStopsBeforeTheFirstNativeInstruction() throws {
     #if arch(arm64)
       let base: UInt64 = 0x2C00

@@ -82,7 +82,7 @@ import Testing
     let ram = try backing(mmap: mmap)
     let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     bus.seal()
-    let dma: any DoryVirtioGuestMemory = bus
+    let dma: any DoryVirtioGuestMemory = DoryPCDMAGuestMemory(bus: bus)
     let ranges = try #require(
       try bus.memoryAccessRanges(at: 0x100, byteCount: 8, access: .write))
     let exclusive = bus.memoryAccessCoordinator.acquireExclusive(ranges: ranges)
@@ -116,7 +116,7 @@ import Testing
     let ram = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
     let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     bus.seal()
-    let dma: any DoryVirtioGuestMemory = bus
+    let dma: any DoryVirtioGuestMemory = DoryPCDMAGuestMemory(bus: bus)
     try bus.write(at: 0x180, bytes: [0x90])
     let generation = try #require(try bus.codeGeneration(at: 0x180, byteCount: 1))
     _ = try bus.protectTranslatedCode(at: 0x180, byteCount: 1)

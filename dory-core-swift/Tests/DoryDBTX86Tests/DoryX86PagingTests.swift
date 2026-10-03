@@ -109,6 +109,30 @@ import Testing
   }
 
   @Test(arguments: [false, true])
+  func classifiedPageTableWriteRejectsBeforeCrossPagePartialMutation(mmap: Bool) throws {
+    let memory: any DoryX86PageTableWriteTrackingMemory
+    if mmap {
+      memory = try DoryX86MmapMemory(validatingByteCount: 0x4_000)
+    } else {
+      memory = try DoryX86ByteArrayMemory(byteCount: 0x4_000)
+    }
+    memory.trackPageTablePage(containing: 0x1000)
+    #expect(throws: DoryX86PageTableWritePolicyError.trackedWriteRejected) {
+      try memory.writeClassifyingPageTableMutation(
+        at: 0xffe, bytes: [1, 2, 3, 4], allowTrackedWrite: false)
+    }
+    #expect(try memory.read(at: 0xffe, byteCount: 4) == [0, 0, 0, 0])
+    #expect(memory.hasPendingPageTableWrite == false)
+
+    #expect(try memory.writeClassifyingPageTableMutation(
+      at: 0xffe, bytes: [1, 2, 3, 4], allowTrackedWrite: true))
+    #expect(try memory.read(at: 0xffe, byteCount: 4) == [1, 2, 3, 4])
+    #expect(memory.consumePendingPageTableWrite())
+    #expect(try memory.writeClassifyingPageTableMutation(
+      at: 0x2000, bytes: [5, 6], allowTrackedWrite: false) == false)
+  }
+
+  @Test(arguments: [false, true])
   func walkerWriteSuppressionDoesNotHideAnotherOwnersGuestWrite(mmap: Bool) throws {
     let memory: any DoryX86PageTableWriteTrackingMemory
     if mmap {

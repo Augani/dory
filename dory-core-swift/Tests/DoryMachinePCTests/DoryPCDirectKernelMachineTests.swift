@@ -995,6 +995,172 @@ import Testing
     }
   }
 
+  @Test func qualifiedInterpreterQuartetAdmissionFailsClosed() throws {
+    for processorCount in [1, 2, 3] {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        processorCount: processorCount,
+        clockSource: .hostMonotonic { 0 }
+      )
+      #expect(
+        throws: DoryPCConcurrentExecutionAdmissionError.requiresExactlyFourProcessors(
+          processorCount
+        )
+      ) {
+        try machine.enableQualifiedInterpreterQuartetExecution()
+      }
+    }
+
+    let deterministic = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 4
+    )
+    #expect(throws: DoryPCConcurrentExecutionAdmissionError.requiresHostMonotonicClock) {
+      try deterministic.enableQualifiedInterpreterQuartetExecution()
+    }
+
+    for tier in [DoryPCExecutionTier.baselineJIT, .optimizingJIT] {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        processorCount: 4,
+        executionTier: tier,
+        clockSource: .hostMonotonic { 0 }
+      )
+      #expect(throws: DoryPCConcurrentExecutionAdmissionError.requiresInterpreter(tier)) {
+        try machine.enableQualifiedInterpreterQuartetExecution()
+      }
+    }
+
+    let extensionMachine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 4,
+      platformMMIODevices: [QualificationMMIODevice()],
+      clockSource: .hostMonotonic { 0 }
+    )
+    #expect(throws: DoryPCConcurrentExecutionAdmissionError.callerExtensionDevicesPresent) {
+      try extensionMachine.enableQualifiedInterpreterQuartetExecution()
+    }
+  }
+
+  @Test func qualifiedBaselineJITPairAdmissionFailsClosed() throws {
+    for processorCount in [1, 3] {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        processorCount: processorCount,
+        executionTier: .baselineJIT,
+        clockSource: .hostMonotonic { 0 }
+      )
+      #expect(throws: DoryPCConcurrentExecutionAdmissionError.requiresExactlyTwoProcessors(
+        processorCount)) {
+        try machine.enableQualifiedBaselineJITPairExecution()
+      }
+    }
+
+    for tier in [DoryPCExecutionTier.interpreter, .optimizingJIT] {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        processorCount: 2,
+        executionTier: tier,
+        clockSource: .hostMonotonic { 0 }
+      )
+      #expect(throws: DoryPCConcurrentExecutionAdmissionError.requiresBaselineJIT(tier)) {
+        try machine.enableQualifiedBaselineJITPairExecution()
+      }
+    }
+
+    let deterministic = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 2,
+      executionTier: .baselineJIT
+    )
+    #expect(throws: DoryPCConcurrentExecutionAdmissionError.requiresHostMonotonicClock) {
+      try deterministic.enableQualifiedBaselineJITPairExecution()
+    }
+
+    let extensionMachine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 2,
+      platformMMIODevices: [QualificationMMIODevice()],
+      executionTier: .baselineJIT,
+      clockSource: .hostMonotonic { 0 }
+    )
+    #expect(throws: DoryPCConcurrentExecutionAdmissionError.callerExtensionDevicesPresent) {
+      try extensionMachine.enableQualifiedBaselineJITPairExecution()
+    }
+
+    let mixed = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 2,
+      executionTier: .baselineJIT,
+      clockSource: .hostMonotonic { 0 }
+    )
+    for invalidProcessor in [-1, 2] {
+      #expect(throws: DoryPCConcurrentExecutionAdmissionError.invalidInterpreterOwner(
+        invalidProcessor)) {
+        try mixed.enableQualifiedMixedBaselineJITPairExecution(
+          interpreterProcessor: invalidProcessor)
+      }
+    }
+  }
+
+  @Test func qualifiedBaselineJITQuartetAdmissionFailsClosed() throws {
+    for processorCount in [1, 2, 3] {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        processorCount: processorCount,
+        executionTier: .baselineJIT,
+        clockSource: .hostMonotonic { 0 }
+      )
+      #expect(throws: DoryPCConcurrentExecutionAdmissionError.requiresExactlyFourProcessors(
+        processorCount)) {
+        try machine.enableQualifiedBaselineJITQuartetExecution()
+      }
+    }
+    for tier in [DoryPCExecutionTier.interpreter, .optimizingJIT] {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        processorCount: 4,
+        executionTier: tier,
+        clockSource: .hostMonotonic { 0 }
+      )
+      #expect(throws: DoryPCConcurrentExecutionAdmissionError.requiresBaselineJIT(tier)) {
+        try machine.enableQualifiedBaselineJITQuartetExecution()
+      }
+    }
+    let deterministic = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 4,
+      executionTier: .baselineJIT
+    )
+    #expect(throws: DoryPCConcurrentExecutionAdmissionError.requiresHostMonotonicClock) {
+      try deterministic.enableQualifiedBaselineJITQuartetExecution()
+    }
+    let extensionMachine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 4,
+      platformMMIODevices: [QualificationMMIODevice()],
+      executionTier: .baselineJIT,
+      clockSource: .hostMonotonic { 0 }
+    )
+    #expect(throws: DoryPCConcurrentExecutionAdmissionError.callerExtensionDevicesPresent) {
+      try extensionMachine.enableQualifiedBaselineJITQuartetExecution()
+    }
+    let mixed = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 4,
+      executionTier: .baselineJIT,
+      clockSource: .hostMonotonic { 0 }
+    )
+    for invalidProcessor in [-1, 4] {
+      #expect(throws: DoryPCConcurrentExecutionAdmissionError.invalidInterpreterOwner(
+        invalidProcessor)) {
+        try mixed.enableQualifiedMixedBaselineJITQuartetExecution(
+          interpreterProcessor: invalidProcessor
+        )
+      }
+    }
+  }
+
   @Test func physicalDiagnosticsPublishDuringConcurrentReads() throws {
     let machine = try workerMachine(clock: .deterministic)
     let bus = machine.physicalMemory
@@ -1024,6 +1190,59 @@ import Testing
     #expect(probe.snapshot().stopped == Set([0]))
     // Joining is idempotent, including the already-exited path.
     worker.stopAndJoin()
+  }
+
+  @Test func concurrentRuntimeStopCallersBothWaitForWorkerExit() throws {
+    let runtime = DoryPCVCPURuntime(processorCount: 1, instrumentationEnabled: false)
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let joined = DispatchSemaphore(value: 0)
+    defer {
+      release.signal()
+      runtime.stopAndJoin()
+    }
+    let completion = runtime.workers[0].submit {
+      entered.signal()
+      release.wait()
+    }
+    try #require(entered.wait(timeout: .now() + 2) == .success)
+    for _ in 0..<2 {
+      DispatchQueue.global(qos: .userInitiated).async {
+        runtime.stopAndJoin()
+        joined.signal()
+      }
+    }
+    #expect(joined.wait(timeout: .now() + .milliseconds(50)) == .timedOut)
+    release.signal()
+    try #require(joined.wait(timeout: .now() + 2) == .success)
+    try #require(joined.wait(timeout: .now() + 2) == .success)
+    _ = try completion.wait()
+  }
+
+  @Test func workerStopCancelsQueuedGuestWorkBeforeItStarts() throws {
+    let worker = DoryPCHostWorker(processor: 0) {}
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let executed = DispatchSemaphore(value: 0)
+    defer {
+      release.signal()
+      worker.stopAndJoin()
+    }
+    let first = worker.submit {
+      entered.signal()
+      release.wait()
+    }
+    try #require(entered.wait(timeout: .now() + 2) == .success)
+    let pending = worker.submit { executed.signal() }
+    worker.requestStop()
+    release.signal()
+    worker.stopAndJoin()
+    _ = try first.wait()
+    do {
+      _ = try pending.wait()
+      Issue.record("Queued guest work executed after stop")
+    } catch DoryPCHostWorker.StopError.cancelled {}
+    #expect(executed.wait(timeout: .now()) == .timedOut)
   }
 
   private func workerMachine(
@@ -1683,6 +1902,7 @@ import Testing
     _ = try disabled.runOnDedicatedStack(maximumInstructions: 1)
     #expect(!disabled.hostExecutionDiagnostics.enabled)
     #expect(disabled.hostExecutionDiagnostics.runCalls == 0)
+    #expect(disabled.hostExecutionDiagnostics.wall.coordinatorWaitNanoseconds == 0)
     #expect(disabled.physicalMemory.diagnostics.totalMemoryHelperCalls == 0)
     #expect(disabled.physicalMemory.diagnostics.totalMMIOExits == 0)
     #expect(disabled.timerInterruptDiagnostics.totalRequests == 0)
@@ -1705,6 +1925,8 @@ import Testing
     #expect(diagnostics.runCalls == 1)
     #expect(diagnostics.wall.totalNanoseconds > 0)
     #expect(diagnostics.wall.processorExecutionNanoseconds > 0)
+    #expect(diagnostics.wall.coordinatorWaitNanoseconds > 0)
+    #expect(diagnostics.wall.coordinatorWaitNanoseconds <= diagnostics.wall.totalNanoseconds)
     #expect(diagnostics.wall.attributedBasisPoints <= 10_000)
     #expect(diagnostics.threadCPU.totalNanoseconds > 0)
     #expect(diagnostics.threadCPU.processorExecutionNanoseconds > 0)
@@ -1861,14 +2083,15 @@ import Testing
           executionTier: tier,
           baselineJITMaximumCodeBytes: 4096
         )
-        // mov dword ptr [0x100],1; hlt. Memory IR deliberately remains interpreter-backed.
+        // Memory stores now have a native lowering. CPUID still needs the precise interpreter
+        // helper, so exercise a real fallback between the native store and HLT.
         try machine.load(
-          kernel: makeELF(code: [0xC7, 0x04, 0x25, 0, 1, 0, 0, 1, 0, 0, 0, 0xF4]),
+          kernel: makeELF(code: [0xC7, 0x04, 0x25, 0, 1, 0, 0, 1, 0, 0, 0, 0x0F, 0xA2, 0xF4]),
           commandLine: "x"
         )
 
         #expect(
-          try machine.runOnDedicatedStack(maximumInstructions: 4) == .halted(instructionCount: 2))
+          try machine.runOnDedicatedStack(maximumInstructions: 5) == .halted(instructionCount: 3))
         #expect(try machine.memory.read(at: 0x100, byteCount: 4) == [1, 0, 0, 0])
         #expect(machine.executionStatistics.interpreterInstructions == 1)
       }

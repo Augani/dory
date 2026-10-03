@@ -125,6 +125,8 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   public let msixVectorCount: Int
 
   private let lock = NSLock()
+  private let statusWriteLock = NSRecursiveLock()
+  private var completedResetEpoch: UInt64?
   private var deviceFeatureSelect: UInt32 = 0
   private var driverFeatureSelect: UInt32 = 0
   private var configurationMSIXVector: UInt16 = .max
@@ -138,26 +140,25 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   private var queueProcessor:
     (@Sendable (UInt16, DoryVirtioDescriptorChain, any DoryVirtioGuestMemory) throws -> UInt32)?
   private var deferredQueueProcessor:
-    (@Sendable (
-      UInt16,
-      DoryVirtioDescriptorChain,
-      any DoryVirtioGuestMemory,
-      DoryPCVirtioPCIDeferredCompletion
-    ) throws -> Void)?
+    (
+      @Sendable (
+        UInt16,
+        DoryVirtioDescriptorChain,
+        any DoryVirtioGuestMemory,
+        DoryPCVirtioPCIDeferredCompletion
+      ) throws -> Void
+    )?
   private var queueCanProcess: @Sendable (UInt16) -> Bool = { _ in true }
   private let processingLocks: [NSRecursiveLock]
   private var registerReadCount: UInt64 = 0
   private var registerWriteCount: UInt64 = 0
   private var recentRegisterAccesses: [DoryPCVirtioPCIRegisterAccess] = []
-  /// Queue indices that were re-requested for draining while a drain was already
-  /// in progress on the transport. The outer drain flushes these after releasing
-  /// its processing lock so a backend callback (e.g. vsock TX → RX publish) does
-  /// not re-enter `deviceState.withLockedSnapshot` and deadlock.
+  /// Queue indices requested while another drain owns the transport. A single drain owner
+  /// serializes the non-reentrant lifecycle gate across all queues, not just each queue lock.
   private var pendingReDrain: Set<UInt16> = []
-  /// Tracks which queue indices currently have an active drain so `processQueue`
-  /// can defer re-entrant calls instead of recursing into the non-reentrant
-  /// `deviceState` lock.
-  private var activeDrains: Set<UInt16> = []
+  private var pendingArmedNotifications: Set<UInt16> = []
+  private var drainActive = false
+  private var resetCompletedSink: (@Sendable (UInt64) -> Void)?
 
   public init(
     queueCount: Int,
@@ -189,6 +190,32 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
 
   public func connectNotifySink(_ sink: @escaping @Sendable (UInt16) -> Void) {
     lock.withLock { notifySink = sink }
+  }
+
+  /// Delivered after the backend and every queue have crossed the status-zero boundary.
+  /// The callback must schedule replacement work, not block waiting for a host helper.
+  public func connectResetCompletedSink(_ sink: @escaping @Sendable (UInt64) -> Void) {
+    lock.withLock { resetCompletedSink = sink }
+  }
+
+  /// Pins only the short local cutover, never bootstrap I/O. Later status-zero writes cannot
+  /// revoke and reuse this device epoch while its replacement is being installed.
+  public func withCompletedReset<Result>(
+    expectedEpoch: UInt64, _ operation: () throws -> Result
+  ) rethrows -> Result? {
+    try statusWriteLock.withLock {
+      guard lock.withLock({ completedResetEpoch == expectedEpoch }),
+        deviceState.snapshot().lifecycleEpoch == expectedEpoch else { return nil }
+      return try operation()
+    }
+  }
+
+  @discardableResult
+  public func requestDeviceReset(expectedLifecycleEpoch: UInt64? = nil) -> Bool {
+    let changed = expectedLifecycleEpoch.map { deviceState.markDeviceNeedsReset(expectedLifecycleEpoch: $0) }
+      ?? deviceState.markDeviceNeedsReset()
+    if changed { signalConfigurationChange() }
+    return changed
   }
 
   public func connectInterruptSink(
@@ -245,31 +272,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   /// `deviceState.withLockedSnapshot` — which is shared across all queues — and deadlocking.
   public func processQueue(_ index: UInt16) {
     guard Int(index) < queueCount else { return }
-    let shouldDrainNow = lock.withLock { () -> Bool in
-      if !activeDrains.isEmpty {
-        pendingReDrain.insert(index)
-        return false
-      }
-      return true
-    }
-    guard shouldDrainNow else { return }
     drain(queue: index)
-  }
-
-  /// Drains any queues that were re-requested during an active drain. Called from
-  /// `drainEpilogue` after the outer drain completes and releases its active-drain
-  /// marker. Each deferred queue is drained once; if that drain itself produces
-  /// more re-entrant requests, they are flushed recursively.
-  private func flushPendingReDrain() {
-    while true {
-      let next = lock.withLock { () -> UInt16? in
-        guard let deferred = pendingReDrain.first else { return nil }
-        pendingReDrain.remove(deferred)
-        return deferred
-      }
-      guard let next else { return }
-      drain(queue: next)
-    }
   }
 
   public func queue(at index: UInt16) throws -> DoryVirtioSplitQueue {
@@ -430,29 +433,44 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     }
   }
 
-  /// Clears the active-drain marker for a queue and flushes any re-entrant
-  /// drain requests that arrived during the drain. Called by `drain`'s `defer`
-  /// after both the direct and deferred paths finish. Re-entrant `processQueue`
-  /// calls (e.g. vsock TX → RX publish) that arrived during the drain are
-  /// deferred via `pendingReDrain` and flushed here to avoid re-entering the
-  /// non-reentrant `deviceState` lock.
-  private func drainEpilogue(_ index: UInt16) {
-    _ = lock.withLock { activeDrains.remove(index) }
-    flushPendingReDrain()
+  private func drain(queue index: UInt16, armNotifications: Bool = false) {
+    // Reserve ownership under the same lock as the re-entrant check. Otherwise two host
+    // kick threads can both enter different queue callbacks before either sets its marker.
+    let ownsDrain = lock.withLock { () -> Bool in
+      guard !drainActive else {
+        pendingReDrain.insert(index)
+        if armNotifications { pendingArmedNotifications.insert(index) }
+        return false
+      }
+      drainActive = true
+      return true
+    }
+    guard ownsDrain else { return }
+    var current = index
+    var armCurrent = armNotifications
+    while true {
+      drainOne(queue: current, armNotifications: armCurrent)
+      let next = lock.withLock { () -> (UInt16, Bool)? in
+        guard let queued = pendingReDrain.min() else {
+          drainActive = false
+          return nil
+        }
+        pendingReDrain.remove(queued)
+        return (queued, pendingArmedNotifications.remove(queued) != nil)
+      }
+      guard let next else { return }
+      current = next.0
+      armCurrent = next.1
+    }
   }
 
-  private func drain(queue index: UInt16, armNotifications: Bool = false) {
+  private func drainOne(queue index: UInt16, armNotifications: Bool) {
     let processing = lock.withLock {
       (guestMemory, queueCanProcess, queueProcessor, deferredQueueProcessor)
     }
     guard let memory = processing.0,
-      processing.2 != nil || processing.3 != nil else { return }
-    // Mark this queue as actively draining so re-entrant processQueue calls
-    // (e.g. vsock TX → RX publish) defer instead of recursing into the
-    // non-reentrant deviceState lock. Cleared by drainEpilogue after both
-    // the direct and deferred paths finish.
-    _ = lock.withLock { activeDrains.insert(index) }
-    defer { drainEpilogue(index) }
+      processing.2 != nil || processing.3 != nil
+    else { return }
     let processingLock = processingLocks[Int(index)]
     if let processor = processing.2 {
       // Direct path: the backend performs guest-memory DMA inline, so the
@@ -472,32 +490,46 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
               // conditional mark below suppresses stale poisoning.
               terminalEpoch = snapshot.lifecycleEpoch
               guard Self.isOperational(snapshot) else { return }
-            // Readiness-triggered draining exists to initialize the negotiated event
-            // field. Preserve the existing notification path for ordinary queues.
-            if armNotifications, !snapshot.negotiatedFeatures.contains(.eventIndex) { return }
-            if armNotifications, snapshot.negotiatedFeatures.contains(.eventIndex) {
-              // Initialize the device-owned event field before the driver's first
-              // kick, even when an RX backend has no frame available to consume.
-              try queue.requestAvailableNotification(memory: memory)
+              // Readiness-triggered draining exists to initialize the negotiated event
+              // field. Preserve the existing notification path for ordinary queues.
+              if armNotifications, !snapshot.negotiatedFeatures.contains(.eventIndex) { return }
+              if armNotifications, snapshot.negotiatedFeatures.contains(.eventIndex) {
+                // Initialize the device-owned event field before the driver's first
+                // kick, even when an RX backend has no frame available to consume.
+                try queue.requestAvailableNotification(memory: memory)
+              }
+              while processing.1(index),
+                let chain = try queue.popAvailable(
+                  memory: memory,
+                  allowIndirectDescriptors: snapshot.negotiatedFeatures.contains(
+                    .indirectDescriptors),
+                  eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
+                )
+              {
+                // Validate every device-owned target before the backend sees the chain. In
+                // particular, a later tracked page-table descriptor or used ring must not
+                // reject after an earlier response descriptor has already been written.
+                for descriptor in chain.descriptors
+                where descriptor.deviceWillWrite && descriptor.length > 0
+                {
+                  try memory.validate(
+                    at: descriptor.address,
+                    byteCount: Int(descriptor.length),
+                    deviceWillWrite: true
+                  )
+                }
+                try queue.validateCompletionWrites(chain, memory: memory)
+                let bytesWritten = try processor(index, chain, memory)
+                memory.synchronize()
+                shouldNotify =
+                  try queue.complete(
+                    chain,
+                    bytesWritten: bytesWritten,
+                    memory: memory,
+                    eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
+                  ) || shouldNotify
+              }
             }
-            while processing.1(index),
-              let chain = try queue.popAvailable(
-                memory: memory,
-                allowIndirectDescriptors: snapshot.negotiatedFeatures.contains(
-                  .indirectDescriptors),
-                eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
-              )
-            {
-              let bytesWritten = try processor(index, chain, memory)
-              memory.synchronize()
-              shouldNotify = try queue.complete(
-                chain,
-                bytesWritten: bytesWritten,
-                memory: memory,
-                eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
-              ) || shouldNotify
-            }
-          }
           } catch {
             // terminalEpoch already holds this lease's epoch when the
             // throw originated inside the lease.
@@ -514,7 +546,9 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           if deviceState.markDeviceNeedsReset(expectedLifecycleEpoch: expected) {
             signalConfigurationChange()
           }
-        } else if deviceState.markDeviceNeedsReset() { signalConfigurationChange() }
+        } else if deviceState.markDeviceNeedsReset() {
+          signalConfigurationChange()
+        }
       }
       return
     }
@@ -561,9 +595,10 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           var popLeaseEpoch: UInt64?
           let captured: (DoryVirtioDescriptorChain, Bool, UInt64)?
           do {
-            captured = try deviceState.withLockedSnapshot { snapshot -> (
-              DoryVirtioDescriptorChain, Bool, UInt64
-            )? in
+            captured = try deviceState.withLockedSnapshot {
+              snapshot -> (
+                DoryVirtioDescriptorChain, Bool, UInt64
+              )? in
               popLeaseEpoch = snapshot.lifecycleEpoch
               guard Self.isOperational(snapshot) else { return nil }
               guard
@@ -574,6 +609,19 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
                   eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
                 )
               else { return nil }
+              // Deferred backends may submit renderer work before their callback fires.
+              // Validate all device-owned DMA targets and completion metadata now, while
+              // the queue and lifecycle epoch are pinned, not after those side effects.
+              for descriptor in chain.descriptors
+              where descriptor.deviceWillWrite && descriptor.length > 0
+              {
+                try memory.validate(
+                  at: descriptor.address,
+                  byteCount: Int(descriptor.length),
+                  deviceWillWrite: true
+                )
+              }
+              try queue.validateCompletionWrites(chain, memory: memory)
               return (
                 chain, snapshot.negotiatedFeatures.contains(.eventIndex),
                 snapshot.lifecycleEpoch
@@ -637,7 +685,9 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
         if deviceState.markDeviceNeedsReset(expectedLifecycleEpoch: expected) {
           signalConfigurationChange()
         }
-      } else if deviceState.markDeviceNeedsReset() { signalConfigurationChange() }
+      } else if deviceState.markDeviceNeedsReset() {
+        signalConfigurationChange()
+      }
     }
   }
 
@@ -681,14 +731,13 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
         configurationMSIXVector = Int(vector) < msixVectorCount ? vector : .max
       }
     case (0x14, 1):
+      statusWriteLock.lock()
+      defer { statusWriteLock.unlock() }
       let status = DoryVirtioDeviceStatus(rawValue: bytes[0])
       let wasReady = Self.isOperational(deviceState.snapshot())
       deviceState.writeStatus(status)
       if status.isEmpty {
         for processingLock in processingLocks { processingLock.lock() }
-        defer {
-          for processingLock in processingLocks.reversed() { processingLock.unlock() }
-        }
         lock.withLock {
           configurationMSIXVector = .max
           isrStatus = 0
@@ -699,6 +748,10 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
             queues[index].queue.reset()
           }
         }
+        let epoch = deviceState.snapshot().lifecycleEpoch
+        lock.withLock { completedResetEpoch = epoch }
+        for processingLock in processingLocks.reversed() { processingLock.unlock() }
+        lock.withLock { resetCompletedSink }?(epoch)
       } else if !wasReady, Self.isOperational(deviceState.snapshot()) {
         let enabledQueues = lock.withLock {
           queues.indices.filter { queues[$0].enabled }.map { UInt16($0) }
@@ -823,7 +876,6 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     var shouldNotify = false
     var shouldMarkNeedsReset = false
     var terminalEpoch: UInt64?
-    var responsePreflightRejected = false
     let failed = processingLock.withLock { () -> Bool in
       do {
         let current = try lock.withLock { () -> QueueRegisters in
@@ -837,61 +889,63 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
             guard current.enabled, current.generation == generation,
               Self.isOperational(snapshot),
               current.queue === splitQueue,
-              snapshot.lifecycleEpoch == popEpoch else { return }
+              snapshot.lifecycleEpoch == popEpoch
+            else { return }
             guard UInt64(response.count) <= chain.writableByteCount else {
               shouldMarkNeedsReset = true
               terminalEpoch = popEpoch
               return
             }
-          // Preflight: validate every writable target that will receive response bytes
-          // before the first guest-memory write. A later invalid/revoked target must
-          // not leave an earlier target partially written; on failure publish no
-          // response bytes and no used-ring completion, leaving the queue usable for
-          // a later retry/control path.
-          var preflightOffset = 0
-          for descriptor in chain.descriptors where descriptor.deviceWillWrite
-            && preflightOffset < response.count
-          {
-            let count = min(Int(descriptor.length), response.count - preflightOffset)
-            do {
-              try memory.validate(
-                at: descriptor.address,
-                byteCount: count,
-                deviceWillWrite: true
-              )
-            } catch {
-              // A revocation after queue pop is not a malformed guest request.  It
-              // must leave every response target and the used ring untouched, but
-              // it is also recoverable: the backend can submit a new descriptor
-              // after the host has re-established the mapping.  Keep this distinct
-              // from a DMA/write failure below, which is terminal for this device
-              // lifecycle and therefore requires NEEDS_RESET.
-              responsePreflightRejected = true
-              return
+            // Preflight: validate every writable target that will receive response bytes
+            // before the first guest-memory write. A later invalid/revoked target must
+            // not leave an earlier target partially written. The deferred backend has
+            // already delivered its one-shot completion, so rejection requires reset;
+            // leaving this chain outstanding on an operational queue would hang the guest.
+            var preflightOffset = 0
+            for descriptor in chain.descriptors
+            where descriptor.deviceWillWrite
+              && preflightOffset < response.count
+            {
+              let count = min(Int(descriptor.length), response.count - preflightOffset)
+              do {
+                try memory.validate(
+                  at: descriptor.address,
+                  byteCount: count,
+                  deviceWillWrite: true
+                )
+              } catch {
+                // No response bytes or used-ring completion have been published.
+                // Force a configuration reset so the guest can reissue this request
+                // against a fresh queue after its mapping is repaired.
+                shouldMarkNeedsReset = true
+                terminalEpoch = popEpoch
+                return
+              }
+              preflightOffset += count
             }
-            preflightOffset += count
-          }
-          var responseOffset = 0
-          for descriptor in chain.descriptors where descriptor.deviceWillWrite
-            && responseOffset < response.count
-          {
-            let count = min(Int(descriptor.length), response.count - responseOffset)
-            try memory.write(
-              at: descriptor.address,
-              bytes: Array(response[responseOffset..<(responseOffset + count)])
+            try splitQueue.validateCompletionWrites(chain, memory: memory)
+            var responseOffset = 0
+            for descriptor in chain.descriptors
+            where descriptor.deviceWillWrite
+              && responseOffset < response.count
+            {
+              let count = min(Int(descriptor.length), response.count - responseOffset)
+              try memory.write(
+                at: descriptor.address,
+                bytes: Array(response[responseOffset..<(responseOffset + count)])
+              )
+              responseOffset += count
+            }
+            guard responseOffset == response.count else { return }
+            memory.synchronize()
+            shouldNotify = try splitQueue.complete(
+              chain,
+              bytesWritten: UInt32(response.count),
+              memory: memory,
+              eventIndexNegotiated: eventIndexNegotiated
             )
-            responseOffset += count
+            published = true
           }
-          guard responseOffset == response.count else { return }
-          memory.synchronize()
-          shouldNotify = try splitQueue.complete(
-            chain,
-            bytesWritten: UInt32(response.count),
-            memory: memory,
-            eventIndexNegotiated: eventIndexNegotiated
-          )
-          published = true
-        }
         } catch {
           // A throw inside the lease (guest-memory DMA or used-ring completion)
           // belongs to the popped chain's epoch. A reset racing the post-lease
@@ -905,16 +959,17 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       }
     }
     // `withLockedSnapshot` intentionally releases its lifecycle lease before we
-    // inspect this result.  A preflight rejection did not perform DMA or mutate
-    // queue state, so it must not be converted into a terminal device failure.
-    if responsePreflightRejected { return false }
+    // inspect this result. A rejected one-shot completion must transition the
+    // device even though preflight itself did not write guest memory.
     if shouldNotify { _ = signalQueueInterrupt(queue: index) }
     if failed || shouldMarkNeedsReset {
       if let expected = terminalEpoch {
         if deviceState.markDeviceNeedsReset(expectedLifecycleEpoch: expected) {
           signalConfigurationChange()
         }
-      } else if deviceState.markDeviceNeedsReset() { signalConfigurationChange() }
+      } else if deviceState.markDeviceNeedsReset() {
+        signalConfigurationChange()
+      }
     }
     return published
   }
@@ -940,7 +995,8 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           guard current.enabled, current.generation == generation,
             Self.isOperational(snapshot),
             current.queue === splitQueue,
-            snapshot.lifecycleEpoch == popEpoch else { return }
+            snapshot.lifecycleEpoch == popEpoch
+          else { return }
           eligibleToFail = true
           terminalEpoch = popEpoch
         }
@@ -964,7 +1020,8 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   /// under the lifecycle lease, including notification arming and deferred publication.
   /// Readiness transitions also use this predicate; they do not replace the DMA lease.
   private static func isOperational(_ snapshot: DoryVirtioDeviceSnapshot) -> Bool {
-    snapshot.status.contains(.driverOK) && !snapshot.status.contains(.deviceNeedsReset)
+    snapshot.status.contains(.driverOK)
+      && snapshot.status.isDisjoint(with: [.deviceNeedsReset, .failed])
   }
 
   private func validate(offset: UInt64, byteCount: Int, write: Bool) throws {
@@ -1152,6 +1209,14 @@ public final class DoryPCVirtioNetworkPCIDevice: DoryPCPCIFunction, DoryPCPCIMSI
       deviceConfiguration: networkDevice.configuration,
       onReset: { [networkDevice] in networkDevice.reset() }
     )
+    networkDevice.connectRetirementSink {
+      [weak transport = pciFunction.transport, weak networkDevice] in
+      guard let transport, let networkDevice else { return }
+      // Direct queue processing owns the lifecycle lease through its final used-ring writes.
+      // Join that lease after payload retirement, before backend stop can release guest memory.
+      _ = transport.deviceState.markDeviceNeedsReset()
+      transport.updateDeviceConfiguration(networkDevice.configuration)
+    }
     networkDevice.connectReceiveReadySink { [weak transport = pciFunction.transport] in
       transport?.processQueue(DoryVirtioNetworkDevice.receiveQueue)
     }
@@ -1161,7 +1226,8 @@ public final class DoryPCVirtioNetworkPCIDevice: DoryPCPCIFunction, DoryPCPCIMSI
     transport.connectQueueProcessor(
       memory: memory,
       canProcess: { [networkDevice] queue in
-        queue != DoryVirtioNetworkDevice.receiveQueue || networkDevice.canReceive
+        !networkDevice.isStopped
+          && (queue != DoryVirtioNetworkDevice.receiveQueue || networkDevice.canReceive)
       },
       processor: { [networkDevice] queue, chain, memory in
         switch queue {
@@ -1212,6 +1278,7 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
 {
   public let pciFunction: DoryPCVirtioPCIFunction
   public let gpuDevice: DoryVirtioGPUDevice
+  public let hostVisibleAperture: DoryPCHostVisibleGPUAperture?
   private let configurationLock = NSLock()
 
   public var pciAddress: DoryPCPCIAddress { pciFunction.pciAddress }
@@ -1219,7 +1286,35 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
     pciFunction.configurationFunction
   }
   public var barIndex: Int { pciFunction.barIndex }
+  public var barIndices: [Int] { hostVisibleAperture == nil ? [barIndex] : [barIndex, 4] }
   public var transport: DoryPCVirtioPCITransport { pciFunction.transport }
+
+  public func barAccessSnapshot(at index: Int) throws -> DoryPCPCIBARAccessSnapshot {
+    try configurationLock.withLock {
+      .init(
+        memoryEnabled: configurationFunction.command & 2 != 0,
+        bar: try configurationFunction.bar(at: index),
+        apertureGeneration: index == 4 ? hostVisibleAperture?.apertureGeneration : nil
+      )
+    }
+  }
+
+  /// Keep BAR placement fixed through the aperture operation. A route captured by the PCI
+  /// window before a guest BAR write must not access the new location while configuration
+  /// change and aperture reset are still in progress.
+  func withHostVisibleBARAccess<Result>(
+    expectedBARAddress: UInt64,
+    _ operation: (DoryPCHostVisibleGPUAperture) throws -> Result
+  ) throws -> Result {
+    try configurationLock.withLock {
+      guard configurationFunction.command & 2 != 0,
+        let bar = try configurationFunction.bar(at: 4),
+        bar.address == expectedBARAddress,
+        let hostVisibleAperture
+      else { throw DoryPCPCIError.invalidBAR(index: 4) }
+      return try operation(hostVisibleAperture)
+    }
+  }
 
   public init(
     address: DoryPCPCIAddress,
@@ -1227,14 +1322,24 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
     scanouts: [DoryVirtioGPUScanout],
     displaySink: (any DoryVirtioGPUDisplaySink)? = nil,
     accelerationAuthority: (any DoryVirtioGPUAccelerationAuthority)? = nil,
+    hostVisibleAperture: DoryPCHostVisibleGPUAperture? = nil,
+    initialHostVisibleBARAddress: UInt64? = nil,
     maximumQueueSize: UInt16 = 256,
     maximumResourceBytes: UInt64 = 256 * 1024 * 1024
   ) throws {
+    let advertisesBlob =
+      accelerationAuthority?.capabilities.features.contains(.gpuResourceBlob)
+      == true
+    guard advertisesBlob == (hostVisibleAperture != nil),
+      (hostVisibleAperture == nil) == (initialHostVisibleBARAddress == nil)
+    else { throw DoryVirtioGPUError.invalidAccelerationCapabilities }
+    self.hostVisibleAperture = hostVisibleAperture
     gpuDevice = try .init(
       scanouts: scanouts,
       maximumResourceBytes: maximumResourceBytes,
       displaySink: displaySink,
-      accelerationAuthority: accelerationAuthority
+      accelerationAuthority: accelerationAuthority,
+      hostVisibleAperture: hostVisibleAperture
     )
     pciFunction = try .init(
       address: address,
@@ -1249,12 +1354,25 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
         .indirectDescriptors, .eventIndex,
       ]),
       deviceConfiguration: gpuDevice.configuration,
+      sharedMemoryRegion: try hostVisibleAperture.map { aperture in
+        guard let initialHostVisibleBARAddress else {
+          throw DoryVirtioGPUError.invalidAccelerationCapabilities
+        }
+        return .init(
+          id: aperture.regionID,
+          byteCount: aperture.byteCount,
+          initialBARAddress: initialHostVisibleBARAddress
+        )
+      },
       onReset: { [gpuDevice] in gpuDevice.reset() }
     )
   }
 
   public func connectGuestMemory(_ memory: any DoryVirtioGuestMemory) {
-    transport.connectDeferredQueueProcessor(memory: memory) { [gpuDevice] queue, chain, memory, completion in
+    transport.connectDeferredQueueProcessor(memory: memory, canProcess: { [gpuDevice] _ in
+      gpuDevice.acceptsGuestCommands
+    }) {
+      [gpuDevice] queue, chain, memory, completion in
       try gpuDevice.processDeferred(
         queue: queue,
         chain: chain,
@@ -1266,10 +1384,33 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
   }
 
   @discardableResult
-  public func updateScanoutSize(scanoutID: UInt32, width: UInt32, height: UInt32) -> Bool {
+  public func updateScanoutSize(
+    scanoutID: UInt32,
+    width: UInt32,
+    height: UInt32,
+    physicalWidthMillimeters: UInt16? = nil,
+    physicalHeightMillimeters: UInt16? = nil
+  ) -> Bool {
     configurationLock.withLock {
-      guard gpuDevice.updateScanoutSize(scanoutID: scanoutID, width: width, height: height)
+      guard gpuDevice.updateScanoutSize(
+        scanoutID: scanoutID,
+        width: width,
+        height: height,
+        physicalWidthMillimeters: physicalWidthMillimeters,
+        physicalHeightMillimeters: physicalHeightMillimeters
+      )
       else { return false }
+      transport.updateDeviceConfiguration(gpuDevice.configuration)
+      return true
+    }
+  }
+
+  @discardableResult
+  public func updateScanoutTopology(
+    _ activeModes: [DoryVirtioGPUDisplayMode]
+  ) -> Bool {
+    configurationLock.withLock {
+      guard gpuDevice.updateScanoutTopology(activeModes) else { return false }
       transport.updateDeviceConfiguration(gpuDevice.configuration)
       return true
     }
@@ -1280,7 +1421,31 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
   }
 
   public func writeConfiguration(offset: Int, bytes: [UInt8]) throws {
-    try pciFunction.writeConfiguration(offset: offset, bytes: bytes)
+    try configurationLock.withLock {
+      let previousHostVisibleAddress = try configurationFunction.bar(at: 4)?.address
+      let previousMemoryEnabled = configurationFunction.command & 2 != 0
+      try pciFunction.writeConfiguration(offset: offset, bytes: bytes)
+      let currentHostVisibleAddress = try configurationFunction.bar(at: 4)?.address
+      let memoryDecodeDisabled = previousMemoryEnabled
+        && configurationFunction.command & 2 == 0
+      if previousHostVisibleAddress != currentHostVisibleAddress || memoryDecodeDisabled {
+        let status = transport.deviceState.snapshot().status
+        // Firmware may place an untouched BAR before VirtIO negotiation begins. No guest alias can
+        // exist in that state, so poisoning the initial device status would prevent discovery.
+        // A BAR move or disabled memory decode invalidates an already-resolved physical route.
+        // Once the driver has acknowledged the device, revoke blobs and require a device reset.
+        if !status.isEmpty {
+          gpuDevice.reset()
+          if transport.deviceState.markDeviceNeedsReset() {
+            transport.signalConfigurationChange()
+          }
+        } else {
+          // Pre-negotiation BAR sizing must not poison virtio status, but it still invalidates
+          // a route that another CPU resolved against the former physical address.
+          hostVisibleAperture?.reset()
+        }
+      }
+    }
   }
 
   public func connectMSISink(
@@ -1293,6 +1458,27 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
     try pciFunction.readBAR(offset: offset, byteCount: byteCount)
   }
 
+  public func readBAR(index: Int, offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    if index == barIndex {
+      return try readBAR(offset: offset, byteCount: byteCount)
+    }
+    guard index == 4, let hostVisibleAperture else {
+      throw DoryPCPCIError.invalidBAR(index: index)
+    }
+    return try hostVisibleAperture.read(offset: offset, byteCount: byteCount)
+  }
+
+  public func validateBARRead(index: Int, offset: UInt64, byteCount: Int) throws {
+    if index == barIndex {
+      try validateBARRead(offset: offset, byteCount: byteCount)
+      return
+    }
+    guard index == 4, let hostVisibleAperture else {
+      throw DoryPCPCIError.invalidBAR(index: index)
+    }
+    try hostVisibleAperture.validateRead(offset: offset, byteCount: byteCount)
+  }
+
   public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
     if offset < 0x310, offset + UInt64(bytes.count) > 0x304 {
       try configurationLock.withLock {
@@ -1302,6 +1488,47 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
       }
     } else {
       try pciFunction.writeBAR(offset: offset, bytes: bytes)
+    }
+  }
+
+  public func writeBAR(index: Int, offset: UInt64, bytes: [UInt8]) throws {
+    if index == barIndex {
+      try writeBAR(offset: offset, bytes: bytes)
+      return
+    }
+    guard index == 4, let hostVisibleAperture else {
+      throw DoryPCPCIError.invalidBAR(index: index)
+    }
+    try hostVisibleAperture.write(offset: offset, bytes: bytes)
+  }
+
+  public func validateBARWrite(index: Int, offset: UInt64, byteCount: Int) throws {
+    if index == barIndex {
+      try validateBARWrite(offset: offset, byteCount: byteCount)
+      return
+    }
+    guard index == 4, let hostVisibleAperture else {
+      throw DoryPCPCIError.invalidBAR(index: index)
+    }
+    try hostVisibleAperture.validateWrite(offset: offset, byteCount: byteCount)
+  }
+
+  public func allowsBARDMA(
+    index: Int,
+    offset: UInt64,
+    byteCount: Int,
+    write: Bool
+  ) -> Bool {
+    guard index == 4, let hostVisibleAperture else { return false }
+    do {
+      if write {
+        try hostVisibleAperture.validateWrite(offset: offset, byteCount: byteCount)
+      } else {
+        try hostVisibleAperture.validateRead(offset: offset, byteCount: byteCount)
+      }
+      return true
+    } catch {
+      return false
     }
   }
 }
@@ -1378,6 +1605,10 @@ public final class DoryPCVirtioInputPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICo
   @discardableResult
   public func enqueueSynchronized(_ events: [DoryVirtioInputEvent]) -> Bool {
     inputDevice.enqueueSynchronized(events)
+  }
+
+  public func releaseAllPressedKeys() {
+    inputDevice.releaseAllPressedKeys()
   }
 
   public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
@@ -1511,6 +1742,20 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
 
   private let capabilities: [UInt8: UInt8]
 
+  public struct SharedMemoryRegion: Sendable, Hashable {
+    public let id: UInt8
+    public let barIndex: Int
+    public let byteCount: UInt64
+    public let initialBARAddress: UInt64
+
+    public init(id: UInt8, barIndex: Int = 4, byteCount: UInt64, initialBARAddress: UInt64) {
+      self.id = id
+      self.barIndex = barIndex
+      self.byteCount = byteCount
+      self.initialBARAddress = initialBARAddress
+    }
+  }
+
   public init(
     address: DoryPCPCIAddress,
     virtioDeviceID: UInt16,
@@ -1520,12 +1765,37 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
     maximumQueueSize: UInt16 = 256,
     offeredFeatures: DoryVirtioFeatures = [],
     deviceConfiguration: [UInt8] = [],
+    sharedMemoryRegion: SharedMemoryRegion? = nil,
     onReset: @escaping @Sendable () -> Void = {}
   ) throws {
     guard (1...63).contains(queueCount) else {
       throw DoryPCVirtioPCIError.invalidQueueCount(queueCount)
     }
     let msixVectorCount = queueCount + 1
+    if let sharedMemoryRegion {
+      guard sharedMemoryRegion.id != 0, sharedMemoryRegion.barIndex == 4,
+        sharedMemoryRegion.byteCount >= 4_096,
+        sharedMemoryRegion.byteCount.nonzeroBitCount == 1,
+        sharedMemoryRegion.initialBARAddress.isMultiple(of: sharedMemoryRegion.byteCount)
+      else { throw DoryPCPCIError.invalidBAR(index: sharedMemoryRegion.barIndex) }
+    }
+    var bars = [
+      DoryPCPCIBARDescriptor(
+        index: 0,
+        kind: .memory32(prefetchable: false),
+        size: 0x1000,
+        address: initialBARAddress
+      )
+    ]
+    if let sharedMemoryRegion {
+      bars.append(
+        .init(
+          index: sharedMemoryRegion.barIndex,
+          kind: .memory64(prefetchable: true),
+          size: sharedMemoryRegion.byteCount,
+          address: sharedMemoryRegion.initialBARAddress
+        ))
+    }
     configurationFunction = try .init(
       address: address,
       vendorID: 0x1AF4,
@@ -1545,14 +1815,7 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
       msixTableOffset: 0x800,
       msixPendingBAR: 0,
       msixPendingOffset: 0xC00,
-      bars: [
-        .init(
-          index: 0,
-          kind: .memory32(prefetchable: false),
-          size: 0x1000,
-          address: initialBARAddress
-        )
-      ]
+      bars: bars
     )
     transport = try .init(
       queueCount: queueCount,
@@ -1562,7 +1825,10 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
       deviceConfiguration: deviceConfiguration,
       onReset: onReset
     )
-    capabilities = Self.makeCapabilities(deviceConfigurationLength: deviceConfiguration.count)
+    capabilities = Self.makeCapabilities(
+      deviceConfigurationLength: deviceConfiguration.count,
+      sharedMemoryRegion: sharedMemoryRegion
+    )
     transport.connectInterruptSink { [configurationFunction, transport] interrupt in
       if configurationFunction.msixState?.enabled == true {
         let vector = transport.msixVector(for: interrupt)
@@ -1579,7 +1845,13 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
   public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
     var bytes = try configurationFunction.readConfiguration(offset: offset, byteCount: byteCount)
     for index in bytes.indices {
-      if let value = capabilities[UInt8(offset + index)] { bytes[index] = value }
+      // VirtIO capabilities live in the first 256 bytes, while PCIe ECAM permits reads
+      // throughout the 4-KiB function space. Do not trap when Linux probes extended config.
+      if let capabilityOffset = UInt8(exactly: offset + index),
+        let value = capabilities[capabilityOffset]
+      {
+        bytes[index] = value
+      }
     }
     return bytes
   }
@@ -1619,27 +1891,50 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
     }
   }
 
-  private static func makeCapabilities(deviceConfigurationLength: Int) -> [UInt8: UInt8] {
+  private static func makeCapabilities(
+    deviceConfigurationLength: Int,
+    sharedMemoryRegion: SharedMemoryRegion?
+  ) -> [UInt8: UInt8] {
     var result: [UInt8: UInt8] = [:]
     addCapability(at: 0x70, next: 0x80, type: 1, offset: 0, length: 0x40, to: &result)
     addCapability(
       at: 0x80, next: 0x94, type: 2, offset: 0x100, length: 0x100, to: &result, notify: true)
     addCapability(
-      at: 0x94, next: deviceConfigurationLength > 0 ? 0xA4 : 0,
+      at: 0x94,
+      next: deviceConfigurationLength > 0 ? 0xA4 : (sharedMemoryRegion == nil ? 0 : 0xB4),
       type: 3, offset: 0x200, length: 1, to: &result)
     // Devices such as virtio-rng have no device-specific configuration region.
     // Advertising an empty region causes Linux's modern PCI probe to reject the device.
     if deviceConfigurationLength > 0 {
       addCapability(
         at: 0xA4,
-        next: 0,
+        next: sharedMemoryRegion == nil ? 0 : 0xB4,
         type: 4,
         offset: 0x300,
         length: UInt32(deviceConfigurationLength),
         to: &result
       )
     }
+    if let sharedMemoryRegion {
+      addSharedMemoryCapability(at: 0xB4, region: sharedMemoryRegion, to: &result)
+    }
     return result
+  }
+
+  private static func addSharedMemoryCapability(
+    at start: UInt8,
+    region: SharedMemoryRegion,
+    to result: inout [UInt8: UInt8]
+  ) {
+    // struct virtio_pci_cap64: base capability plus 64-bit offset/length high words.
+    var bytes: [UInt8] = [
+      0x09, 0, 24, 8, UInt8(region.barIndex), region.id, 0, 0,
+    ]
+    bytes += littleEndian(UInt32(0))
+    bytes += littleEndian(UInt32(truncatingIfNeeded: region.byteCount))
+    bytes += littleEndian(UInt32(0))
+    bytes += littleEndian(UInt32(truncatingIfNeeded: region.byteCount >> 32))
+    for (index, byte) in bytes.enumerated() { result[start &+ UInt8(index)] = byte }
   }
 
   private static func addCapability(

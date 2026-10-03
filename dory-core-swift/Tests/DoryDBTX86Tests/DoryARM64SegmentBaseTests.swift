@@ -3,6 +3,118 @@ import Testing
 @testable import DoryDBTX86
 
 @Suite struct DoryARM64SegmentBaseTests {
+  @Test func protected32DSEmitterRequiresAnExplicitFlatSegmentAssumption() throws {
+    let block = try DoryX86IRTranslator().translate(
+      [0xA1, 0, 1, 0, 0], at: 0, mode: .protected32)
+    let emitter = DoryARM64BaselineEmitter()
+    #expect(emitter.compile(block).tier == .interpreterFallback)
+    #expect(emitter.compile(block, executionMode: .protected32).tier == .interpreterFallback)
+    #expect(emitter.compile(
+      block, executionMode: .protected32, flatProtected32DS: true
+    ).tier == .baseline)
+  }
+
+  @Test func segmentedIndirectTerminatorCannotBypassModeAdmission() {
+    let target = DoryIROperand.memory(
+      .init(addressWidth: .i64, segment: "fs"), width: .i64)
+    let block = DoryIRBasicBlock(
+      guestStart: 0, guestByteCount: 1, guestInstructionCount: 1,
+      statements: [], terminator: .indirect(target))
+    let emitter = DoryARM64BaselineEmitter()
+    #expect(emitter.compile(block).tier == .interpreterFallback)
+    #expect(emitter.compile(
+      block, executionMode: .protected32, flatProtected32DS: true
+    ).tier == .interpreterFallback)
+    #expect(emitter.compile(block, executionMode: .long64).tier == .baseline)
+  }
+
+  @Test func flatProtected32DSMemoryRunsNativelyAndCachedBlockDeclinesAfterSegmentChange() throws {
+    #if arch(arm64)
+      // mov eax,ds:[0x100]. A changed DS must not reuse the resident native block.
+      let bytes: [UInt8] = [0xA1, 0, 1, 0, 0]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
+        try memory.write(at: 0, bytes: bytes)
+        try memory.writeScalar(at: 0x100, value: 0x1122_3344, byteCount: 4)
+        try memory.writeScalar(at: 0x1100, value: 0x5566_7788, byteCount: 4)
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024, optimization: optimization)
+        var state = try DoryX86ArchitecturalState(
+          rip: 0,
+          cs: .init(selector: 8, attributes: 0xC09B, limit: .max),
+          ds: .init(selector: 0x10, attributes: 0xC093, limit: .max),
+          control: .init(cr0: 0x11)
+        )
+        let native = try #require(executor.execute(
+          bytes: bytes, at: 0, mode: .protected32, addressSpaceID: 0,
+          maximumInstructions: 1, state: &state, memory: memory))
+        #expect(native.block.tier.rawValue == optimization.rawValue)
+        #expect(state.registers.rax == 0x1122_3344)
+        #expect(state.rip == 5)
+
+        state.rip = 0
+        state.ds.base = 0x1000
+        let before = state
+        #expect(try executor.execute(
+          bytes: bytes, at: 0, mode: .protected32, addressSpaceID: 0,
+          maximumInstructions: 1, state: &state, memory: memory) == nil)
+        #expect(state == before)
+        let decoded = try DoryX86Decoder().decode(bytes, at: 0, mode: .protected32)
+        #expect(DoryX86Interpreter().step(
+          state: &state, memory: memory, mode: .protected32) == .retired(decoded))
+        #expect(state.registers.rax == 0x5566_7788)
+
+        state.rip = 0
+        state.ds.base = 0
+        state.ds.limit = 0xFF
+        let limited = state
+        #expect(try executor.executeChainedSummary(
+          byteProvider: { address, count in
+            try memory.instructionBytes(at: address, maximumCount: count)
+          },
+          at: 0, mode: .protected32, addressSpaceID: 0,
+          maximumInstructions: 1, state: &state, memory: memory) == nil)
+        #expect(state == limited)
+
+        // A speculative compile while DS is non-flat must not negatively cache the bytes.
+        let newlyAdmittedExecutor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024, optimization: optimization)
+        var initiallyNonFlat = before
+        #expect(try newlyAdmittedExecutor.execute(
+          bytes: bytes, at: 0, mode: .protected32, addressSpaceID: 0,
+          maximumInstructions: 1, state: &initiallyNonFlat, memory: memory) == nil)
+        initiallyNonFlat.ds.base = 0
+        #expect(try newlyAdmittedExecutor.execute(
+          bytes: bytes, at: 0, mode: .protected32, addressSpaceID: 0,
+          maximumInstructions: 1, state: &initiallyNonFlat, memory: memory) != nil)
+        #expect(initiallyNonFlat.registers.rax == 0x1122_3344)
+      }
+    #endif
+  }
+
+  @Test func flatProtected32DSStorePublishesThroughNativeMemoryPath() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0xA3, 0, 1, 0, 0]  // mov ds:[0x100],eax
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+        try memory.write(at: 0, bytes: bytes)
+        var state = try DoryX86ArchitecturalState(
+          registers: .init(rax: 0xAABB_CCDD), rip: 0,
+          cs: .init(selector: 8, attributes: 0xC09B, limit: .max),
+          ds: .init(selector: 0x10, attributes: 0xC093, limit: .max),
+          control: .init(cr0: 0x11)
+        )
+        let execution = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024, optimization: optimization
+        ).execute(bytes: bytes, at: 0, mode: .protected32,
+          addressSpaceID: 0, maximumInstructions: 1, state: &state, memory: memory))
+        #expect(execution.block.tier.rawValue == optimization.rawValue)
+        #expect(state.rip == 5)
+        #expect(try memory.readScalar(at: 0x100, byteCount: 4) == 0xAABB_CCDD)
+      }
+    #endif
+  }
+
   @Test func longModeFSAndGSMemoryOperandsRetainTheirSegmentsInIR() throws {
     for (prefix, segment): (UInt8, String) in [(0x64, "fs"), (0x65, "gs")] {
       for addressPrefix: [UInt8] in [[], [0x67]] {

@@ -1,5 +1,5 @@
 import DoryDBTX86
-import DoryMachinePC
+@testable import DoryMachinePC
 import Foundation
 import Testing
 
@@ -14,6 +14,7 @@ import Testing
   @Test func invalidLengthsMatchRAMBeforeAnyUnsealedOrSealedDeviceAccess() throws {
     for ram in try backends() {
       let bus = try DoryPCPhysicalMemoryBus(ram: ram)
+      let dma = DoryPCDMAGuestMemory(bus: bus)
       let device = LengthConformanceMMIO()
       try bus.attach(device)
       for sealed in [false, true] {
@@ -30,13 +31,13 @@ import Testing
             for memory in [ram, bus] as [any DoryX86CodeGenerationMemory] {
               #expect(throws: expected) { try memory.codeGeneration(at: address, byteCount: count) }
             }
-            // DMA already rejects negative lengths; both its public entry points must stay exact.
+            // The CPU bus and the device-facing adapter reject invalid DMA lengths alike.
             for writes in [false, true] {
               #expect(throws: expected) {
                 try bus.validateDMA(at: address, byteCount: count, deviceWillWrite: writes)
               }
               #expect(throws: expected) {
-                try bus.validate(at: address, byteCount: count, deviceWillWrite: writes)
+                try dma.validate(at: address, byteCount: count, deviceWillWrite: writes)
               }
             }
           }

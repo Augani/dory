@@ -14,7 +14,7 @@ public enum DoryPCPhysicalMemoryError: Error, Sendable, Equatable {
 
 /// Process-local counters for calls that cross the CPU-to-physical-memory helper boundary.
 /// MMIO exits count only actual device reads/writes, not side-effect-free admission checks.
-public struct DoryPCPhysicalMemoryDiagnostics: Sendable, Hashable {
+public struct DoryPCPhysicalMemoryDiagnostics: Codable, Sendable, Hashable {
   public let instructionFetchHelperCalls: UInt64
   public let readHelperCalls: UInt64
   public let writeHelperCalls: UInt64
@@ -27,6 +27,10 @@ public struct DoryPCPhysicalMemoryDiagnostics: Sendable, Hashable {
   public let mmioInstructionFetchExits: UInt64
   public let mmioReadExits: UInt64
   public let mmioWriteExits: UInt64
+  /// Actual MMIO data read/write callback time, excluding gate acquisition,
+  /// validation, scalar conversion and synchronization callbacks.
+  public let mmioDeviceWallNanoseconds: UInt64
+  public let mmioDeviceThreadCPUNanoseconds: UInt64
 
   public var totalMemoryHelperCalls: UInt64 {
     [
@@ -56,7 +60,11 @@ public protocol DoryPCMMIODevice: AnyObject, Sendable {
   func readRestartableScalar(offset: UInt64, byteCount: Int) throws -> UInt64?
   func codeGeneration(offset: UInt64, byteCount: Int) throws -> UInt64?
   func write(offset: UInt64, bytes: [UInt8]) throws
+  func compareExchangeScalar(
+    offset: UInt64, expected: UInt64, desired: UInt64, byteCount: Int
+  ) throws -> UInt64?
   func validateWrite(offset: UInt64, byteCount: Int) throws
+  func allowsDMAAccess(offset: UInt64, byteCount: Int, write: Bool) -> Bool
   func synchronize()
 }
 
@@ -69,6 +77,11 @@ extension DoryPCMMIODevice {
 
   /// Returns a scalar only when reading the range is side-effect free and safe to replay.
   public func readRestartableScalar(offset: UInt64, byteCount: Int) throws -> UInt64? { nil }
+
+  /// Register MMIO has no implicit atomic read-modify-write semantics.
+  public func compareExchangeScalar(
+    offset: UInt64, expected: UInt64, desired: UInt64, byteCount: Int
+  ) throws -> UInt64? { nil }
 
   /// Validates a read without invoking a device register's read side effects. Devices whose
   /// readable ranges are narrower than their mapping must override this admission check.
@@ -87,6 +100,9 @@ extension DoryPCMMIODevice {
         offset: offset, byteCount: byteCount, write: true)
     }
   }
+
+  /// MMIO is excluded from DMA unless a side-effect-free memory aperture opts in explicitly.
+  public func allowsDMAAccess(offset: UInt64, byteCount: Int, write: Bool) -> Bool { false }
 
   public func synchronize() {}
 }
@@ -151,6 +167,8 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   private let diagnosticCounters: UnsafeMutablePointer<UInt64>
   private let diagnosticsEnabled: Bool
   private let diagnosticsLock = NSLock()
+  private var mmioDeviceWallNanoseconds: UInt64 = 0
+  private var mmioDeviceThreadCPUNanoseconds: UInt64 = 0
   private var publishedDiagnostics = DoryPCPhysicalMemoryDiagnostics(
     instructionFetchHelperCalls: 0,
     readHelperCalls: 0,
@@ -163,7 +181,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     dmaValidationCalls: 0,
     mmioInstructionFetchExits: 0,
     mmioReadExits: 0,
-    mmioWriteExits: 0
+    mmioWriteExits: 0,
+    mmioDeviceWallNanoseconds: 0,
+    mmioDeviceThreadCPUNanoseconds: 0
   )
 
   public convenience init(
@@ -238,7 +258,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       dmaValidationCalls: diagnosticValue(.dmaValidationCalls),
       mmioInstructionFetchExits: diagnosticValue(.mmioInstructionFetchExits),
       mmioReadExits: diagnosticValue(.mmioReadExits),
-      mmioWriteExits: diagnosticValue(.mmioWriteExits)
+      mmioWriteExits: diagnosticValue(.mmioWriteExits),
+      mmioDeviceWallNanoseconds: mmioDeviceWallNanoseconds,
+      mmioDeviceThreadCPUNanoseconds: mmioDeviceThreadCPUNanoseconds
     )
     publishedDiagnostics = snapshot
   }
@@ -320,10 +342,12 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
           )
         }
         incrementDiagnostic(.mmioInstructionFetchExits)
-        return try resolved.device.read(
-          offset: resolved.offset,
-          byteCount: Int(min(UInt64(maximumCount), resolved.availableByteCount))
-        )
+        return try timeMMIODeviceCall {
+          try resolved.device.read(
+            offset: resolved.offset,
+            byteCount: Int(min(UInt64(maximumCount), resolved.availableByteCount))
+          )
+        }
       }
     }
     let resolved = try resolveRAM(
@@ -349,8 +373,26 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     if let resolved = try resolve(address: address, byteCount: byteCount, access: .read) {
       return try deviceAccessCoordinator.withAccess {
         incrementDiagnostic(.mmioReadExits)
-        return try resolved.device.read(offset: resolved.offset, byteCount: byteCount)
+        return try timeMMIODeviceCall {
+          try resolved.device.read(offset: resolved.offset, byteCount: byteCount)
+        }
       }
+    }
+    let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
+    return try ram.read(at: resolved.backingAddress, byteCount: byteCount)
+  }
+
+  /// Device reads re-check admission at the access boundary. PCI BARs resolve and consume one
+  /// aperture generation, so relocation cannot redirect an already-authorized DMA read.
+  func readDMA(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    guard byteCount != 0 else { return [] }
+    try validateDMA(at: address, byteCount: byteCount, deviceWillWrite: false)
+    if let resolved = try resolve(address: address, byteCount: byteCount, access: .read) {
+      guard let window = resolved.device as? DoryPCPCIBARWindow else {
+        throw DoryPCPhysicalMemoryError.unsupportedAccess(
+          offset: address, byteCount: byteCount, write: false)
+      }
+      return try window.readDMA(offset: resolved.offset, byteCount: byteCount)
     }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
     return try ram.read(at: resolved.backingAddress, byteCount: byteCount)
@@ -414,9 +456,10 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     if let resolved = try resolve(address: address, byteCount: byteCount, access: .read) {
       return try deviceAccessCoordinator.withAccess {
         incrementDiagnostic(.mmioReadExits)
-        return try resolved.device.read(
-          offset: resolved.offset, byteCount: byteCount
-        ).enumerated().reduce(0) {
+        let bytes = try timeMMIODeviceCall {
+          try resolved.device.read(offset: resolved.offset, byteCount: byteCount)
+        }
+        return bytes.enumerated().reduce(0) {
           $0 | UInt64($1.element) << UInt64($1.offset * 8)
         }
       }
@@ -435,12 +478,55 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     if let resolved = try resolve(address: address, byteCount: bytes.count, access: .write) {
       try deviceAccessCoordinator.withAccess {
         incrementDiagnostic(.mmioWriteExits)
-        try resolved.device.write(offset: resolved.offset, bytes: bytes)
+        try timeMMIODeviceCall {
+          try resolved.device.write(offset: resolved.offset, bytes: bytes)
+        }
       }
       return
     }
     let resolved = try resolveRAM(address: address, byteCount: bytes.count, access: .write)
     try ram.write(at: resolved.backingAddress, bytes: bytes)
+  }
+
+  /// Keeps the tracked-page decision and RAM mutation under one backing-memory lock. A DMA
+  /// admission check performed before this call is not itself a page-table coherence boundary.
+  public func writeClassifyingPageTableMutation(
+    at address: UInt64,
+    bytes: [UInt8],
+    allowTrackedWrite: Bool
+  ) throws -> Bool {
+    guard !bytes.isEmpty else { return false }
+    guard let tracker = ram as? any DoryX86PageTableWriteTrackingMemory else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: address, byteCount: bytes.count, write: true)
+    }
+    if let resolved = try directRAMRoute(address: address, byteCount: bytes.count) {
+      incrementDiagnostic(.writeHelperCalls)
+      return try tracker.writeClassifyingPageTableMutation(
+        at: resolved.backingAddress,
+        bytes: bytes,
+        allowTrackedWrite: allowTrackedWrite
+      )
+    }
+    if let resolved = try resolve(address: address, byteCount: bytes.count, access: .write) {
+      // validateDMA() is only a preflight: a guest can relocate PCI BARs between that
+      // check and this write. Never fall through to ordinary MMIO, where the same GPA
+      // could now be a register with side effects. The BAR window re-resolves its live
+      // route and permits only the explicitly DMA-admitted GPU aperture.
+      guard let window = resolved.device as? DoryPCPCIBARWindow else {
+        throw DoryPCPhysicalMemoryError.unsupportedAccess(
+          offset: address, byteCount: bytes.count, write: true)
+      }
+      try window.writeDMA(offset: resolved.offset, bytes: bytes)
+      return false
+    }
+    let resolved = try resolveRAM(address: address, byteCount: bytes.count, access: .write)
+    incrementDiagnostic(.writeHelperCalls)
+    return try tracker.writeClassifyingPageTableMutation(
+      at: resolved.backingAddress,
+      bytes: bytes,
+      allowTrackedWrite: allowTrackedWrite
+    )
   }
 
   public func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
@@ -459,7 +545,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       try deviceAccessCoordinator.withAccess {
         try resolved.device.validateWrite(offset: resolved.offset, byteCount: byteCount)
         incrementDiagnostic(.mmioWriteExits)
-        try resolved.device.write(offset: resolved.offset, bytes: bytes)
+        try timeMMIODeviceCall {
+          try resolved.device.write(offset: resolved.offset, bytes: bytes)
+        }
       }
       return
     }
@@ -477,15 +565,21 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
     }
     incrementDiagnostic(.atomicHelperCalls)
-    guard let atomicRAM = ram as? any DoryX86AtomicScalarMemory else { return nil }
     if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
+      guard let atomicRAM = ram as? any DoryX86AtomicScalarMemory else { return nil }
       return try atomicRAM.compareExchangeScalar(
         at: resolved.backingAddress, expected: expected, desired: desired, byteCount: byteCount)
     }
-    // Native locked operations are admitted for ordinary RAM only. A device mapping declines
-    // without invoking MMIO read/write side effects; the interpreter remains responsible for
-    // precise device semantics.
-    if try resolve(address: address, byteCount: byteCount, access: .write) != nil { return nil }
+    if let resolved = try resolve(address: address, byteCount: byteCount, access: .write) {
+      // Only an explicitly atomic, side-effect-free aperture may accept a locked scalar.
+      // The device gate also serializes ordinary CPU and DMA accesses to this backing.
+      return try deviceAccessCoordinator.withAccess {
+        try resolved.device.compareExchangeScalar(
+          offset: resolved.offset, expected: expected, desired: desired, byteCount: byteCount
+        )
+      }
+    }
+    guard let atomicRAM = ram as? any DoryX86AtomicScalarMemory else { return nil }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .write)
     return try atomicRAM.compareExchangeScalar(
       at: resolved.backingAddress, expected: expected, desired: desired, byteCount: byteCount)
@@ -556,20 +650,36 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     )
   }
 
-  /// VirtIO DMA is deliberately RAM-only. A descriptor can never trigger an APIC, PCI, or other
-  /// MMIO register read as a side effect of validation or device processing.
+  /// VirtIO DMA is RAM-only except for explicitly admitted side-effect-free memory apertures. A
+  /// descriptor can never trigger an APIC, PCI configuration, or register BAR as a side effect.
   public func validateDMA(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
     incrementDiagnostic(.dmaValidationCalls)
-    guard
-      try resolve(
-        address: address, byteCount: byteCount, access: deviceWillWrite ? .write : .read
-      ) == nil
-    else {
-      throw DoryX86MemoryError.unmapped(
-        address: address,
-        byteCount: byteCount,
-        access: deviceWillWrite ? .write : .read
-      )
+    if let resolved = try resolve(
+      address: address,
+      byteCount: byteCount,
+      access: deviceWillWrite ? .write : .read
+    ) {
+      guard
+        resolved.device.allowsDMAAccess(
+          offset: resolved.offset,
+          byteCount: byteCount,
+          write: deviceWillWrite
+        )
+      else {
+        throw DoryX86MemoryError.unmapped(
+          address: address,
+          byteCount: byteCount,
+          access: deviceWillWrite ? .write : .read
+        )
+      }
+      try deviceAccessCoordinator.withAccess {
+        if deviceWillWrite {
+          try resolved.device.validateWrite(offset: resolved.offset, byteCount: byteCount)
+        } else {
+          try resolved.device.validateRead(offset: resolved.offset, byteCount: byteCount)
+        }
+      }
+      return
     }
     if deviceWillWrite {
       let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .write)
@@ -649,6 +759,14 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     return tracker.isTrackedPageTablePage(containing: resolved.backingAddress)
   }
 
+  public func intersectsTrackedPageTablePage(at address: UInt64, byteCount: Int) -> Bool {
+    guard let tracker = ram as? any DoryX86PageTableWriteTrackingMemory,
+      let resolved = try? resolveRAM(address: address, byteCount: byteCount, access: .write)
+    else { return false }
+    return tracker.intersectsTrackedPageTablePage(
+      at: resolved.backingAddress, byteCount: byteCount)
+  }
+
   public func beginPageTableWalkerWrite() {
     (ram as? any DoryX86PageTableWriteTrackingMemory)?.beginPageTableWalkerWrite()
   }
@@ -666,12 +784,29 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   public func protectTranslatedCode(at address: UInt64, byteCount: Int) throws -> Bool {
-    guard let protector = ram as? any DoryX86TranslatedCodeProtectionMemory else { return false }
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
+    guard byteCount > 0 else { return false }
+    if let resolved = try resolve(address: address, byteCount: byteCount, access: .instructionFetch) {
+      return try deviceAccessCoordinator.withAccess {
+        guard resolved.device.allowsInstructionFetch else {
+          throw DoryX86MemoryError.unmapped(
+            address: address, byteCount: byteCount, access: .instructionFetch)
+        }
+        try resolved.device.validateRead(offset: resolved.offset, byteCount: byteCount)
+        // Executable device mappings (including immutable firmware flash) retain their own
+        // generation/byte validation. They have no backing RAM page to make read-only, and must
+        // never be routed through resolveRAM merely because a native block was published.
+        return false
+      }
+    }
     let resolved = try resolveRAM(
       address: address,
       byteCount: byteCount,
       access: .instructionFetch
     )
+    guard let protector = ram as? any DoryX86TranslatedCodeProtectionMemory else { return false }
     return try protector.protectTranslatedCode(
       at: resolved.backingAddress,
       byteCount: byteCount
@@ -798,6 +933,31 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   private func diagnosticValue(_ counter: DiagnosticCounter) -> UInt64 {
     diagnosticCounters.advanced(by: counter.rawValue).pointee
   }
+
+  /// Called only inside the device-access gate, immediately around a real MMIO callback.
+  /// Opt-in profiling can be expensive, so the normal path takes no clock samples.
+  @inline(__always)
+  private func timeMMIODeviceCall<Result>(_ body: () throws -> Result) rethrows -> Result {
+    guard diagnosticsEnabled else { return try body() }
+    let wallStart = DispatchTime.now().uptimeNanoseconds
+    let cpuStart = dory_thread_cpu_time_nanoseconds()
+    defer {
+      let wallNow = DispatchTime.now().uptimeNanoseconds
+      let cpuNow = dory_thread_cpu_time_nanoseconds()
+      diagnosticsLock.withLock {
+        if wallNow >= wallStart {
+          let (sum, overflow) = mmioDeviceWallNanoseconds.addingReportingOverflow(wallNow - wallStart)
+          mmioDeviceWallNanoseconds = overflow ? .max : sum
+        }
+        if cpuNow >= cpuStart {
+          let (sum, overflow) = mmioDeviceThreadCPUNanoseconds.addingReportingOverflow(
+            cpuNow - cpuStart)
+          mmioDeviceThreadCPUNanoseconds = overflow ? .max : sum
+        }
+      }
+    }
+    return try body()
+  }
 }
 
 extension DoryPCPhysicalMemoryBus: DoryX86RestartableScalarMemory {
@@ -812,10 +972,12 @@ extension DoryPCPhysicalMemoryBus: DoryX86RestartableScalarMemory {
     if let resolved = try resolve(address: address, byteCount: byteCount, access: .read) {
       return try deviceAccessCoordinator.withAccess {
         incrementDiagnostic(.mmioReadExits)
-        return try resolved.device.readRestartableScalar(
-          offset: resolved.offset,
-          byteCount: byteCount
-        )
+        return try timeMMIODeviceCall {
+          try resolved.device.readRestartableScalar(
+            offset: resolved.offset,
+            byteCount: byteCount
+          )
+        }
       }
     }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
@@ -950,10 +1112,90 @@ extension DoryPCPhysicalMemoryBus: DoryX86BulkMemory {
   }
 }
 
-extension DoryPCPhysicalMemoryBus: DoryVirtioGuestMemory {
-  public func validate(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
-    try validateDMA(at: address, byteCount: byteCount, deviceWillWrite: deviceWillWrite)
+/// Device-facing physical memory authority. A DMA rewrite of a page table must complete the
+/// machine-wide translation rendezvous before this device can publish a completion/ready flag.
+/// CPU memory helpers intentionally keep using the bus directly.
+final class DoryPCDMAGuestMemory: DoryPCGuestMemoryDeviceExecutionGuard, @unchecked Sendable {
+  private let bus: DoryPCPhysicalMemoryBus
+  private let permitsTrackedPageTableWrites: Bool
+  private let lock = NSLock()
+  private var onTrackedPageTableWrite: (@Sendable () -> Void)?
+  private var trackedPageTableWriteAdmission: (@Sendable () -> Bool)?
+  private var retainTrackedWriteOwner: (@Sendable () -> AnyObject?)?
+
+  init(bus: DoryPCPhysicalMemoryBus, permitsTrackedPageTableWrites: Bool = true) {
+    self.bus = bus
+    self.permitsTrackedPageTableWrites = permitsTrackedPageTableWrites
   }
+
+  func withDeviceExecutionGuard(_ body: () -> Void) {
+    bus.deviceAccessCoordinator.withAccess(body)
+  }
+
+  func installTrackedPageTableWriteObserver(
+    _ observer: @escaping @Sendable () -> Void,
+    admission: (@Sendable () -> Bool)? = nil,
+    retainOwner: (@Sendable () -> AnyObject?)? = nil
+  ) {
+    lock.withLock {
+      onTrackedPageTableWrite = observer
+      trackedPageTableWriteAdmission = admission
+      retainTrackedWriteOwner = retainOwner
+    }
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    // A backend is allowed to read without calling validate() first.
+    try bus.readDMA(at: address, byteCount: byteCount)
+  }
+
+  func validate(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
+    try bus.validateDMA(at: address, byteCount: byteCount, deviceWillWrite: deviceWillWrite)
+    guard deviceWillWrite, byteCount > 0 else { return }
+    let policy = lock.withLock {
+      (onTrackedPageTableWrite != nil, trackedPageTableWriteAdmission)
+    }
+    let allowTrackedWrite = permitsTrackedPageTableWrites && policy.0
+      && (policy.1?() ?? !bus.deviceAccessCoordinator.isActiveOnCurrentThread)
+    if !allowTrackedWrite,
+      bus.intersectsTrackedPageTablePage(at: address, byteCount: byteCount)
+    {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: address, byteCount: byteCount, write: true)
+    }
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    guard !bytes.isEmpty else { return }
+    // Backends can issue a write without first calling validate(). Never let that bypass the
+    // RAM-only / explicitly admitted aperture rule and reach a register BAR as device DMA.
+    try bus.validateDMA(at: address, byteCount: bytes.count, deviceWillWrite: true)
+    let policy = lock.withLock {
+      (onTrackedPageTableWrite, trackedPageTableWriteAdmission, retainTrackedWriteOwner)
+    }
+    let observer = policy.0
+    // The machine's observer is weak to avoid an ownership cycle. Retain its owner across
+    // mutation and invalidation so teardown cannot turn an admitted write into a write with
+    // no translation acknowledgement.
+    let retainedOwner = policy.2?()
+    defer { withExtendedLifetime(retainedOwner) {} }
+    // An admission callback may allow the single owning vCPU to acknowledge its own write.
+    // Without that explicit proof, a device holding queue/backend locks must not wait for a
+    // vCPU that could itself be blocked on those locks.
+    let allowTrackedWrite = permitsTrackedPageTableWrites && observer != nil
+      && (policy.2 == nil || retainedOwner != nil)
+      && (policy.1?() ?? !bus.deviceAccessCoordinator.isActiveOnCurrentThread)
+    do {
+      let tracked = try bus.writeClassifyingPageTableMutation(
+        at: address, bytes: bytes, allowTrackedWrite: allowTrackedWrite)
+      if tracked { observer?() }
+    } catch DoryX86PageTableWritePolicyError.trackedWriteRejected {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: address, byteCount: bytes.count, write: true)
+    }
+  }
+
+  func synchronize() { bus.synchronize() }
 }
 
 public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
@@ -967,6 +1209,11 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
   private var timerDivideConfiguration: UInt32 = 0
   private var interruptCommandLow: UInt32 = 0
   private var interruptCommandHigh: UInt32 = 0
+  // APIC version 0x14 / maximum LVT index 5 advertises these four entries alongside timer/error.
+  // Their input sources remain quiescent until connected, but guest register programming persists.
+  private var localVectorTable: [UInt64: UInt32] = [
+    0x330: 1 << 16, 0x340: 1 << 16, 0x350: 1 << 16, 0x360: 1 << 16,
+  ]
   private let onEndOfInterrupt: @Sendable (UInt8) throws -> Void
   private let onInterruptCommand: @Sendable (_ high: UInt32, _ low: UInt32) throws -> Void
 
@@ -990,11 +1237,13 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
         offset: offset, byteCount: byteCount, write: false)
     }
     let snapshot = apic.snapshot()
-    let value: UInt32 = lock.withLock {
-      switch offset {
+    let result: (value: UInt32, reserved: Bool) = lock.withLock {
+      let value: UInt32 = switch offset {
       case 0x20: snapshot.apicID << 24
       case 0x30: 0x0005_0014
       case 0x80: UInt32(snapshot.taskPriority)
+      case 0x90: UInt32(apic.arbitrationPriority())
+      case 0xB0, 0xC0: 0
       case 0xD0: apic.logicalDestinationRegister
       case 0xE0: apic.destinationFormatRegister
       case 0xA0:
@@ -1008,17 +1257,21 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
         bitmapRegister(snapshot.levelTriggered, offset: offset, base: 0x180)
       case 0x200...0x270:
         bitmapRegister(snapshot.interruptRequest, offset: offset, base: 0x200)
-      case 0x280: 0
+      case 0x280: apic.errorStatusRegister
       case 0x300: interruptCommandLow
       case 0x310: interruptCommandHigh
       case 0x320: timerLVT
+      case 0x330, 0x340, 0x350, 0x360: localVectorTable[offset]!
+      case 0x370: apic.errorLVTRegister
       case 0x380: timerInitialCount
       case 0x390: snapshot.timer.currentCount
       case 0x3E0: timerDivideConfiguration
       default: 0
       }
+      return (value, !Self.isImplementedRegister(offset))
     }
-    return littleEndian(value)
+    if result.reserved { apic.recordError(.illegalRegisterAddress) }
+    return littleEndian(result.value)
   }
 
   public func validateRead(offset: UInt64, byteCount: Int) throws {
@@ -1046,6 +1299,8 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
     case 0xF0:
       try apic.configureSpuriousVector(
         UInt8(truncatingIfNeeded: value), softwareEnabled: value & (1 << 8) != 0)
+    case 0x280:
+      apic.writeErrorStatusRegister()
     case 0x300:
       let high = lock.withLock {
         interruptCommandLow = value & ~(1 << 12)
@@ -1055,21 +1310,32 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
     case 0x310:
       lock.withLock { interruptCommandHigh = value }
     case 0x320:
-      lock.withLock {
-        timerLVT = value & 0x0003_07FF
-        applyTimerConfiguration(reloadCount: false)
+      let notified = lock.withLock {
+        timerLVT = value & 0x0003_00FF
+        return applyTimerConfiguration(reloadCount: false)
       }
+      if notified { apic.publishPendingWork() }
+    case 0x330, 0x340, 0x350, 0x360:
+      let lvt = value & ((offset == 0x350 || offset == 0x360) ? 0x0001_A7FF : 0x0001_07FF)
+      lock.withLock { localVectorTable[offset] = lvt }
+      if lvt & 0x700 == 0, UInt8(truncatingIfNeeded: lvt) < 0x10 {
+        apic.recordError(.receiveIllegalVector)
+      }
+    case 0x370:
+      apic.writeErrorLVTRegister(value)
     case 0x380:
-      lock.withLock {
+      let notified = lock.withLock {
         timerInitialCount = value
-        applyTimerConfiguration(reloadCount: true)
+        return applyTimerConfiguration(reloadCount: true)
       }
+      if notified { apic.publishPendingWork() }
     case 0x3E0:
       let configuration = value & 0xB
       lock.withLock { timerDivideConfiguration = configuration }
       apic.configureTimerDivideValue(Self.timerDivideValue(configuration: configuration))
     default:
-      break
+      // Read-only implemented registers ignore writes; reserved offsets raise an APIC error.
+      if !Self.isImplementedRegister(offset) { apic.recordError(.illegalRegisterAddress) }
     }
   }
 
@@ -1080,26 +1346,15 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
     }
   }
 
-  private func applyTimerConfiguration(reloadCount: Bool) {
+  private func applyTimerConfiguration(reloadCount: Bool) -> Bool {
     let mode: DoryPCLocalAPICTimerMode = timerLVT & (1 << 17) != 0 ? .periodic : .oneShot
     let vector = UInt8(truncatingIfNeeded: timerLVT)
-    // xAPIC register writes do not become CPU exceptions. Firmware may temporarily program an
-    // illegal vector while probing the timer; retain the raw LVT and activate it only once valid.
-    guard vector >= 0x10 else { return }
-    if reloadCount {
-      try? apic.configureTimer(
-        vector: vector,
-        masked: timerLVT & (1 << 16) != 0,
-        mode: mode,
-        initialCount: timerInitialCount
-      )
-    } else {
-      try? apic.configureTimerControl(
-        vector: vector,
-        masked: timerLVT & (1 << 16) != 0,
-        mode: mode
-      )
-    }
+    return apic.configureTimerFromMMIO(
+      vector: vector,
+      masked: timerLVT & (1 << 16) != 0,
+      mode: mode,
+      reloadCount: reloadCount ? timerInitialCount : nil
+    )
   }
 
   private static func timerDivideValue(configuration: UInt32) -> UInt32 {
@@ -1113,6 +1368,17 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
     case 0xA: 128
     case 0xB: 1
     default: preconditionFailure("masked xAPIC timer divide configuration is exhaustive")
+    }
+  }
+
+  private static func isImplementedRegister(_ offset: UInt64) -> Bool {
+    switch offset {
+    case 0x20, 0x30, 0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0,
+      0x100...0x270, 0x280, 0x300, 0x310, 0x320, 0x330, 0x340, 0x350, 0x360,
+      0x370, 0x380, 0x390, 0x3E0:
+      true
+    default:
+      false
     }
   }
 

@@ -96,6 +96,153 @@ import Testing
     #expect(try memory.read(at: nested.baseAddress, byteCount: 1) == [0x5a])
   }
 
+  @Test func inlineDeviceCallbackRejectsTrackedPageTableDMAWithoutWriting() throws {
+    let coordinator = DoryPCDeviceAccessCoordinator()
+    let ram = try DoryX86ByteArrayMemory(byteCount: 1 << 20)
+    let memory = try bus(ram: ram, coordinator: coordinator)
+    memory.seal()
+    memory.trackPageTablePage(containing: 0x1000)
+    let dma = DoryPCDMAGuestMemory(bus: memory)
+    dma.installTrackedPageTableWriteObserver {}
+    let deviceDMA = DoryPCDMAGuestMemory(
+      bus: memory, permitsTrackedPageTableWrites: false)
+    let unboundDMA = DoryPCDMAGuestMemory(bus: memory)
+
+    #expect(throws: DoryPCPhysicalMemoryError.unsupportedAccess(
+      offset: 0xffe, byteCount: 4, write: true
+    )) {
+      try deviceDMA.validate(at: 0xffe, byteCount: 4, deviceWillWrite: true)
+    }
+    try deviceDMA.validate(at: 0xffe, byteCount: 4, deviceWillWrite: false)
+    try deviceDMA.validate(at: 0x2000, byteCount: 4, deviceWillWrite: true)
+    try dma.validate(at: 0xffe, byteCount: 4, deviceWillWrite: true)
+
+    #expect(throws: DoryPCPhysicalMemoryError.unsupportedAccess(
+      offset: 0x1000, byteCount: 4, write: true
+    )) {
+      try deviceDMA.write(at: 0x1000, bytes: [1, 2, 3, 4])
+    }
+    #expect(throws: DoryPCPhysicalMemoryError.unsupportedAccess(
+      offset: 0xffe, byteCount: 4, write: true
+    )) {
+      try deviceDMA.write(at: 0xffe, bytes: [1, 2, 3, 4])
+    }
+    #expect(throws: DoryPCPhysicalMemoryError.unsupportedAccess(
+      offset: 0x1000, byteCount: 4, write: true
+    )) {
+      try unboundDMA.write(at: 0x1000, bytes: [1, 2, 3, 4])
+    }
+
+    #expect(coordinator.isActiveOnCurrentThread == false)
+    try coordinator.withAccess {
+      #expect(coordinator.isActiveOnCurrentThread)
+      try coordinator.withAccess {
+        #expect(coordinator.isActiveOnCurrentThread)
+        #expect(throws: DoryPCPhysicalMemoryError.unsupportedAccess(
+          offset: 0x1000, byteCount: 4, write: true
+        )) {
+          try dma.write(at: 0x1000, bytes: [1, 2, 3, 4])
+        }
+      }
+      #expect(coordinator.isActiveOnCurrentThread)
+    }
+    #expect(coordinator.isActiveOnCurrentThread == false)
+    #expect(try memory.read(at: 0xffe, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try memory.read(at: 0x1000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(memory.hasPendingPageTableWrite == false)
+    try deviceDMA.write(at: 0x2000, bytes: [5, 6, 7, 8])
+    #expect(try memory.read(at: 0x2000, byteCount: 4) == [5, 6, 7, 8])
+    try deviceDMA.validate(at: 0x3000, byteCount: 4, deviceWillWrite: true)
+    memory.trackPageTablePage(containing: 0x3000)
+    #expect(throws: DoryPCPhysicalMemoryError.unsupportedAccess(
+      offset: 0x3000, byteCount: 4, write: true
+    )) {
+      try deviceDMA.write(at: 0x3000, bytes: [9, 10, 11, 12])
+    }
+    #expect(try memory.read(at: 0x3000, byteCount: 4) == [0, 0, 0, 0])
+  }
+
+  @Test func soleDispatchOwnerCanPublishTrackedDMAInsideDeviceAccess() throws {
+    let coordinator = DoryPCDeviceAccessCoordinator()
+    let memory = try bus(
+      ram: DoryX86ByteArrayMemory(byteCount: 1 << 20), coordinator: coordinator)
+    memory.seal()
+    memory.trackPageTablePage(containing: 0x1000)
+    let wake = DoryPCPendingWorkWake(processorCount: 1)
+    let observed = TrackedDMAWriteCount()
+    let dma = DoryPCDMAGuestMemory(bus: memory)
+    dma.installTrackedPageTableWriteObserver(
+      { observed.record() },
+      admission: { wake.isCurrentDispatchThread(forProcessor: 0) }
+    )
+
+    #expect(throws: DoryPCPhysicalMemoryError.unsupportedAccess(
+      offset: 0x1000, byteCount: 4, write: true
+    )) {
+      try dma.write(at: 0x1000, bytes: [1, 2, 3, 4])
+    }
+    wake.setDispatchThread(Thread.current, forProcessor: 0)
+    defer { wake.setDispatchThread(nil, forProcessor: 0) }
+    try coordinator.withAccess {
+      try dma.validate(at: 0x1000, byteCount: 4, deviceWillWrite: true)
+      try dma.write(at: 0x1000, bytes: [1, 2, 3, 4])
+    }
+    #expect(observed.count == 1)
+    #expect(try memory.read(at: 0x1000, byteCount: 4) == [1, 2, 3, 4])
+
+    let remoteDone = DispatchSemaphore(value: 0)
+    let remoteRejected = TrackedDMAWriteCount()
+    Thread.detachNewThread {
+      defer { remoteDone.signal() }
+      do {
+        try dma.write(at: 0x1004, bytes: [5, 6, 7, 8])
+      } catch DoryPCPhysicalMemoryError.unsupportedAccess {
+        remoteRejected.record()
+      } catch {}
+    }
+    #expect(remoteDone.wait(timeout: .now() + 2) == .success)
+    #expect(remoteRejected.count == 1)
+    #expect(observed.count == 1)
+    #expect(try memory.read(at: 0x1004, byteCount: 4) == [0, 0, 0, 0])
+  }
+
+  @Test func deviceDMAWriteCannotBypassMMIOAdmissionWithoutPreflight() throws {
+    let coordinator = DoryPCDeviceAccessCoordinator()
+    let memory = try bus(
+      ram: DoryX86ByteArrayMemory(byteCount: 1 << 20), coordinator: coordinator)
+    let register = ConstantMMIODevice(baseAddress: 0x20_0000, value: 0x22)
+    try memory.attach(register)
+    memory.seal()
+    let dma = DoryPCDMAGuestMemory(bus: memory, permitsTrackedPageTableWrites: false)
+
+    #expect(throws: DoryX86MemoryError.unmapped(
+      address: register.baseAddress, byteCount: 1, access: .write
+    )) {
+      try dma.write(at: register.baseAddress, bytes: [0xff])
+    }
+    #expect(try memory.read(at: register.baseAddress, byteCount: 1) == [0x22])
+  }
+
+  @Test func deviceDMAReadCannotBypassMMIOAdmissionWithoutPreflight() throws {
+    let coordinator = DoryPCDeviceAccessCoordinator()
+    let memory = try bus(
+      ram: DoryX86ByteArrayMemory(byteCount: 1 << 20), coordinator: coordinator)
+    let register = ConstantMMIODevice(baseAddress: 0x20_0000, value: 0x22)
+    try memory.attach(register)
+    memory.seal()
+    let dma = DoryPCDMAGuestMemory(bus: memory, permitsTrackedPageTableWrites: false)
+
+    #expect(throws: DoryX86MemoryError.unmapped(
+      address: register.baseAddress, byteCount: 1, access: .read
+    )) {
+      _ = try dma.read(at: register.baseAddress, byteCount: 1)
+    }
+    #expect(try dma.read(at: register.baseAddress, byteCount: 0).isEmpty)
+    try memory.write(at: 0x100, bytes: [0x5A])
+    #expect(try dma.read(at: 0x100, byteCount: 1) == [0x5A])
+    #expect(try memory.read(at: register.baseAddress, byteCount: 1) == [0x22])
+  }
+
   private func bus(
     ram: any DoryX86PhysicalRAM,
     coordinator: DoryPCDeviceAccessCoordinator
@@ -107,6 +254,14 @@ import Testing
       deviceAccessCoordinator: coordinator
     )
   }
+}
+
+private final class TrackedDMAWriteCount: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = 0
+
+  var count: Int { lock.withLock { value } }
+  func record() { lock.withLock { value += 1 } }
 }
 
 private final class BlockingMMIODevice: DoryPCMMIODevice, @unchecked Sendable {

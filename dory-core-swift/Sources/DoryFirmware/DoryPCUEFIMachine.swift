@@ -56,8 +56,12 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     processorCount: Int = 1,
     initialRTCDate: Date = Date(),
     firmwareConfigurationFlags: DoryPCFirmwareConfiguration.Flags = [],
+    scanouts: [DoryVirtioGPUScanout] = [
+      .init(id: 0, rectangle: .init(x: 0, y: 0, width: 1_280, height: 800))
+    ],
     displaySink: (any DoryVirtioGPUDisplaySink)? = nil,
     gpuAccelerationAuthority: (any DoryVirtioGPUAccelerationAuthority)? = nil,
+    gpuHostVisibleAperture: DoryPCHostVisibleGPUAperture? = nil,
     soundBackend: any DoryVirtioSoundBackend = DoryVirtioInMemorySoundBackend(),
     networkBackend: any DoryVirtioNetworkBackend = DoryVirtioInMemoryNetworkBackend(),
     networkMACAddress: [UInt8] = [0x02, 0x44, 0x4F, 0x52, 0x59, 0x01],
@@ -139,11 +143,13 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     let displayDevice = try DoryPCVirtioGPUPCIDevice(
       address: DoryPCV1ABI.displayPCIAddress,
       initialBARAddress: DoryPCV1ABI.displayBARAddress,
-      scanouts: [
-        .init(id: 0, rectangle: .init(x: 0, y: 0, width: 1_280, height: 800))
-      ],
+      scanouts: scanouts,
       displaySink: displaySink,
-      accelerationAuthority: gpuAccelerationAuthority
+      accelerationAuthority: gpuAccelerationAuthority,
+      hostVisibleAperture: gpuHostVisibleAperture,
+      initialHostVisibleBARAddress: gpuHostVisibleAperture == nil
+        ? nil
+        : DoryPCV1ABI.gpuHostVisibleBARAddress(memoryBytes: UInt64(memoryBytes))
     )
     let keyboardDevice = try DoryPCVirtioInputPCIDevice(
       address: DoryPCV1ABI.keyboardPCIAddress,

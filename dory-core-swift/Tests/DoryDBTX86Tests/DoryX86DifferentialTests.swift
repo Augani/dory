@@ -3,6 +3,36 @@ import Testing
 @testable import DoryDBTX86
 
 @Suite struct DoryX86DifferentialTests {
+  @Test func protected32FlatDSLoadsAndStoresAgreeWithIndependentInterpreterMemory() throws {
+    #if arch(arm64)
+      let programs: [[UInt8]] = [[0xA1, 0, 1, 0, 0], [0xA3, 0, 1, 0, 0]]
+      for bytes in programs {
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
+        try memory.write(at: 0, bytes: bytes)
+        try memory.writeScalar(at: 0x100, value: 0x1122_3344, byteCount: 4)
+        let state = try DoryX86ArchitecturalState(
+          registers: .init(rax: 0x5566_7788), rip: 0,
+          cs: .init(selector: 8, attributes: 0xC09B, limit: .max),
+          ds: .init(selector: 0x10, attributes: 0xC093, limit: .max),
+          control: .init(cr0: 0x11)
+        )
+        let result = try DoryX86DifferentialHarness().compare(
+          bytes: bytes, initialState: state, memory: memory, mode: .protected32)
+        #expect(result.compiled.tier == .baseline)
+        #expect(result.compiled.requiresMemoryCallbacks)
+        #expect(result.agrees, "\(String(describing: result.firstDivergence))")
+        #expect(result.jitMemory.memory == result.interpreterMemory.memory)
+
+        var nonFlat = state
+        nonFlat.ds.base = 0x1000
+        #expect(throws: DoryX86DifferentialError.requiresBaselineJIT) {
+          try DoryX86DifferentialHarness().compare(
+            bytes: bytes, initialState: nonFlat, memory: memory, mode: .protected32)
+        }
+      }
+    #endif
+  }
+
   @Test func baselineJITAgreesWithInterpreterAtBlockBoundary() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [

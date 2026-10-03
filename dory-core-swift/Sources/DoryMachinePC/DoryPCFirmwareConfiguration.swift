@@ -15,8 +15,8 @@ public final class DoryPCFirmwareConfiguration: DoryPCMMIODevice, @unchecked Sen
 
   public enum ABI {
     public static let magic: UInt64 = 0x3146_4350_5952_4f44  // "DORYPCF1"
-    public static let version: UInt32 = 1
-    public static let headerByteCount: UInt32 = 144
+    public static let version: UInt32 = 2
+    public static let headerByteCount: UInt32 = 168
 
     public static let magicOffset = 0
     public static let versionOffset = 8
@@ -39,6 +39,9 @@ public final class DoryPCFirmwareConfiguration: DoryPCMMIODevice, @unchecked Sen
     public static let firmwareCodeBaseOffset = 120
     public static let firmwareCodeBytesOffset = 128
     public static let highRAMBaseOffset = 136
+    public static let pcie64MMIOBaseOffset = 144
+    public static let pcie64MMIOBytesOffset = 152
+    public static let hostVisibleGPURegionIDOffset = 160
   }
 
   public let baseAddress = DoryPCV1ABI.firmwareConfigurationBase
@@ -53,6 +56,7 @@ public final class DoryPCFirmwareConfiguration: DoryPCMMIODevice, @unchecked Sen
     totalRAMBytes: UInt64,
     processorCount: Int,
     flags: Flags = [],
+    hostVisibleGPURegionID: UInt8? = nil,
     acpiRSDPAddress: UInt64 = DoryPCV1ABI.acpiBase,
     smbiosEntryAddress: UInt64 = DoryPCV1ABI.smbiosBase
   ) {
@@ -88,6 +92,17 @@ public final class DoryPCFirmwareConfiguration: DoryPCMMIODevice, @unchecked Sen
     Self.store(DoryPCV1ABI.firmwareCodeBase, at: ABI.firmwareCodeBaseOffset, in: &bytes)
     Self.store(DoryPCV1ABI.firmwareCodeBytes, at: ABI.firmwareCodeBytesOffset, in: &bytes)
     Self.store(DoryPCV1ABI.above4GRAMStart, at: ABI.highRAMBaseOffset, in: &bytes)
+    Self.store(
+      DoryPCV1ABI.pcie64MMIOBase(memoryBytes: totalRAMBytes),
+      at: ABI.pcie64MMIOBaseOffset,
+      in: &bytes
+    )
+    Self.store(DoryPCV1ABI.pcie64MMIOBytes, at: ABI.pcie64MMIOBytesOffset, in: &bytes)
+    Self.store(
+      UInt32(hostVisibleGPURegionID ?? 0),
+      at: ABI.hostVisibleGPURegionIDOffset,
+      in: &bytes
+    )
     page = bytes
   }
 

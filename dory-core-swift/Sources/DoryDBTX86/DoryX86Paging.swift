@@ -66,7 +66,7 @@ public struct DoryX86Translation: Sendable, Hashable {
 
 /// Bounded, process-local paging-path counters used to attribute full-system execution cost.
 /// They are diagnostic only and do not participate in guest-visible architectural state.
-public struct DoryX86PagingDiagnostics: Sendable, Hashable {
+public struct DoryX86PagingDiagnostics: Codable, Sendable, Hashable {
   public let translationRequests: UInt64
   public let pagingDisabledBypasses: UInt64
   public let recentTLBHits: UInt64
@@ -805,6 +805,9 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   public let memoryAccessCoordinator: DoryX86MemoryAccessCoordinator
   private let pagingUnit: DoryX86PagingUnit
   public let jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy
+  /// Machine owners must publish a tracked page-table write before executing the next guest
+  /// instruction. A native callback cannot do that while another vCPU may still be running.
+  public let jitPageTableWritesRequireInterpreter: Bool
   // Control-register instructions must invalidate the supplied translated-memory cache too.
   var translationUnit: DoryX86PagingUnit { pagingUnit }
   private var context: DoryX86PagingContext
@@ -823,7 +826,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
     physicalMemory: any DoryX86Memory,
     pagingUnit: DoryX86PagingUnit,
     context: DoryX86PagingContext,
-    jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy = .protectedHostPages
+    jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy = .protectedHostPages,
+    jitPageTableWritesRequireInterpreter: Bool = false
   ) {
     self.physicalMemory = physicalMemory
     scalarPhysicalMemory = physicalMemory as? any DoryX86ScalarMemory
@@ -837,6 +841,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
     self.pagingUnit = pagingUnit
     self.context = context
     self.jitWriteCoherencePolicy = jitWriteCoherencePolicy
+    self.jitPageTableWritesRequireInterpreter = jitPageTableWritesRequireInterpreter
   }
 
   /// Refreshes the architectural view before a serialized vCPU dispatch. The owning machine must
@@ -1131,6 +1136,30 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
       throw pagingUnit.normalizeBackingFault(
         error, linearAddress: address, access: .write, context: context)
     }
+  }
+
+  /// Machine-owned native callbacks use the physical RAM's atomic tracked-write decision.
+  /// Crossing a page leaves both permission/fault ordering and the page-table boundary to the
+  /// interpreter; no byte is written speculatively before that fallback.
+  func writeScalarFromMachineJIT(at address: UInt64, value: UInt64, byteCount: Int) throws {
+    guard [1, 2, 4, 8].contains(byteCount),
+      Int(4_096 - (address & 0xfff)) >= byteCount,
+      let tracker = physicalMemory as? any DoryX86PageTableWriteTrackingMemory
+    else { throw DoryX86PageTableWritePolicyError.trackedWriteRejected }
+    let translation = try pagingUnit.translate(
+      linearAddress: address,
+      access: .write,
+      context: context,
+      physicalMemory: physicalMemory
+    )
+    let bytes = (0..<byteCount).map {
+      UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
+    }
+    _ = try tracker.writeClassifyingPageTableMutation(
+      at: translation.physicalAddress,
+      bytes: bytes,
+      allowTrackedWrite: false
+    )
   }
 
   public func compareExchangeScalar(

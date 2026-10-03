@@ -154,6 +154,8 @@ public struct ISAEngineHostTimeBreakdownSnapshot: Codable, Sendable, Hashable {
   public let interruptDeliveryNanoseconds: UInt64
   public let processorExecutionNanoseconds: UInt64
   public let idleWaitNanoseconds: UInt64
+  /// Overlaps execution wall time while the worker is running; excluded from additive totals.
+  public let coordinatorWaitNanoseconds: UInt64
 
   public init(_ breakdown: DoryPCHostTimeBreakdown) {
     self.totalNanoseconds = breakdown.totalNanoseconds
@@ -162,12 +164,14 @@ public struct ISAEngineHostTimeBreakdownSnapshot: Codable, Sendable, Hashable {
     self.interruptDeliveryNanoseconds = breakdown.interruptDeliveryNanoseconds
     self.processorExecutionNanoseconds = breakdown.processorExecutionNanoseconds
     self.idleWaitNanoseconds = breakdown.idleWaitNanoseconds
+    self.coordinatorWaitNanoseconds = breakdown.coordinatorWaitNanoseconds
   }
 
   public init(
     totalNanoseconds: UInt64, processorEventNanoseconds: UInt64,
     clockAdvancementNanoseconds: UInt64, interruptDeliveryNanoseconds: UInt64,
-    processorExecutionNanoseconds: UInt64, idleWaitNanoseconds: UInt64
+    processorExecutionNanoseconds: UInt64, idleWaitNanoseconds: UInt64,
+    coordinatorWaitNanoseconds: UInt64 = 0
   ) {
     self.totalNanoseconds = totalNanoseconds
     self.processorEventNanoseconds = processorEventNanoseconds
@@ -175,6 +179,27 @@ public struct ISAEngineHostTimeBreakdownSnapshot: Codable, Sendable, Hashable {
     self.interruptDeliveryNanoseconds = interruptDeliveryNanoseconds
     self.processorExecutionNanoseconds = processorExecutionNanoseconds
     self.idleWaitNanoseconds = idleWaitNanoseconds
+    self.coordinatorWaitNanoseconds = coordinatorWaitNanoseconds
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case totalNanoseconds, processorEventNanoseconds, clockAdvancementNanoseconds
+    case interruptDeliveryNanoseconds, processorExecutionNanoseconds, idleWaitNanoseconds
+    case coordinatorWaitNanoseconds
+  }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      totalNanoseconds: try values.decode(UInt64.self, forKey: .totalNanoseconds),
+      processorEventNanoseconds: try values.decode(UInt64.self, forKey: .processorEventNanoseconds),
+      clockAdvancementNanoseconds: try values.decode(UInt64.self, forKey: .clockAdvancementNanoseconds),
+      interruptDeliveryNanoseconds: try values.decode(UInt64.self, forKey: .interruptDeliveryNanoseconds),
+      processorExecutionNanoseconds: try values.decode(UInt64.self, forKey: .processorExecutionNanoseconds),
+      idleWaitNanoseconds: try values.decode(UInt64.self, forKey: .idleWaitNanoseconds),
+      coordinatorWaitNanoseconds: try values.decodeIfPresent(
+        UInt64.self, forKey: .coordinatorWaitNanoseconds) ?? 0
+    )
   }
 }
 

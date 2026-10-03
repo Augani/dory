@@ -10,10 +10,16 @@
   DoryPciHostBridgeLib.c
 
 [Packages]
+  DoryPCPkg/DoryPCPkg.dec
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
   OvmfPkg/OvmfPkg.dec
 
 [LibraryClasses]
   BaseMemoryLib
+  IoLib
+  PcdLib
   PciHostBridgeUtilityLib
+
+[Pcd]
+  gDoryPCTokenSpaceGuid.PcdFirmwareConfigurationBase

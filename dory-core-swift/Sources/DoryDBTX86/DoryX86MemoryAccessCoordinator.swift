@@ -1,6 +1,25 @@
 import Darwin
+import Dispatch
 import DoryJITRuntimeC
 import Foundation
+
+/// Machine-wide range contention, shared by interpreter, generated-code and DMA accesses.
+/// Counts describe leases, not guest instructions: a covering ordinary batch admits one lease.
+/// Wait durations include only completed, actually blocked requests and are monotonic wall time,
+/// not host CPU time. Current waiter gauges expose requests whose duration is not yet committed.
+public struct DoryX86MemoryAccessDiagnostics: Codable, Sendable, Hashable {
+  public let schemaVersion: UInt16
+  public let ordinaryAcquisitions: UInt64
+  public let exclusiveAcquisitions: UInt64
+  public let contendedOrdinaryAcquisitions: UInt64
+  public let contendedExclusiveAcquisitions: UInt64
+  public let ordinaryWaitNanoseconds: UInt64
+  public let exclusiveWaitNanoseconds: UInt64
+  public let activeOrdinaryLeases: UInt64
+  public let activeExclusiveLeases: UInt64
+  public let waitingOrdinaryLeases: UInt64
+  public let waitingExclusiveLeases: UInt64
+}
 
 /// Machine-owned byte-range rendezvous for guest RAM.
 ///
@@ -20,8 +39,42 @@ public final class DoryX86MemoryAccessCoordinator: @unchecked Sendable {
   private var nextToken: UInt64 = 1
   private var active: [UInt64: LeaseRecord] = [:]
   private var waitingExclusive: [UInt64: LeaseRecord] = [:]
+  private var waitingOrdinary: UInt64 = 0
+  private var ordinaryAcquisitions: UInt64 = 0
+  private var exclusiveAcquisitions: UInt64 = 0
+  private var contendedOrdinaryAcquisitions: UInt64 = 0
+  private var contendedExclusiveAcquisitions: UInt64 = 0
+  private var ordinaryWaitNanoseconds: UInt64 = 0
+  private var exclusiveWaitNanoseconds: UInt64 = 0
+  private let contentionClock: @Sendable () -> UInt64
 
-  public init() {}
+  public init() {
+    contentionClock = { DispatchTime.now().uptimeNanoseconds }
+  }
+
+  /// Deterministic contention timing without changing admission or the uncontended path.
+  init(contentionClock: @escaping @Sendable () -> UInt64) {
+    self.contentionClock = contentionClock
+  }
+
+  public var diagnostics: DoryX86MemoryAccessDiagnostics {
+    condition.withLock {
+      let exclusiveCount = active.values.lazy.filter(\.exclusive).count
+      return .init(
+        schemaVersion: 1,
+        ordinaryAcquisitions: ordinaryAcquisitions,
+        exclusiveAcquisitions: exclusiveAcquisitions,
+        contendedOrdinaryAcquisitions: contendedOrdinaryAcquisitions,
+        contendedExclusiveAcquisitions: contendedExclusiveAcquisitions,
+        ordinaryWaitNanoseconds: ordinaryWaitNanoseconds,
+        exclusiveWaitNanoseconds: exclusiveWaitNanoseconds,
+        activeOrdinaryLeases: UInt64(active.count - exclusiveCount),
+        activeExclusiveLeases: UInt64(exclusiveCount),
+        waitingOrdinaryLeases: waitingOrdinary,
+        waitingExclusiveLeases: UInt64(waitingExclusive.count)
+      )
+    }
+  }
 
   /// Enters one ordinary access. The supplied ranges must use the shared backing-address
   /// coordinate system exposed by the owning memory object.
@@ -106,9 +159,38 @@ public final class DoryX86MemoryAccessCoordinator: @unchecked Sendable {
     let token = allocateToken()
     let record = LeaseRecord(owner: owner, ranges: ranges, exclusive: exclusive)
     if exclusive { waitingExclusive[token] = record }
-    while conflicts(record, token: token) { condition.wait() }
+    var waitStarted: UInt64?
+    while conflicts(record, token: token) {
+      if waitStarted == nil {
+        // No clock read on an uncontended lease. Spurious broadcasts still describe one
+        // blocked admission and one elapsed interval, not a new request per wakeup.
+        waitStarted = contentionClock()
+        if exclusive {
+          Self.saturatingAdd(1, to: &contendedExclusiveAcquisitions)
+        } else {
+          Self.saturatingAdd(1, to: &contendedOrdinaryAcquisitions)
+          waitingOrdinary += 1
+        }
+      }
+      condition.wait()
+    }
+    if let waitStarted {
+      let completed = contentionClock()
+      let elapsed = completed >= waitStarted ? completed - waitStarted : 0
+      if exclusive {
+        Self.saturatingAdd(elapsed, to: &exclusiveWaitNanoseconds)
+      } else {
+        waitingOrdinary -= 1
+        Self.saturatingAdd(elapsed, to: &ordinaryWaitNanoseconds)
+      }
+    }
     if exclusive { waitingExclusive.removeValue(forKey: token) }
     active[token] = record
+    if exclusive {
+      Self.saturatingAdd(1, to: &exclusiveAcquisitions)
+    } else {
+      Self.saturatingAdd(1, to: &ordinaryAcquisitions)
+    }
     condition.unlock()
     return DoryX86MemoryAccessLease(coordinator: self, token: token)
   }
@@ -129,17 +211,37 @@ public final class DoryX86MemoryAccessCoordinator: @unchecked Sendable {
     return token
   }
 
+  private static func saturatingAdd(_ value: UInt64, to total: inout UInt64) {
+    let (sum, overflow) = total.addingReportingOverflow(value)
+    total = overflow ? .max : sum
+  }
+
   private func conflicts(_ candidate: LeaseRecord, token: UInt64) -> Bool {
     for record in active.values where record.owner != candidate.owner {
       if (candidate.exclusive || record.exclusive), Self.overlaps(candidate.ranges, record.ranges) {
         return true
       }
     }
-    guard !candidate.exclusive else { return false }
-    // Give already-waiting overlapping writers priority over new ordinary accesses. A lease
-    // owned by this thread is ignored so nested memory helpers cannot deadlock themselves.
+    // A checked read/write inside an already-admitted transaction must be able to finish
+    // that transaction. Making its covered ordinary re-entry wait behind another writer
+    // would leave that writer waiting for the very outer lease its owner cannot finish.
+    // Coverage must be complete: extending the owner's access to new bytes still enters
+    // through normal writer priority, as do all accesses from another owner.
+    if !candidate.exclusive, !waitingExclusive.isEmpty,
+      Self.covers(candidate.ranges, with: Self.normalized(
+        active.values.filter { $0.owner == candidate.owner }.flatMap(\.ranges)))
+    {
+      return false
+    }
+    // Give already-waiting overlapping writers priority over new ordinary accesses and newer
+    // exclusive transactions alike. Otherwise a stream of locked RMWs can repeatedly overtake
+    // an older split/cross-page transaction whenever its current readers drain. Disjoint ranges
+    // still proceed independently. A lease owned by this thread is ignored so nested memory
+    // helpers cannot deadlock themselves.
     for (waitingToken, record) in waitingExclusive
-    where waitingToken != token && record.owner != candidate.owner {
+    where (candidate.exclusive ? waitingToken < token : waitingToken != token)
+      && record.owner != candidate.owner
+    {
       if Self.overlaps(candidate.ranges, record.ranges) { return true }
     }
     return false
@@ -182,6 +284,25 @@ public final class DoryX86MemoryAccessCoordinator: @unchecked Sendable {
       }
     }
     return false
+  }
+
+  /// Both inputs are normalized, so one covering interval must contain each requested
+  /// interval. Adjacent owner leases have already been merged; gaps remain authoritative.
+  private static func covers(
+    _ requested: [Range<UInt64>],
+    with coverage: [Range<UInt64>]
+  ) -> Bool {
+    var index = 0
+    for range in requested {
+      while index < coverage.count, coverage[index].upperBound <= range.lowerBound {
+        index += 1
+      }
+      guard index < coverage.count,
+        coverage[index].lowerBound <= range.lowerBound,
+        coverage[index].upperBound >= range.upperBound
+      else { return false }
+    }
+    return true
   }
 }
 

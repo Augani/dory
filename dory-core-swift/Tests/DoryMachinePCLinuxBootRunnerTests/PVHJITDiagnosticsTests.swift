@@ -1,3 +1,4 @@
+import DoryMachinePC
 import Foundation
 import Testing
 
@@ -188,6 +189,33 @@ import Testing
     #expect(decoded.schemaVersion == 2)
     #expect(decoded.fixtureManifest?.sha256 == String(repeating: "f", count: 64))
     #expect(decoded.runnerExecutable?.sha256 == String(repeating: "e", count: 64))
+  }
+
+  @Test func diagnosticReceiptRetainsOptInHostTimingAndReadsOlderReceipts() throws {
+    let configuration = try PVHRunnerConfiguration(arguments: [
+      "--kernel", "/kernel", "--kernel-sha256", String(repeating: "a", count: 64),
+      "--initrd", "/initrd", "--initrd-sha256", String(repeating: "b", count: 64),
+      "--command-line", "console=ttyS0 rdinit=/init", "--tier", "interpreter",
+      "--memory-mib", "512", "--max-instructions", "1000", "--wall-seconds", "10",
+      "--run-id", "fe154770-27f1-4d31-93b5-790932bdf83c", "--workload", "file-io",
+      "--diagnostics", "/receipt.json",
+      "--fixture-manifest", "/fixture-manifest.json", "--fixture-manifest-sha256",
+      String(repeating: "f", count: 64), "--source-commit", String(repeating: "c", count: 40),
+      "--source-tree", "clean", "--host-class", "apple-m2-pro", "--processor-count", "1",
+      "--jit-write-policy", "protected-host-pages", "--raw-target-prediction", "none",
+    ])
+    var record = PVHDiagnosticRecord(configuration: configuration)
+    let previousReceipt = try JSONEncoder().encode(record)
+    #expect(try JSONDecoder().decode(PVHDiagnosticRecord.self, from: previousReceipt)
+      .hostExecutionDiagnostics == nil)
+
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024, instrumentationEnabled: true)
+    record.hostExecutionDiagnostics = machine.hostExecutionDiagnostics
+    let decoded = try JSONDecoder().decode(
+      PVHDiagnosticRecord.self, from: JSONEncoder().encode(record))
+    #expect(decoded.hostExecutionDiagnostics == machine.hostExecutionDiagnostics)
+    #expect(decoded.hostExecutionDiagnostics?.enabled == true)
   }
 
   @Test func diagnosticReceiptsRejectTamperedDeclaredScopeAndIdentity() throws {

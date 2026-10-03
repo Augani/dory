@@ -8,6 +8,14 @@ public enum DoryPCAPICError: Error, Sendable, Equatable {
   case sealed
 }
 
+/// Error bits implemented by Dory's integrated xAPIC (Intel SDM Vol. 3A, 10.5.3).
+struct DoryPCLocalAPICErrorStatus: OptionSet, Sendable {
+  let rawValue: UInt32
+  static let sendIllegalVector = Self(rawValue: 1 << 5)
+  static let receiveIllegalVector = Self(rawValue: 1 << 6)
+  static let illegalRegisterAddress = Self(rawValue: 1 << 7)
+}
+
 public enum DoryPCLocalAPICTimerMode: String, Codable, Sendable, Hashable {
   case oneShot
   case periodic
@@ -61,10 +69,14 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   private var interruptRequest: Set<UInt8> = []
   private var inService: Set<UInt8> = []
   private var levelTriggered: Set<UInt8> = []
-  private var timer = DoryPCLocalAPICTimerState()
+  private var timer = DoryPCLocalAPICTimerState(vector: 0)
   private var timerDivideValue: UInt64 = 2
   private var timerBaseClockRemainder: UInt64 = 0
   private var timerInterruptRequestCount: UInt64 = 0
+  private var pendingErrors: DoryPCLocalAPICErrorStatus = []
+  private var visibleErrors: DoryPCLocalAPICErrorStatus = []
+  private var errorLVT: UInt32 = 1 << 16
+  private var errorInterruptArmed = true
   private let diagnosticsEnabled: Bool
   private let onPendingWork: @Sendable () -> Void
 
@@ -96,6 +108,45 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
 
   public func setTaskPriority(_ value: UInt8) {
     lock.withLock { taskPriority = value }
+  }
+
+  var errorStatusRegister: UInt32 { lock.withLock { visibleErrors.rawValue } }
+
+  /// An ESR write transfers errors accumulated since the previous write into the readable
+  /// register, clears that accumulator, and rearms error-interrupt delivery. The written value
+  /// has no effect in xAPIC mode; reads alone neither acknowledge nor clear an error.
+  func writeErrorStatusRegister() {
+    lock.withLock {
+      visibleErrors = pendingErrors
+      pendingErrors = []
+      errorInterruptArmed = true
+    }
+  }
+
+  var errorLVTRegister: UInt32 { lock.withLock { errorLVT } }
+
+  func writeErrorLVTRegister(_ value: UInt32) {
+    let notified = lock.withLock {
+      errorLVT = value & 0x0001_00FF
+      return UInt8(truncatingIfNeeded: value) < 0x10
+        ? recordErrorLocked(.receiveIllegalVector) : false
+    }
+    if notified { onPendingWork() }
+  }
+
+  func recordError(_ error: DoryPCLocalAPICErrorStatus) {
+    let notified = lock.withLock { recordErrorLocked(error) }
+    if notified { onPendingWork() }
+  }
+
+  private func recordErrorLocked(_ error: DoryPCLocalAPICErrorStatus) -> Bool {
+    pendingErrors.formUnion(error)
+    let vector = UInt8(truncatingIfNeeded: errorLVT)
+    guard errorInterruptArmed, softwareEnabled, errorLVT & (1 << 16) == 0,
+      vector >= 0x10 else { return false }
+    errorInterruptArmed = false
+    injectLocked(vector: vector, levelTriggered: false)
+    return true
   }
 
   var logicalDestinationRegister: UInt32 {
@@ -229,6 +280,7 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
         initialCount: initialCount,
         currentCount: initialCount
       )
+      timerBaseClockRemainder = 0
     }
   }
 
@@ -250,6 +302,37 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
       timer.mode = mode
     }
   }
+
+  /// Guest LVT writes retain even an illegal vector. Keeping the preceding valid timer would
+  /// deliver the wrong interrupt after a guest disables or reprograms it. The timer still counts
+  /// down, but invalid vectors report an APIC error and can never populate IRR bits 0...15.
+  /// The MMIO transport publishes the returned notification after releasing its register lock.
+  func configureTimerFromMMIO(
+    vector: UInt8,
+    masked: Bool,
+    mode: DoryPCLocalAPICTimerMode,
+    reloadCount: UInt32?
+  ) -> Bool {
+    lock.withLock {
+      if let reloadCount {
+        timer = .init(vector: vector, masked: masked, mode: mode,
+          initialCount: reloadCount, currentCount: reloadCount)
+        timerBaseClockRemainder = 0
+      } else {
+        if timer.mode != mode {
+          timer.currentCount = 0
+          timerBaseClockRemainder = 0
+        }
+        timer.vector = vector
+        timer.masked = masked
+        timer.mode = mode
+      }
+      return reloadCount == nil && vector < 0x10
+        ? recordErrorLocked(.receiveIllegalVector) : false
+    }
+  }
+
+  func publishPendingWork() { onPendingWork() }
 
   /// Updates the architectural xAPIC timer divisor without reloading the current count.
   public func configureTimerDivideValue(_ divideValue: UInt32) {
@@ -301,8 +384,12 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
     var injected = false
     if !timer.masked {
       if diagnosticsEnabled, timerInterruptRequestCount < .max { timerInterruptRequestCount += 1 }
-      injectLocked(vector: timer.vector, levelTriggered: false)
-      injected = true
+      if timer.vector < 0x10 {
+        injected = recordErrorLocked(.receiveIllegalVector)
+      } else {
+        injectLocked(vector: timer.vector, levelTriggered: false)
+        injected = true
+      }
     }
     switch timer.mode {
     case .oneShot:
@@ -486,7 +573,7 @@ public final class DoryPCIOAPIC: @unchecked Sendable {
   func configureMMIORedirectionEntry(pin: Int, route: DoryPCIOAPICRoute) throws {
     // Guest MMIO writes store the architectural redirection entry even when the vector field is in
     // the reserved 0...15 range; such an entry is not deliverable until software programs a valid
-    // vector. Dory does not yet expose local-APIC ESR illegal-vector reporting.
+    // vector.
     try storeRedirectionEntry(pin: pin, route: route)
   }
 

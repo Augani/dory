@@ -66,6 +66,45 @@ import Testing
     #expect(secondReaderEntered.wait(timeout: .now() + 2) == .success)
   }
 
+  @Test func olderOverlappingLockedTransactionCannotBeOvertaken() throws {
+    let coordinator = DoryX86MemoryAccessCoordinator()
+    let ordinary = coordinator.acquireOrdinary(ranges: [0x3000..<0x3040])
+    let firstEntered = DispatchSemaphore(value: 0)
+    let releaseFirst = DispatchSemaphore(value: 0)
+    let firstFinished = DispatchSemaphore(value: 0)
+    startMemoryAccessThread {
+      let lease = coordinator.acquireExclusive(ranges: [0x3008..<0x3020])
+      firstEntered.signal()
+      releaseFirst.wait()
+      lease.release()
+      firstFinished.signal()
+    }
+    try waitUntil(timeout: .now() + 2) { coordinator.waitingExclusiveCount == 1 }
+
+    let secondEntered = DispatchSemaphore(value: 0)
+    startMemoryAccessThread {
+      let lease = coordinator.acquireExclusive(ranges: [0x3018..<0x3028])
+      secondEntered.signal()
+      lease.release()
+    }
+    try waitUntil(timeout: .now() + 2) { coordinator.waitingExclusiveCount == 2 }
+
+    let disjointEntered = DispatchSemaphore(value: 0)
+    startMemoryAccessThread {
+      let lease = coordinator.acquireExclusive(ranges: [0x4000..<0x4010])
+      disjointEntered.signal()
+      lease.release()
+    }
+    #expect(disjointEntered.wait(timeout: .now() + 2) == .success)
+
+    ordinary.release()
+    #expect(firstEntered.wait(timeout: .now() + 2) == .success)
+    #expect(secondEntered.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
+    releaseFirst.signal()
+    #expect(firstFinished.wait(timeout: .now() + 2) == .success)
+    #expect(secondEntered.wait(timeout: .now() + 2) == .success)
+  }
+
   @Test func oneMultiRangeLeaseIsAtomicAndReentrantForItsOwner() {
     let coordinator = DoryX86MemoryAccessCoordinator()
     let exclusive = coordinator.acquireExclusive(

@@ -136,6 +136,11 @@ public enum DoryX86SavedStateError: Error, Sendable, Equatable, CustomStringConv
   case cpuIdentityMismatch(expected: DoryX86CPUIdentity, actual: DoryX86CPUIdentity)
   case xcr0OutsideProfile(value: UInt64, allowed: UInt64)
   case osxsaveEnabledOutsideProfile(cr4: UInt64)
+  case cr4OutsideExecutionContract(value: UInt64, allowed: UInt64)
+  case cr0OutsideExecutionContract(value: UInt64, allowed: UInt64)
+  case invalidCR0Configuration(value: UInt64)
+  case eferOutsideExecutionContract(value: UInt64, allowed: UInt64)
+  case inconsistentLongMode(cr0: UInt64, cr4: UInt64, efer: UInt64)
 
   public var description: String {
     switch self {
@@ -151,6 +156,16 @@ public enum DoryX86SavedStateError: Error, Sendable, Equatable, CustomStringConv
       "x86 saved-state XCR0 0x\(String(value, radix: 16)) exceeds profile mask 0x\(String(allowed, radix: 16))"
     case .osxsaveEnabledOutsideProfile(let cr4):
       "x86 saved-state CR4.OSXSAVE is enabled outside the resolved profile (CR4 0x\(String(cr4, radix: 16)))"
+    case .cr4OutsideExecutionContract(let value, let allowed):
+      "x86 saved-state CR4 0x\(String(value, radix: 16)) exceeds execution mask 0x\(String(allowed, radix: 16))"
+    case .cr0OutsideExecutionContract(let value, let allowed):
+      "x86 saved-state CR0 0x\(String(value, radix: 16)) exceeds stored execution mask 0x\(String(allowed, radix: 16))"
+    case .invalidCR0Configuration(let value):
+      "x86 saved-state CR0 0x\(String(value, radix: 16)) violates the fixed ET, PG/PE, or NW/CD contract"
+    case .eferOutsideExecutionContract(let value, let allowed):
+      "x86 saved-state EFER 0x\(String(value, radix: 16)) exceeds execution mask 0x\(String(allowed, radix: 16))"
+    case .inconsistentLongMode(let cr0, let cr4, let efer):
+      "x86 saved-state IA-32e controls disagree (CR0 0x\(String(cr0, radix: 16)), CR4 0x\(String(cr4, radix: 16)), EFER 0x\(String(efer, radix: 16)))"
     }
   }
 }
@@ -245,10 +260,48 @@ public struct DoryX86SavedStateEnvelope: Codable, Sendable, Hashable {
     guard cr4 & (1 << 18) == 0 || resolved.cpuProfile.supports(.xsave) else {
       throw DoryX86SavedStateError.osxsaveEnabledOutsideProfile(cr4: cr4)
     }
+    let allowedCR4 = resolved.cpuProfile.implementedCR4Mask
+    guard cr4 & ~allowedCR4 == 0 else {
+      throw DoryX86SavedStateError.cr4OutsideExecutionContract(value: cr4, allowed: allowedCR4)
+    }
     let allowedXCR0 = Self.allowedXCR0(for: resolved.cpuProfile)
     let xcr0 = architecturalState.control.xcr0
     guard xcr0 & ~allowedXCR0 == 0 else {
       throw DoryX86SavedStateError.xcr0OutsideProfile(value: xcr0, allowed: allowedXCR0)
+    }
+    // Public architectural controls are mutable after their constructor has
+    // validated XSTATE. Save/migration must not bypass that existing shape gate.
+    // Keep profile-mask error precedence above, and generic decode's error type.
+    guard xcr0 & 1 == 1, xcr0 & 4 == 0 || xcr0 & 2 != 0 else {
+      throw DoryX86StateError.invalidXCR0(xcr0)
+    }
+
+    // These are stored control facts, not new CPUID/feature qualifications.
+    // Preserve earlier format/profile/CR4/XCR0 errors before the new checks.
+    let cr0 = architecturalState.control.cr0
+    let allowedCR0 = DoryX86CPUProfile.implementedCR0Mask
+    guard cr0 & ~allowedCR0 == 0 else {
+      throw DoryX86SavedStateError.cr0OutsideExecutionContract(value: cr0, allowed: allowedCR0)
+    }
+    let paging = cr0 & (1 << 31) != 0
+    guard cr0 & (1 << 4) != 0,
+      !paging || cr0 & 1 != 0,
+      cr0 & (1 << 29) == 0 || cr0 & (1 << 30) != 0
+    else { throw DoryX86SavedStateError.invalidCR0Configuration(value: cr0) }
+
+    let efer = architecturalState.control.efer
+    let allowedEFER = resolved.cpuProfile.implementedEFERWritableMask | (1 << 10)
+    guard efer & ~allowedEFER == 0 else {
+      throw DoryX86SavedStateError.eferOutsideExecutionContract(value: efer, allowed: allowedEFER)
+    }
+    let longModeEnabled = efer & (1 << 8) != 0
+    let longModeActive = efer & (1 << 10) != 0
+    // MOV CR0 sets LMA exactly when PG enters with LME; WRMSR cannot change
+    // LME under paging or independently write LMA, and active IA-32e keeps PAE.
+    guard longModeActive == (paging && longModeEnabled),
+      !longModeActive || cr4 & (1 << 5) != 0
+    else {
+      throw DoryX86SavedStateError.inconsistentLongMode(cr0: cr0, cr4: cr4, efer: efer)
     }
   }
 

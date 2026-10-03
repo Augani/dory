@@ -1,4 +1,4 @@
-import DoryMachinePC
+@testable import DoryMachinePC
 import DoryVirtio
 import Foundation
 import Testing
@@ -232,7 +232,7 @@ import Testing
       memoryBytes: 2 * 1024 * 1024,
       pciFunctions: [function]
     )
-    let memory = TrackingVirtioGuestMemory(machine.physicalMemory)
+    let memory = TrackingVirtioGuestMemory(machine.qualificationDMAMemory)
     let processorCalls = LockedValue(0)
     if deferred {
       function.transport.connectDeferredQueueProcessor(memory: memory) { _, _, _, completion in
@@ -271,13 +271,181 @@ import Testing
     #expect(try machine.physicalMemory.read(at: 0x3000, byteCount: 70) == usedRing)
   }
 
+  @Test(arguments: [false, true])
+  func failedStatusPreventsDoorbellDMAUntilGenuineReset(deferred: Bool) throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024, pciFunctions: [function])
+    let memory = TrackingVirtioGuestMemory(machine.qualificationDMAMemory)
+    let processorCalls = LockedValue(0)
+    if deferred {
+      function.transport.connectDeferredQueueProcessor(memory: memory) { _, _, _, completion in
+        processorCalls.value += 1
+        completion.publish([9, 8, 7, 6])
+      }
+    } else {
+      function.transport.connectQueueProcessor(memory: memory) { _, chain, memory in
+        processorCalls.value += 1
+        try memory.write(at: chain.descriptors[1].address, bytes: [9, 8, 7, 6])
+        return 4
+      }
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try write8(machine, bar + 0x14, 0x80)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1, notify: false)
+    let usedRing = try machine.physicalMemory.read(at: 0x3000, byteCount: 70)
+    let accesses = memory.accessCount
+    try write16(machine, bar + 0x100, 0)
+    function.transport.processQueue(0)
+
+    // FAILED is cumulative, just like DRIVER_OK: readiness cannot clear it or resume DMA.
+    try write8(machine, bar + 0x14, 0x0F)
+    try write16(machine, bar + 0x1C, 1)
+    try write16(machine, bar + 0x100, 0)
+    #expect(try read8(machine, bar + 0x14) == 0x8F)
+    #expect(memory.accessCount == accesses)
+    #expect(processorCalls.value == 0)
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try machine.physicalMemory.read(at: 0x3000, byteCount: 70) == usedRing)
+
+    try write8(machine, bar + 0x14, 0)
+    #expect(function.transport.deviceState.snapshot().status.isEmpty)
+    #expect(function.transport.deviceState.snapshot().negotiatedFeatures.isEmpty)
+    #expect(!(try function.transport.queueSnapshot(at: 0).enabled))
+    try write16(machine, 0x2002, 0)
+    try write16(machine, 0x3002, 0)
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    function.transport.processQueue(0)
+    #expect(try read8(machine, bar + 0x14) == 0x0F)
+    #expect(processorCalls.value == 1)
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 6])
+    #expect(try read16(machine, 0x3002) == 1)
+  }
+
+  @Test func failedStatusRejectsCapturedCompletionBeforeDMAAndSuccessorPublication() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024, pciFunctions: [function])
+    let memory = TrackingVirtioGuestMemory(machine.qualificationDMAMemory)
+    let completions = DeferredCompletionRecorder()
+    function.transport.connectDeferredQueueProcessor(memory: memory) { _, _, _, completion in
+      completions.append(completion)
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    let oldCompletion = try #require(completions.removeFirst())
+    try write8(machine, bar + 0x14, 0x80)
+    let usedRing = try machine.physicalMemory.read(at: 0x3000, byteCount: 70)
+    let accesses = memory.accessCount
+    #expect(!oldCompletion.publish([5, 5, 5, 5]))
+    #expect(memory.accessCount == accesses)
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try machine.physicalMemory.read(at: 0x3000, byteCount: 70) == usedRing)
+
+    try write8(machine, bar + 0x14, 0)
+    try write16(machine, 0x2002, 0)
+    try write16(machine, 0x3002, 0)
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    let successor = try #require(completions.removeFirst())
+    #expect(!oldCompletion.publish([5, 5, 5, 5]))
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try read16(machine, 0x3002) == 0)
+    #expect(successor.publish([9, 8, 7, 6]))
+    #expect(!successor.publish([5, 5, 5, 5]))
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 6])
+    #expect(try read16(machine, 0x3002) == 1)
+  }
+
+  @Test(arguments: [false, true])
+  func directQueuePreflightsEveryDeviceWriteBeforeBackend(trackUsedRing: Bool) throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024, pciFunctions: [function])
+    let dma = DoryPCDMAGuestMemory(
+      bus: machine.physicalMemory, permitsTrackedPageTableWrites: false)
+    let processorCalls = LockedValue(0)
+    function.transport.connectQueueProcessor(memory: dma) { _, chain, memory in
+      processorCalls.value += 1
+      try memory.write(at: chain.descriptors[1].address, bytes: [1, 2, 3, 4])
+      try memory.write(at: chain.descriptors[2].address, bytes: [5, 6, 7, 8])
+      return 8
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try machine.physicalMemory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(1)) + littleEndian(UInt16(1))
+        + littleEndian(UInt64(0x5000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(3)) + littleEndian(UInt16(2))
+        + littleEndian(UInt64(0x6000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
+    )
+    try machine.physicalMemory.write(at: 0x4000, bytes: [9, 8, 7, 6])
+    machine.physicalMemory.trackPageTablePage(containing: trackUsedRing ? 0x3000 : 0x6000)
+    try machine.physicalMemory.write(at: 0x2004, bytes: littleEndian(UInt16(0)))
+    try machine.physicalMemory.write(at: 0x2002, bytes: littleEndian(UInt16(1)))
+
+    try write16(machine, bar + 0x100, 0)
+
+    #expect(processorCalls.value == 0)
+    #expect(function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try machine.physicalMemory.read(at: 0x6000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try read16(machine, 0x3002) == 0)
+  }
+
+  @Test(arguments: [false, true])
+  func deferredQueuePreflightsEveryDeviceWriteBeforeBackend(trackUsedRing: Bool) throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024, pciFunctions: [function])
+    let dma = DoryPCDMAGuestMemory(
+      bus: machine.physicalMemory, permitsTrackedPageTableWrites: false)
+    let processorCalls = LockedValue(0)
+    function.transport.connectDeferredQueueProcessor(memory: dma) { _, _, _, _ in
+      processorCalls.value += 1
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+    try machine.physicalMemory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(1)) + littleEndian(UInt16(1))
+        + littleEndian(UInt64(0x5000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(3)) + littleEndian(UInt16(2))
+        + littleEndian(UInt64(0x6000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
+    )
+    try machine.physicalMemory.write(at: 0x4000, bytes: [9, 8, 7, 6])
+    machine.physicalMemory.trackPageTablePage(containing: trackUsedRing ? 0x3000 : 0x6000)
+    try machine.physicalMemory.write(at: 0x2004, bytes: littleEndian(UInt16(0)))
+    try machine.physicalMemory.write(at: 0x2002, bytes: littleEndian(UInt16(1)))
+
+    try write16(machine, bar + 0x100, 0)
+
+    #expect(processorCalls.value == 0)
+    #expect(function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try machine.physicalMemory.read(at: 0x6000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try read16(machine, 0x3002) == 0)
+  }
+
   @Test func deviceNeedsResetRejectsCapturedDeferredCompletionBeforeGuestWrites() throws {
     let function = try makeFunction()
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: 2 * 1024 * 1024,
       pciFunctions: [function]
     )
-    let memory = TrackingVirtioGuestMemory(machine.physicalMemory)
+    let memory = TrackingVirtioGuestMemory(machine.qualificationDMAMemory)
     let completions = DeferredCompletionRecorder()
     function.transport.connectDeferredQueueProcessor(memory: memory) {
       _, _, _, completion in
@@ -307,7 +475,7 @@ import Testing
       pciFunctions: [function]
     )
     let completions = DeferredCompletionRecorder()
-    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+    function.transport.connectDeferredQueueProcessor(memory: machine.qualificationDMAMemory) {
       _, _, _, completion in
       completions.append(completion)
     }
@@ -347,7 +515,7 @@ import Testing
       memoryBytes: 2 * 1024 * 1024,
       pciFunctions: [function]
     )
-    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+    function.transport.connectDeferredQueueProcessor(memory: machine.qualificationDMAMemory) {
       _, chain, memory, completion in
       let request = try memory.read(at: chain.descriptors[0].address, byteCount: 4)
       #expect(request == [1, 2, 3, 4])
@@ -386,7 +554,7 @@ import Testing
       pciFunctions: [function]
     )
     let completions = DeferredCompletionRecorder()
-    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+    function.transport.connectDeferredQueueProcessor(memory: machine.qualificationDMAMemory) {
       _, chain, memory, completion in
       let request = try memory.read(at: chain.descriptors[0].address, byteCount: 4)
       #expect(request == [1, 2, 3, 4])
@@ -436,7 +604,7 @@ import Testing
       pciFunctions: [function]
     )
     let completions = DeferredCompletionRecorder()
-    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+    function.transport.connectDeferredQueueProcessor(memory: machine.qualificationDMAMemory) {
       _, _, _, completion in
       completions.append(completion)
     }
@@ -462,7 +630,7 @@ import Testing
       pciFunctions: [function]
     )
     let completions = DeferredCompletionRecorder()
-    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+    function.transport.connectDeferredQueueProcessor(memory: machine.qualificationDMAMemory) {
       _, _, _, completion in
       completions.append(completion)
     }
@@ -558,7 +726,7 @@ import Testing
       pciFunctions: [function]
     )
     let completions = DeferredCompletionRecorder()
-    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+    function.transport.connectDeferredQueueProcessor(memory: machine.qualificationDMAMemory) {
       _, _, _, completion in
       completions.append(completion)
     }
@@ -607,7 +775,7 @@ import Testing
       pciFunctions: [function]
     )
     let completions = DeferredCompletionRecorder()
-    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+    function.transport.connectDeferredQueueProcessor(memory: machine.qualificationDMAMemory) {
       _, _, _, completion in
       completions.append(completion)
     }
@@ -643,7 +811,7 @@ import Testing
       pciFunctions: [function]
     )
     let completions = DeferredCompletionRecorder()
-    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+    function.transport.connectDeferredQueueProcessor(memory: machine.qualificationDMAMemory) {
       _, _, _, completion in
       completions.append(completion)
     }
@@ -851,7 +1019,61 @@ import Testing
     #expect(try readUsedIndex(memory) == 1)
   }
 
-  @Test func deferredCompletionPreflightLeavesEarlyTargetUntouchedWhenLaterTargetIsRevoked()
+  @Test func concurrentQueueKickWaitsForTransportDrainOwner() throws {
+    let function = try makeFunction()
+    let memory = BlockingVirtioGuestMemory(byteCount: 0x20_000, blockedWriteAddress: 0xF_000)
+    let firstEntered = DispatchSemaphore(value: 0)
+    let firstRelease = DispatchSemaphore(value: 0)
+    let callbacks = LockedValue([UInt16]())
+    function.transport.connectQueueProcessor(memory: memory) { index, chain, memory in
+      if index == 0 {
+        firstEntered.signal()
+        guard firstRelease.wait(timeout: .now() + 2) == .success else {
+          throw DoryPCVirtioPCIError.invalidQueue(index)
+        }
+      }
+      callbacks.value = callbacks.value + [index]
+      try memory.write(at: chain.descriptors[0].address, bytes: [UInt8(index), 1, 2, 3])
+      return 4
+    }
+    try function.transport.writeBAR(offset: 0x08, bytes: littleEndian(UInt32(1)))
+    try function.transport.writeBAR(offset: 0x0C, bytes: littleEndian(UInt32(1)))
+    try function.transport.writeBAR(offset: 0x14, bytes: [0x0F])
+    for index: UInt16 in 0..<2 {
+      let base = UInt64(0x1000 + Int(index) * 0x4000)
+      try function.transport.writeBAR(offset: 0x16, bytes: littleEndian(index))
+      try function.transport.writeBAR(offset: 0x18, bytes: littleEndian(UInt16(8)))
+      try function.transport.writeBAR(offset: 0x20, bytes: littleEndian(base))
+      try function.transport.writeBAR(offset: 0x28, bytes: littleEndian(base + 0x1000))
+      try function.transport.writeBAR(offset: 0x30, bytes: littleEndian(base + 0x2000))
+      try function.transport.writeBAR(offset: 0x1C, bytes: littleEndian(UInt16(1)))
+      try memory.write(
+        at: base,
+        bytes: littleEndian(base + 0x3000) + littleEndian(UInt32(4))
+          + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
+      )
+      try memory.write(at: base + 0x1000, bytes: [0, 0, 1, 0, 0, 0])
+    }
+
+    let firstDone = DispatchSemaphore(value: 0)
+    let first = Thread {
+      try? function.transport.writeBAR(offset: 0x100, bytes: littleEndian(UInt16(0)))
+      firstDone.signal()
+    }
+    first.start()
+    #expect(firstEntered.wait(timeout: .now() + 1) == .success)
+    try function.transport.writeBAR(offset: 0x104, bytes: littleEndian(UInt16(1)))
+    #expect(callbacks.value.isEmpty)
+    #expect(try memory.read(at: 0x7002, byteCount: 2) == [0, 0])
+    firstRelease.signal()
+    #expect(firstDone.wait(timeout: .now() + 2) == .success)
+    #expect(callbacks.value == [0, 1])
+    #expect(try memory.read(at: 0x3002, byteCount: 2) == [1, 0])
+    #expect(try memory.read(at: 0x7002, byteCount: 2) == [1, 0])
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+  }
+
+  @Test func deferredCompletionPreflightResetsWithoutPartialWriteWhenLaterTargetIsRevoked()
     throws
   {
     let function = try makeFunction()
@@ -897,31 +1119,16 @@ import Testing
     memory.revokeWrite(at: 0x6000, byteCount: 4)
 
     // A response spanning both writable targets must publish nothing: the early
-    // target is untouched and the used ring stays uncompleted, with no reset.
+    // target and used ring stay untouched. The backend's one-shot callback has
+    // already fired, so the device must request reset instead of silently
+    // stranding the popped chain on an otherwise operational queue.
     #expect(!failed.publish([9, 8, 7, 6, 5, 4, 3, 2]))
     #expect(try memory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
     #expect(try memory.read(at: 0x6000, byteCount: 4) == [0, 0, 0, 0])
     #expect(try readUsedIndex(memory) == 0)
-    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
-
-    // A valid retry/control path on the same queue still publishes exactly once.
-    try memory.write(
-      at: 0x1010,
-      bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(4))
-        + littleEndian(UInt16(1)) + littleEndian(UInt16(3))
-    )
-    try memory.write(
-      at: 0x1030,
-      bytes: littleEndian(UInt64(0x5000)) + littleEndian(UInt32(4))
-        + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
-    )
-    try memory.write(at: 0x2006, bytes: littleEndian(UInt16(1)))
-    try memory.write(at: 0x2002, bytes: littleEndian(UInt16(2)))
-    try function.transport.writeBAR(offset: 0x100, bytes: littleEndian(UInt16(0)))
-    let retry = try #require(completions.removeFirst())
-    #expect(retry.publish([9, 8, 7, 6]))
-    #expect(try memory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 6])
-    #expect(try readUsedIndex(memory) == 1)
+    #expect(function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+    #expect(!failed.publish([9, 8, 7, 6, 5, 4, 3, 2]))
+    #expect(try readUsedIndex(memory) == 0)
   }
 
   private func configureSingleDescriptorQueue(

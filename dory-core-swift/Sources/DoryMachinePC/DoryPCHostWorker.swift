@@ -27,6 +27,9 @@ final class DoryPCExecutionGate: @unchecked Sendable {
 /// state; guest work runs outside it. The machine runtime owns this worker for its entire lifetime,
 /// while each coordinator submission transfers exclusive vCPU ownership until completion.
 final class DoryPCHostWorker: @unchecked Sendable {
+  static let stopJoinTimeout: TimeInterval = 30
+  enum StopError: Error, Sendable { case cancelled }
+
   struct CPUTime: Sendable {
     let executionNanoseconds: UInt64
     let eventNanoseconds: UInt64
@@ -35,12 +38,26 @@ final class DoryPCHostWorker: @unchecked Sendable {
   final class Completion<T: Sendable>: @unchecked Sendable {
     private let condition = NSCondition()
     private var result: Result<T, any Error>?
+    private var onFinished: (@Sendable (Completion<T>) -> Void)?
+
+    init(onFinished: (@Sendable (Completion<T>) -> Void)? = nil) {
+      self.onFinished = onFinished
+    }
 
     func finish(_ result: Result<T, any Error>) {
       condition.lock()
+      guard self.result == nil else {
+        condition.unlock()
+        return
+      }
       self.result = result
+      let notification = onFinished
+      onFinished = nil
       condition.broadcast()
       condition.unlock()
+      // An external waiter may use a different condition. Publish the real completion first,
+      // then notify outside this lock so its callback can inspect/wait for this exact result.
+      notification?(self)
     }
 
     func wait() throws -> T {
@@ -48,6 +65,15 @@ final class DoryPCHostWorker: @unchecked Sendable {
       defer { condition.unlock() }
       while result == nil { condition.wait() }
       return try result!.get()
+    }
+
+    func waitUntilFinished(until deadline: Date) -> Bool {
+      condition.lock()
+      defer { condition.unlock() }
+      while result == nil {
+        if !condition.wait(until: deadline) { return result != nil }
+      }
+      return true
     }
 
     var isFinished: Bool {
@@ -58,7 +84,11 @@ final class DoryPCHostWorker: @unchecked Sendable {
   enum WorkKind: Sendable { case execution, processorEvent, runLoop }
 
   private let condition = NSCondition()
-  private var job: (kind: WorkKind, body: @Sendable () -> Void)?
+  private var job: (
+    kind: WorkKind,
+    body: @Sendable () -> Void,
+    cancel: @Sendable () -> Void
+  )?
   private var stopping = false
   private var exited = false
   private let onExit: @Sendable () -> Void
@@ -81,9 +111,10 @@ final class DoryPCHostWorker: @unchecked Sendable {
 
   func submit<T: Sendable>(
     kind: WorkKind = .execution,
+    onFinished: (@Sendable (Completion<T>) -> Void)? = nil,
     _ body: @escaping @Sendable () throws -> T
   ) -> Completion<T> {
-    let completion = Completion<T>()
+    let completion = Completion<T>(onFinished: onFinished)
     condition.lock()
     precondition(!stopping && job == nil)
     job = (
@@ -109,7 +140,8 @@ final class DoryPCHostWorker: @unchecked Sendable {
         // Publish completion only after instrumentation. A coordinator that has observed every
         // completion can therefore consume an exact per-run CPU-time delta without racing a worker.
         completion.finish(result)
-      }
+      },
+      { completion.finish(.failure(StopError.cancelled)) }
     )
     condition.signal()
     condition.unlock()
@@ -145,10 +177,18 @@ final class DoryPCHostWorker: @unchecked Sendable {
     condition.unlock()
   }
 
-  func stopAndJoin() {
+  func stopAndJoin(until deadline: Date = Date(timeIntervalSinceNow: stopJoinTimeout)) {
     requestStop()
     condition.lock()
-    while !exited { condition.wait() }
+    while !exited {
+      guard condition.wait(until: deadline) || exited else {
+        condition.unlock()
+        // Returning would let the owner destroy guest RAM, device callbacks and native poll
+        // bytes while this thread may still execute a submitted vCPU job. The runner is a
+        // dedicated process; fail-stop containment lets the daemon report/recover that VM.
+        preconditionFailure("DoryPC vCPU worker failed to quiesce before owner teardown")
+      }
+    }
     condition.unlock()
   }
 
@@ -156,6 +196,13 @@ final class DoryPCHostWorker: @unchecked Sendable {
     while true {
       condition.lock()
       while job == nil && !stopping { condition.wait() }
+      if stopping {
+        let pending = job
+        job = nil
+        condition.unlock()
+        pending?.cancel()
+        break
+      }
       guard let work = job else {
         condition.unlock()
         break
@@ -179,7 +226,7 @@ final class DoryPCVCPURuntime: @unchecked Sendable {
   let workers: [DoryPCHostWorker]
 
   private let lifecycleLock = NSLock()
-  private var stopped = false
+  private var stopRequested = false
 
   init(processorCount: Int, instrumentationEnabled: Bool) {
     workers = (0..<processorCount).map { processor in
@@ -192,14 +239,18 @@ final class DoryPCVCPURuntime: @unchecked Sendable {
   }
 
   func stopAndJoin() {
-    let shouldStop = lifecycleLock.withLock {
-      guard !stopped else { return false }
-      stopped = true
+    let shouldRequestStop = lifecycleLock.withLock {
+      guard !stopRequested else { return false }
+      stopRequested = true
       return true
     }
-    guard shouldStop else { return }
-    for worker in workers { worker.requestStop() }
-    for worker in workers { worker.stopAndJoin() }
+    if shouldRequestStop {
+      for worker in workers { worker.requestStop() }
+    }
+    // A second concurrent teardown caller must join as well; an earlier requestStop alone is
+    // not proof that any worker has exited. Share one deadline across the complete worker set.
+    let deadline = Date(timeIntervalSinceNow: DoryPCHostWorker.stopJoinTimeout)
+    for worker in workers { worker.stopAndJoin(until: deadline) }
   }
 
   deinit { stopAndJoin() }

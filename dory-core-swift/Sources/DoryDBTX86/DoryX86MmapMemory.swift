@@ -576,6 +576,18 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     }
   }
 
+  public func intersectsTrackedPageTablePage(at address: UInt64, byteCount: Int) -> Bool {
+    lock.withLock {
+      guard byteCount > 0, address >= baseAddress else { return false }
+      let offset = address - baseAddress
+      guard offset < UInt64(self.byteCount),
+        UInt64(byteCount) <= UInt64(self.byteCount) - offset else { return false }
+      let first = Int(offset / 4_096)
+      let last = Int((offset + UInt64(byteCount) - 1) / 4_096)
+      return trackedPageTablePages.contains { first <= $0 && $0 <= last }
+    }
+  }
+
   public func beginPageTableWalkerWrite() {
     lock.withLock {
       let owner = ObjectIdentifier(Thread.current)
@@ -722,6 +734,38 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       }
       if !storedAtomically { copyBytes(bytes, toLogicalOffset: offset) }
       markCodePagesWritten(offset: offset, byteCount: bytes.count)
+    }
+  }
+
+  public func writeClassifyingPageTableMutation(
+    at address: UInt64,
+    bytes: [UInt8],
+    allowTrackedWrite: Bool
+  ) throws -> Bool {
+    guard !bytes.isEmpty else { return false }
+    return try withOrdinaryAccess(at: address, byteCount: bytes.count, access: .write) {
+      try lock.withLock {
+        let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
+        let firstPage = offset / 4_096
+        let lastPage = (offset + bytes.count - 1) / 4_096
+        let tracked = (firstPage...lastPage).contains { trackedPageTablePages.contains($0) }
+        if tracked && !allowTrackedWrite {
+          throw DoryX86PageTableWritePolicyError.trackedWriteRejected
+        }
+        try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: bytes.count)
+        let resolved = resolvedHostOffset(forLogicalOffset: offset)
+        var storedAtomically = false
+        if bytes.count <= resolved.availableByteCount, [1, 2, 4, 8].contains(bytes.count) {
+          let value = bytes.enumerated().reduce(UInt64(0)) {
+            $0 | UInt64($1.element) << UInt64($1.offset * 8)
+          }
+          storedAtomically = doryX86AtomicScalarStore(
+            to: pointer.advanced(by: resolved.offset), value: value, byteCount: bytes.count)
+        }
+        if !storedAtomically { copyBytes(bytes, toLogicalOffset: offset) }
+        markCodePagesWritten(offset: offset, byteCount: bytes.count)
+        return tracked
+      }
     }
   }
 

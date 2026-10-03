@@ -54,6 +54,13 @@ final class DoryPCPendingWorkWake: @unchecked Sendable {
     condition.unlock()
   }
 
+  func isCurrentDispatchThread(forProcessor processor: Int) -> Bool {
+    condition.withLock {
+      precondition(dispatchThreads.indices.contains(processor))
+      return dispatchThreads[processor] === Thread.current
+    }
+  }
+
   func snapshot() -> Snapshot {
     condition.withLock { Snapshot(generations: generations) }
   }
@@ -243,17 +250,41 @@ public enum DoryPCExecutionTier: String, Codable, Sendable, Hashable {
   case optimizingJIT
 }
 
+/// Immutable construction facts for correlated execution diagnostics. These are the settings
+/// actually supplied to the machine's executors, not a requested policy or qualification claim.
+/// Code-byte limits are executor limits, not measured resident bytes or host allocation sizes.
+public struct DoryPCExecutionConfiguration: Codable, Sendable, Equatable {
+  public enum ClockKind: String, Codable, Sendable { case deterministic, hostMonotonic }
+
+  public let cpuProfile: DoryX86CPUProfile
+  public let memoryBytes: Int
+  public let processorCount: Int
+  public let tier: DoryPCExecutionTier
+  public let baselineJITTier1Enabled: Bool?
+  public let optimizingJITTier1Enabled: Bool?
+  public let rawTargetPredictionOptionBits: UInt8?
+  public let baselineCodeByteLimitsByProcessor: [Int]
+  public let optimizingCodeByteLimitsByProcessor: [Int]
+  public let optimizingWarmupDispatches: UInt8?
+  public let jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy
+  public let clockKind: ClockKind
+  public let instrumentationEnabled: Bool
+}
+
 /// Internal qualification boundary for scheduler modes that are not yet part of the supported
 /// product matrix. Production construction remains serialized unless an in-module qualification
-/// harness explicitly enables the narrowly admitted interpreter pair.
+/// harness explicitly enables narrowly admitted concurrent owners.
 enum DoryPCMultiprocessorExecutionPolicy: Sendable, Equatable {
   case serialized
-  case qualifiedInterpreterPair
+  case qualifiedConcurrentOwners
 }
 
 enum DoryPCConcurrentExecutionAdmissionError: Error, Sendable, Equatable {
   case requiresExactlyTwoProcessors(Int)
+  case requiresExactlyFourProcessors(Int)
   case requiresInterpreter(DoryPCExecutionTier)
+  case requiresBaselineJIT(DoryPCExecutionTier)
+  case invalidInterpreterOwner(Int)
   case requiresHostMonotonicClock
   case callerExtensionDevicesPresent
 }
@@ -401,13 +432,17 @@ public struct DoryPCTimerInterruptDiagnostics: Sendable, Hashable {
   }
 }
 
-public struct DoryPCHostTimeBreakdown: Sendable, Hashable {
+public struct DoryPCHostTimeBreakdown: Codable, Sendable, Hashable {
   public let totalNanoseconds: UInt64
   public let processorEventNanoseconds: UInt64
   public let clockAdvancementNanoseconds: UInt64
   public let interruptDeliveryNanoseconds: UInt64
   public let processorExecutionNanoseconds: UInt64
   public let idleWaitNanoseconds: UInt64
+  /// Time spent waiting for a worker result. This overlaps
+  /// processorExecutionNanoseconds while guest work is in flight; it is not an
+  /// additional component of attributedNanoseconds.
+  public let coordinatorWaitNanoseconds: UInt64
 
   public var attributedNanoseconds: UInt64 {
     [
@@ -436,7 +471,7 @@ public struct DoryPCHostTimeBreakdown: Sendable, Hashable {
 
 /// Opt-in host timing for the coordinated machine run loop. Wall time measures elapsed time;
 /// threadCPU aggregates coordinator and worker CPU time and can exceed wall time during overlap.
-public struct DoryPCHostExecutionDiagnostics: Sendable, Hashable {
+public struct DoryPCHostExecutionDiagnostics: Codable, Sendable, Hashable {
   public let enabled: Bool
   public let runCalls: UInt64
   public let wall: DoryPCHostTimeBreakdown
@@ -725,6 +760,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     case interruptDelivery
     case processorExecution
     case idleWait
+    case coordinatorWait
   }
 
   private struct HostTimeSample {
@@ -739,6 +775,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     var interruptDeliveryNanoseconds: UInt64 = 0
     var processorExecutionNanoseconds: UInt64 = 0
     var idleWaitNanoseconds: UInt64 = 0
+    var coordinatorWaitNanoseconds: UInt64 = 0
 
     var snapshot: DoryPCHostTimeBreakdown {
       .init(
@@ -747,7 +784,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         clockAdvancementNanoseconds: clockAdvancementNanoseconds,
         interruptDeliveryNanoseconds: interruptDeliveryNanoseconds,
         processorExecutionNanoseconds: processorExecutionNanoseconds,
-        idleWaitNanoseconds: idleWaitNanoseconds
+        idleWaitNanoseconds: idleWaitNanoseconds,
+        coordinatorWaitNanoseconds: coordinatorWaitNanoseconds
       )
     }
   }
@@ -848,6 +886,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let memory: any DoryX86PhysicalRAM
   public let physicalMemory: DoryPCPhysicalMemoryBus
   public let physicalMemories: [DoryPCPhysicalMemoryBus]
+  let qualificationDMAMemory: DoryPCDMAGuestMemory
+  private let deviceDMAMemory: DoryPCDMAGuestMemory
   public let ioBus: DoryPCPortIOBus
   public let serial: DoryPCUART16550
   public let ps2Keyboard: DoryPCPS2KeyboardController
@@ -862,6 +902,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let hpet: DoryPCHPET
   public let pciExpress: DoryPCPCIExpressECAM
   public let pciBARWindow: DoryPCPCIBARWindow
+  public let pci64BARWindow: DoryPCPCIBARWindow
   public let powerController: DoryPCPowerController
   public let pagingUnit: DoryX86PagingUnit
   public let pagingUnits: [DoryX86PagingUnit]
@@ -882,6 +923,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let processorCount: Int
   public let executionTier: DoryPCExecutionTier
   public let jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy
+  public let executionConfiguration: DoryPCExecutionConfiguration
 
   private let lock = DoryPCExecutionGate()
   /// Persistent host threads owned for the complete machine lifetime. Public `run` calls borrow
@@ -889,6 +931,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private let vcpuRuntime: DoryPCVCPURuntime
   private let pendingWorkWake: DoryPCPendingWorkWake
   private let translationInvalidationCoordinator: DoryPCTranslationInvalidationCoordinator
+  /// Serializes a run's entry/exit with external DMA invalidation. A publisher must never
+  /// directly mutate a paging unit or native TLB while its owner may still be in guest code.
+  private let runActivityLock = NSLock()
+  private var runIsActive = false
   // `run` reserves the execution gate while transferring ownership to dedicated workers.
   // No mutex remains held during guest execution. Observability must not
   // contend for that lock: a lifecycle telemetry request is served on another queue while the VM
@@ -900,6 +946,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var roundRobinCursor = 0
   private var runGeneration: UInt64 = 0
   private var multiprocessorExecutionPolicy: DoryPCMultiprocessorExecutionPolicy = .serialized
+  private var qualificationInterpreterOnlyProcessor: Int?
   private let hasCallerExtensionDevices: Bool
   private var consumedPayload = false
   private let baselineJITs: [DoryARM64BaselineExecutor]
@@ -932,7 +979,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       clockAdvancementNanoseconds: 0,
       interruptDeliveryNanoseconds: 0,
       processorExecutionNanoseconds: 0,
-      idleWaitNanoseconds: 0
+      idleWaitNanoseconds: 0,
+      coordinatorWaitNanoseconds: 0
     ),
     threadCPU: .init(
       totalNanoseconds: 0,
@@ -940,7 +988,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       clockAdvancementNanoseconds: 0,
       interruptDeliveryNanoseconds: 0,
       processorExecutionNanoseconds: 0,
-      idleWaitNanoseconds: 0
+      idleWaitNanoseconds: 0,
+      coordinatorWaitNanoseconds: 0
     )
   )
   private var pitClockRemainder: UInt64 = 0
@@ -1053,6 +1102,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     baselineJITs = createdBaselineJITs
     let optimizingCodeBytes = max(4_096, baselineJITMaximumCodeBytes * 3 / 4)
     let perProcessorOptimizingCodeBytes = max(4_096, optimizingCodeBytes / processorCount)
+    // Bind the existing optimizing-executor default explicitly for immutable diagnostics.
+    let optimizingTier1Enabled = false
     let createdOptimizingJITs: [DoryARM64BaselineExecutor] =
       switch executionTier {
       case .interpreter, .baselineJIT:
@@ -1065,6 +1116,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             cpuProfileIdentifier: interpreter.profile.identifier,
             physicalAddressBits: interpreter.profile.physicalAddressBits,
             profile: interpreter.profile,
+            tier1Enabled: optimizingTier1Enabled,
             rawTargetPredictionOptions: baselineJITRawTargetPredictionOptions,
             optimization: .optimizing,
             tracksInterpreterFallback: true,
@@ -1073,10 +1125,61 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         }
       }
     optimizingJITs = createdOptimizingJITs
+    executionConfiguration = .init(
+      cpuProfile: interpreter.profile,
+      memoryBytes: memoryBytes,
+      processorCount: processorCount,
+      tier: executionTier,
+      baselineJITTier1Enabled: createdBaselineJITs.isEmpty ? nil : baselineJITTier1Enabled,
+      optimizingJITTier1Enabled: createdOptimizingJITs.isEmpty ? nil : optimizingTier1Enabled,
+      rawTargetPredictionOptionBits: createdBaselineJITs.isEmpty
+        ? nil : baselineJITRawTargetPredictionOptions.rawValue,
+      baselineCodeByteLimitsByProcessor: createdBaselineJITs.map(\.maximumCodeBytes),
+      optimizingCodeByteLimitsByProcessor: createdOptimizingJITs.map(\.maximumCodeBytes),
+      optimizingWarmupDispatches: createdOptimizingJITs.isEmpty ? nil : optimizingJITWarmupDispatches,
+      jitWriteCoherencePolicy: jitWriteCoherencePolicy,
+      clockKind: clockSource.monotonicNanoseconds == nil ? .deterministic : .hostMonotonic,
+      instrumentationEnabled: instrumentationEnabled
+    )
+    let hostVisibleGPUDevices = pciFunctions.compactMap {
+      $0 as? DoryPCVirtioGPUPCIDevice
+    }.filter { $0.hostVisibleAperture != nil }
+    guard hostVisibleGPUDevices.count <= 1 else {
+      throw DoryPCPCIError.overlappingBAR(index: 4)
+    }
+    let lowPCIUpper = DoryPCV1ABI.pcieMMIOBase + DoryPCV1ABI.pcieMMIOBytes
+    let highPCIBase = DoryPCV1ABI.pcie64MMIOBase(memoryBytes: UInt64(memoryBytes))
+    let highPCIUpper = highPCIBase + DoryPCV1ABI.pcie64MMIOBytes
+    var admittedBARRanges: [(index: Int, range: Range<UInt64>)] = []
+    for function in pciFunctions {
+      guard let device = function as? any DoryPCPCIBARMemoryDevice else { continue }
+      for index in device.barIndices {
+        guard let bar = try device.configurationFunction.bar(at: index), bar.address != 0 else {
+          continue
+        }
+        let (upper, overflow) = bar.address.addingReportingOverflow(bar.size)
+        let inLowWindow =
+          bar.address >= DoryPCV1ABI.pcieMMIOBase && !overflow
+          && upper <= lowPCIUpper
+        let inHighWindow = bar.address >= highPCIBase && !overflow && upper <= highPCIUpper
+        guard !overflow, inLowWindow != inHighWindow else {
+          throw DoryPCPCIError.invalidBAR(index: index)
+        }
+        let range = bar.address..<upper
+        guard
+          !admittedBARRanges.contains(where: { existing in
+            range.lowerBound < existing.range.upperBound
+              && existing.range.lowerBound < range.upperBound
+          })
+        else { throw DoryPCPCIError.overlappingBAR(index: index) }
+        admittedBARRanges.append((index, range))
+      }
+    }
     firmwareConfiguration = DoryPCFirmwareConfiguration(
       totalRAMBytes: UInt64(memoryBytes),
       processorCount: processorCount,
       flags: firmwareConfigurationFlags,
+      hostVisibleGPURegionID: hostVisibleGPUDevices.first?.hostVisibleAperture?.regionID,
       acpiRSDPAddress: acpiLayout.rsdp,
       smbiosEntryAddress: smbiosLayout.entryPoint
     )
@@ -1133,6 +1236,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       )
     }
     physicalMemory = physicalMemories[0]
+    qualificationDMAMemory = DoryPCDMAGuestMemory(bus: physicalMemory)
+    deviceDMAMemory = DoryPCDMAGuestMemory(bus: physicalMemory)
     memoryByteCount = memoryBytes
     ioBus = DoryPCPortIOBus(deviceAccessCoordinator: deviceAccessCoordinator)
     let requestPendingWorkForProcessor: @Sendable (Int) -> Void = {
@@ -1200,12 +1305,17 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     pciExpress = DoryPCPCIExpressECAM()
     pciBARWindow = DoryPCPCIBARWindow()
+    pci64BARWindow = DoryPCPCIBARWindow(
+      baseAddress: DoryPCV1ABI.pcie64MMIOBase(memoryBytes: UInt64(memoryBytes)),
+      byteCount: DoryPCV1ABI.pcie64MMIOBytes
+    )
     powerController = DoryPCPowerController(onPendingWork: requestPendingWorkForAllProcessors)
     let intxRouter = DoryPCPCIINTxRouter(ioAPIC: ioAPIC)
     for function in pciFunctions {
       try pciExpress.attach(function)
       if let barDevice = function as? any DoryPCPCIBARMemoryDevice {
         try pciBARWindow.attach(barDevice)
+        try pci64BARWindow.attach(barDevice)
       }
       if let msiFunction = function as? any DoryPCPCIMSIControllable {
         msiFunction.connectMSISink { [localAPICs] address, data in
@@ -1227,11 +1337,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         }
       }
       if let memoryConsumer = function as? any DoryPCVirtioGuestMemoryConsumer {
-        memoryConsumer.connectGuestMemory(physicalMemory)
+        memoryConsumer.connectGuestMemory(deviceDMAMemory)
       }
     }
     pciExpress.seal()
     pciBARWindow.seal()
+    pci64BARWindow.seal()
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: false))
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: true))
     try ioBus.attach(DoryPCELCRPort(pic: legacyPIC))
@@ -1266,6 +1377,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       try bus.attach(hpet)
       try bus.attach(pciExpress)
       try bus.attach(pciBARWindow)
+      try bus.attach(pci64BARWindow)
       for device in self.platformMMIODevices { try bus.attach(device) }
       bus.seal()
     }
@@ -1281,7 +1393,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         physicalMemory: physicalMemory,
         pagingUnit: pagingUnit,
         context: .init(state: .reset(), mode: .real16, profile: interpreter.profile),
-        jitWriteCoherencePolicy: jitWriteCoherencePolicy
+        jitWriteCoherencePolicy: jitWriteCoherencePolicy,
+        jitPageTableWritesRequireInterpreter: true
       )
     }
     interpreters = (0..<processorCount).map {
@@ -1306,6 +1419,24 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     processorSlots = (0..<processorCount).map {
       ProcessorSlot(lifecycle: $0 == 0 ? .running : .waitingForStartup)
     }
+    qualificationDMAMemory.installTrackedPageTableWriteObserver { [weak self] in
+      self?.publishExternalDMAPageTableInvalidation()
+    }
+    deviceDMAMemory.installTrackedPageTableWriteObserver(
+      { [weak self] in
+        self?.publishTranslationInvalidationFromWorker(
+          sourceProcessor: 0, sourceAlreadyInvalidated: false,
+          linearAddress: nil, observer: nil
+        )
+      },
+      admission: { [weak self] in
+        guard let self, self.processorCount == 1 else { return false }
+        // The configured queue may hold device locks. Only its sole owning worker can
+        // acknowledge inline; an async backend or a second vCPU needs an unlocked boundary.
+        return self.pendingWorkWake.isCurrentDispatchThread(forProcessor: 0)
+      },
+      retainOwner: { [weak self] in self }
+    )
   }
 
   public func load(
@@ -1485,12 +1616,24 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     baselineJITs.isEmpty ? nil : .init(baselineJITs.map(\.diagnostics))
   }
 
+  /// Quiescent, per-owner native-entry evidence for internal mixed/native memory litmus tests.
+  /// The public aggregate deliberately does not claim which vCPU executed native code.
+  var qualificationBaselineNativeEntriesByProcessor: [UInt64] {
+    baselineJITs.map { $0.diagnostics.nativeDispatcherEntries }
+  }
+
   public var optimizingJITDiagnostics: DoryPCJITCacheStatistics? {
     optimizingJITs.isEmpty ? nil : .init(optimizingJITs.map(\.diagnostics))
   }
 
   public var pagingDiagnostics: [DoryX86PagingDiagnostics] {
     pagingUnits.map(\.diagnostics)
+  }
+
+  /// One machine-wide snapshot, not a per-vCPU sum: CPU, generated-code and DMA paths share
+  /// the physical backing's range authority, so summing processor views would double-count it.
+  public var memoryAccessDiagnostics: DoryX86MemoryAccessDiagnostics {
+    physicalMemory.memoryAccessCoordinator.diagnostics
   }
 
   public var timerInterruptDiagnostics: DoryPCTimerInterruptDiagnostics {
@@ -1582,6 +1725,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     guard maximumInstructions > 0 else { return .instructionBudget(0) }
     return try lock.withLock {
       guard processorSlots[0].state != nil else { throw DoryPCMachineError.notLoaded }
+      runActivityLock.withLock {
+        precondition(!runIsActive)
+        runIsActive = true
+      }
+      defer { finishRunActivity() }
       pendingWorkWake.setDispatchThread(Thread.current)
       defer { pendingWorkWake.setDispatchThread(nil) }
       // Validate installed latches before consuming device events, advancing clocks, or
@@ -1672,28 +1820,45 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       concurrentExecutionGate.close()
       commandBus.close()
       parallelPlanBox.removeAll()
+      let deadline = Date(timeIntervalSinceNow: DoryPCHostWorker.stopJoinTimeout)
       for processor in 0..<processorCount {
         pendingWorkWake.notify(forProcessor: processor)
       }
 
+      var directiveFailures: [Int: any Error] = [:]
       var snapshot = session.snapshot
       while true {
         for processor in 0..<processorCount {
+          if completions.indices.contains(processor), completions[processor].isFinished {
+            outstandingResults[processor] = nil
+            continue
+          }
+          if directiveFailures[processor] != nil { continue }
           let result = outstandingResults[processor] ?? snapshot.workerResults[processor]
           if let result {
-            _ = try session.respond(to: result, with: .stop)
-            pendingWorkWake.notify(forProcessor: processor)
+            do {
+              _ = try session.respond(to: result, with: .stop)
+              pendingWorkWake.notify(forProcessor: processor)
+            } catch {
+              // The bus is closed, but a worker could still be parked at this result. Retain its
+              // owner and wait for actual completion below; only a still-live worker at the
+              // deadline is an unrecoverable teardown failure.
+              directiveFailures[processor] = error
+            }
             outstandingResults[processor] = nil
           }
         }
         if completions.allSatisfy(\.isFinished) { break }
+        guard Date() < deadline else {
+          preconditionFailure("DoryPC vCPU run loops failed to quiesce after cancellation")
+        }
         snapshot = session.waitForChange(
           after: snapshot.changeGeneration,
-          until: Date(timeIntervalSinceNow: 0.05)
+          until: min(Date(timeIntervalSinceNow: 0.05), deadline)
         )
       }
 
-      var firstFailure: (any Error)?
+      var firstFailure: (any Error)? = directiveFailures.sorted { $0.key < $1.key }.first?.value
       for completion in completions {
         do {
           _ = try completion.wait()
@@ -1752,7 +1917,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
 
     completions = (0..<processorCount).map { processor in
-      workers[processor].submit(kind: .runLoop) { [self] in
+      workers[processor].submit(
+        kind: .runLoop,
+        onFinished: { _ in session.notifyWorkerCompletion() }
+      ) { [self] in
         try runProcessorWorkerLoop(
           session: session,
           processor: processor,
@@ -1855,11 +2023,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         }
 
         // This path is reachable only through the internal, fail-closed qualification switch.
-        // Split one bounded global reservation between both runnable owners, release them only
-        // after both reservations exist, and do not inspect either architectural state until both
-        // results are parked. Product/default execution continues through the serialized and
-        // frozen-register paths below.
-        if multiprocessorExecutionPolicy == .qualifiedInterpreterPair,
+        // Split one bounded global reservation among runnable owners, release them only after
+        // every reservation exists, and do not inspect architectural state until all results
+        // are parked. Product/default execution remains serialized below.
+        if multiprocessorExecutionPolicy == .qualifiedConcurrentOwners,
           maximumInstructions - completed >= 2
         {
           var participants = [processor]
@@ -1870,10 +2037,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
               participants.append(candidate)
             }
           }
-          if participants.count == 2 {
+          if participants.count >= 2 {
             let totalLimit = min(maximumInstructions - completed, 128)
-            let firstLimit = (totalLimit + 1) / 2
-            let limits = [firstLimit, totalLimit - firstLimit]
+            participants = Array(participants.prefix(Int(totalLimit)))
+            let sharedLimit = totalLimit / UInt64(participants.count)
+            let extraReservations = Int(totalLimit % UInt64(participants.count))
+            let limits = participants.indices.map {
+              sharedLimit + ($0 < extraReservations ? 1 : 0)
+            }
             concurrentBatch = concurrentBatch == .max ? 1 : concurrentBatch + 1
             let batch = concurrentBatch
             try concurrentExecutionGate.begin(batch: batch, participants: participants)
@@ -1890,22 +2061,27 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
               let result = try waitForWorkerResult(
                 session: session,
                 processor: candidate,
-                completion: completions[candidate]
+                completion: completions[candidate],
+                peerCompletions: completions
               )
               outstandingResults[candidate] = result
               results.append(result)
             }
-            try concurrentExecutionGate.finish(batch: batch)
             recordHostTime(.processorExecution, since: executionSample)
-
             for result in results {
               recordSessionCounters(result.counters)
             }
             // A host failure has the strongest termination priority. Wait for the complete batch
-            // first, then select by vCPU number so scheduling order cannot alter the surfaced error.
-            for result in results.sorted(by: { $0.processor < $1.processor }) {
+            // first. If one owner aborted the entry barrier, preserve its original error rather
+            // than reporting a peer's secondary barrier-cancellation error.
+            let abortedProcessor = concurrentExecutionGate.abortedProcessor(batch: batch)
+            for result in results.sorted(by: {
+              ($0.processor == abortedProcessor ? -1 : $0.processor)
+                < ($1.processor == abortedProcessor ? -1 : $1.processor)
+            }) {
               try hostFailure(from: result)
             }
+            try concurrentExecutionGate.finish(batch: batch)
             for result in results {
               completed += result.counters.instructionCount
               switch result.outcome {
@@ -1921,7 +2097,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
                 preconditionFailure("host failure handled before concurrent result dispatch")
               }
             }
-            // Alternate the first owner (and the extra reservation when a batch total is odd).
+            // Rotate the first owner and distribute any extra reservations fairly.
             roundRobinCursor = (participants[0] + 1) % processorCount
 
             let clockSample = hostTimeSample()
@@ -2185,28 +2361,46 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       parallelPlanBox.removeAll()
       defer { pendingWorkWake.setDispatchThread(nil) }
       if let workerCompletion {
+        let deadline = Date(timeIntervalSinceNow: DoryPCHostWorker.stopJoinTimeout)
+        var stopResultError: (any Error)?
         let result: DoryPCRunSession.WorkerResult?
         if let outstandingResult {
           result = outstandingResult
-        } else if let published = try session.workerResult(forProcessor: 0) {
-          result = published
         } else if workerCompletion.isFinished {
           result = nil
         } else {
-          // Close prevents any new guest entry. If an owner already consumed a command, rendezvous
-          // with that exact result before asking it to stop.
-          result = try waitForWorkerResult(
-            session: session,
-            processor: 0,
-            completion: workerCompletion
-          )
+          do {
+            if let published = try session.workerResult(forProcessor: 0) {
+              result = published
+            } else {
+              // Close prevents any new guest entry. If an owner already consumed a command,
+              // rendezvous with that exact result before asking it to stop.
+              result = try waitForWorkerResult(
+                session: session,
+                processor: 0,
+                completion: workerCompletion,
+                stopDeadline: deadline
+              )
+            }
+          } catch {
+            result = nil
+            stopResultError = error
+          }
         }
         if let result {
-          _ = try session.respond(to: result, with: .stop)
-          pendingWorkWake.notify(forProcessor: result.processor)
+          do {
+            _ = try session.respond(to: result, with: .stop)
+            pendingWorkWake.notify(forProcessor: result.processor)
+          } catch {
+            stopResultError = error
+          }
         }
         outstandingResult = nil
+        guard workerCompletion.waitUntilFinished(until: deadline) else {
+          preconditionFailure("DoryPC vCPU run loop failed to quiesce after cancellation")
+        }
         _ = try workerCompletion.wait()
+        if let stopResultError { throw stopResultError }
       }
     }
 
@@ -2231,7 +2425,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         outstandingResult = nil
       } else {
         precondition(workerCompletion == nil)
-        workerCompletion = worker.submit(kind: .runLoop) { [self] in
+        workerCompletion = worker.submit(
+          kind: .runLoop,
+          onFinished: { _ in session.notifyWorkerCompletion() }
+        ) { [self] in
           try runProcessorWorkerLoop(
             session: session,
             processor: 0,
@@ -2469,12 +2666,20 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           observer: observer
         )
       else { return }
-      guard
-        let reservation = try session.reserve(
+      let reservation: DoryPCRunSession.Reservation
+      do {
+        guard let admitted = try session.reserve(
           processor: processor,
           maximumInstructions: command.command.maximumInstructions
         )
-      else { throw WorkerError.missingRunReservation }
+        else { throw WorkerError.missingRunReservation }
+        reservation = admitted
+      } catch {
+        if case .executeConcurrent(_, let batch) = command.command {
+          concurrentExecutionGate?.abort(batch: batch, processor: processor)
+        }
+        throw error
+      }
       pendingWorkWake.setDispatchThread(Thread.current, forProcessor: processor)
       let result: DoryPCRunSession.WorkerResult
       var failureCounters = DoryPCRunSession.WorkerCounters.zero
@@ -2622,6 +2827,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           )
         }
       } catch {
+        if case .executeConcurrent(_, let batch) = command.command {
+          concurrentExecutionGate?.abort(batch: batch, processor: processor)
+        }
         pendingWorkWake.setDispatchThread(nil, forProcessor: processor)
         if let executionStartedCPU {
           failureCounters.executionCPUNanoseconds =
@@ -2847,9 +3055,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private func waitForWorkerResult(
     session: DoryPCRunSession,
     processor: Int,
-    completion: DoryPCHostWorker.Completion<Void>
+    completion: DoryPCHostWorker.Completion<Void>,
+    peerCompletions: [DoryPCHostWorker.Completion<Void>] = [],
+    stopDeadline: Date? = nil
   ) throws -> DoryPCRunSession.WorkerResult {
     precondition((0..<session.processorCount).contains(processor))
+    let waitSample = hostTimeSample()
+    defer { recordHostTime(.coordinatorWait, since: waitSample) }
     var snapshot = session.snapshot
     while true {
       if let result = snapshot.workerResults[processor] { return result }
@@ -2857,9 +3069,20 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         _ = try completion.wait()
         throw WorkerError.runLoopExitedWithoutResult
       }
+      // A peer can fail before reserving its batch share and therefore publish no session
+      // result. Detect that completed worker while this processor is still waiting at the
+      // entry barrier; the caller's unwind closes the gate and joins every other owner.
+      for (peer, peerCompletion) in peerCompletions.enumerated()
+      where peer != processor && peerCompletion.isFinished {
+        _ = try peerCompletion.wait()
+        throw WorkerError.runLoopExitedWithoutResult
+      }
+      if let stopDeadline, Date() >= stopDeadline {
+        preconditionFailure("DoryPC vCPU produced no result before stop deadline")
+      }
       snapshot = session.waitForChange(
         after: snapshot.changeGeneration,
-        until: Date(timeIntervalSinceNow: 0.05)
+        until: min(Date(timeIntervalSinceNow: 0.05), stopDeadline ?? .distantFuture)
       )
     }
   }
@@ -3011,12 +3234,89 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   /// product option: every unsupported topology, tier, clock, or extension configuration fails
   /// closed and the default scheduler remains serialized.
   func enableQualifiedInterpreterPairExecution() throws {
+    try enableQualifiedConcurrentOwners(
+      count: 2,
+      countError: .requiresExactlyTwoProcessors(processorCount),
+      tier: .interpreter,
+      tierError: .requiresInterpreter(executionTier)
+    )
+  }
+
+  /// Four-owner qualification is separate from the product policy and from the two-owner
+  /// admission above. It exists for memory-order cells such as IRIW that cannot be observed
+  /// with only a reader and writer pair.
+  func enableQualifiedInterpreterQuartetExecution() throws {
+    try enableQualifiedConcurrentOwners(
+      count: 4,
+      countError: .requiresExactlyFourProcessors(processorCount),
+      tier: .interpreter,
+      tierError: .requiresInterpreter(executionTier)
+    )
+  }
+
+  /// Internal native/native memory-contract qualification. This does not admit the optimizing
+  /// tier, caller extensions, or any production parallel-vCPU configuration.
+  func enableQualifiedBaselineJITPairExecution() throws {
+    try enableQualifiedConcurrentOwners(
+      count: 2,
+      countError: .requiresExactlyTwoProcessors(processorCount),
+      tier: .baselineJIT,
+      tierError: .requiresBaselineJIT(executionTier)
+    )
+  }
+
+  /// Four native owners exercise ordering that a pair cannot observe, without exposing the
+  /// still-unqualified scheduler as a product option. Admission retains the same clock and
+  /// extension-device restrictions as the native pair.
+  func enableQualifiedBaselineJITQuartetExecution() throws {
+    try enableQualifiedConcurrentOwners(
+      count: 4,
+      countError: .requiresExactlyFourProcessors(processorCount),
+      tier: .baselineJIT,
+      tierError: .requiresBaselineJIT(executionTier)
+    )
+  }
+
+  /// An interpreter owner inside a four-vCPU native run must observe the same ordered memory
+  /// history as the JIT owners. This remains a quiescent qualification-only admission.
+  func enableQualifiedMixedBaselineJITQuartetExecution(interpreterProcessor: Int) throws {
+    try enableQualifiedConcurrentOwners(
+      count: 4,
+      countError: .requiresExactlyFourProcessors(processorCount),
+      tier: .baselineJIT,
+      tierError: .requiresBaselineJIT(executionTier),
+      interpreterOnlyProcessor: interpreterProcessor
+    )
+  }
+
+  /// Forces one owner through the real interpreter memory path while the other uses baseline JIT.
+  /// This is a quiescent, internal test admission only; it never changes product dispatch.
+  func enableQualifiedMixedBaselineJITPairExecution(interpreterProcessor: Int) throws {
+    try enableQualifiedConcurrentOwners(
+      count: 2,
+      countError: .requiresExactlyTwoProcessors(processorCount),
+      tier: .baselineJIT,
+      tierError: .requiresBaselineJIT(executionTier),
+      interpreterOnlyProcessor: interpreterProcessor
+    )
+  }
+
+  private func enableQualifiedConcurrentOwners(
+    count: Int,
+    countError: DoryPCConcurrentExecutionAdmissionError,
+    tier: DoryPCExecutionTier,
+    tierError: DoryPCConcurrentExecutionAdmissionError,
+    interpreterOnlyProcessor: Int? = nil
+  ) throws {
     try lock.withLock {
-      guard processorCount == 2 else {
-        throw DoryPCConcurrentExecutionAdmissionError.requiresExactlyTwoProcessors(processorCount)
-      }
-      guard executionTier == .interpreter else {
-        throw DoryPCConcurrentExecutionAdmissionError.requiresInterpreter(executionTier)
+      guard processorCount == count else { throw countError }
+      guard executionTier == tier else { throw tierError }
+      if let interpreterOnlyProcessor {
+        guard tier == .baselineJIT, (0..<count).contains(interpreterOnlyProcessor) else {
+          throw DoryPCConcurrentExecutionAdmissionError.invalidInterpreterOwner(
+            interpreterOnlyProcessor
+          )
+        }
       }
       guard clockSource.monotonicNanoseconds != nil else {
         throw DoryPCConcurrentExecutionAdmissionError.requiresHostMonotonicClock
@@ -3024,7 +3324,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       guard !hasCallerExtensionDevices else {
         throw DoryPCConcurrentExecutionAdmissionError.callerExtensionDevicesPresent
       }
-      multiprocessorExecutionPolicy = .qualifiedInterpreterPair
+      qualificationInterpreterOnlyProcessor = interpreterOnlyProcessor
+      multiprocessorExecutionPolicy = .qualifiedConcurrentOwners
     }
   }
 
@@ -3119,6 +3420,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private func executeParallelInstruction(
     _ plan: ParallelInstruction, observer: (@Sendable (WorkerEvent) -> Void)?
   ) throws -> ProcessorExecution {
+    var nativeFetchObserved = false
     if let jit = plan.jit {
       // Each executor owns its region, context, TLB, predictors and cache. Frozen fetches and
       // nil memory prevent compilation/execution from touching shared RAM or device metadata.
@@ -3136,7 +3438,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         },
         at: plan.state.value.rip, mode: plan.mode,
         addressSpaceID: plan.state.value.control.cr3, maximumInstructions: 1,
-        state: &plan.state.value
+        state: &plan.state.value,
+        frozenRegisterOnlyBytes: plan.memory.bytes
       )
       if let execution {
         guard execution.exitCode == .dispatch || execution.exitCode == .pendingWork,
@@ -3157,11 +3460,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           result: .yielded, instructionCount: 0, jitTier: nil,
           jitInstructionCount: 0, interpreterInstructionCount: 0, jitBlockCount: 0)
       }
+      nativeFetchObserved = observedFetch
       // A resident larger than this budget or a compiler decline still has the identical
       // preflighted, register-only interpreter step available; it cannot access shared memory.
     }
+    let fallbackNeedsFetchObservation = !nativeFetchObserved
     let onFirstFetch: @Sendable () -> Void = {
-      if plan.jit == nil { observer?(.frozenInstructionFetch(plan.processor)) }
+      if fallbackNeedsFetchObservation { observer?(.frozenInstructionFetch(plan.processor)) }
     }
     let memory = DoryPCFrozenInstructionMemory(
       address: plan.memory.address, bytes: plan.memory.bytes, onFirstFetch: onFirstFetch)
@@ -3271,6 +3576,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     case .idleWait:
       saturatingAdd(elapsed.wallNanoseconds, to: &hostWallTime.idleWaitNanoseconds)
       saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.idleWaitNanoseconds)
+    case .coordinatorWait:
+      saturatingAdd(elapsed.wallNanoseconds, to: &hostWallTime.coordinatorWaitNanoseconds)
+      saturatingAdd(
+        elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.coordinatorWaitNanoseconds)
     }
   }
 
@@ -3394,7 +3703,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       generation: publication.generation)
   }
 
-  private func publishTranslationPendingWork(excluding sourceProcessor: Int) {
+  private func publishTranslationPendingWork(excluding sourceProcessor: Int? = nil) {
     for processor in pagingUnits.indices where processor != sourceProcessor {
       pendingWorkWake.signal(forProcessor: processor) {
         if baselineJITs.indices.contains(processor) {
@@ -3404,6 +3713,45 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           optimizingJITs[processor].requestPendingWork()
         }
       }
+    }
+  }
+
+  /// The device callback has returned from the physical-memory write, so it holds no bus lock.
+  /// A running owner acknowledges on its own worker after leaving generated code. If a run has
+  /// already joined, the publisher invalidates directly under the run-activity lock. In either
+  /// case this method returns only after every owner has acknowledged, before a device can write
+  /// its later completion flag.
+  private func publishExternalDMAPageTableInvalidation() {
+    let publication = translationInvalidationCoordinator.publish(linearAddress: nil)
+    runActivityLock.withLock {
+      if runIsActive {
+        publishTranslationPendingWork()
+      } else {
+        acknowledgeAllPendingTranslationInvalidations()
+      }
+    }
+    translationInvalidationCoordinator.wait(for: publication)
+  }
+
+  /// Called after all run-loop loans have joined, but before the next run may enter. It also
+  /// covers a publication racing the last worker's exit: that publication cannot be stranded
+  /// waiting for an owner that will no longer poll its mailbox.
+  private func finishRunActivity() {
+    runActivityLock.withLock {
+      precondition(runIsActive)
+      acknowledgeAllPendingTranslationInvalidations()
+      runIsActive = false
+    }
+  }
+
+  private func acknowledgeAllPendingTranslationInvalidations() {
+    for processor in pagingUnits.indices {
+      guard let pending = translationInvalidationCoordinator.pending(for: processor) else {
+        continue
+      }
+      acknowledgeTranslationInvalidation(
+        pending, forProcessor: processor, pagingAlreadyInvalidated: false
+      )
     }
   }
 
@@ -3514,7 +3862,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     maximumInstructions: UInt64,
     jitInstructionBudget: Int?
   ) throws -> ProcessorExecution {
-    if baselineJITs.isEmpty {
+    if baselineJITs.isEmpty || qualificationInterpreterOnlyProcessor == processor {
       return executeInterpreterBatch(
         processor: processor,
         state: &state,

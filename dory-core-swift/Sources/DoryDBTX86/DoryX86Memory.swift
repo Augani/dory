@@ -264,10 +264,24 @@ public protocol DoryX86DirectHostAddressSpaceMemory: DoryX86HostAddressSpaceMemo
 public protocol DoryX86PageTableWriteTrackingMemory: DoryX86Memory {
   func trackPageTablePage(containing address: UInt64)
   func isTrackedPageTablePage(containing address: UInt64) -> Bool
+  /// Read-only DMA preflight. The subsequent write must still reclassify under the RAM lock.
+  func intersectsTrackedPageTablePage(at address: UInt64, byteCount: Int) -> Bool
   func beginPageTableWalkerWrite()
   func endPageTableWalkerWrite()
   var hasPendingPageTableWrite: Bool { get }
   func consumePendingPageTableWrite() -> Bool
+  /// Classifies and performs one write under the same RAM lock used by the paging walker.
+  /// Returning true means the write touched a registered page-table page. Rejection must
+  /// occur before any byte or code-protection state changes.
+  func writeClassifyingPageTableMutation(
+    at address: UInt64,
+    bytes: [UInt8],
+    allowTrackedWrite: Bool
+  ) throws -> Bool
+}
+
+public enum DoryX86PageTableWritePolicyError: Error, Sendable, Equatable {
+  case trackedWriteRejected
 }
 
 /// Optional SMC boundary for RAM that can revoke host writes to pages backing translated guest
@@ -595,6 +609,43 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     }
   }
 
+  public func writeClassifyingPageTableMutation(
+    at address: UInt64,
+    bytes: [UInt8],
+    allowTrackedWrite: Bool
+  ) throws -> Bool {
+    guard !bytes.isEmpty else { return false }
+    return try withOrdinaryAccess(at: address, byteCount: bytes.count, access: .write) {
+      try lock.withLock {
+        let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
+        let firstPage = offset / 4_096
+        let lastPage = (offset + bytes.count - 1) / 4_096
+        let tracked = (firstPage...lastPage).contains { trackedPageTablePages.contains($0) }
+        if tracked && !allowTrackedWrite {
+          throw DoryX86PageTableWritePolicyError.trackedWriteRejected
+        }
+        let destination = storage.baseAddress!.advanced(by: offset)
+        let storedAtomically: Bool
+        if [1, 2, 4, 8].contains(bytes.count) {
+          let scalar = bytes.enumerated().reduce(UInt64(0)) {
+            $0 | UInt64($1.element) << UInt64($1.offset * 8)
+          }
+          storedAtomically = doryX86AtomicScalarStore(
+            to: UnsafeMutableRawPointer(destination), value: scalar, byteCount: bytes.count)
+        } else {
+          storedAtomically = false
+        }
+        if !storedAtomically {
+          bytes.withUnsafeBufferPointer { source in
+            destination.update(from: source.baseAddress!, count: source.count)
+          }
+        }
+        markCodePagesWritten(offset: offset, byteCount: bytes.count)
+        return tracked
+      }
+    }
+  }
+
   public func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
     guard [1, 2, 4, 8].contains(byteCount) else {
       throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
@@ -730,6 +781,18 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     lock.withLock {
       guard address >= baseAddress, address - baseAddress < UInt64(byteCount) else { return false }
       return trackedPageTablePages.contains(Int((address - baseAddress) / 4_096))
+    }
+  }
+
+  public func intersectsTrackedPageTablePage(at address: UInt64, byteCount: Int) -> Bool {
+    lock.withLock {
+      guard byteCount > 0, address >= baseAddress else { return false }
+      let offset = address - baseAddress
+      guard offset < UInt64(self.byteCount),
+        UInt64(byteCount) <= UInt64(self.byteCount) - offset else { return false }
+      let first = Int(offset / 4_096)
+      let last = Int((offset + UInt64(byteCount) - 1) / 4_096)
+      return trackedPageTablePages.contains { first <= $0 && $0 <= last }
     }
   }
 

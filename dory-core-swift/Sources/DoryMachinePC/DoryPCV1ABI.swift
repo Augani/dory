@@ -52,7 +52,8 @@ public enum DoryPCV1ABI {
   //
   // P2-01 item 2 — Reserved ranges:
   //
-  // PCIe ECAM (0xE000_0000, 256 MiB) and PCIe MMIO (0xD000_0000, 256 MiB) are active
+  // PCIe ECAM (0xE000_0000, 256 MiB), register MMIO (0xD000_0000, 256 MiB), and the
+  // dynamic, 4-GiB-aligned 64-bit MMIO window after high RAM are active
   // in ABI v1: the PCI host bridge enumerates devices and the guest discovers them
   // via ACPI/PNP0A03. All BAR addresses are allocated from the frozen PCIe MMIO
   // aperture. The PCI-to-ISA bridge at device 31 exposes the legacy PS/2 controller. USB (xHCI
@@ -103,6 +104,10 @@ public enum DoryPCV1ABI {
   public static let pcieECAMBytes: UInt64 = 0x1000_0000
   public static let mmioHoleStart = pcieMMIOBase
   public static let above4GRAMStart: UInt64 = 0x1_0000_0000
+  /// Relocatable 64-bit prefetchable PCI resource window. The base is derived from admitted RAM
+  /// and aligned to the complete four-GiB window, so it can never alias high RAM and firmware can
+  /// safely relocate the GPU's 256 MiB...4 GiB host-visible BAR within it.
+  public static let pcie64MMIOBytes: UInt64 = 0x1_0000_0000
 
   public static let firmwareConfigurationBase: UInt64 = 0xFE90_0000
   public static let firmwareConfigurationBytes: UInt64 = 0x0000_1000
@@ -189,13 +194,29 @@ public enum DoryPCV1ABI {
   public static func guestPhysicalAddressBits(memoryBytes: UInt64) -> UInt8 {
     precondition(memoryBytes > 0 && memoryBytes <= maximumMemoryBytes)
     let highRAMBytes = memoryBytes > mmioHoleStart ? memoryBytes - mmioHoleStart : 0
-    let requiredUpperBound = above4GRAMStart + highRAMBytes
+    let highRAMEnd = above4GRAMStart + highRAMBytes
+    let requiredUpperBound = max(
+      highRAMEnd,
+      pcie64MMIOBase(memoryBytes: memoryBytes) + pcie64MMIOBytes
+    )
     let requiredBits = UInt8(UInt64.bitWidth - (requiredUpperBound - 1).leadingZeroBitCount)
     return min(max(requiredBits, minimumGuestPhysicalAddressBits), maximumGuestPhysicalAddressBits)
   }
 
   public static func guestPhysicalAddressSpaceBytes(memoryBytes: UInt64) -> UInt64 {
     1 << guestPhysicalAddressBits(memoryBytes: memoryBytes)
+  }
+
+  public static func pcie64MMIOBase(memoryBytes: UInt64) -> UInt64 {
+    precondition(memoryBytes > 0 && memoryBytes <= maximumMemoryBytes)
+    let highRAMBytes = memoryBytes > mmioHoleStart ? memoryBytes - mmioHoleStart : 0
+    let highRAMEnd = above4GRAMStart + highRAMBytes
+    let mask = pcie64MMIOBytes - 1
+    return (highRAMEnd + mask) & ~mask
+  }
+
+  public static func gpuHostVisibleBARAddress(memoryBytes: UInt64) -> UInt64 {
+    pcie64MMIOBase(memoryBytes: memoryBytes)
   }
 
   public static func validateProductMemoryBytes(_ byteCount: UInt64) throws {
@@ -306,12 +327,13 @@ public enum DoryPCV1ABI {
     | Local APIC | `0xfee00000` | `0x00001000` |
     | Firmware code | `0xff000000` | `0x01000000` |
     | RAM remapped above 4 GiB | `0x0000000100000000` | variable |
+    | PCIe 64-bit MMIO | first 4-GiB-aligned address after high RAM | `0x0000000100000000` |
 
     UEFI resets at `0xfffffff0`, uses firmware ABI `dory.edk2.pc@1`, and persists variables as `dory.uefi.variables.pc@1`. Product launches accept 512 MiB through 512 GiB in 2 MiB increments and 1...255 logical processors. The host reservation is a power-of-two guest-physical space selected from 36 through 40 address bits for the admitted RAM size.
 
     ## Interrupt and PCI contract
 
-    The IOAPIC exposes GSIs 0...23. PCI INTx uses level-triggered, active-low GSIs 16...23 with standard device/pin swizzling. MSI and MSI-X target the local APIC window. PCIe ECAM covers segment 0, buses 0...255. BAR MMIO is allocated from the frozen 256 MiB PCIe aperture. The VirtIO GPU advertises PCI class `03:80` (display-other), never VGA class `03:00`; Dory does not expose a legacy VGA framebuffer.
+    The IOAPIC exposes GSIs 0...23. PCI INTx uses level-triggered, active-low GSIs 16...23 with standard device/pin swizzling. MSI and MSI-X target the local APIC window. PCIe ECAM covers segment 0, buses 0...255. Register BAR MMIO is allocated from the frozen 256 MiB low PCIe aperture. Firmware configuration ABI version 2 additionally publishes a 4-GiB, naturally aligned 64-bit MMIO aperture immediately after high RAM. UEFI consumes that exact range as `MemoryAbove4G`; launch validation rejects BARs outside either aperture or overlapping another BAR. The VirtIO GPU advertises PCI class `03:80` (display-other), never VGA class `03:00`; Dory does not expose a legacy VGA framebuffer.
 
     | Boot device | PCI address | BAR 0 |
     |---|---:|---:|
@@ -328,6 +350,15 @@ public enum DoryPCV1ABI {
     | VirtIO socket | `0000:00:0a.0` | `0xd000e000` |
     | VirtIO filesystem share 0 | `0000:00:0b.0` | `0xd000f000` |
     | VirtIO filesystem shares 1...7 | `0000:00:0d.0`...`0000:00:13.0` | `0xd0010000`...`0xd0016000` |
+
+    When an authenticated PC Venus renderer is admitted, the VirtIO GPU also exposes BAR 4 as a
+    64-bit prefetchable host-visible region, sized from 256 MiB through 4 GiB to match the admitted
+    renderer arena, at the base of the dynamic 64-bit aperture. VirtIO
+    PCI shared-memory capability type 8 names region ID 1, BAR 4, offset zero and the exact BAR length.
+    Only live, generation-matched blob leases populate this sparse range; holes reject CPU and DMA
+    access. BAR relocation or device reset revokes every mapping, resets the semantic GPU device and
+    sets `DEVICE_NEEDS_RESET` before the relocated range can be reused. VirGL-only launches publish no
+    shared-memory capability or BAR 4.
 
     ## Boot contract
 

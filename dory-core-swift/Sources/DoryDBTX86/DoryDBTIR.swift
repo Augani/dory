@@ -1319,7 +1319,8 @@ public struct DoryX86IRTranslator: Sendable {
   }
 
   private func isJITMemoryAddress(_ address: DoryIRMemoryAddress) -> Bool {
-    (address.segment == nil || address.segment == "fs" || address.segment == "gs")
+    (address.segment == nil || address.segment == "ds" || address.segment == "fs"
+      || address.segment == "gs")
       && (address.addressWidth == .i32 || address.addressWidth == .i64)
       && (address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8)
       && [address.base, address.index].compactMap { $0 }.allSatisfy {

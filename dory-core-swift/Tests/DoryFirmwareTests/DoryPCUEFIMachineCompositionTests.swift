@@ -5,6 +5,35 @@ import Foundation
 import Testing
 
 @Suite struct DoryPCUEFIMachineCompositionTests {
+  @Test func composesTheAdmittedPCScanoutTopology() throws {
+    let fixture = try PCUEFIMachineFixture()
+    defer { fixture.remove() }
+    let scanouts: [DoryVirtioGPUScanout] = [
+      .init(id: 0, rectangle: .init(x: 0, y: 0, width: 1_280, height: 800)),
+      .init(id: 1, rectangle: .init(x: 0, y: 0, width: 1_920, height: 1_080)),
+    ]
+    let composed = try DoryPCUEFIMachine(
+      plan: fixture.plan,
+      firmware: fixture.firmware,
+      variableStore: .init(file: fixture.store),
+      bootStorage: [
+        .init(
+          logicalID: "system-disk",
+          storage: DoryVirtioInMemoryBlockStorage(byteCount: 512)
+        ),
+        .init(
+          logicalID: "installer-iso",
+          storage: DoryVirtioInMemoryBlockStorage(byteCount: 512, readOnly: true)
+        ),
+      ],
+      memoryBytes: 2 * 1024 * 1024,
+      scanouts: scanouts
+    )
+
+    #expect(composed.displayDevice.gpuDevice.scanouts == scanouts)
+    #expect(Array(composed.displayDevice.gpuDevice.configuration[8..<12]) == [2, 0, 0, 0])
+  }
+
   @Test func composesVerifiedFirmwareVariablesAndInstallerStorageIntoOneMachine() throws {
     let fixture = try PCUEFIMachineFixture()
     defer { fixture.remove() }

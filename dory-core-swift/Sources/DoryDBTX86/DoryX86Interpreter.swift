@@ -4026,8 +4026,16 @@ public struct DoryX86Interpreter: Sendable {
           return generalProtection(at: originalRIP)
         }
       case .pushFlags(let width):
+        // Both admitted profiles exclude CR4.VME. In virtual-8086 mode their
+        // low-IOPL form faults before touching the stack (SDM Vol. 2B PUSHF).
+        if mode != .real16, mode != .long64, state.control.efer & (1 << 10) == 0,
+          state.rflags.contains(.virtual8086), (state.rflags.rawValue >> 12) & 3 < 3
+        {
+          return generalProtection(at: originalRIP)
+        }
         try pushStack(
-          state.rflags.rawValue,
+          state.rflags.rawValue
+            & ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue),
           width: width,
           instruction: instruction,
           mode: mode,
@@ -4035,6 +4043,13 @@ public struct DoryX86Interpreter: Sendable {
           memory: executionMemory
         )
       case .popFlags(let width):
+        let privilege = currentPrivilegeLevel(state, mode: mode)
+        let ioPrivilege = UInt8((state.rflags.rawValue >> 12) & 3)
+        if mode != .real16, mode != .long64, state.control.efer & (1 << 10) == 0,
+          state.rflags.contains(.virtual8086), ioPrivilege < 3
+        {
+          return generalProtection(at: originalRIP)
+        }
         let stackRead = try readStack(
           width: width,
           instruction: instruction,
@@ -4042,12 +4057,18 @@ public struct DoryX86Interpreter: Sendable {
           state: state,
           memory: executionMemory
         )
-        let raw = stackRead.value
-        var requested = DoryX86RFLAGS(
-          rawValue: (raw & DoryX86RFLAGS.architecturallyWritableMask) | 2)
-        if currentPrivilegeLevel(state, mode: mode) > UInt8((state.rflags.rawValue >> 12) & 3) {
-          setFlag(.interruptEnable, state.rflags.contains(.interruptEnable), in: &requested)
-        }
+        // SDM Vol. 2B Table 4-15: VM/VIF/VIP cannot be changed by POPF, RF
+        // stays cleared, and the word form preserves the upper flags. Only
+        // CPL 0 may change IOPL; IF admission uses the original IOPL value.
+        var writable = DoryX86RFLAGS.architecturallyWritableMask & mask(width)
+          & ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue
+            | DoryX86RFLAGS.virtualInterrupt.rawValue
+            | DoryX86RFLAGS.virtualInterruptPending.rawValue)
+        if privilege != 0 { writable &= ~UInt64(0x3000) }
+        if privilege > ioPrivilege { writable &= ~DoryX86RFLAGS.interruptEnable.rawValue }
+        let requested = DoryX86RFLAGS(rawValue:
+          ((state.rflags.rawValue & ~writable) | (stackRead.value & writable) | 2)
+            & ~DoryX86RFLAGS.resume.rawValue)
         guard let validated = try? requested.validated() else {
           return generalProtection(at: originalRIP)
         }
@@ -6775,7 +6796,7 @@ public struct DoryX86Interpreter: Sendable {
       // Intel SDM Vol. 2B MOV CR: reserved low bits are ignored, reserved high
       // bits cause #GP, and ET remains fixed at one after every successful write.
       guard value >> 32 == 0 else { return false }
-      let normalizedValue = (value & 0xE005_003F) | (1 << 4)
+      let normalizedValue = (value & DoryX86CPUProfile.implementedCR0Mask) | (1 << 4)
       let paging = normalizedValue & (1 << 31) != 0
       let protectedMode = normalizedValue & 1 != 0
       let cacheDisable = normalizedValue & (1 << 30) != 0
@@ -6822,11 +6843,7 @@ public struct DoryX86Interpreter: Sendable {
       // Engineering mechanisms remain independently testable. The selected
       // profiles advertise the now-qualified PSE/PAE/PGE subset; PCID and SMAP remain
       // unavailable until a qualified feature and CPUID contract exist.
-      var implementedMask: UInt64 =
-        (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8)
-        | (1 << 9) | (1 << 10) | (1 << 20)
-      if profile.supports(.xsave) { implementedMask |= 1 << 18 }
-      guard value & ~implementedMask == 0 else { return false }
+      guard value & ~profile.implementedCR4Mask == 0 else { return false }
       if value & (1 << 17) != 0 {
         guard previous.efer & (1 << 10) != 0 else { return false }
         if previous.cr4 & (1 << 17) == 0, previous.cr3 & 0xFFF != 0 { return false }
@@ -6938,10 +6955,7 @@ public struct DoryX86Interpreter: Sendable {
       guard validPageAttributeTable(value) else { return false }
       state.modelSpecific.pageAttributeTable = value
     case 0xC000_0080:
-      var writableMask: UInt64 = 0
-      if profile.supports(.syscall) { writableMask |= 1 << 0 }
-      if profile.supports(.longMode) { writableMask |= 1 << 8 }
-      if profile.supports(.executeDisable) { writableMask |= 1 << 11 }
+      let writableMask = profile.implementedEFERWritableMask
       guard value & ~(writableMask | (1 << 10)) == 0,
         value & (1 << 10) == state.control.efer & (1 << 10),
         state.control.cr0 & (1 << 31) == 0

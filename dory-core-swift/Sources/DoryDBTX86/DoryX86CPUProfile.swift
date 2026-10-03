@@ -143,6 +143,31 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
   /// profile until its execution and CPUID contracts are implemented together.
   private static let unimplementedEntropyFeatures: Set<DoryX86Feature> = [.rdrand, .rdseed]
 
+  /// MOV CR0 stores only these bits and always fixes ET at one. Reserved low
+  /// input bits are ignored by MOV; persistence must contain the stored value.
+  static let implementedCR0Mask: UInt64 = 0xE005_003F
+
+  /// The existing WRMSR EFER contract. LMA is not writable: MOV CR0 derives it
+  /// when entering/leaving IA-32e paging, and persistence must retain that fact.
+  var implementedEFERWritableMask: UInt64 {
+    var mask: UInt64 = 0
+    if supports(.syscall) { mask |= 1 << 0 }
+    if supports(.longMode) { mask |= 1 << 8 }
+    if supports(.executeDisable) { mask |= 1 << 11 }
+    return mask
+  }
+
+  /// The exact CR4 write contract implemented by the execution engine. Mechanisms
+  /// remain independently testable; this mask is not a CPUID feature qualification.
+  /// Keep persistence admission identical to MOV CR4 so saved state cannot enable
+  /// a control (including PCID or SMAP) that the selected engine cannot admit.
+  var implementedCR4Mask: UInt64 {
+    var mask: UInt64 = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6)
+      | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 20)
+    if supports(.xsave) { mask |= 1 << 18 }
+    return mask
+  }
+
   /// Creates a guest profile, omitting optional SIMD and extended-state
   /// capabilities that are not part of Dory's qualified public CPU contract.
   public init(
