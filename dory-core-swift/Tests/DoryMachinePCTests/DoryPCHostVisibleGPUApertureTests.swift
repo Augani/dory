@@ -337,6 +337,8 @@ private let pcBlobTestWorkspaceID = UUID(uuidString: "11111111-2222-3333-4444-55
   @Test func offsetIndexRoutesManyOutOfOrderBlobsAndRetiresTheExactMapping() throws {
     let aperture = try DoryPCHostVisibleGPUAperture(byteCount: 256 * 1_024 * 1_024)
     let stores = (0..<512).map { _ in BlobStore(byteCount: 4_096) }
+    // The mapping callbacks borrow their backing. Keep every owner alive through all accesses.
+    defer { withExtendedLifetime(stores) {} }
     for index in stores.indices.reversed() {
       try aperture.map(mapping(
         resourceID: UInt32(index + 1), generation: UInt64(index + 1),
@@ -360,6 +362,7 @@ private let pcBlobTestWorkspaceID = UUID(uuidString: "11111111-2222-3333-4444-55
     #expect(try aperture.read(offset: 254 * 8_192, byteCount: 1) == [0])
     #expect(try aperture.read(offset: 256 * 8_192, byteCount: 1) == [0])
     let replacement = BlobStore(byteCount: 4_096)
+    defer { withExtendedLifetime(replacement) {} }
     try aperture.map(mapping(
       resourceID: 256, generation: 513, offset: 255 * 8_192, store: replacement
     ))
