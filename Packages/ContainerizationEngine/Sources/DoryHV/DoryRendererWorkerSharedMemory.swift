@@ -8,6 +8,17 @@ import Foundation
 struct DoryRendererWorkerSharedRegionSet: @unchecked Sendable {
     let references: [DoryRendererSharedRegionReference]
     let descriptors: [FileHandle]
+    private let memoryLeases: [GuestMemoryRangeLease]
+
+    init(
+        references: [DoryRendererSharedRegionReference],
+        descriptors: [FileHandle],
+        memoryLeases: [GuestMemoryRangeLease] = []
+    ) {
+        self.references = references
+        self.descriptors = descriptors
+        self.memoryLeases = memoryLeases
+    }
 
     static func guestBacking(
         entries: [VirtioGPUMemoryEntry],
@@ -19,6 +30,7 @@ struct DoryRendererWorkerSharedRegionSet: @unchecked Sendable {
             var references = [DoryRendererSharedRegionReference]()
             references.reserveCapacity(entries.count)
             var expectedFileSize: UInt64?
+            var leases: [GuestMemoryRangeLease] = []
             for entry in entries {
                 guard entry.length > 0, let guestAddress = entry.guestAddress else {
                     throw VMError.invalidConfiguration(
@@ -29,6 +41,7 @@ struct DoryRendererWorkerSharedRegionSet: @unchecked Sendable {
                     at: guestAddress,
                     count: UInt64(entry.length)
                 )
+                leases.append(try transport.pinGuestMemory(at: guestAddress, count: UInt64(entry.length)))
                 if let expectedFileSize {
                     guard expectedFileSize == bounds.declaredFileSize else {
                         throw VMError.invalidConfiguration(
@@ -47,7 +60,7 @@ struct DoryRendererWorkerSharedRegionSet: @unchecked Sendable {
                     declaredFileSize: bounds.declaredFileSize
                 ))
             }
-            return Self(references: references, descriptors: [descriptor])
+            return Self(references: references, descriptors: [descriptor], memoryLeases: leases)
         } catch {
             try? descriptor.close()
             throw error

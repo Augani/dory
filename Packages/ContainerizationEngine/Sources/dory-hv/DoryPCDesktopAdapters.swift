@@ -1,5 +1,6 @@
 import DoryHV
 import DoryMachinePC
+import DoryRendererWorkerWireContracts
 import DoryVirtio
 import DorydKit
 import Foundation
@@ -18,9 +19,14 @@ final class DoryPCDesktopInputSink: DesktopInputSink, @unchecked Sendable {
     }
 
     func send(frame events: [VirtioInputEvent]) {
-        guard !events.isEmpty else { return }
+        _ = submit(frame: events)
+    }
+
+    @discardableResult
+    func submit(frame events: [VirtioInputEvent]) -> Bool {
+        guard !events.isEmpty else { return false }
         let current: DoryPCVirtioInputPCIDevice = lock.withLock { self.device }
-        _ = current.enqueueSynchronized(events.map {
+        return current.enqueueSynchronized(events.map {
             DoryVirtioInputEvent(
                 type: $0.type,
                 code: $0.code,
@@ -28,72 +34,15 @@ final class DoryPCDesktopInputSink: DesktopInputSink, @unchecked Sendable {
             )
         })
     }
+
+    func releaseAllPressedKeys() {
+        let current = lock.withLock { device }
+        current.releaseAllPressedKeys()
+    }
 }
 
-/// Converts DoryPC's complete transport-neutral resource snapshot into the bounded dirty-row
-/// representation already consumed by the native Metal desktop mailbox.
-struct DoryPCSoftwareDisplayMetrics: Equatable, Sendable {
-    var receivedFrames: UInt64 = 0
-    var visibleFrames: UInt64 = 0
-    var receivedFrameBytes: UInt64 = 0
-}
-
-final class DoryPCSoftwareDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Sendable {
-    private struct ResourceIdentity: Equatable {
-        let width: UInt32
-        let height: UInt32
-        let format: DoryVirtioGPUFormat
-    }
-
-    private let lock = NSLock()
-    private let mailbox: DesktopFrameMailbox
-    private let onFirstFrame: @Sendable () -> Void
-    private var identities = [UInt32: ResourceIdentity]()
-    private var generations = [UInt32: UInt64]()
-    private var deliveredVisibleFrame = false
-    private var metricStorage = DoryPCSoftwareDisplayMetrics()
-
-    init(
-        mailbox: DesktopFrameMailbox,
-        onFirstFrame: @escaping @Sendable () -> Void = {}
-    ) {
-        self.mailbox = mailbox
-        self.onFirstFrame = onFirstFrame
-    }
-
-    func present(_ frame: DoryVirtioGPUFrame) {
-        guard let converted = convert(frame) else { return }
-        mailbox.submit(converted)
-        lock.withLock {
-            metricStorage.receivedFrames = Self.saturatingAdd(metricStorage.receivedFrames, 1)
-            metricStorage.receivedFrameBytes = Self.saturatingAdd(
-                metricStorage.receivedFrameBytes,
-                UInt64(converted.bytes.count)
-            )
-        }
-    }
-
-    /// A submitted frame is not evidence of a working host display. The mailbox calls this only
-    /// after AppKit's display view accepts the CPU frame for Metal upload.
-    func hostDidPresent(_ frame: VirtioGPUScanoutFrame) {
-        guard Self.containsVisibleContent(frame.bytes) else { return }
-        let shouldDeliver = lock.withLock { () -> Bool in
-            metricStorage.visibleFrames = Self.saturatingAdd(metricStorage.visibleFrames, 1)
-            guard !deliveredVisibleFrame else { return false }
-            deliveredVisibleFrame = true
-            return true
-        }
-        if shouldDeliver { onFirstFrame() }
-    }
-
-    var metrics: DoryPCSoftwareDisplayMetrics { lock.withLock { metricStorage } }
-
-    /// A modeset commonly flushes one uniformly cleared resource before firmware or a bootloader
-    /// has drawn anything. Keep the startup presentation over that clear instead of turning a
-    /// healthy translated boot into an unexplained blank window. Variation is visible regardless
-    /// of channel order; a uniform pixel is visible when it contains color rather than only an
-    /// opaque alpha/X byte.
-    static func containsVisibleContent(_ bytes: Data) -> Bool {
+enum DesktopFrameContent {
+    static func containsVisiblePixels(_ bytes: Data) -> Bool {
         let bytesPerPixel = 4
         guard bytes.count >= bytesPerPixel, bytes.count.isMultiple(of: bytesPerPixel) else {
             return false
@@ -113,13 +62,177 @@ final class DoryPCSoftwareDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Send
         let nonzero = baseline.filter { $0 != 0 }
         return nonzero.count > 1 || nonzero.contains { $0 != 0xff }
     }
+}
+
+/// Converts DoryPC's complete transport-neutral resource snapshot into the bounded dirty-row
+/// representation already consumed by the native Metal desktop mailbox.
+struct DoryPCSoftwareDisplayMetrics: Equatable, Sendable {
+    var receivedFrames: UInt64 = 0
+    var visibleFrames: UInt64 = 0
+    var receivedFrameBytes: UInt64 = 0
+}
+
+final class DoryPCSoftwareDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Sendable {
+    private struct ResourceIdentity: Equatable {
+        let generation: UInt64
+        let width: UInt32
+        let height: UInt32
+        let format: DoryVirtioGPUFormat
+    }
+
+    private let lock = NSLock()
+    private let publishFrame: @Sendable (VirtioGPUScanoutFrame) -> Void
+    private let releaseFrame: @Sendable (UInt32, UInt64) -> Void
+    private let publishCursor: @Sendable (VirtioGPUCursorUpdate?) -> Void
+    private let hideCursor: @Sendable (UInt32) -> Void
+    private let onFirstFrame: @Sendable () -> Void
+    private var identities = [UInt32: ResourceIdentity]()
+    private var generations = [UInt32: UInt64]()
+    private var invalidatedResources = Set<UInt32>()
+    private var resourceAdmissionExhausted = false
+    private static let maximumTrackedResourceIDs = 1_048_576
+    private var deliveredVisibleFrame = false
+    private var metricStorage = DoryPCSoftwareDisplayMetrics()
+
+    init(
+        mailbox: DesktopFrameMailbox,
+        publishCursor: @escaping @Sendable (VirtioGPUCursorUpdate?) -> Void = { _ in },
+        onFirstFrame: @escaping @Sendable () -> Void = {}
+    ) {
+        self.publishFrame = { frame in mailbox.submit(frame) }
+        self.releaseFrame = { resourceID, resourceGeneration in
+            mailbox.release(VirtioGPUScanoutResourceRelease(
+                resourceID: resourceID,
+                resourceGeneration: resourceGeneration,
+                scanoutCount: 1,
+                completion: {}
+            ))
+        }
+        self.publishCursor = publishCursor
+        self.hideCursor = { _ in publishCursor(nil) }
+        self.onFirstFrame = onFirstFrame
+    }
+
+    init(
+        publishFrame: @escaping @Sendable (VirtioGPUScanoutFrame) -> Void,
+        releaseFrame: @escaping @Sendable (UInt32, UInt64) -> Void = { _, _ in },
+        publishCursor: @escaping @Sendable (VirtioGPUCursorUpdate?) -> Void = { _ in },
+        hideCursor: (@Sendable (UInt32) -> Void)? = nil,
+        onFirstFrame: @escaping @Sendable () -> Void = {}
+    ) {
+        self.publishFrame = publishFrame
+        self.releaseFrame = releaseFrame
+        self.publishCursor = publishCursor
+        self.hideCursor = hideCursor ?? { _ in publishCursor(nil) }
+        self.onFirstFrame = onFirstFrame
+    }
+
+    func presentCursor(_ update: DoryVirtioGPUCursorUpdate) {
+        guard update.resourceID != 0 else {
+            hideCursor(update.scanoutID)
+            return
+        }
+        guard update.bytes.count == 64 * 64 * 4 else { return }
+        publishCursor(VirtioGPUCursorUpdate(
+            scanoutID: update.scanoutID,
+            resourceID: update.resourceID,
+            x: update.x,
+            y: update.y,
+            width: 64,
+            height: 64,
+            hotX: update.hotX,
+            hotY: update.hotY,
+            bytes: Data(update.bytes)
+        ))
+    }
+
+    func present(_ frame: DoryVirtioGPUFrame) {
+        guard let converted = convert(frame) else { return }
+        publishFrame(converted)
+        lock.withLock {
+            metricStorage.receivedFrames = Self.saturatingAdd(metricStorage.receivedFrames, 1)
+            metricStorage.receivedFrameBytes = Self.saturatingAdd(
+                metricStorage.receivedFrameBytes,
+                UInt64(converted.bytes.count)
+            )
+        }
+    }
+
+    /// A submitted frame is not evidence of a working host display. The mailbox calls this only
+    /// after AppKit's display view accepts the CPU frame for Metal upload.
+    func hostDidPresent(_ frame: VirtioGPUScanoutFrame) {
+        hostDidPresent(
+            resourceID: frame.resourceID,
+            resourceGeneration: frame.resourceGeneration,
+            visibleContent: Self.containsVisibleContent(frame.bytes)
+        )
+    }
+
+    func hostDidPresent(
+        resourceID: UInt32,
+        resourceGeneration: UInt64,
+        visibleContent: Bool
+    ) {
+        guard visibleContent else { return }
+        let shouldDeliver = lock.withLock { () -> Bool in
+            guard generations[resourceID] == resourceGeneration,
+                  !invalidatedResources.contains(resourceID) else { return false }
+            metricStorage.visibleFrames = Self.saturatingAdd(metricStorage.visibleFrames, 1)
+            guard !deliveredVisibleFrame else { return false }
+            deliveredVisibleFrame = true
+            return true
+        }
+        if shouldDeliver { onFirstFrame() }
+    }
+
+    /// A reset invalidates every old presentation, but the semantic GPU owns the next incarnation
+    /// number. Do not synthesize a number from geometry or reuse an old frame's generation.
+    func resetResources() {
+        lock.withLock {
+            invalidatedResources.formUnion(generations.keys)
+        }
+    }
+
+    func retireResource(resourceID: UInt32, resourceGeneration: UInt64) {
+        let shouldRelease = lock.withLock { () -> Bool in
+            let current = generations[resourceID] ?? 0
+            guard resourceGeneration >= current else { return false }
+            if resourceGeneration == current,
+               invalidatedResources.contains(resourceID) { return false }
+            let hadPresentedFrame = generations[resourceID] != nil
+            if generations[resourceID] == nil,
+               generations.count >= Self.maximumTrackedResourceIDs {
+                resourceAdmissionExhausted = true
+                return hadPresentedFrame
+            }
+            generations[resourceID] = resourceGeneration
+            invalidatedResources.insert(resourceID)
+            return hadPresentedFrame
+        }
+        if shouldRelease { releaseFrame(resourceID, resourceGeneration) }
+    }
+
+    var metrics: DoryPCSoftwareDisplayMetrics { lock.withLock { metricStorage } }
+
+    /// A modeset commonly flushes one uniformly cleared resource before firmware or a bootloader
+    /// has drawn anything. Keep the startup presentation over that clear instead of turning a
+    /// healthy translated boot into an unexplained blank window. Variation is visible regardless
+    /// of channel order; a uniform pixel is visible when it contains color rather than only an
+    /// opaque alpha/X byte.
+    static func containsVisibleContent(_ bytes: Data) -> Bool {
+        DesktopFrameContent.containsVisiblePixels(bytes)
+    }
 
     func convert(_ frame: DoryVirtioGPUFrame) -> VirtioGPUScanoutFrame? {
         let bytesPerPixel = UInt64(frame.format.bytesPerPixel)
-        let resourceRowBytes = UInt64(frame.resourceWidth) * bytesPerPixel
-        let resourceByteCount = resourceRowBytes * UInt64(frame.resourceHeight)
-        guard frame.resourceWidth > 0,
+        let (resourceRowBytes, rowOverflow) = UInt64(frame.resourceWidth)
+            .multipliedReportingOverflow(by: bytesPerPixel)
+        let (resourceByteCount, resourceOverflow) = resourceRowBytes
+            .multipliedReportingOverflow(by: UInt64(frame.resourceHeight))
+        guard frame.resourceID != 0, frame.resourceGeneration > 0,
+              frame.resourceWidth > 0,
               frame.resourceHeight > 0,
+              !rowOverflow, !resourceOverflow,
               resourceByteCount <= UInt64(Int.max),
               UInt64(frame.pixels.count) == resourceByteCount else { return nil }
 
@@ -140,39 +253,69 @@ final class DoryPCSoftwareDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Send
         let bottom = min(scanoutMaxY, damageMaxY)
         guard right > left, bottom > top else { return nil }
 
+        // The relay retains a full surface, even when only a small dirty rectangle is sent.
+        // Reject an oversized scanout before allocating a second dirty-frame copy.
+        guard Self.canRelayScanout(
+            width: scanout.width, height: scanout.height, bytesPerPixel: bytesPerPixel
+        ) else {
+            return nil
+        }
+
         let dirtyWidth = right - left
         let dirtyHeight = bottom - top
-        let dirtyRowBytes = UInt64(dirtyWidth) * bytesPerPixel
-        let outputByteCount = dirtyRowBytes * UInt64(dirtyHeight)
-        guard dirtyRowBytes <= UInt64(UInt32.max), outputByteCount <= UInt64(Int.max) else {
+        let (dirtyRowBytes, dirtyRowOverflow) = UInt64(dirtyWidth)
+            .multipliedReportingOverflow(by: bytesPerPixel)
+        let (outputByteCount, outputOverflow) = dirtyRowBytes
+            .multipliedReportingOverflow(by: UInt64(dirtyHeight))
+        guard !dirtyRowOverflow, !outputOverflow,
+              dirtyRowBytes <= UInt64(UInt32.max),
+              outputByteCount <= UInt64(Int.max) else {
             return nil
         }
         var bytes = Data()
         bytes.reserveCapacity(Int(outputByteCount))
         for row in top..<bottom {
-            let offset = UInt64(row) * resourceRowBytes + UInt64(left) * bytesPerPixel
-            let end = offset + dirtyRowBytes
-            guard end <= UInt64(frame.pixels.count) else { return nil }
+            let (rowStart, rowOffsetOverflow) = UInt64(row)
+                .multipliedReportingOverflow(by: resourceRowBytes)
+            let (columnStart, columnOffsetOverflow) = UInt64(left)
+                .multipliedReportingOverflow(by: bytesPerPixel)
+            let (offset, offsetOverflow) = rowStart.addingReportingOverflow(columnStart)
+            let (end, endOverflow) = offset.addingReportingOverflow(dirtyRowBytes)
+            guard !rowOffsetOverflow, !columnOffsetOverflow, !offsetOverflow, !endOverflow,
+                  end <= UInt64(frame.pixels.count) else { return nil }
             bytes.append(contentsOf: frame.pixels[Int(offset)..<Int(end)])
         }
 
-        let identity = ResourceIdentity(
-            width: frame.resourceWidth,
-            height: frame.resourceHeight,
-            format: frame.format
-        )
-        let generation = lock.withLock { () -> UInt64 in
-            if identities[frame.resourceID] != identity {
-                identities[frame.resourceID] = identity
-                let next = (generations[frame.resourceID] ?? 0) &+ 1
-                generations[frame.resourceID] = next == 0 ? 1 : next
+        let admitted = lock.withLock { () -> Bool in
+            guard !resourceAdmissionExhausted else { return false }
+            if generations[frame.resourceID] == nil,
+               generations.count >= Self.maximumTrackedResourceIDs {
+                resourceAdmissionExhausted = true
+                return false
             }
-            return generations[frame.resourceID] ?? 1
+            let current = generations[frame.resourceID] ?? 0
+            guard frame.resourceGeneration >= current,
+                  (!invalidatedResources.contains(frame.resourceID)
+                    || frame.resourceGeneration > current) else { return false }
+            let identity = ResourceIdentity(
+                generation: frame.resourceGeneration,
+                width: frame.resourceWidth,
+                height: frame.resourceHeight,
+                format: frame.format
+            )
+            if let previous = identities[frame.resourceID],
+               previous.generation == identity.generation,
+               previous != identity { return false }
+            identities[frame.resourceID] = identity
+            generations[frame.resourceID] = frame.resourceGeneration
+            invalidatedResources.remove(frame.resourceID)
+            return true
         }
+        guard admitted else { return nil }
         return VirtioGPUScanoutFrame(
             scanoutID: frame.scanoutID,
             resourceID: frame.resourceID,
-            resourceGeneration: generation,
+            resourceGeneration: frame.resourceGeneration,
             format: frame.format.rawValue,
             width: scanout.width,
             height: scanout.height,
@@ -190,6 +333,18 @@ final class DoryPCSoftwareDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Send
     private static func sum(_ lhs: UInt32, _ rhs: UInt32) -> UInt32? {
         let (value, overflow) = lhs.addingReportingOverflow(rhs)
         return overflow ? nil : value
+    }
+
+    static func canRelayScanout(
+        width: UInt32, height: UInt32, bytesPerPixel: UInt64
+    ) -> Bool {
+        guard width > 0, height > 0, bytesPerPixel > 0 else { return false }
+        let (rowBytes, rowOverflow) = UInt64(width)
+            .multipliedReportingOverflow(by: bytesPerPixel)
+        let (surfaceBytes, surfaceOverflow) = rowBytes
+            .multipliedReportingOverflow(by: UInt64(height))
+        return !rowOverflow && !surfaceOverflow
+            && surfaceBytes <= DoryRendererWorkerLimits.production.maximumScanoutBytes
     }
 
     private static func saturatingAdd(_ value: UInt64, _ increment: UInt64) -> UInt64 {

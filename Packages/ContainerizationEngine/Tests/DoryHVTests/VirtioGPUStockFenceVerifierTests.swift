@@ -46,4 +46,79 @@ import Testing
             producerFencePending: false
         ) == nil)
     }
+
+    @Test func replacementRequiresFreshGenerationAndCompleteObservationWindow() {
+        let verifier = VirtioGPUStockFenceVerifier(
+            requiredCleanFlushes: 2,
+            workerGeneration: 7
+        )
+        #expect(verifier.observeScanoutBlobFlush(
+            resourceID: 9,
+            resourceGeneration: 1,
+            producerFencePending: false,
+            workerGeneration: 7
+        ) == nil)
+        let firstOutcome = verifier.observeScanoutBlobFlush(
+            resourceID: 9,
+            resourceGeneration: 2,
+            producerFencePending: false,
+            workerGeneration: 7
+        )
+        guard case .verified(let firstProof) = firstOutcome else {
+            Issue.record("first worker did not produce a proof")
+            return
+        }
+
+        verifier.beginWorkerGeneration(8)
+        #expect(verifier.observeScanoutBlobFlush(
+            resourceID: 9,
+            resourceGeneration: 3,
+            producerFencePending: true,
+            workerGeneration: 7
+        ) == nil)
+        #expect(verifier.observeScanoutBlobFlush(
+            resourceID: 9,
+            resourceGeneration: 1,
+            producerFencePending: false,
+            workerGeneration: 8
+        ) == nil)
+        let replacementOutcome = verifier.observeScanoutBlobFlush(
+            resourceID: 9,
+            resourceGeneration: 2,
+            producerFencePending: false,
+            workerGeneration: 8
+        )
+        guard case .verified(let replacementProof) = replacementOutcome else {
+            Issue.record("replacement worker did not produce a proof")
+            return
+        }
+        #expect(replacementProof != firstProof)
+        verifier.beginWorkerGeneration(7)
+        #expect(verifier.observeScanoutBlobFlush(
+            resourceID: 9,
+            resourceGeneration: 6,
+            producerFencePending: false,
+            workerGeneration: 7
+        ) == nil)
+    }
+
+    @Test func workerReplacementDoesNotEraseGuestFenceViolation() {
+        let verifier = VirtioGPUStockFenceVerifier(
+            requiredCleanFlushes: 2,
+            workerGeneration: 7
+        )
+        #expect(verifier.observeScanoutBlobFlush(
+            resourceID: 9,
+            resourceGeneration: 1,
+            producerFencePending: true,
+            workerGeneration: 7
+        ) == .violated)
+        #expect(verifier.beginWorkerGeneration(8))
+        #expect(verifier.observeScanoutBlobFlush(
+            resourceID: 9,
+            resourceGeneration: 1,
+            producerFencePending: false,
+            workerGeneration: 8
+        ) == nil)
+    }
 }

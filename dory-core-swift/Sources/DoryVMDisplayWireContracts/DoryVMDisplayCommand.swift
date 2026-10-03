@@ -4,6 +4,7 @@ public enum DoryVMDisplayCommandKind: String, Codable, Sendable {
     case input
     case resize
     case topology
+    case focus
     case restartGraphics = "restart-graphics"
 }
 
@@ -55,6 +56,7 @@ public struct DoryVMDisplayCommand: Codable, Equatable, Sendable {
     public static let maximumEncodedByteCount = 8_192
     public static let maximumInputEventCount = 64
     public static let maximumDimension: UInt32 = 16_384
+    public static let maximumFocusLeaseLifetimeNanoseconds: UInt64 = 1_500_000_000
 
     public var schemaVersion: UInt16
     public var machineID: String
@@ -69,6 +71,33 @@ public struct DoryVMDisplayCommand: Codable, Equatable, Sendable {
     public var physicalWidthMillimeters: UInt16?
     public var physicalHeightMillimeters: UInt16?
     public var topology: [DoryVMDisplayTopologyEntry]?
+    public var focused: Bool? = nil
+    public var focusLeaseID: String? = nil
+    public var focusExpiresAtUptimeNanoseconds: UInt64? = nil
+
+    /// Focus is a short-lived authority, not an assertion that the helper application is active.
+    /// The broker binds this lease to the authenticated display application's XPC connection.
+    public static func focus(
+        machineID: String, operationID: UUID, sequence: UInt64,
+        leaseID: UUID, active: Bool, expiresAtUptimeNanoseconds: UInt64? = nil
+    ) throws -> Self {
+        var command = try restartGraphics(
+            machineID: machineID, operationID: operationID, sequence: sequence
+        )
+        command.kind = .focus
+        command.focused = active
+        command.focusLeaseID = leaseID.uuidString.lowercased()
+        if active {
+            let now = DispatchTime.now().uptimeNanoseconds
+            let deadline = now.addingReportingOverflow(maximumFocusLeaseLifetimeNanoseconds)
+            guard !deadline.overflow else { throw DoryVMDisplayWireError.invalidCommand }
+            command.focusExpiresAtUptimeNanoseconds = expiresAtUptimeNanoseconds ?? deadline.partialValue
+        } else {
+            command.focusExpiresAtUptimeNanoseconds = expiresAtUptimeNanoseconds
+        }
+        try command.validate()
+        return command
+    }
 
     public static func input(
         machineID: String,
@@ -182,6 +211,10 @@ public struct DoryVMDisplayCommand: Codable, Equatable, Sendable {
               sequence > 0 else {
             throw DoryVMDisplayWireError.invalidCommand
         }
+        guard kind == .focus || (focused == nil && focusLeaseID == nil
+            && focusExpiresAtUptimeNanoseconds == nil) else {
+            throw DoryVMDisplayWireError.invalidCommand
+        }
 
         switch kind {
         case .input:
@@ -232,7 +265,7 @@ public struct DoryVMDisplayCommand: Codable, Equatable, Sendable {
                   }) else {
                 throw DoryVMDisplayWireError.invalidCommand
             }
-        case .restartGraphics:
+        case .restartGraphics, .focus:
             guard inputEndpoint == nil,
                   inputEvents.isEmpty,
                   scanoutID == nil,
@@ -242,6 +275,22 @@ public struct DoryVMDisplayCommand: Codable, Equatable, Sendable {
                   physicalHeightMillimeters == nil,
                   topology == nil else {
                 throw DoryVMDisplayWireError.invalidCommand
+            }
+            if kind == .focus {
+                guard focused != nil, let focusLeaseID,
+                      let leaseID = UUID(uuidString: focusLeaseID),
+                      leaseID != UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+                      leaseID.uuidString.lowercased() == focusLeaseID else {
+                    throw DoryVMDisplayWireError.invalidCommand
+                }
+                if focused == true {
+                    guard let focusExpiresAtUptimeNanoseconds,
+                          focusExpiresAtUptimeNanoseconds > 0 else {
+                        throw DoryVMDisplayWireError.invalidCommand
+                    }
+                } else if focusExpiresAtUptimeNanoseconds != nil {
+                    throw DoryVMDisplayWireError.invalidCommand
+                }
             }
         }
     }

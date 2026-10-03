@@ -35,6 +35,18 @@ protocol DoryVMDisplayRunnerTransport: AnyObject, Sendable {
         operationID: String,
         reply: @escaping @Sendable (Bool, String) -> Void
     )
+    func retireCPUFrames(
+        machineID: String,
+        operationID: String,
+        reply: @escaping @Sendable (Bool, String) -> Void
+    )
+    func retireCPUResource(
+        machineID: String,
+        operationID: String,
+        resourceID: UInt32,
+        throughGeneration: UInt64,
+        reply: @escaping @Sendable (Bool, String) -> Void
+    )
     func invalidate()
 }
 
@@ -146,6 +158,42 @@ final class DoryVMDisplayRunnerXPCTransport: DoryVMDisplayRunnerTransport,
         proxy.retireRunner(machineID, operationID: operationID, withReply: reply)
     }
 
+    func retireCPUFrames(
+        machineID: String,
+        operationID: String,
+        reply: @escaping @Sendable (Bool, String) -> Void
+    ) {
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+            reply(false, "display-broker-error: \(error)")
+        }) as? DoryVMDisplayBrokerXPCProtocol else {
+            reply(false, "display-broker-proxy-unavailable")
+            return
+        }
+        proxy.retireCPUFrames(machineID, operationID: operationID, withReply: reply)
+    }
+
+    func retireCPUResource(
+        machineID: String,
+        operationID: String,
+        resourceID: UInt32,
+        throughGeneration: UInt64,
+        reply: @escaping @Sendable (Bool, String) -> Void
+    ) {
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+            reply(false, "display-broker-error: \(error)")
+        }) as? DoryVMDisplayBrokerXPCProtocol else {
+            reply(false, "display-broker-proxy-unavailable")
+            return
+        }
+        proxy.retireCPUResource(
+            machineID,
+            operationID: operationID,
+            resourceID: resourceID,
+            throughGeneration: throughGeneration,
+            withReply: reply
+        )
+    }
+
     func invalidate() {
         connection.invalidate()
     }
@@ -159,9 +207,14 @@ struct DoryVMDisplayRunnerCommandHandler: Sendable {
         UInt32,
         UInt16,
         UInt16
-    ) -> Void
-    var topology: @Sendable ([DoryVMDisplayTopologyEntry]) -> Void = { _ in }
-    var restartGraphics: @Sendable () -> Void = {}
+    ) -> Bool
+    var topology: @Sendable ([DoryVMDisplayTopologyEntry]) -> Bool = { _ in false }
+    var restartGraphics: @Sendable () -> Bool = { false }
+    var focus: @Sendable (UUID, Bool, UInt64?) -> Bool = { _, _, _ in false }
+    var revokeFocus: @Sendable () -> Void = {}
+    /// Durable device-owned reconciliation, not a best-effort ordinary input packet. Production
+    /// handlers retain release debt even if the guest has exhausted its receive queue.
+    var releaseInput: @Sendable () -> Void = {}
 
     @discardableResult
     func apply(_ command: DoryVMDisplayCommand) -> Bool {
@@ -180,15 +233,16 @@ struct DoryVMDisplayRunnerCommandHandler: Sendable {
                   let height = command.height,
                   let physicalWidth = command.physicalWidthMillimeters,
                   let physicalHeight = command.physicalHeightMillimeters else { return false }
-            resize(scanoutID, width, height, physicalWidth, physicalHeight)
-            return true
+            return resize(scanoutID, width, height, physicalWidth, physicalHeight)
         case .topology:
             guard let displays = command.topology else { return false }
-            topology(displays)
-            return true
+            return topology(displays)
         case .restartGraphics:
-            restartGraphics()
-            return true
+            return restartGraphics()
+        case .focus:
+            guard let lease = command.focusLeaseID.flatMap(UUID.init(uuidString:)),
+                  let focused = command.focused else { return false }
+            return focus(lease, focused, command.focusExpiresAtUptimeNanoseconds)
         }
     }
 }
@@ -215,8 +269,28 @@ final class DoryVMDisplayRunnerRelaySlot: @unchecked Sendable {
         relay.publish(update)
     }
 
+    @discardableResult
+    func publish(_ update: DoryPCVirGLScanoutUpdate) -> Bool {
+        guard let relay = lock.withLock({ relay }) else {
+            update.retire()
+            return false
+        }
+        return relay.publish(update)
+    }
+
     func publish(_ frame: VirtioGPUScanoutFrame) {
         lock.withLock { relay }?.publish(frame)
+    }
+
+    func resetCPUFrames() -> Bool {
+        lock.withLock { relay }?.resetCPUFrames() ?? true
+    }
+
+    func retireCPUResource(resourceID: UInt32, throughGeneration: UInt64) -> Bool {
+        lock.withLock { relay }?.retireCPUResource(
+            resourceID: resourceID,
+            throughGeneration: throughGeneration
+        ) ?? true
     }
 
     func canPublishCPUFrame(scanoutID: UInt32) -> Bool {
@@ -225,6 +299,10 @@ final class DoryVMDisplayRunnerRelaySlot: @unchecked Sendable {
 
     func publishCursor(_ update: VirtioGPUCursorUpdate?, scanoutCount: Int) {
         lock.withLock { relay }?.publishCursor(update, scanoutCount: scanoutCount)
+    }
+
+    func publishHiddenCursor(scanoutID: UInt32) {
+        lock.withLock { relay }?.publishHiddenCursor(scanoutID: scanoutID)
     }
 
     func start() {
@@ -244,6 +322,13 @@ struct DoryVMDisplayPresentationIntervalMetrics: Equatable, Sendable {
     var sampleCount: UInt64
     var p95Nanoseconds: UInt64
     var p99Nanoseconds: UInt64
+}
+
+struct DoryVMDisplayCPUFrameCompletion: Equatable, Sendable {
+    let scanoutID: UInt32
+    let resourceID: UInt32
+    let resourceGeneration: UInt64
+    let visibleContent: Bool
 }
 
 /// Bounded, per-scanout measurement of intervals between frames the Dory app actually presented.
@@ -335,25 +420,26 @@ final class DoryVMDisplayRunnerResizeTarget: @unchecked Sendable {
         height: UInt32,
         physicalWidthMillimeters: UInt16,
         physicalHeightMillimeters: UInt16
-    ) {
+    ) -> Bool {
         guard let target = lock.withLock({ target }),
               let gpu = target.gpu,
-              let transport = target.transport else { return }
-        target.pointerTopology.update(scanoutID: scanoutID, width: width, height: height)
-        gpu.updateScanoutSize(
+              let transport = target.transport else { return false }
+        guard gpu.updateScanoutSize(
             scanoutID: scanoutID,
             width: width,
             height: height,
             physicalWidthMillimeters: physicalWidthMillimeters,
             physicalHeightMillimeters: physicalHeightMillimeters,
             transport: transport
-        )
+        ) else { return false }
+        target.pointerTopology.update(scanoutID: scanoutID, width: width, height: height)
+        return true
     }
 
-    func apply(topology: [DoryVMDisplayTopologyEntry]) {
+    func apply(topology: [DoryVMDisplayTopologyEntry]) -> Bool {
         guard let target = lock.withLock({ target }),
               let gpu = target.gpu,
-              let transport = target.transport else { return }
+              let transport = target.transport else { return false }
         let sizes = topology.map {
             VirtioGPUScanoutSize(
                 width: $0.width,
@@ -362,26 +448,51 @@ final class DoryVMDisplayRunnerResizeTarget: @unchecked Sendable {
                 physicalHeightMillimeters: $0.physicalHeightMillimeters
             )
         }
-        for (index, size) in sizes.enumerated() {
-            target.pointerTopology.update(
-                scanoutID: UInt32(index),
-                width: size.width,
-                height: size.height
-            )
-        }
-        gpu.updateScanoutTopology(sizes, transport: transport)
+        guard gpu.updateScanoutTopology(sizes, transport: transport) else { return false }
+        target.pointerTopology.updateActiveTopology(sizes)
+        return true
     }
 }
 
 /// Runner-side owner of app-presented frame leases. A frame remains live in this process until
 /// doryd reports that the app either committed or rejected it; only then is the existing GPU host
 /// submission completed and the renderer presentation consumer retired.
+enum DoryVMDisplayPresentationDisposition {
+    static func isExpectedRetirement(_ detail: String) -> Bool {
+        switch detail {
+        case "frame-evicted", "scanout-removed", "application-disconnected",
+             "runner-stopped", "runner-retired", "runner-disconnected":
+            true
+        default:
+            false
+        }
+    }
+}
+
+enum DoryVMDisplayAcceleratedFrameAdmission {
+    static func accepts<S: Sequence>(
+        scanoutID: UInt32,
+        pendingScanoutIDs: S,
+        maximumPerScanout: Int
+    ) -> Bool where S.Element == UInt32 {
+        precondition(maximumPerScanout > 0)
+        var count = 0
+        for pendingScanoutID in pendingScanoutIDs where pendingScanoutID == scanoutID {
+            count += 1
+            if count >= maximumPerScanout { return false }
+        }
+        return true
+    }
+}
+
 final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
     private final class PendingFrame: @unchecked Sendable {
         let scanoutID: UInt32
         let descriptor: FileHandle?
         let sharedTextureHandle: MTLSharedTextureHandle?
         let requiresMetalCompletion: Bool
+        let cpuResourceID: UInt32?
+        let cpuResourceGeneration: UInt64?
         let completion: @Sendable (Bool, UInt64, String) -> Void
 
         private let lock = NSLock()
@@ -398,6 +509,8 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
             self.descriptor = descriptor
             self.sharedTextureHandle = sharedTextureHandle
             self.requiresMetalCompletion = true
+            self.cpuResourceID = nil
+            self.cpuResourceGeneration = nil
             self.completion = { presented, completionID, detail in
                 if presented {
                     update.recordPresentationCompleted(completionID: completionID)
@@ -408,7 +521,9 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
                     )
                 } else {
                     update.rejectHostSubmission()
-                    onPresentationFailed(update.presentation.workerGeneration.rawValue, detail)
+                    if !DoryVMDisplayPresentationDisposition.isExpectedRetirement(detail) {
+                        onPresentationFailed(update.presentation.workerGeneration.rawValue, detail)
+                    }
                 }
                 update.presentation.finishPresentation()
             }
@@ -416,15 +531,57 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
 
         init(
             scanoutID: UInt32,
+            resourceID: UInt32,
+            resourceGeneration: UInt64,
             descriptor: FileHandle,
-            onPresentationCompleted: @escaping @Sendable (UInt32) -> Void
+            visibleContent: Bool,
+            onPresentationCompleted: @escaping @Sendable (DoryVMDisplayCPUFrameCompletion) -> Void
         ) {
             self.scanoutID = scanoutID
             self.descriptor = descriptor
             self.sharedTextureHandle = nil
             self.requiresMetalCompletion = false
+            self.cpuResourceID = resourceID
+            self.cpuResourceGeneration = resourceGeneration
             self.completion = { presented, _, _ in
-                if presented { onPresentationCompleted(scanoutID) }
+                if presented {
+                    onPresentationCompleted(.init(
+                        scanoutID: scanoutID,
+                        resourceID: resourceID,
+                        resourceGeneration: resourceGeneration,
+                        visibleContent: visibleContent
+                    ))
+                }
+            }
+        }
+
+        init(
+            update: DoryPCVirGLScanoutUpdate,
+            descriptor: FileHandle?,
+            sharedTextureHandle: MTLSharedTextureHandle?,
+            onPresentationCompleted: @escaping @Sendable (UInt64, UInt32) -> Void,
+            onPresentationFailed: @escaping @Sendable (UInt64, String) -> Void
+        ) {
+            self.scanoutID = update.flush.scanoutID
+            self.descriptor = descriptor
+            self.sharedTextureHandle = sharedTextureHandle
+            self.requiresMetalCompletion = true
+            self.cpuResourceID = nil
+            self.cpuResourceGeneration = nil
+            self.completion = { presented, completionID, detail in
+                if presented && update.isGenerationCurrent {
+                    update.recordPresentationCompleted(completionID: completionID)
+                    onPresentationCompleted(
+                        update.workerGeneration.rawValue,
+                        update.flush.scanoutID
+                    )
+                } else if !DoryVMDisplayPresentationDisposition.isExpectedRetirement(detail) {
+                    onPresentationFailed(
+                        update.workerGeneration.rawValue,
+                        presented ? "renderer-generation-revoked-before-presentation" : detail
+                    )
+                }
+                update.retire()
             }
         }
 
@@ -451,14 +608,37 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
     private struct State {
         var nextFrameSequence: UInt64 = 1
         var nextCursorSequence: UInt64 = 1
+        var cpuEpoch: UInt64 = 1
         var lastCommandSequence: UInt64 = 0
         var pending: [UUID: PendingFrame] = [:]
         var cpuSurfaces: [UInt32: CPUFrameSurface] = [:]
+        var retiredCPUResourceGenerations: [UInt32: UInt64] = [:]
+        var cpuResourceAdmissionExhausted = false
         var cpuFrameInFlightScanouts: Set<UInt32> = []
         var cpuFrameRefreshPendingScanouts: Set<UInt32> = []
         var started = false
         var stopped = false
         var pollInFlight = false
+    }
+
+    private final class RetirementReplyBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var response: (Bool, String)?
+        private let semaphore = DispatchSemaphore(value: 0)
+
+        func resolve(_ accepted: Bool, _ detail: String) {
+            let first = lock.withLock { () -> Bool in
+                guard response == nil else { return false }
+                response = (accepted, detail)
+                return true
+            }
+            if first { semaphore.signal() }
+        }
+
+        func wait() -> (Bool, String)? {
+            guard semaphore.wait(timeout: .now() + 3) == .success else { return nil }
+            return lock.withLock { response }
+        }
     }
 
     private struct CPUFrameSurface {
@@ -474,6 +654,7 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
     private struct CPUFrameSnapshot {
         var scanoutID: UInt32
         var sequence: UInt64
+        var epoch: UInt64
         var surface: CPUFrameSurface
     }
 
@@ -484,14 +665,24 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
     private let log: @Sendable (String) -> Void
     private let onPresentationCompleted: @Sendable (UInt64, UInt32) -> Void
     private let onPresentationFailed: @Sendable (UInt64, String) -> Void
-    private let onCPUPresentationCompleted: @Sendable (UInt32) -> Void
+    private let onCPUPresentationCompleted: @Sendable (DoryVMDisplayCPUFrameCompletion) -> Void
+    private let onDeferredCPUFrameRefresh: (@Sendable (UInt32) -> Void)?
     private let presentationIntervals: DoryVMDisplayPresentationIntervals
+    private let maximumCPUSurfaceBytes: UInt64
+    private let maximumPendingAcceleratedFramesPerScanout: Int
     private let pollQueue = DispatchQueue(
         label: "dev.dory.dory-hv.display-command-relay",
         qos: .userInteractive
     )
+    private let cpuRefreshQueue = DispatchQueue(
+        label: "dev.dory.dory-hv.display-cpu-refresh",
+        qos: .userInitiated
+    )
     private let lock = NSLock()
     private var state = State()
+    // The handlers only submit bounded device work. Serialize that submission with revocation,
+    // without invoking any device callback while the frame/resource state lock is held.
+    private let commandApplicationLock = NSLock()
 
     static func connect(
         machineID: String,
@@ -500,7 +691,8 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         commandHandler: DoryVMDisplayRunnerCommandHandler,
         onPresentationCompleted: @escaping @Sendable (UInt64, UInt32) -> Void = { _, _ in },
         onPresentationFailed: @escaping @Sendable (UInt64, String) -> Void = { _, _ in },
-        onCPUPresentationCompleted: @escaping @Sendable (UInt32) -> Void = { _ in },
+        onCPUPresentationCompleted: @escaping @Sendable (DoryVMDisplayCPUFrameCompletion) -> Void = { _ in },
+        onDeferredCPUFrameRefresh: (@Sendable (UInt32) -> Void)? = nil,
         log: @escaping @Sendable (String) -> Void
     ) -> DoryVMDisplayRunnerRelay {
         final class TransportBox: @unchecked Sendable {
@@ -521,6 +713,7 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
             onPresentationCompleted: onPresentationCompleted,
             onPresentationFailed: onPresentationFailed,
             onCPUPresentationCompleted: onCPUPresentationCompleted,
+            onDeferredCPUFrameRefresh: onDeferredCPUFrameRefresh,
             log: log
         )
         box.relay = relay
@@ -534,10 +727,15 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         commandHandler: DoryVMDisplayRunnerCommandHandler,
         onPresentationCompleted: @escaping @Sendable (UInt64, UInt32) -> Void = { _, _ in },
         onPresentationFailed: @escaping @Sendable (UInt64, String) -> Void = { _, _ in },
-        onCPUPresentationCompleted: @escaping @Sendable (UInt32) -> Void = { _ in },
+        onCPUPresentationCompleted: @escaping @Sendable (DoryVMDisplayCPUFrameCompletion) -> Void = { _ in },
+        onDeferredCPUFrameRefresh: (@Sendable (UInt32) -> Void)? = nil,
         presentationIntervals: DoryVMDisplayPresentationIntervals = .init(),
+        maximumCPUSurfaceBytes: UInt64 = DoryRendererWorkerLimits.production.maximumScanoutBytes,
+        maximumPendingAcceleratedFramesPerScanout: Int = 3,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
+        precondition(maximumCPUSurfaceBytes > 0)
+        precondition(maximumPendingAcceleratedFramesPerScanout > 0)
         self.machineID = machineID
         self.operationID = operationID.uuidString.lowercased()
         self.transport = transport
@@ -545,8 +743,22 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         self.onPresentationCompleted = onPresentationCompleted
         self.onPresentationFailed = onPresentationFailed
         self.onCPUPresentationCompleted = onCPUPresentationCompleted
+        self.onDeferredCPUFrameRefresh = onDeferredCPUFrameRefresh
         self.presentationIntervals = presentationIntervals
+        self.maximumCPUSurfaceBytes = maximumCPUSurfaceBytes
+        self.maximumPendingAcceleratedFramesPerScanout = maximumPendingAcceleratedFramesPerScanout
         self.log = log
+    }
+
+    /// Called with `lock` held. The broker independently retains at most two frames per scanout;
+    /// one additional runner lease covers a frame still in transit over XPC.
+    private func admitsAcceleratedFrame(scanoutID: UInt32) -> Bool {
+        DoryVMDisplayAcceleratedFrameAdmission.accepts(
+            scanoutID: scanoutID,
+            pendingScanoutIDs: state.pending.values.lazy.filter(\.requiresMetalCompletion)
+                .map(\.scanoutID),
+            maximumPerScanout: maximumPendingAcceleratedFramesPerScanout
+        )
     }
 
     var presentationIntervalMetrics: DoryVMDisplayPresentationIntervalMetrics {
@@ -658,12 +870,14 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         )
         let leaseID = update.presentation.leaseID.rawValue
         let admitted = lock.withLock { () -> Bool in
-            guard !state.stopped, state.pending[leaseID] == nil else { return false }
+            guard !state.stopped, state.pending[leaseID] == nil,
+                  admitsAcceleratedFrame(scanoutID: pending.scanoutID)
+            else { return false }
             state.pending[leaseID] = pending
             return true
         }
         guard admitted else {
-            pending.complete(presented: false, detail: "runner-not-accepting-frames")
+            pending.complete(presented: false, detail: "frame-evicted")
             return
         }
 
@@ -690,15 +904,151 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    func publish(_ update: DoryPCVirGLScanoutUpdate) -> Bool {
+        guard update.isCurrent else {
+            update.retire()
+            return false
+        }
+        let prepared: (
+            frame: DoryVMDisplayFrame,
+            leaseID: UUID,
+            descriptor: FileHandle?,
+            handle: MTLSharedTextureHandle?
+        )
+        do {
+            let sequence = try nextFrameSequence()
+            let payload: Data
+            let leaseID: UUID
+            let transportKind: DoryVMDisplayFrameTransport
+            let descriptor: FileHandle?
+            let sharedTextureHandle: MTLSharedTextureHandle?
+            switch update.transport {
+            case .sharedMemory:
+                let authority = try update.withSharedMemory { lease, sourceDescriptor in
+                    let duplicate = fcntl(sourceDescriptor, F_DUPFD_CLOEXEC, 0)
+                    guard duplicate >= 0 else { throw CocoaError(.fileReadUnknown) }
+                    return (
+                        lease,
+                        FileHandle(fileDescriptor: duplicate, closeOnDealloc: true)
+                    )
+                }
+                payload = DoryRendererScanoutLeaseCodec.encode(authority.0)
+                leaseID = authority.0.leaseID.rawValue
+                descriptor = authority.1
+                sharedTextureHandle = nil
+                transportKind = .sharedMemory
+            case .sharedTexture:
+                let authority = try update.withSharedTextureAuthority { lease, handle in
+                    (lease, handle)
+                }
+                payload = DoryRendererSharedTextureScanoutLeaseCodec.encode(authority.0)
+                leaseID = authority.0.leaseID.rawValue
+                descriptor = nil
+                sharedTextureHandle = authority.1
+                transportKind = .sharedTexture
+            }
+            let flush = update.flush
+            prepared = (
+                try DoryVMDisplayFrame(
+                    machineID: machineID,
+                    operationID: UUID(uuidString: operationID)!,
+                    scanoutID: flush.scanoutID,
+                    sequence: sequence,
+                    displayResourceGeneration: update.rendererResourceGeneration,
+                    transport: transportKind,
+                    leasePayload: payload,
+                    sourceRect: DoryVMDisplayRect(
+                        x: flush.sourceRectangle.x,
+                        y: flush.sourceRectangle.y,
+                        width: flush.sourceRectangle.width,
+                        height: flush.sourceRectangle.height
+                    ),
+                    dirtyRect: DoryVMDisplayRect(
+                        x: flush.damagedRectangle.x,
+                        y: flush.damagedRectangle.y,
+                        width: flush.damagedRectangle.width,
+                        height: flush.damagedRectangle.height
+                    )
+                ),
+                leaseID,
+                descriptor,
+                sharedTextureHandle
+            )
+        } catch {
+            update.retire()
+            log("dory-hv display relay rejected DoryPC frame preparation: \(error)")
+            return false
+        }
+
+        let pending = PendingFrame(
+            update: update,
+            descriptor: prepared.descriptor,
+            sharedTextureHandle: prepared.handle,
+            onPresentationCompleted: onPresentationCompleted,
+            onPresentationFailed: onPresentationFailed
+        )
+        let admitted = lock.withLock { () -> Bool in
+            guard !state.stopped, state.pending[prepared.leaseID] == nil,
+                  admitsAcceleratedFrame(scanoutID: pending.scanoutID) else {
+                return false
+            }
+            state.pending[prepared.leaseID] = pending
+            return true
+        }
+        guard admitted else {
+            pending.complete(presented: false, detail: "frame-evicted")
+            return false
+        }
+        guard update.isCurrent else {
+            completeFrame(
+                leaseID: prepared.leaseID,
+                presented: false,
+                detail: "DoryPC-renderer-generation-revoked"
+            )
+            return false
+        }
+        let leaseID = prepared.leaseID
+        do {
+            transport.publishFrame(
+                try DoryVMDisplayFrameCodec.encode(prepared.frame),
+                descriptors: prepared.descriptor.map { [$0] } ?? [],
+                sharedTextureHandle: prepared.handle
+            ) { [weak self] presented, completionID, detail in
+                self?.completeFrame(
+                    leaseID: leaseID,
+                    presented: presented,
+                    metalCommandBufferCompletionID: completionID,
+                    detail: detail
+                )
+            }
+            return true
+        } catch {
+            completeFrame(
+                leaseID: prepared.leaseID,
+                presented: false,
+                detail: "DoryPC-frame-encoding-failed: \(error)"
+            )
+            return false
+        }
+    }
+
     /// Relays the copied 2D scanout used by firmware, boot loaders, and early kernel modesetting.
     /// This path is deliberately distinct from renderer-backed presentation: its acknowledgement
     /// never satisfies the synchronized-renderer readiness boundary.
     func publish(_ frame: VirtioGPUScanoutFrame) {
         let snapshot: CPUFrameSnapshot?
+        var claimedSnapshot: CPUFrameSnapshot?
         do {
             snapshot = try lock.withLock {
                 guard !state.stopped, state.nextFrameSequence < UInt64.max else {
                     throw CancellationError()
+                }
+                guard !state.cpuResourceAdmissionExhausted,
+                      frame.resourceID != 0,
+                      frame.resourceGeneration > (state.retiredCPUResourceGenerations[
+                        frame.resourceID] ?? 0) else {
+                    throw DoryVMDisplayWireError.invalidFrameIdentity
                 }
                 guard frame.scanoutID < DoryVMDisplayFrame.maximumScanoutCount,
                       frame.width > 0, frame.height > 0,
@@ -712,20 +1062,31 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
                         >= UInt64(frame.stride) * UInt64(frame.dirtyRect.height) else {
                     throw DoryVMDisplayWireError.invalidRectangle
                 }
-                let fullStride = UInt64(frame.width) * 4
-                let fullBytes = fullStride * UInt64(frame.height)
-                guard fullStride <= UInt64(UInt32.max),
+                let (fullStride, strideOverflow) = UInt64(frame.width)
+                    .multipliedReportingOverflow(by: 4)
+                let (fullBytes, surfaceOverflow) = fullStride
+                    .multipliedReportingOverflow(by: UInt64(frame.height))
+                guard !strideOverflow, !surfaceOverflow,
+                      frame.width <= 16_384, frame.height <= 16_384,
+                      fullStride <= UInt64(UInt32.max),
                       fullBytes <= UInt64(Int.max),
                       fullBytes <= DoryRendererWorkerLimits.production.maximumScanoutBytes else {
                     throw DoryVMDisplayWireError.frameTooLarge
                 }
-                let resourceGeneration = max(1, frame.resourceGeneration)
+                let resourceGeneration = frame.resourceGeneration
                 var surface = state.cpuSurfaces[frame.scanoutID]
                 if surface?.resourceID != frame.resourceID
                     || surface?.resourceGeneration != resourceGeneration
                     || surface?.format != pixelFormat.rawValue
                     || surface?.width != frame.width
                     || surface?.height != frame.height {
+                    let retainedBytes = state.cpuSurfaces.reduce(UInt64(0)) { total, entry in
+                        entry.key == frame.scanoutID ? total : total + UInt64(entry.value.bytes.count)
+                    }
+                    guard fullBytes <= maximumCPUSurfaceBytes,
+                          retainedBytes <= maximumCPUSurfaceBytes - fullBytes else {
+                        throw DoryVMDisplayWireError.frameTooLarge
+                    }
                     surface = CPUFrameSurface(
                         resourceID: frame.resourceID,
                         resourceGeneration: resourceGeneration,
@@ -754,12 +1115,9 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
                     }
                 }
                 state.cpuSurfaces[frame.scanoutID] = surface
-                // Firmware and splash animations can flush a full 4K/Retina surface much faster
-                // than the app can consume descriptor-backed CPU leases. Preparing another lease
-                // here would synchronously create and copy a multi-megabyte temporary file on the
-                // vCPU thread, starving the guest itself. Keep accumulating dirty rows in the
-                // canonical surface and let the next guest flush publish them after this lease is
-                // retired.
+                // Do not prepare another descriptor-backed lease while the app owns one. PC
+                // submits dirty rows here and they coalesce into the canonical surface; ARM can
+                // defer extraction in the GPU and request one current snapshot after the receipt.
                 guard !state.cpuFrameInFlightScanouts.contains(frame.scanoutID) else {
                     state.cpuFrameRefreshPendingScanouts.insert(frame.scanoutID)
                     return nil
@@ -770,25 +1128,128 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
                 return CPUFrameSnapshot(
                     scanoutID: frame.scanoutID,
                     sequence: sequence,
+                    epoch: state.cpuEpoch,
                     surface: surface
                 )
             }
             guard let snapshot else { return }
+            claimedSnapshot = snapshot
             try publishCPUFrame(snapshot)
         } catch {
-            _ = lock.withLock {
-                state.cpuFrameInFlightScanouts.remove(frame.scanoutID)
-            }
+            if let claimedSnapshot { releaseCPUFrameClaimIfCurrent(claimedSnapshot) }
             log("dory-hv display relay rejected CPU frame: \(error)")
+        }
+    }
+
+    private func releaseCPUFrameClaimIfCurrent(_ snapshot: CPUFrameSnapshot) {
+        lock.withLock {
+            guard state.cpuEpoch == snapshot.epoch,
+                  state.cpuSurfaces[snapshot.scanoutID]?.resourceID
+                    == snapshot.surface.resourceID,
+                  state.cpuSurfaces[snapshot.scanoutID]?.resourceGeneration
+                    == snapshot.surface.resourceGeneration else { return }
+            state.cpuFrameInFlightScanouts.remove(snapshot.scanoutID)
         }
     }
 
     func canPublishCPUFrame(scanoutID: UInt32) -> Bool {
         lock.withLock {
-            guard !state.stopped else { return false }
-            guard state.cpuFrameInFlightScanouts.contains(scanoutID) else { return true }
-            return state.cpuFrameRefreshPendingScanouts.insert(scanoutID).inserted
+            guard !state.stopped, !state.cpuResourceAdmissionExhausted,
+                  state.nextFrameSequence < UInt64.max,
+                  scanoutID < DoryVMDisplayFrame.maximumScanoutCount else { return false }
+            guard state.cpuFrameInFlightScanouts.contains(scanoutID),
+                  onDeferredCPUFrameRefresh != nil else { return true }
+            // The caller is still under the virtio command lock. Record only a bounded signal;
+            // the acknowledgement callback will request one fresh copy of the latest backing.
+            state.cpuFrameRefreshPendingScanouts.insert(scanoutID)
+            return false
         }
+    }
+
+    /// A guest reset revokes all CPU-copy surfaces from the previous boot. Retiring pending
+    /// receipts also frees their descriptors and prevents a late Metal acknowledgement from
+    /// publishing a coalesced frame that belonged to the old virtio-gpu generation.
+    func resetCPUFrames() -> Bool {
+        let retirement = lock.withLock { () -> [PendingFrame] in
+            if state.cpuEpoch == .max {
+                state.cpuResourceAdmissionExhausted = true
+            } else {
+                state.cpuEpoch += 1
+            }
+            state.cpuSurfaces.removeAll(keepingCapacity: false)
+            state.cpuFrameInFlightScanouts.removeAll(keepingCapacity: false)
+            state.cpuFrameRefreshPendingScanouts.removeAll(keepingCapacity: false)
+            let leaseIDs = state.pending.compactMap { leaseID, frame in
+                frame.requiresMetalCompletion ? nil : leaseID
+            }
+            return leaseIDs.compactMap { state.pending.removeValue(forKey: $0) }
+        }
+        for frame in retirement {
+            frame.complete(presented: false, detail: "guest-reset")
+        }
+        let reply = RetirementReplyBox()
+        transport.retireCPUFrames(machineID: machineID, operationID: operationID) {
+            reply.resolve($0, $1)
+        }
+        guard let (accepted, detail) = reply.wait() else {
+            log("dory-hv display relay CPU frame retirement timed out")
+            return false
+        }
+        if !accepted {
+            log("dory-hv display relay CPU frame retirement rejected: \(detail)")
+        }
+        return accepted && !lock.withLock { state.cpuResourceAdmissionExhausted }
+    }
+
+    /// Resource unref only revokes the matching copied incarnation; other scanouts remain live.
+    /// The broker also records the tombstone before returning so an already-sent descriptor cannot
+    /// be delivered after the guest has reused the numeric resource ID.
+    func retireCPUResource(resourceID: UInt32, throughGeneration: UInt64) -> Bool {
+        guard resourceID != 0, throughGeneration != 0 else { return false }
+        let retirement = lock.withLock { () -> [PendingFrame] in
+            if state.retiredCPUResourceGenerations[resourceID] == nil,
+               state.retiredCPUResourceGenerations.count >= 1_048_576 {
+                state.cpuResourceAdmissionExhausted = true
+            } else {
+                state.retiredCPUResourceGenerations[resourceID] = max(
+                    state.retiredCPUResourceGenerations[resourceID] ?? 0,
+                    throughGeneration
+                )
+            }
+            let retiredScanouts = state.cpuSurfaces.compactMap { scanoutID, surface in
+                surface.resourceID == resourceID
+                    && surface.resourceGeneration <= throughGeneration ? scanoutID : nil
+            }
+            for scanoutID in retiredScanouts {
+                state.cpuSurfaces.removeValue(forKey: scanoutID)
+                state.cpuFrameInFlightScanouts.remove(scanoutID)
+                state.cpuFrameRefreshPendingScanouts.remove(scanoutID)
+            }
+            let leaseIDs = state.pending.compactMap { leaseID, frame in
+                frame.cpuResourceID == resourceID
+                    && (frame.cpuResourceGeneration ?? .max) <= throughGeneration
+                    ? leaseID : nil
+            }
+            return leaseIDs.compactMap { state.pending.removeValue(forKey: $0) }
+        }
+        for frame in retirement {
+            frame.complete(presented: false, detail: "resource-retired")
+        }
+        let reply = RetirementReplyBox()
+        transport.retireCPUResource(
+            machineID: machineID,
+            operationID: operationID,
+            resourceID: resourceID,
+            throughGeneration: throughGeneration
+        ) { reply.resolve($0, $1) }
+        guard let (accepted, detail) = reply.wait() else {
+            log("dory-hv display relay CPU resource retirement timed out")
+            return false
+        }
+        if !accepted {
+            log("dory-hv display relay CPU resource retirement rejected: \(detail)")
+        }
+        return accepted && !lock.withLock { state.cpuResourceAdmissionExhausted }
     }
 
     func publishCursor(_ update: VirtioGPUCursorUpdate?, scanoutCount: Int) {
@@ -798,6 +1259,17 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         } else {
             scanoutIDs = (0..<max(0, scanoutCount)).map(UInt32.init)
         }
+        publishCursor(update, scanoutIDs: scanoutIDs)
+    }
+
+    func publishHiddenCursor(scanoutID: UInt32) {
+        publishCursor(nil, scanoutIDs: [scanoutID])
+    }
+
+    private func publishCursor(
+        _ update: VirtioGPUCursorUpdate?,
+        scanoutIDs: [UInt32]
+    ) {
         for scanoutID in scanoutIDs {
             do {
                 let sequence = try nextCursorSequence()
@@ -839,11 +1311,20 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
     }
 
     func stop() {
-        let retirement = lock.withLock { () -> [PendingFrame]? in
-            guard !state.stopped else { return nil }
-            state.stopped = true
-            let pending = Array(state.pending.values)
-            state.pending.removeAll(keepingCapacity: false)
+        let retirement = commandApplicationLock.withLock { () -> [PendingFrame]? in
+            let pending = lock.withLock { () -> [PendingFrame]? in
+                guard !state.stopped else { return nil }
+                state.stopped = true
+                let pending = Array(state.pending.values)
+                state.pending.removeAll(keepingCapacity: false)
+                state.cpuSurfaces.removeAll(keepingCapacity: false)
+                state.cpuFrameInFlightScanouts.removeAll(keepingCapacity: false)
+                state.cpuFrameRefreshPendingScanouts.removeAll(keepingCapacity: false)
+                return pending
+            }
+            guard pending != nil else { return nil }
+            commandHandler.revokeFocus()
+            commandHandler.releaseInput()
             return pending
         }
         guard let pending = retirement else { return }
@@ -885,27 +1366,33 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         metalCommandBufferCompletionID: UInt64 = 0,
         detail: String
     ) {
-        let completed = lock.withLock { () -> (PendingFrame, CPUFrameSnapshot?)? in
+        let completed = lock.withLock { () -> (PendingFrame, CPUFrameSnapshot?, UInt64?)? in
             guard let pending = state.pending.removeValue(forKey: leaseID) else { return nil }
             var refresh: CPUFrameSnapshot?
+            var deferredRefreshEpoch: UInt64?
             if !pending.requiresMetalCompletion {
                 state.cpuFrameInFlightScanouts.remove(pending.scanoutID)
                 if state.cpuFrameRefreshPendingScanouts.remove(pending.scanoutID) != nil,
                    !state.stopped,
                    state.nextFrameSequence < UInt64.max,
                    let surface = state.cpuSurfaces[pending.scanoutID] {
-                    state.cpuFrameInFlightScanouts.insert(pending.scanoutID)
-                    refresh = CPUFrameSnapshot(
-                        scanoutID: pending.scanoutID,
-                        sequence: state.nextFrameSequence,
-                        surface: surface
-                    )
-                    state.nextFrameSequence += 1
+                    if onDeferredCPUFrameRefresh != nil {
+                        deferredRefreshEpoch = state.cpuEpoch
+                    } else {
+                        state.cpuFrameInFlightScanouts.insert(pending.scanoutID)
+                        refresh = CPUFrameSnapshot(
+                            scanoutID: pending.scanoutID,
+                            sequence: state.nextFrameSequence,
+                            epoch: state.cpuEpoch,
+                            surface: surface
+                        )
+                        state.nextFrameSequence += 1
+                    }
                 }
             }
-            return (pending, refresh)
+            return (pending, refresh, deferredRefreshEpoch)
         }
-        guard let (pending, refresh) = completed else {
+        guard let (pending, refresh, deferredRefreshEpoch) = completed else {
             return
         }
         // Every app-owned display frame is rendered by Metal, including a descriptor-backed
@@ -928,13 +1415,21 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
             metalCommandBufferCompletionID: effectiveCompletionID,
             detail: effectiveDetail
         )
+        if let deferredRefreshEpoch {
+            let scanoutID = pending.scanoutID
+            cpuRefreshQueue.async { [weak self] in
+                guard let self,
+                      self.lock.withLock({
+                          !self.state.stopped && self.state.cpuEpoch == deferredRefreshEpoch
+                      }) else { return }
+                self.onDeferredCPUFrameRefresh?(scanoutID)
+            }
+        }
         if let refresh {
             do {
                 try publishCPUFrame(refresh)
             } catch {
-                _ = lock.withLock {
-                    state.cpuFrameInFlightScanouts.remove(refresh.scanoutID)
-                }
+                releaseCPUFrameClaimIfCurrent(refresh)
                 log("dory-hv display relay rejected coalesced CPU frame: \(error)")
             }
         }
@@ -952,6 +1447,9 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         let lease = try DoryVMDisplayCPUFrameLease(
             leaseID: leaseID,
             releaseToken: UUID(),
+            resourceID: snapshot.surface.resourceID,
+            resourceGeneration: snapshot.surface.resourceGeneration,
+            cpuEpoch: snapshot.epoch,
             pixelFormat: snapshot.surface.format,
             yOriginTop: true,
             width: snapshot.surface.width,
@@ -978,18 +1476,30 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         )
         let pending = PendingFrame(
             scanoutID: snapshot.scanoutID,
+            resourceID: snapshot.surface.resourceID,
+            resourceGeneration: snapshot.surface.resourceGeneration,
             descriptor: descriptor,
+            visibleContent: DesktopFrameContent.containsVisiblePixels(
+                snapshot.surface.bytes
+            ),
             onPresentationCompleted: onCPUPresentationCompleted
         )
         let admitted = lock.withLock { () -> Bool in
-            guard !state.stopped, state.pending[leaseID] == nil else { return false }
+            guard !state.stopped,
+                  state.cpuEpoch == snapshot.epoch,
+                  !state.cpuResourceAdmissionExhausted,
+                  snapshot.surface.resourceGeneration > (state.retiredCPUResourceGenerations[
+                    snapshot.surface.resourceID] ?? 0),
+                  state.cpuSurfaces[snapshot.scanoutID]?.resourceID
+                    == snapshot.surface.resourceID,
+                  state.cpuSurfaces[snapshot.scanoutID]?.resourceGeneration
+                    == snapshot.surface.resourceGeneration,
+                  state.pending[leaseID] == nil else { return false }
             state.pending[leaseID] = pending
             return true
         }
         guard admitted else {
-            _ = lock.withLock {
-                state.cpuFrameInFlightScanouts.remove(snapshot.scanoutID)
-            }
+            releaseCPUFrameClaimIfCurrent(snapshot)
             pending.complete(presented: false, detail: "runner-not-accepting-frames")
             return
         }
@@ -1080,13 +1590,16 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
                 guard command.machineID == machineID, command.operationID == operationID else {
                     throw DoryVMDisplayWireError.invalidCommand
                 }
-                let shouldApply = lock.withLock { () -> Bool in
-                    guard command.sequence > state.lastCommandSequence else { return false }
-                    state.lastCommandSequence = command.sequence
-                    return true
+                let result = commandApplicationLock.withLock { () -> Bool? in
+                    let admitted = lock.withLock { () -> Bool in
+                        guard state.started, !state.stopped,
+                              command.sequence > state.lastCommandSequence else { return false }
+                        state.lastCommandSequence = command.sequence
+                        return true
+                    }
+                    return admitted ? commandHandler.apply(command) : nil
                 }
-                if shouldApply {
-                    let applied = commandHandler.apply(command)
+                if let applied = result {
                     transport.acknowledgeCommand(
                         machineID: machineID,
                         operationID: operationID,
@@ -1115,14 +1628,25 @@ final class DoryVMDisplayRunnerRelay: @unchecked Sendable {
         if shouldContinue { scheduleCommandPoll(after: nextDelay) }
     }
 
-    private func transportInvalidated() {
-        let pending = lock.withLock { () -> [PendingFrame] in
-            let pending = Array(state.pending.values)
-            state.pending.removeAll(keepingCapacity: false)
-            state.stopped = true
-            state.pollInFlight = false
+    func transportInvalidated() {
+        let pending = commandApplicationLock.withLock { () -> [PendingFrame]? in
+            let pending = lock.withLock { () -> [PendingFrame]? in
+                guard !state.stopped else { return nil }
+                let pending = Array(state.pending.values)
+                state.pending.removeAll(keepingCapacity: false)
+                state.stopped = true
+                state.pollInFlight = false
+                state.cpuSurfaces.removeAll(keepingCapacity: false)
+                state.cpuFrameInFlightScanouts.removeAll(keepingCapacity: false)
+                state.cpuFrameRefreshPendingScanouts.removeAll(keepingCapacity: false)
+                return pending
+            }
+            guard pending != nil else { return nil }
+            commandHandler.revokeFocus()
+            commandHandler.releaseInput()
             return pending
         }
+        guard let pending else { return }
         for frame in pending {
             frame.complete(presented: false, detail: "display-broker-disconnected")
         }

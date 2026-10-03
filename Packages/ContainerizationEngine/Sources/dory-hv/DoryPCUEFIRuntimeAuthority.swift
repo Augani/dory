@@ -9,213 +9,248 @@ import Foundation
 /// Fully admitted DoryPC-v1 authority. Immutable firmware is consumed into memory; block devices
 /// retain duplicates of the daemon-opened objects, and the NVRAM store retains directory authority.
 struct DoryPCUEFIRuntimeAuthority {
-    private final class VariableGenerationState: @unchecked Sendable {
-        private let lock = NSLock()
-        private var expected: UInt64
+  private final class VariableGenerationState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var expected: UInt64
 
-        init(expected: UInt64) { self.expected = expected }
+    init(expected: UInt64) { self.expected = expected }
 
-        func authorize(_ actual: UInt64) throws {
-            try lock.withLock {
-                guard actual == expected else {
-                    throw VMError.invalidConfiguration(
-                        "DoryPC NVRAM changed outside the admitted runtime generation"
-                    )
-                }
-            }
+    func authorize(_ actual: UInt64) throws {
+      try lock.withLock {
+        guard actual == expected else {
+          throw VMError.invalidConfiguration(
+            "DoryPC NVRAM changed outside the admitted runtime generation"
+          )
         }
-
-        func advance(to generation: UInt64) {
-            lock.withLock { expected = generation }
-        }
+      }
     }
 
-    let envelope: DoryPCRuntimeLaunchEnvelope
-    let resources: DoryPCRuntimeLaunchEnvelope.ResolvedResources
-    let artifacts: DoryVerifiedFirmwareArtifacts
-    let variableStore: DoryUEFIVariableStoreAuthority
-    let bootStorage: [DoryPCUEFIBootStorage]
-    private let variableGeneration: VariableGenerationState
+    func advance(to generation: UInt64) {
+      lock.withLock { expected = generation }
+    }
+  }
 
-    static func admit(envelope: DoryPCRuntimeLaunchEnvelope) throws -> Self {
-        let resources = try envelope.validatedResources()
-        defer {
-            Darwin.close(resources.systemDisk.descriptor)
-            if let installer = resources.installerMedia {
-                Darwin.close(installer.descriptor)
-            }
-            Darwin.close(resources.variableStoreDirectory.descriptor)
-        }
-        let immutable = try MachineInheritedImmutableBlobReader.readAndClose([
-            try immutableBlob(
-                resources.firmwareCode,
-                maximumByteCount: DoryPCV1ABI.firmwareCodeBytes
-            ),
-            try immutableBlob(
-                resources.variableStoreTemplate,
-                maximumByteCount: UInt64(DoryUEFIVariableStoreFile.maximumEncodedBytes)
-            ),
-            try immutableBlob(
-                resources.firmwareSBOM,
-                maximumByteCount: RuntimeLaunchEnvelope.maximumFirmwareSBOMBytes
-            ),
-        ])
-        let artifacts = try DoryVerifiedFirmwareArtifacts(
-            manifest: envelope.launchPlan.firmware,
-            firmwareCode: immutable[0],
-            variableStoreTemplate: immutable[1],
-            sbom: immutable[2]
-        )
-        let template = try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(immutable[1])
-        guard template.platform == .pcV1, template.generation == 1 else {
-            throw VMError.invalidConfiguration(
-                "DoryPC variable-store template must be a generation-one PC template"
-            )
-        }
-        let descriptorStore = try DoryUEFIVariableStoreDirectoryDescriptor(
-            inheritedDescriptor: resources.variableStoreDirectory.descriptor
-        )
-        do {
-            _ = try descriptorStore.load()
-        } catch DoryUEFIVariableStoreFileError.storeNotInitialized {
-            try descriptorStore.initialize(template)
-        }
-        let load = try descriptorStore.load()
-        guard load.source == .primary,
-              load.snapshot.platform == .pcV1,
-              load.snapshot.generation == envelope.launchPlan.variableStoreGeneration else {
-            throw VMError.invalidConfiguration(
-                "DoryPC variable-store state does not match the immutable launch generation"
-            )
-        }
+  let envelope: DoryPCRuntimeLaunchEnvelope
+  let resources: DoryPCRuntimeLaunchEnvelope.ResolvedResources
+  let artifacts: DoryVerifiedFirmwareArtifacts
+  let variableStore: DoryUEFIVariableStoreAuthority
+  let bootStorage: [DoryPCUEFIBootStorage]
+  private let variableGeneration: VariableGenerationState
 
-        let systemStorage = try admittedStorage(
-            resources.systemDisk,
-            readOnly: false,
-            requiresUnlinkedObject: false
-        )
-        var storage = [
-            DoryPCUEFIBootStorage(
-                logicalID: resources.systemDisk.logicalDeviceID!.rawValue,
-                storage: systemStorage
-            )
-        ]
-        if let installer = resources.installerMedia {
-            storage.append(DoryPCUEFIBootStorage(
-                logicalID: installer.logicalDeviceID!.rawValue,
-                storage: try admittedStorage(
-                    installer,
-                    readOnly: true,
-                    requiresUnlinkedObject: true
-                )
-            ))
-        }
-        return Self(
-            envelope: envelope,
-            resources: resources,
-            artifacts: artifacts,
-            variableStore: DoryUEFIVariableStoreAuthority(directoryDescriptor: descriptorStore),
-            bootStorage: storage,
-            variableGeneration: VariableGenerationState(
-                expected: envelope.launchPlan.variableStoreGeneration
-            )
-        )
+  static func admit(envelope: DoryPCRuntimeLaunchEnvelope) throws -> Self {
+    let resources = try envelope.validatedResources()
+    defer {
+      Darwin.close(resources.systemDisk.descriptor)
+      if let installer = resources.installerMedia {
+        Darwin.close(installer.descriptor)
+      }
+      Darwin.close(resources.variableStoreDirectory.descriptor)
+    }
+    let immutable = try MachineInheritedImmutableBlobReader.readAndClose([
+      try immutableBlob(
+        resources.firmwareCode,
+        maximumByteCount: DoryPCV1ABI.firmwareCodeBytes
+      ),
+      try immutableBlob(
+        resources.variableStoreTemplate,
+        maximumByteCount: UInt64(DoryUEFIVariableStoreFile.maximumEncodedBytes)
+      ),
+      try immutableBlob(
+        resources.firmwareSBOM,
+        maximumByteCount: RuntimeLaunchEnvelope.maximumFirmwareSBOMBytes
+      ),
+    ])
+    let artifacts = try DoryVerifiedFirmwareArtifacts(
+      manifest: envelope.launchPlan.firmware,
+      firmwareCode: immutable[0],
+      variableStoreTemplate: immutable[1],
+      sbom: immutable[2]
+    )
+    let template = try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(immutable[1])
+    guard template.platform == .pcV1, template.generation == 1 else {
+      throw VMError.invalidConfiguration(
+        "DoryPC variable-store template must be a generation-one PC template"
+      )
+    }
+    let descriptorStore = try DoryUEFIVariableStoreDirectoryDescriptor(
+      inheritedDescriptor: resources.variableStoreDirectory.descriptor
+    )
+    do {
+      _ = try descriptorStore.load()
+    } catch DoryUEFIVariableStoreFileError.storeNotInitialized {
+      try descriptorStore.initialize(template)
+    }
+    let load = try descriptorStore.load()
+    guard load.source == .primary,
+      load.snapshot.platform == .pcV1,
+      load.snapshot.generation == envelope.launchPlan.variableStoreGeneration
+    else {
+      throw VMError.invalidConfiguration(
+        "DoryPC variable-store state does not match the immutable launch generation"
+      )
     }
 
-    func makeMachine(
-        displaySink: (any DoryVirtioGPUDisplaySink)? = nil,
-        gpuAccelerationAuthority: (any DoryVirtioGPUAccelerationAuthority)? = nil,
-        soundBackend: any DoryVirtioSoundBackend = DoryVirtioInMemorySoundBackend(),
-        networkBackend: any DoryVirtioNetworkBackend = DoryVirtioInMemoryNetworkBackend(),
-        additionalPCIFunctions: [any DoryPCPCIFunction] = []
-    ) throws -> DoryPCUEFIMachine {
-        guard envelope.platform.cpuProfile == .compatibleX8664V1 else {
-            throw VMError.invalidConfiguration("DoryPC CPU profile is not supported by this runtime")
-        }
-        guard let networkInterface = envelope.devices.networkInterface else {
-            throw VMError.invalidConfiguration("DoryPC network identity is missing")
-        }
-        let tier: DoryPCExecutionTier = switch envelope.executionResources.tier {
-        case .interpreter: .interpreter
-        case .baselineJIT: .baselineJIT
-        case .optimizingJIT: .optimizingJIT
-        }
-        let current = try variableStore.load()
-        guard current.source == .primary, current.snapshot.platform == .pcV1 else {
-            throw VMError.invalidConfiguration("DoryPC NVRAM recovery is required")
-        }
-        try variableGeneration.authorize(current.snapshot.generation)
-        let plan = try DoryPCUEFILaunchPlan(
-            firmware: envelope.launchPlan.firmware,
-            variableStoreGeneration: current.snapshot.generation,
-            bootDevices: envelope.launchPlan.bootDevices,
-            bootOrder: envelope.launchPlan.bootOrder
-        )
-        let machine = try DoryPCUEFIMachine(
-            plan: plan,
-            firmware: artifacts,
-            variableStore: variableStore,
-            bootStorage: bootStorage,
-            memoryBytes: Int(envelope.executionResources.memoryMB) * 1_024 * 1_024,
-            processorCount: Int(envelope.executionResources.virtualCPUCount),
-            displaySink: displaySink,
-            gpuAccelerationAuthority: gpuAccelerationAuthority,
-            soundBackend: soundBackend,
-            networkBackend: networkBackend,
-            networkMACAddress: networkInterface.macAddressOctets!,
-            networkMTU: networkInterface.maximumTransmissionUnit,
-            additionalPCIFunctions: additionalPCIFunctions,
-            interpreter: .init(profile: .compatibleV1),
-            executionTier: tier
-        )
-        variableGeneration.advance(to: machine.effectiveVariableStoreGeneration)
-        return machine
+    let systemStorage = try admittedStorage(
+      resources.systemDisk,
+      readOnly: false,
+      requiresUnlinkedObject: false
+    )
+    var storage = [
+      DoryPCUEFIBootStorage(
+        logicalID: resources.systemDisk.logicalDeviceID!.rawValue,
+        storage: systemStorage
+      )
+    ]
+    if let installer = resources.installerMedia {
+      storage.append(
+        DoryPCUEFIBootStorage(
+          logicalID: installer.logicalDeviceID!.rawValue,
+          storage: try admittedStorage(
+            installer,
+            readOnly: true,
+            requiresUnlinkedObject: true
+          )
+        ))
     }
+    return Self(
+      envelope: envelope,
+      resources: resources,
+      artifacts: artifacts,
+      variableStore: DoryUEFIVariableStoreAuthority(directoryDescriptor: descriptorStore),
+      bootStorage: storage,
+      variableGeneration: VariableGenerationState(
+        expected: envelope.launchPlan.variableStoreGeneration
+      )
+    )
+  }
 
-    private static func admittedStorage(
-        _ slot: RuntimeLaunchEnvelope.InheritedFileDescriptorSlot,
-        readOnly: Bool,
-        requiresUnlinkedObject: Bool
-    ) throws -> DoryVirtioFileBlockStorage {
-        let descriptor = slot.descriptor
-        let flags = fcntl(descriptor, F_GETFL)
-        var status = stat()
-        guard flags >= 0,
-              (readOnly ? flags & O_ACCMODE == O_RDONLY : flags & O_ACCMODE == O_RDWR),
-              fstat(descriptor, &status) == 0,
-              status.st_mode & S_IFMT == S_IFREG,
-              status.st_uid == geteuid(),
-              status.st_mode & 0o077 == 0,
-              status.st_size > 0,
-              UInt64(status.st_size) == slot.byteCount,
-              status.st_nlink == (requiresUnlinkedObject ? 0 : 1),
-              slot.byteCount % DoryVirtioBlockDevice.sectorSize == 0 else {
-            throw VMError.invalidConfiguration(
-                "\(slot.name) is not the exact private DoryPC block authority"
-            )
-        }
-        return try DoryVirtioFileBlockStorage(
-            duplicatingFileDescriptor: descriptor,
-            expectedCapacityBytes: slot.byteCount,
-            readOnly: readOnly
-        )
+  func makeMachine(
+    displaySink: (any DoryVirtioGPUDisplaySink)? = nil,
+    gpuAccelerationAuthority: (any DoryVirtioGPUAccelerationAuthority)? = nil,
+    gpuHostVisibleAperture: DoryPCHostVisibleGPUAperture? = nil,
+    soundBackend: any DoryVirtioSoundBackend = DoryVirtioInMemorySoundBackend(),
+    networkBackend: any DoryVirtioNetworkBackend = DoryVirtioInMemoryNetworkBackend(),
+    additionalPCIFunctions: [any DoryPCPCIFunction] = [],
+    instrumentationEnabled: Bool = false
+  ) throws -> DoryPCUEFIMachine {
+    guard envelope.platform.cpuProfile == .compatibleX8664V1 else {
+      throw VMError.invalidConfiguration("DoryPC CPU profile is not supported by this runtime")
     }
+    guard let networkInterface = envelope.devices.networkInterface else {
+      throw VMError.invalidConfiguration("DoryPC network identity is missing")
+    }
+    let tier: DoryPCExecutionTier =
+      switch envelope.executionResources.tier {
+      case .interpreter: .interpreter
+      case .baselineJIT: .baselineJIT
+      case .optimizingJIT: .optimizingJIT
+      }
+    let current = try variableStore.load()
+    guard current.source == .primary, current.snapshot.platform == .pcV1 else {
+      throw VMError.invalidConfiguration("DoryPC NVRAM recovery is required")
+    }
+    try variableGeneration.authorize(current.snapshot.generation)
+    let plan = try DoryPCUEFILaunchPlan(
+      firmware: envelope.launchPlan.firmware,
+      variableStoreGeneration: current.snapshot.generation,
+      bootDevices: envelope.launchPlan.bootDevices,
+      bootOrder: envelope.launchPlan.bootOrder
+    )
+    var scanouts: [DoryVirtioGPUScanout] = envelope.devices.displays.enumerated().map {
+      index, display in
+      .init(
+        id: UInt32(index),
+        rectangle: .init(x: 0, y: 0, width: display.widthPixels, height: display.heightPixels)
+      )
+    }
+    if scanouts.isEmpty {
+      scanouts = [
+        .init(
+          id: 0,
+          rectangle: .init(x: 0, y: 0, width: 1_280, height: 800),
+          enabled: false
+        )
+      ]
+    } else if envelope.devices.dynamicDisplay {
+      for index in scanouts.count..<16 {
+        scanouts.append(
+          .init(
+            id: UInt32(index),
+            rectangle: .init(x: 0, y: 0, width: 1_280, height: 800),
+            enabled: false
+          )
+        )
+      }
+    }
+    let machine = try DoryPCUEFIMachine(
+      plan: plan,
+      firmware: artifacts,
+      variableStore: variableStore,
+      bootStorage: bootStorage,
+      memoryBytes: Int(envelope.executionResources.memoryMB) * 1_024 * 1_024,
+      processorCount: Int(envelope.executionResources.virtualCPUCount),
+      scanouts: scanouts,
+      displaySink: displaySink,
+      gpuAccelerationAuthority: gpuAccelerationAuthority,
+      gpuHostVisibleAperture: gpuHostVisibleAperture,
+      soundBackend: soundBackend,
+      networkBackend: networkBackend,
+      networkMACAddress: networkInterface.macAddressOctets!,
+      networkMTU: networkInterface.maximumTransmissionUnit,
+      additionalPCIFunctions: additionalPCIFunctions,
+      interpreter: .init(profile: .compatibleV1),
+      executionTier: tier,
+      instrumentationEnabled: instrumentationEnabled
+    )
+    variableGeneration.advance(to: machine.effectiveVariableStoreGeneration)
+    return machine
+  }
 
-    private static func immutableBlob(
-        _ slot: RuntimeLaunchEnvelope.InheritedFileDescriptorSlot,
-        maximumByteCount: UInt64
-    ) throws -> MachineInheritedImmutableBlob {
-        guard slot.access == .readOnly, let sha256 = slot.contentSHA256 else {
-            throw VMError.invalidConfiguration(
-                "\(slot.name) is not an exact immutable descriptor authority"
-            )
-        }
-        return MachineInheritedImmutableBlob(
-            name: slot.name,
-            descriptor: slot.descriptor,
-            byteCount: slot.byteCount,
-            sha256: sha256,
-            maximumByteCount: maximumByteCount
-        )
+  private static func admittedStorage(
+    _ slot: RuntimeLaunchEnvelope.InheritedFileDescriptorSlot,
+    readOnly: Bool,
+    requiresUnlinkedObject: Bool
+  ) throws -> DoryVirtioFileBlockStorage {
+    let descriptor = slot.descriptor
+    let flags = fcntl(descriptor, F_GETFL)
+    var status = stat()
+    guard flags >= 0,
+      readOnly ? flags & O_ACCMODE == O_RDONLY : flags & O_ACCMODE == O_RDWR,
+      fstat(descriptor, &status) == 0,
+      status.st_mode & S_IFMT == S_IFREG,
+      status.st_uid == geteuid(),
+      status.st_mode & 0o077 == 0,
+      status.st_size > 0,
+      UInt64(status.st_size) == slot.byteCount,
+      status.st_nlink == (requiresUnlinkedObject ? 0 : 1),
+      slot.byteCount % DoryVirtioBlockDevice.sectorSize == 0
+    else {
+      throw VMError.invalidConfiguration(
+        "\(slot.name) is not the exact private DoryPC block authority"
+      )
     }
+    return try DoryVirtioFileBlockStorage(
+      duplicatingFileDescriptor: descriptor,
+      expectedCapacityBytes: slot.byteCount,
+      readOnly: readOnly
+    )
+  }
+
+  private static func immutableBlob(
+    _ slot: RuntimeLaunchEnvelope.InheritedFileDescriptorSlot,
+    maximumByteCount: UInt64
+  ) throws -> MachineInheritedImmutableBlob {
+    guard slot.access == .readOnly, let sha256 = slot.contentSHA256 else {
+      throw VMError.invalidConfiguration(
+        "\(slot.name) is not an exact immutable descriptor authority"
+      )
+    }
+    return MachineInheritedImmutableBlob(
+      name: slot.name,
+      descriptor: slot.descriptor,
+      byteCount: slot.byteCount,
+      sha256: sha256,
+      maximumByteCount: maximumByteCount
+    )
+  }
 }

@@ -65,6 +65,11 @@ public struct DoryRendererResource3DCreatePayload: Equatable, Sendable {
     public let lastLevel: UInt32
     public let samples: UInt32
     public let flags: UInt32
+    /// Conservative admission charge, not a claim about the renderer's exact physical VRAM.
+    /// A texture is charged at 16 bytes per texel for every declared mip/sample/layer;
+    /// compressed formats are intentionally overcharged so guest declarations cannot evade
+    /// the worker-generation memory budget by selecting a compact format identifier.
+    public let budgetChargeBytes: UInt64
 
     public init(
         target: UInt32,
@@ -96,6 +101,36 @@ public struct DoryRendererResource3DCreatePayload: Equatable, Sendable {
                 operation: .createResource3D
             )
         }
+        var charge: UInt64 = 0
+        var levelWidth = UInt64(width)
+        var levelHeight = UInt64(height)
+        var levelDepth = UInt64(depth)
+        let sampleCount = UInt64(max(samples, 1))
+        for _ in 0...lastLevel {
+            let factors: [UInt64] = target == Self.pipeBufferTarget
+                ? [levelWidth, levelHeight, levelDepth, UInt64(arraySize)]
+                : [levelWidth, levelHeight, levelDepth, UInt64(arraySize), sampleCount, 16]
+            var levelCharge: UInt64 = 1
+            for factor in factors {
+                let (product, overflow) = levelCharge.multipliedReportingOverflow(by: factor)
+                guard !overflow, product <= maximumReferencedBytes else {
+                    throw DoryRendererWorkerContractError.invalidOperationPayload(
+                        operation: .createResource3D
+                    )
+                }
+                levelCharge = product
+            }
+            let (total, overflow) = charge.addingReportingOverflow(levelCharge)
+            guard !overflow, total <= maximumReferencedBytes else {
+                throw DoryRendererWorkerContractError.invalidOperationPayload(
+                    operation: .createResource3D
+                )
+            }
+            charge = total
+            levelWidth = max(1, levelWidth / 2)
+            levelHeight = max(1, levelHeight / 2)
+            levelDepth = max(1, levelDepth / 2)
+        }
         self.target = target
         self.format = format
         self.bind = bind
@@ -106,6 +141,7 @@ public struct DoryRendererResource3DCreatePayload: Equatable, Sendable {
         self.lastLevel = lastLevel
         self.samples = samples
         self.flags = flags
+        self.budgetChargeBytes = charge
     }
 
     public var encoded: Data {
@@ -160,10 +196,10 @@ public struct DoryRendererBlobCreatePayload: Equatable, Sendable {
         blobID: UInt64,
         size: UInt64
     ) throws {
-        let supportedBlobID = blobID != 0 || (
+        let supportedBlobID = blobID != 0 || blobMemory == 1 || (
             blobMemory == Self.host3DMemory && blobFlags == Self.mappableFlag
         )
-        guard (1...4).contains(blobMemory),
+        guard (1...3).contains(blobMemory),
               blobFlags & ~UInt32(0x0007) == 0,
               supportedBlobID,
               size != 0 else {

@@ -32,6 +32,9 @@ struct DoryVMDisplayFrameTests {
         let lease = try DoryVMDisplayCPUFrameLease(
             leaseID: UUID(uuidString: "11000000-0000-0000-0000-000000000011")!,
             releaseToken: UUID(uuidString: "12000000-0000-0000-0000-000000000012")!,
+            resourceID: 7,
+            resourceGeneration: 2,
+            cpuEpoch: 1,
             pixelFormat: DoryRendererScanoutPixelFormat.bgra8Unorm.rawValue,
             yOriginTop: true,
             width: 2,
@@ -175,6 +178,24 @@ struct DoryVMDisplayFrameTests {
         )
         let restartData = try DoryVMDisplayCommandCodec.encode(restart)
         #expect(try DoryVMDisplayCommandCodec.decode(restartData) == restart)
+        let focus = try DoryVMDisplayCommand.focus(
+            machineID: "ubuntu", operationID: operationID, sequence: 5,
+            leaseID: UUID(), active: true
+        )
+        #expect(try DoryVMDisplayCommandCodec.decode(DoryVMDisplayCommandCodec.encode(focus)) == focus)
+        var mixed = input
+        mixed.focused = true
+        mixed.focusLeaseID = focus.focusLeaseID
+        #expect(throws: DoryVMDisplayWireError.self) { try mixed.validate() }
+        var noncanonical = focus
+        noncanonical.focusLeaseID = focus.focusLeaseID?.uppercased()
+        #expect(throws: DoryVMDisplayWireError.self) { try noncanonical.validate() }
+        var missingDeadline = focus
+        missingDeadline.focusExpiresAtUptimeNanoseconds = nil
+        #expect(throws: DoryVMDisplayWireError.self) { try missingDeadline.validate() }
+        var expiringRevoke = focus
+        expiringRevoke.focused = false
+        #expect(throws: DoryVMDisplayWireError.self) { try expiringRevoke.validate() }
     }
 
     @Test("commands reject cross-endpoint events and mixed payloads")

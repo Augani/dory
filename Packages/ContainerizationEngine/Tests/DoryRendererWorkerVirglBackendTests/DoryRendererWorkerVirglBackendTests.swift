@@ -570,6 +570,7 @@ import Testing
             ),
             descriptors: []
         ))
+        session.mapInfoValue = 0
         let mapped = try requireSuccess(backend.execute(
             command: command(
                 requestID: 3,
@@ -591,11 +592,327 @@ import Testing
         #expect(lease.arenaOffset == 4_096)
         #expect(lease.mappingByteCount == 8_192)
         #expect(lease.declaredFileSize == arenaBytes)
+        #expect(lease.mapInfo == 0)
+        session.mapInfoValue = 1
         #expect(session.guestVRAMBinds.count == 1)
         #expect(session.guestVRAMBinds[0].contextID == 7)
         #expect(session.guestVRAMBinds[0].resourceID == 42)
         #expect(session.guestVRAMBinds[0].offset == 4_096)
         #expect(!session.exportedResourceIDs.contains(42))
+
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 4,
+                operation: .createBlob,
+                contextID: 7,
+                resourceID: 43,
+                payload: blob.encoded
+            ),
+            descriptors: []
+        ))
+        func map(_ resourceID: UInt32, _ requestID: UInt64, _ offset: UInt64) throws
+            -> DoryRendererWorkerBackendExecution {
+            try backend.execute(
+                command: command(
+                    requestID: requestID,
+                    operation: .mapBlob,
+                    resourceID: resourceID,
+                    resourceGeneration: 1,
+                    payload: DoryRendererBlobMapPayload(hostVisibleOffset: offset).encoded
+                ),
+                descriptors: []
+            )
+        }
+        #expect(isRejected(try map(43, 5, 8_192)))
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 6,
+                operation: .createBlob,
+                contextID: 7,
+                resourceID: 44,
+                payload: blob.encoded
+            ),
+            descriptors: []
+        ))
+        // These byte ranges are adjacent, though both touch one 16-KiB host page.
+        session.mapInfoValue = 0x11
+        #expect(throws: DoryRendererForeignSessionError.invalidResult(
+            operation: "typed-operation-payload"
+        )) {
+            _ = try map(44, 7, 12_288)
+        }
+        session.mapInfoValue = 1
+        try expectSuccess(map(44, 7, 12_288))
+        #expect(session.guestVRAMBinds.count == 2)
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 8, operation: .unmapBlob,
+                resourceID: 44, resourceGeneration: 1
+            ),
+            descriptors: []
+        ))
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 9, operation: .unrefResource,
+                resourceID: 44, resourceGeneration: 1
+            ),
+            descriptors: []
+        ))
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 10, operation: .unmapBlob,
+                resourceID: 42, resourceGeneration: 1
+            ),
+            descriptors: []
+        ))
+        #expect(isRejected(try map(42, 11, 16_384)))
+        #expect(isRejected(try map(43, 12, 4_096)))
+        try expectSuccess(map(42, 13, 4_096))
+        #expect(session.guestVRAMBinds.count == 2)
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 14, operation: .unmapBlob,
+                resourceID: 42, resourceGeneration: 1
+            ),
+            descriptors: []
+        ))
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 15, operation: .unrefResource,
+                resourceID: 42, resourceGeneration: 1
+            ),
+            descriptors: []
+        ))
+        try expectSuccess(map(43, 16, 4_096))
+        #expect(session.guestVRAMBinds.count == 3)
+    }
+
+    @Test func defaultHostAndGuestBlobCannotAcquireHostVisibleMapping() throws {
+        let session = FakeRendererForeignSession()
+        let backend = makeBackend(session: session)
+        _ = try backend.activate(bootstrap: makeBootstrap(
+            hostVisibleArenaByteCount: DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
+        ))
+        try expectSuccess(backend.execute(
+            command: createContextCommand(requestID: 1), descriptors: []
+        ))
+        let blob = try DoryRendererBlobCreatePayload(
+            blobMemory: 3, blobFlags: 1, blobID: 100, size: 4_096
+        )
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 2, operation: .createBlob, contextID: 7,
+                resourceID: 42, payload: blob.encoded
+            ),
+            descriptors: []
+        ))
+        #expect(isRejected(try backend.execute(
+            command: command(
+                requestID: 3, operation: .mapBlob, resourceID: 42,
+                resourceGeneration: 1,
+                payload: DoryRendererBlobMapPayload(hostVisibleOffset: 0).encoded
+            ),
+            descriptors: []
+        )))
+        #expect(session.guestVRAMBinds.isEmpty)
+        #expect(!session.exportedResourceIDs.contains(42))
+    }
+
+    @Test func hostOnlyBlobRejectsGuestBackingAtWorkerBoundary() throws {
+        let session = FakeRendererForeignSession()
+        let backend = makeBackend(session: session)
+        _ = try backend.activate(bootstrap: makeBootstrap())
+        let payload = try DoryRendererBlobCreatePayload(
+            blobMemory: 2, blobFlags: 1, blobID: 0, size: 4_096
+        )
+        let descriptor = try FakeRendererForeignSession.makeAnonymousFile(byteCount: 4_096)
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        let region = try DoryRendererSharedRegionReference(
+            identity: .random(), descriptorIndex: 0, access: .readWrite,
+            offset: 0, length: 4_096, declaredFileSize: 4_096
+        )
+        #expect(isRejected(try backend.execute(
+            command: command(
+                requestID: 1, operation: .createBlob, resourceID: 42,
+                sharedRegions: [region], payload: payload.encoded
+            ),
+            descriptors: [handle]
+        )))
+        #expect(!session.createdBlobs.contains { $0.resourceID == 42 })
+
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 2, operation: .createBlob, resourceID: 42,
+                payload: payload.encoded
+            ),
+            descriptors: []
+        ))
+        #expect(isRejected(try backend.execute(
+            command: command(
+                requestID: 3, operation: .attachBacking, resourceID: 42,
+                resourceGeneration: 1, sharedRegions: [region]
+            ),
+            descriptors: [handle]
+        )))
+        #expect(!session.attachedBackings.contains { $0.resourceID == 42 })
+    }
+
+    @Test func guestBlobBackingMustCoverAllocationAtWorkerBoundary() throws {
+        let session = FakeRendererForeignSession()
+        let backend = makeBackend(session: session)
+        _ = try backend.activate(bootstrap: makeBootstrap())
+        let guestBlob = try DoryRendererBlobCreatePayload(
+            blobMemory: 1, blobFlags: 0, blobID: 0, size: 8_192
+        )
+        let defaultBlob = try DoryRendererBlobCreatePayload(
+            blobMemory: 3, blobFlags: 0, blobID: 101, size: 8_192
+        )
+        let descriptor = try FakeRendererForeignSession.makeAnonymousFile(byteCount: 8_192)
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        let shortRegion = try DoryRendererSharedRegionReference(
+            identity: .random(), descriptorIndex: 0, access: .readWrite,
+            offset: 0, length: 4_096, declaredFileSize: 8_192
+        )
+        let fullRegion = try DoryRendererSharedRegionReference(
+            identity: .random(), descriptorIndex: 0, access: .readWrite,
+            offset: 0, length: 8_192, declaredFileSize: 8_192
+        )
+
+        #expect(isRejected(try backend.execute(
+            command: command(
+                requestID: 1, operation: .createBlob, resourceID: 42,
+                payload: guestBlob.encoded
+            ),
+            descriptors: []
+        )))
+        #expect(isRejected(try backend.execute(
+            command: command(
+                requestID: 2, operation: .createBlob, resourceID: 42,
+                sharedRegions: [shortRegion], payload: guestBlob.encoded
+            ),
+            descriptors: [handle]
+        )))
+        #expect(isRejected(try backend.execute(
+            command: command(
+                requestID: 3, operation: .createBlob, resourceID: 42,
+                sharedRegions: [shortRegion], payload: defaultBlob.encoded
+            ),
+            descriptors: [handle]
+        )))
+        #expect(!session.createdBlobs.contains { $0.resourceID == 42 })
+
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 4, operation: .createBlob, resourceID: 42,
+                payload: defaultBlob.encoded
+            ),
+            descriptors: []
+        ))
+        #expect(isRejected(try backend.execute(
+            command: command(
+                requestID: 5, operation: .attachBacking, resourceID: 42,
+                resourceGeneration: 1, sharedRegions: [shortRegion]
+            ),
+            descriptors: [handle]
+        )))
+        #expect(!session.attachedBackings.contains { $0.resourceID == 42 })
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 6, operation: .attachBacking, resourceID: 42,
+                resourceGeneration: 1, sharedRegions: [fullRegion]
+            ),
+            descriptors: [handle]
+        ))
+        #expect(session.attachedBackings.filter { $0.resourceID == 42 }.map(\.resourceID) == [42])
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 7, operation: .createBlob, resourceID: 43,
+                sharedRegions: [fullRegion], payload: guestBlob.encoded
+            ),
+            descriptors: [handle]
+        ))
+        #expect(session.createdBlobs.contains { $0.resourceID == 43 })
+    }
+
+    @Test func liveBlobAllocationsShareOneWorkerByteBudget() throws {
+        let limits = try DoryRendererWorkerLimits(
+            maximumCommandBytes: DoryRendererWorkerLimits.production.maximumCommandBytes,
+            maximumSharedRegions: 4,
+            maximumReferencedBytes: 8_192,
+            maximumInFlightCommands: 8,
+            maximumLiveScanoutLeases: 4,
+            maximumScanoutBytes: 8_192
+        )
+        let session = FakeRendererForeignSession()
+        let backend = makeBackend(session: session)
+        _ = try backend.activate(bootstrap: makeBootstrap(limits: limits))
+        let blob = try DoryRendererBlobCreatePayload(
+            blobMemory: 2, blobFlags: 1, blobID: 0, size: 4_096
+        )
+        for (requestID, resourceID) in [(UInt64(1), UInt32(42)), (2, 43)] {
+            try expectSuccess(backend.execute(
+                command: command(
+                    requestID: requestID, operation: .createBlob,
+                    resourceID: resourceID, payload: blob.encoded
+                ),
+                descriptors: []
+            ))
+        }
+        #expect(isResourceExhausted(try backend.execute(
+            command: command(
+                requestID: 3, operation: .createBlob,
+                resourceID: 44, payload: blob.encoded
+            ),
+            descriptors: []
+        )))
+        #expect(session.createdBlobs.filter { [42, 43, 44].contains($0.resourceID) }.count == 2)
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 4, operation: .unrefResource,
+                resourceID: 42, resourceGeneration: 1
+            ),
+            descriptors: []
+        ))
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 5, operation: .createBlob,
+                resourceID: 44, payload: blob.encoded
+            ),
+            descriptors: []
+        ))
+        #expect(session.createdBlobs.filter { [42, 43, 44].contains($0.resourceID) }.count == 3)
+    }
+
+    @Test func contextlessHostBlobCanAcquireScanoutLease() throws {
+        let session = FakeRendererForeignSession()
+        let backend = makeBackend(session: session)
+        _ = try backend.activate(bootstrap: makeBootstrap())
+        let blob = try DoryRendererBlobCreatePayload(
+            blobMemory: 2, blobFlags: 1, blobID: 0, size: 4_096
+        )
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 1, operation: .createBlob,
+                resourceID: 42, payload: blob.encoded
+            ),
+            descriptors: []
+        ))
+        let scanout = try DoryRendererScanoutAcquirePayload(
+            width: 64, height: 4, virglFormat: 1,
+            stride: 256, storageOffset: 0
+        )
+        let acquired = try requireSuccess(backend.execute(
+            command: command(
+                requestID: 2, operation: .acquireScanoutLease,
+                resourceID: 42, resourceGeneration: 1,
+                payload: scanout.encoded
+            ),
+            descriptors: []
+        ))
+        #expect(acquired.descriptors.count == 1)
+        #expect(session.exportedResourceIDs.contains(42))
     }
 
     @Test func surfaceLifecycleFailureFailsClosedBeforeAdvertisingVirGL2() throws {
@@ -662,19 +979,164 @@ import Testing
         )
         let preflightCreateCount = session.createdResources3D.count
 
-        #expect(throws: DoryRendererForeignSessionError.self) {
-            _ = try backend.execute(
-                command: command(
-                    requestID: 1,
-                    operation: .createResource3D,
-                    resourceID: 42,
-                    payload: oversizedBuffer.encoded
-                ),
-                descriptors: []
-            )
-        }
+        #expect(isResourceExhausted(try backend.execute(
+            command: command(
+                requestID: 1,
+                operation: .createResource3D,
+                resourceID: 42,
+                payload: oversizedBuffer.encoded
+            ),
+            descriptors: []
+        )))
         #expect(session.createdResources3D.count == preflightCreateCount)
         #expect(backend.snapshot().resourceCount == 0)
+        let admittedBuffer = try DoryRendererResource3DCreatePayload(
+            target: 0,
+            format: 64,
+            bind: 1 << 4,
+            width: 512,
+            height: 1,
+            depth: 1,
+            arraySize: 1,
+            lastLevel: 0,
+            samples: 0,
+            flags: 0
+        )
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 2,
+                operation: .createResource3D,
+                resourceID: 42,
+                payload: admittedBuffer.encoded
+            ),
+            descriptors: []
+        ))
+        #expect(backend.snapshot().resourceCount == 1)
+    }
+
+    @Test func threeDResourcesConsumeAndReleaseOneAggregateGenerationBudget() throws {
+        let limits = try DoryRendererWorkerLimits(
+            maximumCommandBytes: DoryRendererWorkerLimits.production.maximumCommandBytes,
+            maximumSharedRegions: DoryRendererWorkerLimits.production.maximumSharedRegions,
+            maximumReferencedBytes: 512 * 1_024,
+            maximumInFlightCommands: 8,
+            maximumLiveScanoutLeases: 4,
+            maximumScanoutBytes: 512 * 1_024
+        )
+        let session = FakeRendererForeignSession()
+        let backend = makeBackend(session: session)
+        _ = try backend.activate(bootstrap: makeBootstrap(limits: limits))
+        let preflightCreateCount = session.createdResources3D.count
+        let texture = try DoryRendererResource3DCreatePayload(
+            target: 2,
+            format: 1,
+            bind: 1,
+            width: 128,
+            height: 128,
+            depth: 1,
+            arraySize: 1,
+            lastLevel: 0,
+            samples: 0,
+            flags: 0
+        )
+        #expect(texture.budgetChargeBytes == 256 * 1_024)
+        for resourceID in [UInt32(41), 42] {
+            try expectSuccess(backend.execute(
+                command: command(
+                    requestID: UInt64(resourceID),
+                    operation: .createResource3D,
+                    resourceID: resourceID,
+                    payload: texture.encoded
+                ),
+                descriptors: []
+            ))
+        }
+        let overBudget = try backend.execute(
+            command: command(
+                requestID: 43,
+                operation: .createResource3D,
+                resourceID: 43,
+                payload: texture.encoded
+            ),
+            descriptors: []
+        )
+        #expect(isResourceExhausted(overBudget))
+        #expect(session.createdResources3D.count == preflightCreateCount + 2)
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 44,
+                operation: .unrefResource,
+                resourceID: 41,
+                resourceGeneration: 1
+            ),
+            descriptors: []
+        ))
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 45,
+                operation: .createResource3D,
+                resourceID: 43,
+                payload: texture.encoded
+            ),
+            descriptors: []
+        ))
+        #expect(session.createdResources3D.count == preflightCreateCount + 3)
+
+        let blob = try DoryRendererBlobCreatePayload(
+            blobMemory: 2,
+            blobFlags: 1,
+            blobID: 0,
+            size: 4_096
+        )
+        let preflightBlobCount = session.createdBlobs.count
+        #expect(isResourceExhausted(try backend.execute(
+            command: command(
+                requestID: 46,
+                operation: .createBlob,
+                resourceID: 44,
+                payload: blob.encoded
+            ),
+            descriptors: []
+        )))
+        #expect(session.createdBlobs.count == preflightBlobCount)
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 47,
+                operation: .unrefResource,
+                resourceID: 42,
+                resourceGeneration: 1
+            ),
+            descriptors: []
+        ))
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 48,
+                operation: .createBlob,
+                resourceID: 44,
+                payload: blob.encoded
+            ),
+            descriptors: []
+        ))
+        #expect(session.createdBlobs.count == preflightBlobCount + 1)
+    }
+
+    @Test func threeDResourceBudgetRejectsOverflowingTextureDimensions() {
+        #expect(throws: DoryRendererWorkerContractError.invalidOperationPayload(
+            operation: .createResource3D
+        )) {
+            _ = try DoryRendererResource3DCreatePayload(
+                target: 2,
+                format: 1,
+                bind: 1,
+                width: 16_384,
+                height: 16_384,
+                depth: 16_384,
+                arraySize: 16_384,
+                lastLevel: 31,
+                samples: 64,
+                flags: 0
+            )
+        }
     }
 
     @Test func foreignRendererLifetimeUsesOnePersistentPthreadAcrossCallers() throws {
@@ -1708,6 +2170,138 @@ import Testing
         #expect(backend.snapshot().resourceCount == 0)
     }
 
+    @Test func retainedBackingQuotaIsCumulativeAndReleasedByDetach() throws {
+        let pageSize = UInt64(getpagesize())
+        let limits = try DoryRendererWorkerLimits(
+            maximumCommandBytes: DoryRendererWorkerLimits.production.maximumCommandBytes,
+            maximumSharedRegions: 2,
+            maximumReferencedBytes: pageSize,
+            maximumInFlightCommands: 8,
+            maximumLiveScanoutLeases: 4,
+            maximumScanoutBytes: pageSize
+        )
+        let session = FakeRendererForeignSession()
+        let backend = makeBackend(session: session)
+        _ = try backend.activate(bootstrap: makeBootstrap(limits: limits))
+        let resource = try DoryRendererResource3DCreatePayload(
+            target: 2,
+            format: 1,
+            bind: UInt32(DORY_VIRGL_RENDERER_RESOURCE_BIND_RENDER_TARGET),
+            width: 4,
+            height: 4,
+            depth: 1,
+            arraySize: 1,
+            lastLevel: 0,
+            samples: 0,
+            flags: 0
+        )
+        for (requestID, resourceID) in [(UInt64(1), UInt32(42)), (2, 43)] {
+            try expectSuccess(backend.execute(
+                command: command(
+                    requestID: requestID,
+                    operation: .createResource3D,
+                    resourceID: resourceID,
+                    payload: resource.encoded
+                ),
+                descriptors: []
+            ))
+        }
+        let descriptor = try FakeRendererForeignSession.makeAnonymousFile(byteCount: pageSize)
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        let region = try DoryRendererSharedRegionReference(
+            identity: .random(),
+            descriptorIndex: 0,
+            access: .readWrite,
+            offset: 0,
+            length: pageSize,
+            declaredFileSize: pageSize
+        )
+        func attach(_ requestID: UInt64, _ resourceID: UInt32) throws
+            -> DoryRendererWorkerBackendExecution {
+            try backend.execute(
+                command: command(
+                    requestID: requestID,
+                    operation: .attachBacking,
+                    resourceID: resourceID,
+                    resourceGeneration: 1,
+                    sharedRegions: [region]
+                ),
+                descriptors: [handle]
+            )
+        }
+        try expectSuccess(attach(3, 42))
+        #expect(try isRejected(attach(4, 43)))
+        #expect(session.attachedBackings.filter { [42, 43].contains($0.resourceID) }
+            .map(\.resourceID) == [42])
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 5,
+                operation: .detachBacking,
+                resourceID: 42,
+                resourceGeneration: 1
+            ),
+            descriptors: []
+        ))
+        try expectSuccess(attach(6, 43))
+        #expect(session.attachedBackings.filter { [42, 43].contains($0.resourceID) }
+            .map(\.resourceID) == [42, 43])
+    }
+
+    @Test func teardownRetainsBorrowedBackingUntilForeignSessionDestroy() throws {
+        let session = FakeRendererForeignSession()
+        let backend = makeBackend(session: session)
+        _ = try backend.activate(bootstrap: makeBootstrap())
+        let resource = try DoryRendererResource3DCreatePayload(
+            target: 2,
+            format: 1,
+            bind: UInt32(DORY_VIRGL_RENDERER_RESOURCE_BIND_RENDER_TARGET),
+            width: 4,
+            height: 4,
+            depth: 1,
+            arraySize: 1,
+            lastLevel: 0,
+            samples: 0,
+            flags: 0
+        )
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 1,
+                operation: .createResource3D,
+                resourceID: 42,
+                payload: resource.encoded
+            ),
+            descriptors: []
+        ))
+        let descriptor = try FakeRendererForeignSession.makeAnonymousFile(byteCount: 4_096)
+        var marker: UInt8 = 0x6d
+        guard pwrite(descriptor, &marker, 1, 0) == 1 else {
+            close(descriptor)
+            throw POSIXError(.EIO)
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        let region = try DoryRendererSharedRegionReference(
+            identity: .random(),
+            descriptorIndex: 0,
+            access: .readWrite,
+            offset: 0,
+            length: 4_096,
+            declaredFileSize: 4_096
+        )
+        try expectSuccess(backend.execute(
+            command: command(
+                requestID: 2,
+                operation: .attachBacking,
+                resourceID: 42,
+                resourceGeneration: 1,
+                sharedRegions: [region]
+            ),
+            descriptors: [handle]
+        ))
+        try handle.close()
+        backend.invalidate()
+        #expect(session.backingBytesAtInvalidation[42] == marker)
+    }
+
     @Test func staleResourceGenerationCannotMapRecreatedResource() throws {
         let session = FakeRendererForeignSession()
         let backend = makeBackend(session: session)
@@ -1924,6 +2518,11 @@ import Testing
         if case .rejected = execution { return true }
         return false
     }
+
+    private func isResourceExhausted(_ execution: DoryRendererWorkerBackendExecution) -> Bool {
+        if case .resourceExhausted = execution { return true }
+        return false
+    }
 }
 
 private enum TestFailure: Error {
@@ -2065,6 +2664,8 @@ private final class FakeRendererForeignSession:
     private(set) var submissions = [(contextID: UInt32, dwords: [UInt32])]()
     private(set) var unreferencedResourceIDs = [UInt32]()
     private(set) var invalidated = false
+    private(set) var backingBytesAtInvalidation = [UInt32: UInt8]()
+    var mapInfoValue: UInt32 = 1
 
     init(
         missingVirGL2: Bool = false,
@@ -2229,7 +2830,7 @@ private final class FakeRendererForeignSession:
 
     func mapInfo(resourceID _: UInt32) throws -> UInt32 {
         recordForeignCallThread()
-        return 1
+        return mapInfoValue
     }
 
     func exportBlob(resourceID: UInt32) throws -> DoryRendererForeignExportedBlob {
@@ -2370,6 +2971,11 @@ private final class FakeRendererForeignSession:
 
     func invalidate() {
         recordForeignCallThread()
+        for (resourceID, address) in attachedBackingBaseAddresses {
+            backingBytesAtInvalidation[resourceID] = address
+                .assumingMemoryBound(to: UInt8.self).pointee
+        }
+        attachedBackingBaseAddresses.removeAll()
         if pollReadDescriptor >= 0 {
             close(pollReadDescriptor)
             pollReadDescriptor = -1

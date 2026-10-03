@@ -36,6 +36,23 @@ Silicon hosts; macOS ARM64 guests use the supported VZMac path in `dory-core-swi
 Historical `ContainerizationVMEngine` and `dory-vmboot` prototype sources were removed because they
 were not build targets or production dependencies.
 
+## PC graphics recovery
+
+The app's graphics-restart command requests a VirtIO GPU reset, not a PC machine restart.
+Unexpected loss of the authenticated PC renderer also requests only that GPU reset: guest RAM,
+vCPU execution, disks and network retain their owners. Until the driver writes status zero,
+no replacement is admitted. After backend and PCI queue retirement, a fresh daemon-authorized
+worker with identical features/capsets and a newer generation is installed; pending fresh queues
+are replayed without requiring another guest kick. Old callbacks cannot restore graphics readiness.
+Reset admission is consumed once; a later worker failure requires a new guest reset.
+An intentional whole-guest reboot during this handoff joins its pending worker preparation.
+
+Readiness is revoked on loss and restored only by fresh-generation producer/shader/presentation
+observations. A replacement bootstrap failure leaves the running VM's graphics unavailable;
+host presentation/resource-retirement faults retain their separate fail-closed stop behavior.
+These are implemented and locally tested boundaries, not a physical worker-kill, surviving GPU
+context or three-family desktop qualification claim.
+
 ## Build and test
 
 The generated DoryCore XCFramework and Swift bindings are ignored build products. Materialize them
@@ -56,7 +73,7 @@ binary is rejected because it cannot prove the production bundle identity, camer
 camera entitlement:
 
 ```sh
-export DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 xcodebuild -project ../../Dory.xcodeproj -scheme DoryHVRunner \
   -configuration Release -derivedDataPath /absolute/path/to/DerivedData \
   DORY_BUNDLE_RENDERER=0 DORY_BUNDLE_RENDERER_REQUIRED=0 \

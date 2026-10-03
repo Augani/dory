@@ -23,13 +23,13 @@ enum DoryPCGVProxyNetworkError: Error, CustomStringConvertible {
 /// the existing gvproxy process. One Unix datagram is exactly one Ethernet frame.
 final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Sendable {
     private let lock = NSLock()
+    private let deliveryLock = NSRecursiveLock()
     private let descriptor: Int32
-    private let localSocketPath: String
-    private let datapathSocketPath: String
-    private let apiSocketPath: String
-    private let configurationPath: String
-    private let process: Process
+    private let ownedPaths: [String]
+    private let process: Process?
     private let receiveSource: any DispatchSourceRead
+    private let receiveQueue: DispatchQueue
+    private let receiveQueueKey = DispatchSpecificKey<Bool>()
     private let portForwardReconciler: ResolvedPortForwardReconciler?
     private let receiveCompletion = DispatchSemaphore(value: 0)
     private let stopCompletion: DispatchGroup = {
@@ -39,7 +39,12 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
     }()
     private let maximumFrameBytes: Int
     private var receiveSink: (@Sendable ([UInt8]) -> Void)?
+    private var stopSink: (@Sendable () -> Void)?
+    private var receiveEpoch = UUID()
     private var stopped = false
+    static let maximumReceiveDatagramsPerTurn = 64
+    var isStopped: Bool { lock.withLock { stopped } }
+    var receiveGeneration: UUID { lock.withLock { receiveEpoch } }
 
     init(
         gvproxyPath: String,
@@ -122,21 +127,17 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
             reconciler?.start()
             let descriptor = pendingDescriptor
             self.descriptor = descriptor
-            localSocketPath = local
-            datapathSocketPath = datapath
-            apiSocketPath = api
-            configurationPath = yaml
+            ownedPaths = [local, datapath, api, yaml]
             process = child
             portForwardReconciler = reconciler
             maximumFrameBytes = Int(interface.maximumTransmissionUnit) + 18
-            let source = DispatchSource.makeReadSource(
-                fileDescriptor: descriptor,
-                queue: DispatchQueue(
-                    label: "dev.dory.dory-hv.dorypc.network.receive",
-                    qos: .userInitiated
-                )
+            let queue = DispatchQueue(
+                label: "dev.dory.dory-hv.dorypc.network.receive", qos: .userInitiated
             )
+            receiveQueue = queue
+            let source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
             receiveSource = source
+            queue.setSpecific(key: receiveQueueKey, value: true)
             source.setEventHandler { [weak self] in self?.drainReceive() }
             source.setCancelHandler { [descriptor, receiveCompletion] in
                 Darwin.close(descriptor)
@@ -154,9 +155,68 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
         }
     }
 
+    /// Takes ownership of an already-connected Unix datagram endpoint without spawning gvproxy.
+    /// Kept internal for isolated lifetime tests and alternative local datapath provisioning.
+    init(connectedDescriptor: Int32, maximumFrameBytes: Int) throws {
+        guard connectedDescriptor >= 0, (14...65_553).contains(maximumFrameBytes) else {
+            throw DoryPCGVProxyNetworkError.invalidConfiguration("invalid connected endpoint")
+        }
+        guard fcntl(connectedDescriptor, F_SETFD, FD_CLOEXEC) == 0,
+              fcntl(connectedDescriptor, F_SETFL, O_NONBLOCK) == 0 else {
+            throw DoryPCGVProxyNetworkError.systemCall("configure connected endpoint", errno)
+        }
+        descriptor = connectedDescriptor
+        ownedPaths = []
+        process = nil
+        portForwardReconciler = nil
+        self.maximumFrameBytes = maximumFrameBytes
+        let queue = DispatchQueue(
+            label: "dev.dory.dory-hv.dorypc.network.receive", qos: .userInitiated
+        )
+        receiveQueue = queue
+        let source = DispatchSource.makeReadSource(fileDescriptor: connectedDescriptor, queue: queue)
+        receiveSource = source
+        queue.setSpecific(key: receiveQueueKey, value: true)
+        source.setEventHandler { [weak self] in self?.drainReceive() }
+        source.setCancelHandler { [connectedDescriptor, receiveCompletion] in
+            Darwin.close(connectedDescriptor)
+            receiveCompletion.signal()
+        }
+        source.resume()
+    }
+
     func connectReceiveSink(_ sink: @escaping @Sendable ([UInt8]) -> Void) {
-        lock.withLock { receiveSink = sink }
-        drainReceive()
+        let replacement = UUID()
+        let admitted = lock.withLock {
+            guard !stopped else { return false }
+            // Revoke before joining. Otherwise the old reader could repeatedly reacquire the
+            // delivery gate and continue delivering queued packets while replacement waits.
+            receiveEpoch = replacement
+            receiveSink = nil
+            return true
+        }
+        guard admitted else { return }
+        let published = deliveryLock.withLock {
+            lock.withLock {
+                guard !stopped, receiveEpoch == replacement else { return false }
+                receiveSink = sink
+                return true
+            }
+        }
+        if published { receiveQueue.async { [weak self] in self?.drainReceive() } }
+    }
+
+    func connectStopSink(_ sink: @escaping @Sendable () -> Void) {
+        let registration = lock.withLock {
+            guard !stopped else { return (true, Optional<@Sendable () -> Void>.none) }
+            let previous = stopSink
+            stopSink = sink
+            return (false, previous)
+        }
+        // A new semantic device may replace a connection, but the previous one cannot retain
+        // transmit authority or DMA after the replacement registration returns.
+        registration.1?()
+        if registration.0 { sink() }
     }
 
     func transmit(frame: [UInt8]) throws {
@@ -178,48 +238,103 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
         }
     }
 
-    func stop() {
+    /// True means the receive source, guest delivery, and child have all been joined. Reentrant
+    /// calls from a receive callback revoke immediately, but finish off-queue and return false.
+    @discardableResult
+    func stop() -> Bool {
         let ownsStop = lock.withLock { () -> Bool in
             guard !stopped else { return false }
             stopped = true
+            receiveEpoch = UUID()
             receiveSink = nil
             return true
         }
+        let onReceiveQueue = DispatchQueue.getSpecific(key: receiveQueueKey) == true
         guard ownsStop else {
             // A receive failure, host signal, and the AppKit cleanup path may converge here. The
             // first caller owns teardown; every other caller must wait for it rather than letting
             // the runner exit while that queue still holds an unreaped gvproxy child.
-            _ = stopCompletion.wait(timeout: .now() + 5)
-            return
+            guard !onReceiveQueue else { return false }
+            stopCompletion.wait()
+            return true
         }
+        guard !onReceiveQueue else {
+            DispatchQueue.global(qos: .utility).async { self.finishStop() }
+            return false
+        }
+        finishStop()
+        return true
+    }
+
+    private func finishStop() {
         defer { stopCompletion.leave() }
+        // The socket state is revoked first. Join any sink that already passed admission before
+        // retiring its semantic device, then wait for cancellation to close the exact descriptor.
+        deliveryLock.withLock {}
+        let retiringSink = lock.withLock {
+            let sink = stopSink
+            stopSink = nil
+            return sink
+        }
+        retiringSink?()
         receiveSource.cancel()
-        _ = receiveCompletion.wait(timeout: .now() + 2)
+        receiveCompletion.wait()
+        retireResources()
+    }
+
+    private func retireResources() {
         portForwardReconciler?.stop()
-        ChildProcessTerminator.terminateAndReap(process)
-        for path in [localSocketPath, datapathSocketPath, apiSocketPath, configurationPath] {
-            unlink(path)
+        if let process { ChildProcessTerminator.terminateAndReap(process) }
+        for path in ownedPaths { unlink(path) }
+    }
+
+    deinit {
+        if DispatchQueue.getSpecific(key: receiveQueueKey) == true {
+            // The event handler's temporary strong reference can be the last owner. Never
+            // resurrect self from deinit or wait for cancellation on the cancellation queue.
+            // That handler has returned before deinit runs; cancellation owns the descriptor.
+            let retirement = lock.withLock {
+                guard !stopped else { return (false, Optional<@Sendable () -> Void>.none) }
+                stopped = true
+                receiveEpoch = UUID()
+                receiveSink = nil
+                let sink = stopSink
+                stopSink = nil
+                return (true, sink)
+            }
+            if retirement.0 {
+                retirement.1?()
+                receiveSource.cancel()
+                retireResources()
+                stopCompletion.leave()
+            }
+        } else {
+            stop()
         }
     }
 
-    deinit { stop() }
-
     private func drainReceive() {
-        while true {
-            let result: (frame: [UInt8]?, code: Int32) = lock.withLock {
-                guard !stopped else { return (nil, ECANCELED) }
+        // Invalid/oversized datagrams and EINTR consume the same bounded turn quota as valid
+        // traffic. A hostile sender cannot monopolize the serial cancellation queue.
+        for _ in 0..<Self.maximumReceiveDatagramsPerTurn {
+            let result: (frame: [UInt8]?, code: Int32, epoch: UUID) = lock.withLock {
+                guard !stopped else { return (nil, ECANCELED, receiveEpoch) }
                 var bytes = [UInt8](repeating: 0, count: maximumFrameBytes + 1)
                 let count = bytes.withUnsafeMutableBytes {
                     Darwin.recv(descriptor, $0.baseAddress, $0.count, MSG_DONTWAIT)
                 }
-                guard count >= 0 else { return (nil, errno) }
+                guard count >= 0 else { return (nil, errno, receiveEpoch) }
                 bytes.removeSubrange(Int(count)..<bytes.count)
-                return (bytes, 0)
+                return (bytes, 0, receiveEpoch)
             }
             if let frame = result.frame {
                 guard (14...maximumFrameBytes).contains(frame.count) else { continue }
-                let sink = lock.withLock { receiveSink }
-                sink?(frame)
+                deliveryLock.withLock {
+                    let sink = lock.withLock {
+                        !stopped && receiveEpoch == result.epoch ? receiveSink : nil
+                    }
+                    sink?(frame)
+                }
                 continue
             }
             if result.code == EINTR { continue }

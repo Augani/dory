@@ -284,6 +284,10 @@ public final class DoryRendererWorkerVirglBackend:
         let hostVisibleArena: HostVisibleArena?
         var contexts = [UInt32: UInt32]()
         var resources = [UInt32: ResourceState]()
+        var retainedBlobBytes: UInt64 = 0
+        var retainedResource3DChargeBytes: UInt64 = 0
+        var retainedBackingMappedBytes: UInt64 = 0
+        var retainedBackingRegionCount = 0
         var lastResourceGenerations = [UInt32: UInt64]()
         var leases = [UUID: ScanoutLeaseState]()
         var loggedScanoutRejections = Set<UInt32>()
@@ -301,8 +305,9 @@ public final class DoryRendererWorkerVirglBackend:
     }
 
     /// One unlink-on-create sparse SHM object for the complete worker generation. The mapping is
-    /// intentionally established before foreign renderer activation so the next integration step
-    /// can bind every Venus allocation to a stable subrange without changing bootstrap authority.
+    /// established before foreign renderer activation so each Venus allocation can bind a stable
+    /// subrange. Individual 4-KiB guest ranges may share a host page; the arena itself remains
+    /// mapped until the complete worker generation retires.
     private final class HostVisibleArena {
         let byteCount: UInt64
         let baseAddress: UnsafeMutableRawPointer
@@ -419,22 +424,30 @@ public final class DoryRendererWorkerVirglBackend:
         let generation: UInt64
         let contextID: UInt32
         let blobSize: UInt64?
+        let resource3DChargeBytes: UInt64
+        let blobMemory: UInt32?
         let resource3DBind: UInt32?
         var backing: OwnedBacking?
         var attachedContexts = Set<UInt32>()
         var mapped = false
+        /// The foreign Venus binding survives guest UNMAP_BLOB and is released at resource unref.
+        var arenaRange: Range<UInt64>?
         var liveLeaseIDs = Set<UUID>()
 
         init(
             generation: UInt64,
             contextID: UInt32,
             blobSize: UInt64?,
+            resource3DChargeBytes: UInt64 = 0,
+            blobMemory: UInt32? = nil,
             resource3DBind: UInt32?,
             backing: OwnedBacking?
         ) {
             self.generation = generation
             self.contextID = contextID
             self.blobSize = blobSize
+            self.resource3DChargeBytes = resource3DChargeBytes
+            self.blobMemory = blobMemory
             self.resource3DBind = resource3DBind
             self.backing = backing
         }
@@ -737,10 +750,12 @@ public final class DoryRendererWorkerVirglBackend:
     ) throws -> DoryRendererWorkerBackendExecution {
         switch command.operation {
         case .createContext:
-            guard active.contexts.count < Self.maximumContexts,
-                  active.contexts[command.contextID] == nil else { return .rejected }
+            guard active.contexts[command.contextID] == nil else { return .rejected }
             let payload = try DoryRendererContextCreatePayload.decode(command.payload)
             guard payload.capsetID == 2 || payload.capsetID == 4 else { return .rejected }
+            guard active.contexts.count < Self.maximumContexts else {
+                return .resourceExhausted
+            }
             try active.session.createContext(
                 id: command.contextID,
                 capsetID: payload.capsetID,
@@ -750,29 +765,60 @@ public final class DoryRendererWorkerVirglBackend:
             return .success(payload: Data(), descriptors: [])
 
         case .createResource3D:
-            guard active.resources.count < Self.maximumResources,
-                  active.resources[command.resourceID] == nil else { return .rejected }
-            let payload = try DoryRendererResource3DCreatePayload.decode(
-                command.payload,
-                maximumReferencedBytes: active.bootstrap.limits.maximumReferencedBytes
+            guard active.resources[command.resourceID] == nil else { return .rejected }
+            let payload: DoryRendererResource3DCreatePayload
+            do {
+                payload = try DoryRendererResource3DCreatePayload.decode(command.payload)
+            } catch DoryRendererWorkerContractError.invalidOperationPayload {
+                // Texture dimensions and the byte budget originate in a guest request. A
+                // rejected resource is not a corrupt worker channel or an unknown GPU outcome.
+                Self.executionLogger.error(
+                    "renderer-resource-rejected reason=invalid-geometry-or-absolute-byte-limit resourceID=\(command.resourceID, privacy: .public)"
+                )
+                return .rejected
+            }
+            guard active.resources.count < Self.maximumResources else {
+                return .resourceExhausted
+            }
+            let (resourceBytes, resourceOverflow) = active.retainedResource3DChargeBytes
+                .addingReportingOverflow(payload.budgetChargeBytes)
+            let (totalBytes, totalOverflow) = resourceBytes.addingReportingOverflow(
+                active.retainedBlobBytes
             )
+            guard !resourceOverflow, !totalOverflow,
+                  totalBytes <= active.bootstrap.limits.maximumReferencedBytes else {
+                Self.executionLogger.error(
+                    "renderer-resource-rejected reason=resource-byte-quota retained=\(active.retainedResource3DChargeBytes, privacy: .public) requested=\(payload.budgetChargeBytes, privacy: .public) blob=\(active.retainedBlobBytes, privacy: .public) limit=\(active.bootstrap.limits.maximumReferencedBytes, privacy: .public)"
+                )
+                return .resourceExhausted
+            }
             try active.session.createResource3D(
                 DoryRendererForeignResource3DCreate(
                     resourceID: command.resourceID,
                     payload: payload
                 )
             )
-            let generation = try nextResourceGeneration(
-                resourceID: command.resourceID,
-                active: active
-            )
+            let generation: UInt64
+            do {
+                generation = try nextResourceGeneration(
+                    resourceID: command.resourceID,
+                    active: active
+                )
+            } catch {
+                // A generation cannot be issued for this ID. Retire the foreign allocation
+                // before the worker reports failure or accepts another resource command.
+                active.session.unrefResource(id: command.resourceID)
+                throw error
+            }
             active.resources[command.resourceID] = ResourceState(
                 generation: generation,
                 contextID: 0,
                 blobSize: nil,
+                resource3DChargeBytes: payload.budgetChargeBytes,
                 resource3DBind: payload.bind,
                 backing: nil
             )
+            active.retainedResource3DChargeBytes = resourceBytes
             return .success(payload: Self.encodeUInt64(generation), descriptors: [])
 
         case .destroyContext:
@@ -835,6 +881,7 @@ public final class DoryRendererWorkerVirglBackend:
         case .submit3D:
             guard active.contexts[command.contextID] != nil,
                   let region = command.sharedRegions.first else { return .rejected }
+            guard canMapBacking([region], active: active) != nil else { return .rejected }
             let mapping = try OwnedBacking(
                 regions: [region],
                 descriptors: descriptors
@@ -848,14 +895,43 @@ public final class DoryRendererWorkerVirglBackend:
             return .success(payload: Data(), descriptors: [])
 
         case .createBlob:
-            guard active.resources.count < Self.maximumResources,
-                  active.resources[command.resourceID] == nil,
+            guard active.resources[command.resourceID] == nil,
                   command.contextID == 0 || active.contexts[command.contextID] != nil else {
                 return .rejected
             }
             let payload = try DoryRendererBlobCreatePayload.decode(command.payload)
-            guard payload.size <= active.bootstrap.limits.maximumReferencedBytes else {
+            guard active.resources.count < Self.maximumResources else {
+                return .resourceExhausted
+            }
+            let (totalBlobBytes, blobBytesOverflow) = active.retainedBlobBytes
+                .addingReportingOverflow(payload.size)
+            let (totalBytes, totalOverflow) = totalBlobBytes.addingReportingOverflow(
+                active.retainedResource3DChargeBytes
+            )
+            guard !blobBytesOverflow, !totalOverflow,
+                  totalBytes <= active.bootstrap.limits.maximumReferencedBytes else {
+                Self.executionLogger.error(
+                    "renderer-resource-rejected reason=resource-byte-quota retained=\(active.retainedResource3DChargeBytes, privacy: .public) requested=\(payload.size, privacy: .public) blob=\(active.retainedBlobBytes, privacy: .public) limit=\(active.bootstrap.limits.maximumReferencedBytes, privacy: .public)"
+                )
+                return .resourceExhausted
+            }
+            // HOST3D is renderer-owned. A direct worker command must not smuggle guest memory
+            // into it even when the transport-neutral GPU semantic layer normally rejects it.
+            guard (payload.blobMemory != 2 || command.sharedRegions.isEmpty),
+                  (payload.blobMemory != 1 || !command.sharedRegions.isEmpty),
+                  (command.sharedRegions.isEmpty || Self.backingCovers(
+                    command.sharedRegions, byteCount: payload.size
+                  )) else {
                 return .rejected
+            }
+            let footprint: UInt64
+            if command.sharedRegions.isEmpty {
+                footprint = 0
+            } else {
+                guard let admitted = canMapBacking(command.sharedRegions, active: active) else {
+                    return .rejected
+                }
+                footprint = admitted
             }
             let backing = command.sharedRegions.isEmpty
                 ? nil
@@ -869,24 +945,44 @@ public final class DoryRendererWorkerVirglBackend:
                 iovecs: backing?.iovecs,
                 iovecCount: backing?.count ?? 0
             )
-            let generation = try nextResourceGeneration(
-                resourceID: command.resourceID,
-                active: active
-            )
+            let generation: UInt64
+            do {
+                generation = try nextResourceGeneration(
+                    resourceID: command.resourceID,
+                    active: active
+                )
+            } catch {
+                // Keep borrowed backing live until the foreign blob is unreferenced.
+                active.session.unrefResource(id: command.resourceID)
+                throw error
+            }
             active.resources[command.resourceID] = ResourceState(
                 generation: generation,
                 contextID: command.contextID,
                 blobSize: payload.size,
+                blobMemory: payload.blobMemory,
                 resource3DBind: nil,
                 backing: backing
             )
+            active.retainedBlobBytes = totalBlobBytes
+            if backing != nil {
+                active.retainedBackingMappedBytes += footprint
+                active.retainedBackingRegionCount += command.sharedRegions.count
+            }
             return .success(payload: Self.encodeUInt64(generation), descriptors: [])
 
         case .attachBacking:
             guard let resource = matchingResource(command, active: active),
                   resource.backing == nil,
+                  resource.blobMemory != 2,
                   !resource.mapped,
-                  resource.liveLeaseIDs.isEmpty else { return .rejected }
+                  resource.liveLeaseIDs.isEmpty,
+                  resource.blobSize.map({ Self.backingCovers(
+                    command.sharedRegions, byteCount: $0
+                  ) }) ?? true else { return .rejected }
+            guard let footprint = canMapBacking(command.sharedRegions, active: active) else {
+                return .rejected
+            }
             let backing = try OwnedBacking(
                 regions: command.sharedRegions,
                 descriptors: descriptors
@@ -897,14 +993,18 @@ public final class DoryRendererWorkerVirglBackend:
                 iovecCount: backing.count
             )
             resource.backing = backing
+            active.retainedBackingMappedBytes += footprint
+            active.retainedBackingRegionCount += command.sharedRegions.count
             return .success(payload: Data(), descriptors: [])
 
         case .detachBacking:
             guard let resource = matchingResource(command, active: active),
-                  resource.backing != nil,
+                  let backing = resource.backing,
+                  resource.blobMemory != 2,
                   !resource.mapped,
                   resource.liveLeaseIDs.isEmpty else { return .rejected }
             active.session.detachBacking(resourceID: command.resourceID)
+            releaseBacking(backing, active: active)
             resource.backing = nil
             return .success(payload: Data(), descriptors: [])
 
@@ -913,20 +1013,26 @@ public final class DoryRendererWorkerVirglBackend:
                   resource.attachedContexts.isEmpty,
                   !resource.mapped,
                   resource.liveLeaseIDs.isEmpty else { return .rejected }
-            if resource.backing != nil {
+            if let backing = resource.backing {
                 // virglrenderer borrows these iovecs. Keep OwnedBacking (and its mmap regions)
                 // alive through the foreign detach, then revoke that memory authority before the
                 // resource handle is unreferenced or becomes eligible for same-ID reuse.
                 active.session.detachBacking(resourceID: command.resourceID)
+                releaseBacking(backing, active: active)
                 resource.backing = nil
             }
             active.session.unrefResource(id: command.resourceID)
             active.resources.removeValue(forKey: command.resourceID)
+            if let blobSize = resource.blobSize {
+                active.retainedBlobBytes -= blobSize
+            }
+            active.retainedResource3DChargeBytes -= resource.resource3DChargeBytes
             return .success(payload: Data(), descriptors: [])
 
         case .mapBlob:
             guard let resource = matchingResource(command, active: active),
                   let blobSize = resource.blobSize,
+                  resource.blobMemory == 2,
                   !resource.mapped else { return .rejected }
             let mapPayload = try DoryRendererBlobMapPayload.decode(command.payload)
             if let arena = active.hostVisibleArena {
@@ -934,13 +1040,20 @@ public final class DoryRendererWorkerVirglBackend:
                     .addingReportingOverflow(blobSize)
                 guard !overflow, end <= arena.byteCount else { return .rejected }
             }
-            let mapInfo = try active.session.mapInfo(resourceID: command.resourceID) & 0x0f
+            // Preserve the foreign result. Masking unknown bits could falsely turn an
+            // unsupported cache mode into a valid lease that the guest then maps differently.
+            let mapInfo = try active.session.mapInfo(resourceID: command.resourceID)
             if let arena = active.hostVisibleArena {
-                try active.session.bindGuestVRAM(
-                    contextID: resource.contextID,
-                    resourceID: command.resourceID,
-                    offset: mapPayload.hostVisibleOffset
-                )
+                let end = mapPayload.hostVisibleOffset + blobSize
+                let requestedRange = mapPayload.hostVisibleOffset..<end
+                if let boundRange = resource.arenaRange {
+                    guard boundRange == requestedRange else { return .rejected }
+                } else {
+                    guard !active.resources.values.contains(where: { candidate in
+                        candidate !== resource
+                            && candidate.arenaRange.map({ $0.overlaps(requestedRange) }) == true
+                    }) else { return .rejected }
+                }
                 let lease = try DoryRendererBlobMappingLease(
                     workerGeneration: active.bootstrap.generation,
                     resourceID: command.resourceID,
@@ -955,6 +1068,14 @@ public final class DoryRendererWorkerVirglBackend:
                     hostVisibleArenaByteCount: arena.byteCount,
                     limits: active.bootstrap.limits
                 )
+                if resource.arenaRange == nil {
+                    try active.session.bindGuestVRAM(
+                        contextID: resource.contextID,
+                        resourceID: command.resourceID,
+                        offset: mapPayload.hostVisibleOffset
+                    )
+                    resource.arenaRange = requestedRange
+                }
                 resource.mapped = true
                 return .success(
                     payload: DoryRendererBlobMappingLeaseCodec.encode(lease),
@@ -995,8 +1116,8 @@ public final class DoryRendererWorkerVirglBackend:
         case .unmapBlob:
             guard let resource = matchingResource(command, active: active),
                   resource.mapped else { return .rejected }
-            // `mapBlob` exported an owned SHM descriptor; it did not call the process-local
-            // `virgl_renderer_resource_map`, so no foreign unmap state exists to release here.
+            // The guest alias is retired before this command. The foreign Venus binding remains
+            // reserved until RESOURCE_UNREF; another blob must not reuse its arena range here.
             resource.mapped = false
             return .success(payload: Data(), descriptors: [])
 
@@ -1009,6 +1130,10 @@ public final class DoryRendererWorkerVirglBackend:
                 command.payload,
                 operation: command.operation
             )
+            if !command.sharedRegions.isEmpty,
+               canMapBacking(command.sharedRegions, active: active) == nil {
+                return .rejected
+            }
             let backing = command.sharedRegions.isEmpty
                 ? nil
                 : try OwnedBacking(regions: command.sharedRegions, descriptors: descriptors)
@@ -1055,10 +1180,6 @@ public final class DoryRendererWorkerVirglBackend:
 
         case .acquireScanoutLease:
             guard let resource = matchingResource(command, active: active),
-                  // Dumb-KMS RESOURCE_CREATE_2D scanouts are valid without a VirGL context.
-                  // Blob scanouts remain context-owned, while classic resources must still pass
-                  // the generation, SCANOUT-bind, resource-info, and Metal checks below.
-                  resource.blobSize == nil || !resource.attachedContexts.isEmpty,
                   active.leases.count < active.bootstrap.limits.maximumLiveScanoutLeases else {
                 return .rejected
             }
@@ -1801,10 +1922,67 @@ public final class DoryRendererWorkerVirglBackend:
     private func teardownLocked(_ active: ActiveState) {
         active.pollDriver?.cancel()
         active.pollDriver = nil
+        // The foreign renderer borrows retained iovecs and their mmap pages. Destroy it before
+        // releasing either the backing objects or any exported scanout handles.
+        active.session.invalidate()
         active.leases.removeAll()
         active.resources.removeAll()
         active.contexts.removeAll()
-        active.session.invalidate()
+        active.retainedBlobBytes = 0
+        active.retainedResource3DChargeBytes = 0
+        active.retainedBackingMappedBytes = 0
+        active.retainedBackingRegionCount = 0
+    }
+
+    private static func backingCovers(
+        _ regions: [DoryRendererSharedRegionReference],
+        byteCount: UInt64
+    ) -> Bool {
+        var coveredBytes: UInt64 = 0
+        for region in regions {
+            let (next, overflow) = coveredBytes.addingReportingOverflow(region.length)
+            guard !overflow else { return false }
+            coveredBytes = next
+        }
+        return coveredBytes >= byteCount
+    }
+
+    /// Bound the complete worker generation's retained mappings, not just each valid command.
+    /// Temporary submit/transfer mappings also need headroom alongside retained resource iovecs.
+    private func canMapBacking(
+        _ regions: [DoryRendererSharedRegionReference],
+        active: ActiveState
+    ) -> UInt64? {
+        guard let mappedBytes = OwnedBacking.mappedByteCount(for: regions) else {
+            Self.executionLogger.warning(
+                "renderer-backing-rejected reason=invalid-mapped-footprint regions=\(regions.count, privacy: .public)"
+            )
+            return nil
+        }
+        let (totalBytes, byteOverflow) = active.retainedBackingMappedBytes
+            .addingReportingOverflow(mappedBytes)
+        let (totalRegions, regionOverflow) = active.retainedBackingRegionCount
+            .addingReportingOverflow(regions.count)
+        guard !byteOverflow,
+              totalBytes <= active.bootstrap.limits.maximumReferencedBytes else {
+            Self.executionLogger.warning(
+                "renderer-backing-rejected reason=mapped-byte-quota retained=\(active.retainedBackingMappedBytes, privacy: .public) requested=\(mappedBytes, privacy: .public) limit=\(active.bootstrap.limits.maximumReferencedBytes, privacy: .public)"
+            )
+            return nil
+        }
+        guard !regionOverflow,
+              totalRegions <= active.bootstrap.limits.maximumSharedRegions else {
+            Self.executionLogger.warning(
+                "renderer-backing-rejected reason=mapped-region-quota retained=\(active.retainedBackingRegionCount, privacy: .public) requested=\(regions.count, privacy: .public) limit=\(active.bootstrap.limits.maximumSharedRegions, privacy: .public)"
+            )
+            return nil
+        }
+        return mappedBytes
+    }
+
+    private func releaseBacking(_ backing: OwnedBacking, active: ActiveState) {
+        active.retainedBackingMappedBytes -= backing.mappedByteCount
+        active.retainedBackingRegionCount -= Int(backing.count)
     }
 
     private func pollForeignEvents() {
@@ -1828,7 +2006,30 @@ public final class DoryRendererWorkerVirglBackend:
 private final class OwnedBacking {
     let iovecs: UnsafeMutablePointer<iovec>
     let count: UInt32
+    let mappedByteCount: UInt64
     private let mappings: [OwnedMapping]
+
+    static func mappedByteCount(
+        for regions: [DoryRendererSharedRegionReference]
+    ) -> UInt64? {
+        guard !regions.isEmpty else { return nil }
+        let pageSize = UInt64(getpagesize())
+        var total: UInt64 = 0
+        for region in regions {
+            let delta = region.offset % pageSize
+            let (requested, requestOverflow) = delta.addingReportingOverflow(region.length)
+            guard !requestOverflow, requested > 0, requested <= UInt64(Int.max) else {
+                return nil
+            }
+            let (rounded, roundOverflow) = requested.addingReportingOverflow(pageSize - 1)
+            guard !roundOverflow else { return nil }
+            let mapped = rounded / pageSize * pageSize
+            let (next, totalOverflow) = total.addingReportingOverflow(mapped)
+            guard !totalOverflow else { return nil }
+            total = next
+        }
+        return total
+    }
 
     init(
         regions: [DoryRendererSharedRegionReference],
@@ -1842,6 +2043,9 @@ private final class OwnedBacking {
                 limit: Int(UInt32.max),
                 actual: regions.count
             )
+        }
+        guard let mappedByteCount = Self.mappedByteCount(for: regions) else {
+            throw DoryRendererWorkerContractError.invalidSharedRegionBounds
         }
         var created = [OwnedMapping]()
         created.reserveCapacity(regions.count)
@@ -1860,6 +2064,7 @@ private final class OwnedBacking {
         }
         mappings = created
         count = UInt32(created.count)
+        self.mappedByteCount = mappedByteCount
         iovecs = .allocate(capacity: created.count)
         for (index, mapping) in created.enumerated() {
             iovecs.advanced(by: index).initialize(to: iovec(

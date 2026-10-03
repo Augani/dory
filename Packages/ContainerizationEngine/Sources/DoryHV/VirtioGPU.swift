@@ -1,6 +1,8 @@
 import Darwin
+import DoryVirtio
 import DoryFSWorkerContracts
 import DoryRendererWorkerContracts
+import DoryOperations
 import Dispatch
 import Foundation
 import Hypervisor
@@ -24,6 +26,9 @@ public struct VirtioGPUMemoryEntry {
     /// Guest-physical identity used to grant the same bytes to an isolated renderer worker.
     /// Synthetic host-only entries leave this nil and are never eligible for worker submission.
     public var guestAddress: UInt64?
+    // Retained by the resource and any asynchronous admission copies until backing retirement.
+    // Host-only synthetic entries have no RAM lease and cannot be submitted to a worker.
+    var memoryLease: GuestMemoryRangeLease?
 
     public init(
         pointer: UnsafeMutableRawPointer,
@@ -33,6 +38,7 @@ public struct VirtioGPUMemoryEntry {
         self.pointer = pointer
         self.length = length
         self.guestAddress = guestAddress
+        self.memoryLease = nil
     }
 }
 
@@ -769,7 +775,7 @@ public final class VirtioGPUScanoutResourceRelease: @unchecked Sendable {
     private var pendingScanoutIDs: Set<UInt32>
     private var completion: (@Sendable () -> Void)?
 
-    init(
+    public init(
         resourceID: UInt32,
         resourceGeneration: UInt64,
         scanoutCount: UInt32,
@@ -957,6 +963,7 @@ public enum VirtioGPURendererWorkerReplacementError: Error, Equatable, Sendable 
     case capabilityContractMismatch
     case hostVisibleArenaContractMismatch
     case replacementFailedBeforeCutover
+    case replacementLostBeforeCommandReplay
 }
 
 public enum VirtioGPUQuiescenceReason: Equatable, Sendable {
@@ -1723,6 +1730,7 @@ public final class VirtioGPUHostVisibleMemory: @unchecked Sendable {
     private var mappings: [UInt32: (offset: UInt64, size: UInt64)] = [:]
     private var arenaMappings: [UInt32: ArenaMapping] = [:]
     private var arenaGranuleReferences: [UInt64: UInt32] = [:]
+    private var arenaBaseAddress: UInt?
     private let arenaMapOperation: ArenaMapOperation
     private let arenaUnmapOperation: ArenaUnmapOperation
 
@@ -1776,15 +1784,29 @@ public final class VirtioGPUHostVisibleMemory: @unchecked Sendable {
     /// hv_vm_map the renderer-owned `hostPointer` into the window at `offset`. `hostPointer` stays
     /// owned by virglrenderer and must never be munmap'd here — it is released via resource_unmap.
     public func map(resourceID: UInt32, hostPointer: UnsafeMutableRawPointer, offset: UInt64, size: UInt64) throws {
-        let mapSize = size.roundedUpToMultiple(of: HostPage.size)
-        guard offset.isMultiple(of: HostPage.size),
-              mapSize > 0, offset <= length, mapSize <= length - offset else {
-            throw VMError.guestMemoryFault(address: guestBase + offset, count: size)
+        let remainder = size % HostPage.size
+        let (mapSize, overflow) = remainder == 0
+            ? (size, false)
+            : size.addingReportingOverflow(HostPage.size - remainder)
+        let faultAddress = offset <= UInt64.max - guestBase
+            ? guestBase + offset : UInt64.max
+        guard !overflow, mapSize > 0,
+              offset.isMultiple(of: HostPage.size),
+              UInt(bitPattern: hostPointer).isMultiple(of: UInt(HostPage.size)),
+              offset <= length, mapSize <= length - offset else {
+            throw VMError.guestMemoryFault(address: faultAddress, count: size)
         }
         lock.lock()
         defer { lock.unlock() }
-        if let previous = mappings.removeValue(forKey: resourceID) {
-            arenaUnmapOperation(guestBase + previous.offset, Int(previous.size))
+        let end = offset + mapSize
+        guard mappings[resourceID] == nil, arenaMappings[resourceID] == nil,
+              !mappings.values.contains(where: {
+                  $0.offset < end && offset < $0.offset + $0.size
+              }),
+              !arenaGranuleReferences.keys.contains(where: { offset <= $0 && $0 < end }) else {
+            throw VMError.invalidConfiguration(
+                "virtio-gpu host-visible range is already mapped"
+            )
         }
         try arenaMapOperation(
             hostPointer,
@@ -1830,6 +1852,16 @@ public final class VirtioGPUHostVisibleMemory: @unchecked Sendable {
               roundedEnd - firstGranule <= UInt64(Int.max) else {
             throw VMError.guestMemoryFault(address: faultAddress, count: size)
         }
+        let requestedArenaBase = UInt(bitPattern: arenaBase)
+        let (_, pointerOverflow) = requestedArenaBase.addingReportingOverflow(
+            UInt(roundedEnd)
+        )
+        guard requestedArenaBase.isMultiple(of: UInt(HostPage.size)),
+              !pointerOverflow else {
+            throw VMError.invalidConfiguration(
+                "virtio-gpu host-visible arena has an invalid host address"
+            )
+        }
 
         var granules = [UInt64]()
         granules.reserveCapacity(Int((roundedEnd - firstGranule) / HostPage.size))
@@ -1841,9 +1873,21 @@ public final class VirtioGPUHostVisibleMemory: @unchecked Sendable {
 
         lock.lock()
         defer { lock.unlock() }
-        guard mappings[resourceID] == nil, arenaMappings[resourceID] == nil else {
+        guard mappings[resourceID] == nil, arenaMappings[resourceID] == nil,
+              arenaBaseAddress == nil || arenaBaseAddress == requestedArenaBase else {
             throw VMError.invalidConfiguration(
-                "virtio-gpu host-visible resource is already mapped"
+                "virtio-gpu host-visible resource or arena generation is already mapped"
+            )
+        }
+        guard !arenaMappings.values.contains(where: {
+                  $0.offset < end && offset < $0.offset + $0.size
+              }),
+              !mappings.values.contains(where: {
+                  $0.offset < roundedEnd && firstGranule < $0.offset + $0.size
+              }),
+              granules.allSatisfy({ (arenaGranuleReferences[$0] ?? 0) < UInt32.max }) else {
+            throw VMError.invalidConfiguration(
+                "virtio-gpu host-visible range overlaps or exhausts a mapped granule"
             )
         }
 
@@ -1873,6 +1917,7 @@ public final class VirtioGPUHostVisibleMemory: @unchecked Sendable {
             size: size,
             granuleOffsets: granules
         )
+        arenaBaseAddress = requestedArenaBase
     }
 
     public func unmap(resourceID: UInt32) {
@@ -1906,6 +1951,7 @@ public final class VirtioGPUHostVisibleMemory: @unchecked Sendable {
         }
         arenaMappings.removeAll(keepingCapacity: false)
         arenaGranuleReferences.removeAll(keepingCapacity: false)
+        arenaBaseAddress = nil
         for (_, mapping) in mappings {
             arenaUnmapOperation(guestBase + mapping.offset, Int(mapping.size))
         }
@@ -1955,12 +2001,13 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private let onScanoutDisabled: (@Sendable (UInt32) -> Void)?
     private let onCursorUpdate: (@Sendable (VirtioGPUCursorUpdate?) -> Void)?
     private let onRendererWorkerFailure: (@Sendable (String) -> Void)?
+    private let onRendererWorkerUnavailable: (@Sendable (UInt64, String) -> Void)?
     private let stockFenceVerifier: VirtioGPUStockFenceVerifier?
     private let onStockFenceVerification:
-        (@Sendable (VirtioGPUStockFenceVerificationOutcome) -> Void)?
+        (@Sendable (UInt64, VirtioGPUStockFenceVerificationOutcome) -> Void)?
     private var stockFenceFallbackActive = false
     private var stockFirstShaderCompletionReported = false
-    private let onStockFirstShaderCompletion: (@Sendable () -> Void)?
+    private let onStockFirstShaderCompletion: (@Sendable (UInt64) -> Void)?
     private let rendererExecutor: VirtioGPURendererCommandExecutor?
     private let rendererWorkerCandidateLock = NSLock()
     private var rendererWorkerCandidateStorage: DoryRendererWorkerVirtioCommandLane?
@@ -2348,6 +2395,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     /// barrier after its used entry has been published.
     private struct RendererWorkerControlCommandClaim: Equatable, Sendable {
         let generation: UInt64
+        let workerGeneration: UInt64
         let token: UInt64
     }
     private var rendererWorkerControlCommandClaim: RendererWorkerControlCommandClaim?
@@ -2377,10 +2425,22 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         var requiresBlobUnmap: Bool
     }
 
+    private struct GuestBackingAuthority: @unchecked Sendable {
+        let entries: [VirtioGPUMemoryEntry]
+        let regions: DoryRendererWorkerSharedRegionSet?
+    }
+
+    private struct WorkerBackingKey: Hashable {
+        let workerGeneration: UInt64
+        let deviceGeneration: UInt64
+        let resourceID: UInt32
+    }
+
     private struct ActiveQuiescence {
         var receipt: VirtioGPUQuiescence
         var rendererGeneration: UInt64
         var workerReboundForPristineDeviceReset: Bool
+        var retiringWorker: DoryRendererWorkerVirtioCommandLane?
         var rendererResources: [QuiescingResource]
         var awaitingReleaseAcknowledgements: Set<ResourceRetirementKey>
         var priorRetirements: Set<ResourceRetirementKey>
@@ -2396,10 +2456,21 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private weak var attachedTransport: VirtioMMIOTransport?
     private let rendererRetirementQueue = DispatchQueue(label: "dev.dory.gpu.resource-retirement")
     private var retiringResources: [UInt32: UInt64] = [:]
+    // Releasing guest-visible resource tables does not retire renderer/display aliases. These
+    // exact pins survive until acknowledged teardown; failed teardown leaves them quarantined.
+    private var retiringGuestBackings: [ResourceRetirementKey: GuestBackingAuthority] = [:]
+    private var uncertainRendererGuestBackings: [GuestBackingAuthority] = []
+    // A worker revoke only requests asynchronous connection invalidation, not proof of process
+    // exit. Keep each published authority until exact detach/unref acknowledgement or confirmed
+    // death of that authenticated worker after all display consumers have retired.
+    private var workerGuestBackings: [WorkerBackingKey: GuestBackingAuthority] = [:]
     private var activeQuiescence: ActiveQuiescence?
     /// `deviceReset()` runs before VirtioMMIO clears its queue registers. Record replacement
     /// demand here and publish it only from `deviceResetCompleted()`, after that reset boundary.
     private var pendingRendererReplacementEpoch: UInt64?
+    /// One-shot admission is granted by reset completion, never by shutdown or failed cleanup.
+    /// A later quiescence revokes it before a slow replacement provider can return.
+    private var rendererReplacementAdmissionEpoch: UInt64?
     /// Linux can notify controlq after a reset while the replacement worker is still launching.
     /// If another reset clears that queue before cutover, the replacement's eager drain observes
     /// an unready queue. Preserve the notification until the final QueueReady write so the fresh
@@ -2452,6 +2523,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         static let okResourceUUID: UInt32 = 0x1105
         static let okMapInfo: UInt32 = 0x1106
         static let errorUnspecified: UInt32 = 0x1200
+        static let errorOutOfMemory: UInt32 = 0x1201
         static let errorInvalidParameter: UInt32 = 0x1205
     }
 
@@ -2518,9 +2590,10 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         onScanoutDisabled: (@Sendable (UInt32) -> Void)? = nil,
         onCursorUpdate: (@Sendable (VirtioGPUCursorUpdate?) -> Void)? = nil,
         onRendererWorkerFailure: (@Sendable (String) -> Void)? = nil,
+        onRendererWorkerUnavailable: (@Sendable (UInt64, String) -> Void)? = nil,
         onStockFenceVerification:
-            (@Sendable (VirtioGPUStockFenceVerificationOutcome) -> Void)? = nil,
-        onStockFirstShaderCompletion: (@Sendable () -> Void)? = nil
+            (@Sendable (UInt64, VirtioGPUStockFenceVerificationOutcome) -> Void)? = nil,
+        onStockFirstShaderCompletion: (@Sendable (UInt64) -> Void)? = nil
     ) {
         let boundedScanoutSizes: [VirtioGPUScanoutSize]
         if let scanoutSizes {
@@ -2623,9 +2696,12 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         self.onScanoutDisabled = onScanoutDisabled
         self.onCursorUpdate = onCursorUpdate
         self.onRendererWorkerFailure = onRendererWorkerFailure
+        self.onRendererWorkerUnavailable = onRendererWorkerUnavailable
         self.stockFenceVerifier = onStockFenceVerification == nil
             ? nil
-            : VirtioGPUStockFenceVerifier()
+            : VirtioGPUStockFenceVerifier(
+                workerGeneration: selectedWorkerCandidate?.workerGeneration.rawValue ?? 0
+            )
         self.onStockFenceVerification = onStockFenceVerification
         self.onStockFirstShaderCompletion = onStockFirstShaderCompletion
         rendererExecutor?.installCallbacks(
@@ -2687,6 +2763,15 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         )
     }
 
+    public func requestQualificationRendererCrash(
+        _ admission: DoryRendererCrashQualificationAdmission,
+        acknowledgement: @escaping @Sendable (Bool, UInt32) -> Void,
+        interrupted: @escaping @Sendable () -> Void
+    ) throws {
+        guard let lane = rendererWorkerCandidate else { throw DoryRuntimeQualificationFaultError.unauthorized }
+        try lane.requestQualificationCrash(admission, acknowledgement: acknowledgement, interrupted: interrupted)
+    }
+
     public var configSpace: [UInt8] {
         displayLock.lock()
         let events = pendingDisplayEvents
@@ -2719,13 +2804,14 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             pendingDisplayEvents |= 1
             return previousCount
         }
-        guard let previousCount else { return false }
-        if previousCount > UInt32(sizes.count) {
-            for scanoutID in UInt32(sizes.count)..<previousCount {
-                onScanoutDisabled?(scanoutID)
+        if let previousCount {
+            if previousCount > UInt32(sizes.count) {
+                for scanoutID in UInt32(sizes.count)..<previousCount {
+                    onScanoutDisabled?(scanoutID)
+                }
             }
+            transport.notifyConfigChange()
         }
-        transport.notifyConfigChange()
         return true
     }
 
@@ -2733,6 +2819,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     /// driver responds by re-reading GET_DISPLAY_INFO and issuing a real modeset, so the guest
     /// compositor renders at the Retina window's pixel dimensions instead of scaling one fixed
     /// framebuffer on the host.
+    @discardableResult
     public func updateScanoutSize(
         scanoutID: UInt32,
         width: UInt32,
@@ -2740,10 +2827,11 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         physicalWidthMillimeters: UInt16? = nil,
         physicalHeightMillimeters: UInt16? = nil,
         transport: VirtioMMIOTransport
-    ) {
+    ) -> Bool {
         displayLock.lock()
         let index = Int(scanoutID)
-        let previous = index < Int(activeScanoutCount) ? scanoutSizes[index] : nil
+        let admitted = index < Int(activeScanoutCount)
+        let previous = admitted ? scanoutSizes[index] : nil
         let updated = VirtioGPUScanoutSize(
             width: width,
             height: height,
@@ -2752,27 +2840,52 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             physicalHeightMillimeters: physicalHeightMillimeters
                 ?? previous?.physicalHeightMillimeters
         )
-        let changed = index < Int(activeScanoutCount) && scanoutSizes[index] != updated
+        let changed = admitted && scanoutSizes[index] != updated
         if changed {
             scanoutSizes[index] = updated
             pendingDisplayEvents |= 1  // VIRTIO_GPU_EVENT_DISPLAY
         }
         displayLock.unlock()
         if changed { transport.notifyConfigChange() }
+        return admitted
     }
 
     public func deviceReady(transport: VirtioMMIOTransport) {
-        lifecycleLock.withLock { attachedTransport = transport }
+        transport.withQueueLock {
+            let shouldReplay = lifecycleLock.withLock {
+                attachedTransport = transport
+                return rendererWorkerAuthorityConfigured && deferredRendererWorkerControlKick
+            }
+            if shouldReplay { handleKick(queue: 0, transport: transport) }
+        }
+    }
+
+    /// A user-requested restart must first cross the guest's status-0 reset boundary.
+    /// Do not revoke live resources or install a worker underneath still-live guest queues.
+    /// DEVICE_NEEDS_RESET asks the driver to quiesce the GPU; deviceResetCompleted() owns
+    /// replacement admission after that boundary. Other VM devices remain running.
+    @discardableResult
+    public func requestRendererWorkerRestart() -> Bool {
+        guard rendererWorkerAuthorityConfigured,
+              let transport = lifecycleLock.withLock({ () -> VirtioMMIOTransport? in
+                  guard activeQuiescence == nil, acceptingGuestCommands,
+                        case .ready = rendererLifecycleHealthState else { return nil }
+                  return attachedTransport
+              }) else { return false }
+        transport.requestDeviceReset()
+        return true
     }
 
     /// Atomically installs a fresh authenticated worker after a completed device reset. The
     /// replacement must advertise the exact guest-visible capability and host-window contract of
     /// the original lane. Old-generation callbacks are identity checked and can no longer affect
-    /// the replacement after the cutover.
+    /// the replacement after the cutover. The optional callback runs after installation but
+    /// before guest command admission and deferred queue replay.
     public func installRendererWorkerReplacementAfterDeviceReset(
-        _ replacement: DoryRendererWorkerVirtioCommandLane
+        _ replacement: DoryRendererWorkerVirtioCommandLane,
+        onInstalledBeforeCommandReplay: (@Sendable () throws -> Void)? = nil
     ) throws {
-        try commandLock.withLock {
+        let installedEpoch = try commandLock.withLock { () throws -> UInt64 in
             guard rendererExecutor == nil,
                   rendererWorkerAuthorityConfigured,
                   let previous = rendererWorkerCandidate else {
@@ -2783,7 +2896,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                   replacement.snapshot().state == .active(deviceGeneration: 1) else {
                 throw VirtioGPURendererWorkerReplacementError.replacementIsNotPristine
             }
-            guard replacement.capsets == capsets,
+            guard replacement.workspaceID == previous.workspaceID,
+                  replacement.producerFenceContract == previous.producerFenceContract,
+                  replacement.capsets == capsets,
                   replacement.maximumSharedRegions == previous.maximumSharedRegions,
                   replacement.maximumReferencedBytes == previous.maximumReferencedBytes,
                   replacement.maximumQueuedCommands == previous.maximumQueuedCommands,
@@ -2802,15 +2917,17 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             }
 
             let resetBoundaryIsComplete = lifecycleLock.withLock { () -> Bool in
-                guard activeQuiescence == nil, !acceptingGuestCommands else { return false }
+                guard activeQuiescence == nil, !acceptingGuestCommands,
+                      rendererReplacementAdmissionEpoch != nil else { return false }
                 switch rendererLifecycleHealthState {
-                case .failed, .notConfigured:
-                    return true
-                case .ready, .quiescing:
+                case .notConfigured:
+                    return retiringResources.isEmpty
+                case .failed, .ready, .quiescing:
                     return false
                 }
             }
             guard resetBoundaryIsComplete,
+                  previous.waitForRetirement(timeout: 0),
                   resources2D.isEmpty,
                   resources3D.isEmpty,
                   blobResources.isEmpty,
@@ -2860,18 +2977,59 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     }
                     rendererWorkerCandidateStorage = replacement
                     try lifecycleLock.withLock {
-                        guard activeQuiescence == nil, !acceptingGuestCommands else {
+                        guard activeQuiescence == nil, !acceptingGuestCommands,
+                              rendererReplacementAdmissionEpoch == epoch else {
                             throw VirtioGPURendererWorkerReplacementError.deviceResetRequired
                         }
+                        rendererReplacementAdmissionEpoch = nil
                         rendererLifecycleHealthState = .ready(epoch: epoch)
-                        acceptingGuestCommands = true
                     }
+                    stockFenceFallbackActive = stockFenceVerifier?.beginWorkerGeneration(
+                        replacement.workerGeneration.rawValue
+                    ) ?? false
+                    stockFirstShaderCompletionReported = false
                 }
             } catch {
                 fenceLock.withLock { fenceAdmissionBlockedUntilDeviceReset = true }
                 replacement.revoke(deviceGeneration: epoch)
                 throw error
             }
+            return epoch
+        }
+        do {
+            try onInstalledBeforeCommandReplay?()
+        } catch {
+            // The launch owner may have stopped or admitted another generation while bootstrap
+            // awaited. Fail only this installed epoch; never roll back to its dead predecessor or
+            // overwrite a newer reset/quiescence. No guest command replay has started yet.
+            commandLock.withLock {
+                guard rendererWorkerCandidate === replacement else { return }
+                let failed = lifecycleLock.withLock { () -> Bool in
+                    guard rendererLifecycleHealthState == .ready(epoch: installedEpoch),
+                          activeQuiescence == nil else { return false }
+                    acceptingGuestCommands = false
+                    rendererLifecycleHealthState = .failed(
+                        epoch: installedEpoch,
+                        fault: .resetFailed("renderer launch admission rejected: \(error)"))
+                    return true
+                }
+                if failed {
+                    fenceLock.withLock { fenceAdmissionBlockedUntilDeviceReset = true }
+                }
+            }
+            replacement.revoke(deviceGeneration: installedEpoch)
+            throw error
+        }
+        let readyForReplay = lifecycleLock.withLock { () -> Bool in
+            guard activeQuiescence == nil,
+                  rendererLifecycleHealthState == .ready(epoch: installedEpoch) else {
+                return false
+            }
+            acceptingGuestCommands = true
+            return true
+        }
+        guard readyForReplay else {
+            throw VirtioGPURendererWorkerReplacementError.replacementLostBeforeCommandReplay
         }
         // The guest's status-0 write already reset the transport and began a fresh feature/queue
         // negotiation. The replacement joins that new device epoch; asking for another reset here
@@ -2883,8 +3041,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             // queue layout and cannot lose the only notification published during replacement.
             transport.withQueueLock {
                 let ready = transport.queues[0].ready
-                let pending = (try? transport.queues[0].pendingCount()).map(String.init)
-                    ?? "invalid"
+                let pending = transport.acceptsQueueWork
+                    ? ((try? transport.queues[0].pendingCount()).map(String.init) ?? "invalid")
+                    : "not-operational"
                 let deferred = lifecycleLock.withLock {
                     deferredRendererWorkerControlKick
                 }
@@ -2905,17 +3064,16 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         reason: String
     ) {
         guard let rendererWorkerCandidate,
-              rendererWorkerCandidate.snapshot().state
-                == .active(deviceGeneration: workerGeneration) else { return }
-        rendererWorkerCandidate.revoke(deviceGeneration: workerGeneration)
+              rendererWorkerCandidate.workerGeneration.rawValue == workerGeneration,
+              case .active(let deviceGeneration) =
+                rendererWorkerCandidate.snapshot().state else { return }
+        rendererWorkerCandidate.revoke(deviceGeneration: deviceGeneration)
         rendererWorkerCandidateFailed(
             source: rendererWorkerCandidate,
-            generation: workerGeneration,
-            error: .notActive(.failed(deviceGeneration: workerGeneration))
+            generation: deviceGeneration,
+            error: .notActive(.revoked(deviceGeneration: deviceGeneration)),
+            hostPresentationFailure: reason
         )
-        FileHandle.standardError.write(Data(
-            "dory-gpu: worker Metal presentation failed: \(reason)\n".utf8
-        ))
     }
 
     /// Source-compatible primary-scanout resize bridge.
@@ -2945,114 +3103,18 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         displayLock.unlock()
     }
 
-    /// Builds one EDID 1.4 base block whose preferred detailed timing exactly matches the current
-    /// guest-pixel mode. The physical dimensions are supplied by the AppKit display surface and
-    /// therefore move with the window across host panels instead of encoding a fixed pretend DPI.
+    /// The shared encoder keeps the MMIO and PCI devices' synthetic monitor identity identical.
     private static func makeEDID(
         scanoutID: UInt32,
         size: VirtioGPUScanoutSize
     ) -> [UInt8] {
-        var edid = [UInt8](repeating: 0, count: 128)
-        edid[0..<8] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]
-        // EISA manufacturer code "DOR", stored most-significant byte first.
-        edid[8] = 0x11
-        edid[9] = 0xF2
-        edid[10] = UInt8(truncatingIfNeeded: scanoutID &+ 1)
-        edid[11] = UInt8(truncatingIfNeeded: (scanoutID &+ 1) >> 8)
-        edid[12] = UInt8(truncatingIfNeeded: scanoutID)
-        edid[13] = UInt8(truncatingIfNeeded: scanoutID >> 8)
-        edid[14] = UInt8(truncatingIfNeeded: scanoutID >> 16)
-        edid[15] = UInt8(truncatingIfNeeded: scanoutID >> 24)
-        edid[16] = 1 // manufacture week; stable synthetic identity
-        edid[17] = 36 // 2026 - 1990
-        edid[18] = 1
-        edid[19] = 4
-        edid[20] = 0x80 // digital input
-        edid[21] = UInt8(clamping: max(1, Int(size.physicalWidthMillimeters) / 10))
-        edid[22] = UInt8(clamping: max(1, Int(size.physicalHeightMillimeters) / 10))
-        edid[23] = 120 // gamma 2.20
-        edid[24] = 0x0A // standard RGB + preferred timing in descriptor 1
-        for index in stride(from: 38, to: 54, by: 2) {
-            edid[index] = 0x01
-            edid[index + 1] = 0x01
-        }
-
-        let width = min(4_095, size.width)
-        let height = min(4_095, size.height)
-        let horizontalBlanking = min(
-            4_095,
-            UInt32(max(160, ((Int(width) / 5 + 7) / 8) * 8))
+        DoryVirtioGPUSyntheticEDID.make(
+            scanoutID: scanoutID,
+            width: size.width,
+            height: size.height,
+            physicalWidthMillimeters: size.physicalWidthMillimeters,
+            physicalHeightMillimeters: size.physicalHeightMillimeters
         )
-        let verticalBlanking = min(4_095, UInt32(max(45, Int(height) / 20)))
-        let horizontalSyncOffset = min(1_023, max(8, horizontalBlanking / 3))
-        let horizontalSyncPulse = min(
-            1_023,
-            max(8, horizontalBlanking - horizontalSyncOffset * 2)
-        )
-        let verticalSyncOffset: UInt32 = min(63, max(1, verticalBlanking / 4))
-        let verticalSyncPulse: UInt32 = min(
-            63,
-            max(1, verticalBlanking / 8)
-        )
-        let totalPixels = UInt64(width + horizontalBlanking)
-            * UInt64(height + verticalBlanking)
-        let pixelClock10KHz = UInt16(clamping: max(1, Int(totalPixels * 60 / 10_000)))
-        let physicalWidth = UInt32(size.physicalWidthMillimeters)
-        let physicalHeight = UInt32(size.physicalHeightMillimeters)
-        var timing = [UInt8](repeating: 0, count: 18)
-        timing[0] = UInt8(truncatingIfNeeded: pixelClock10KHz)
-        timing[1] = UInt8(truncatingIfNeeded: pixelClock10KHz >> 8)
-        timing[2] = UInt8(truncatingIfNeeded: width)
-        timing[3] = UInt8(truncatingIfNeeded: horizontalBlanking)
-        timing[4] = UInt8(((width >> 8) & 0x0F) << 4 | ((horizontalBlanking >> 8) & 0x0F))
-        timing[5] = UInt8(truncatingIfNeeded: height)
-        timing[6] = UInt8(truncatingIfNeeded: verticalBlanking)
-        timing[7] = UInt8(((height >> 8) & 0x0F) << 4 | ((verticalBlanking >> 8) & 0x0F))
-        timing[8] = UInt8(truncatingIfNeeded: horizontalSyncOffset)
-        timing[9] = UInt8(truncatingIfNeeded: horizontalSyncPulse)
-        timing[10] = UInt8(
-            (verticalSyncOffset & 0x0F) << 4 | (verticalSyncPulse & 0x0F)
-        )
-        let horizontalOffsetHigh = ((horizontalSyncOffset >> 8) & 0x03) << 6
-        let horizontalPulseHigh = ((horizontalSyncPulse >> 8) & 0x03) << 4
-        let verticalOffsetHigh = ((verticalSyncOffset >> 4) & 0x03) << 2
-        let verticalPulseHigh = (verticalSyncPulse >> 4) & 0x03
-        timing[11] = UInt8(
-            horizontalOffsetHigh | horizontalPulseHigh | verticalOffsetHigh | verticalPulseHigh
-        )
-        timing[12] = UInt8(truncatingIfNeeded: physicalWidth)
-        timing[13] = UInt8(truncatingIfNeeded: physicalHeight)
-        timing[14] = UInt8(
-            ((physicalWidth >> 8) & 0x0F) << 4 | ((physicalHeight >> 8) & 0x0F)
-        )
-        timing[17] = 0x1E // digital separate sync, positive H/V, non-interlaced
-        edid.replaceSubrange(54..<72, with: timing)
-
-        var nameDescriptor = [UInt8](repeating: 0x20, count: 18)
-        nameDescriptor[0..<5] = [0x00, 0x00, 0x00, 0xFC, 0x00]
-        let name = Array("Dory Display\n".utf8.prefix(13))
-        nameDescriptor.replaceSubrange(5..<(5 + name.count), with: name)
-        edid.replaceSubrange(72..<90, with: nameDescriptor)
-
-        var rangeDescriptor = [UInt8](repeating: 0, count: 18)
-        rangeDescriptor[0..<5] = [0x00, 0x00, 0x00, 0xFD, 0x00]
-        rangeDescriptor[5] = 48
-        rangeDescriptor[6] = 60
-        rangeDescriptor[7] = 30
-        rangeDescriptor[8] = 160
-        rangeDescriptor[9] = UInt8(clamping: max(1, Int(pixelClock10KHz) / 1_000))
-        edid.replaceSubrange(90..<108, with: rangeDescriptor)
-
-        var serialDescriptor = [UInt8](repeating: 0x20, count: 18)
-        serialDescriptor[0..<5] = [0x00, 0x00, 0x00, 0xFF, 0x00]
-        let serial = Array(String(format: "DORY-%02u\n", scanoutID).utf8.prefix(13))
-        serialDescriptor.replaceSubrange(5..<(5 + serial.count), with: serial)
-        edid.replaceSubrange(108..<126, with: serialDescriptor)
-        edid[126] = 0
-        edid[127] = UInt8(truncatingIfNeeded: 0 &- edid[0..<127].reduce(0) {
-            $0 &+ UInt32($1)
-        })
-        return edid
     }
 
     /// Clears one complete guest GPU epoch. Display disable is published before generation
@@ -3117,14 +3179,15 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 rendererExecutor != nil || rendererWorkerCandidate != nil
             return (lifecycleEpoch, revokedWorkerGeneration, fenceStateIsPristine)
         }
+        let workerToRetire = rendererWorkerCandidate
         let workerReboundForPristineDeviceReset = localWorkerStateIsPristine
             && fenceStateIsPristine
-            && rendererWorkerCandidate?.rebindPristineDeviceGeneration(
+            && workerToRetire?.rebindPristineDeviceGeneration(
                 from: revokedWorkerGeneration,
                 to: epoch
             ) == true
         if !workerReboundForPristineDeviceReset {
-            rendererWorkerCandidate?.revoke(deviceGeneration: revokedWorkerGeneration)
+            workerToRetire?.revoke(deviceGeneration: revokedWorkerGeneration)
             revokeRendererWorkerScanouts()
         }
         rendererWorkerControlCommandClaim = nil
@@ -3182,6 +3245,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
 
         let existingFault: VirtioGPURendererHealthFault? = lifecycleLock.withLock {
             acceptingGuestCommands = false
+            pendingRendererReplacementEpoch = nil
+            rendererReplacementAdmissionEpoch = nil
             if let executorAdmissionFault {
                 rendererLifecycleHealthState = .failed(
                     epoch: epoch,
@@ -3189,22 +3254,43 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 )
                 return executorAdmissionFault
             }
-            if case .failed(_, let fault) = rendererLifecycleHealthState {
+            // An isolated worker's uncertain commands cannot be replayed, but its local display
+            // and CPU aliases can still be retired. Use the same acknowledged quiescence as a
+            // healthy reset, then request a NEW worker only after the transport clears queues.
+            // In-process renderer faults and failed retirement/reset barriers remain terminal.
+            let canRetireQuarantinedWorker: Bool
+            if case .failed(_, .commandOutcomeUnknown(let operation, _)) = rendererLifecycleHealthState {
+                canRetireQuarantinedWorker = operation == "renderer-worker"
+                    && rendererExecutor == nil && rendererWorkerAuthorityConfigured
+            } else {
+                canRetireQuarantinedWorker = false
+            }
+            if case .failed(_, let fault) = rendererLifecycleHealthState,
+               !canRetireQuarantinedWorker {
                 for resource in resources {
                     retiringResources[resource.key.resourceID] = resource.key.generation
+                    retainRetiringBackingLocked(resource.key)
                 }
                 return fault
             }
-            let prior = Set(retiringResources.map {
+            var prior = Set(retiringResources.map {
                 ResourceRetirementKey(resourceID: $0.key, generation: $0.value)
             })
+            if canRetireQuarantinedWorker {
+                // A worker may die during unref after reserving an ID. That same generation is
+                // still in the resource table: its new all-consumer release below is the barrier,
+                // not the dead worker's impossible unref reply. Unrelated retirements still wait.
+                prior.subtract(resources.map(\.key))
+            }
             for resource in resources {
                 retiringResources[resource.key.resourceID] = resource.key.generation
+                retainRetiringBackingLocked(resource.key)
             }
             activeQuiescence = ActiveQuiescence(
                 receipt: receipt,
                 rendererGeneration: rendererGeneration,
                 workerReboundForPristineDeviceReset: workerReboundForPristineDeviceReset,
+                retiringWorker: workerReboundForPristineDeviceReset ? nil : workerToRetire,
                 rendererResources: resources,
                 awaitingReleaseAcknowledgements: Set(resources.map(\.key)),
                 priorRetirements: prior,
@@ -3284,9 +3370,25 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     }
 
     public func deviceResetCompleted(transport: VirtioMMIOTransport) {
+        _ = publishPendingRendererReplacementAfterReset()
+    }
+
+    /// A PSCI whole-machine reset replaces the MMIO transport instead of writing status zero to
+    /// the old one. Publish the same one-shot worker replacement request only after the new VM
+    /// has been attached, so the old renderer cannot be reused across guest-memory generations.
+    @discardableResult
+    public func machineResetCompleted() -> Bool {
+        publishPendingRendererReplacementAfterReset()
+    }
+
+    private func publishPendingRendererReplacementAfterReset() -> Bool {
         let shouldRequestReplacement = lifecycleLock.withLock { () -> Bool in
-            guard pendingRendererReplacementEpoch != nil else { return false }
+            guard let epoch = pendingRendererReplacementEpoch,
+                  activeQuiescence == nil, !acceptingGuestCommands,
+                  rendererLifecycleHealthState == .notConfigured,
+                  retiringResources.isEmpty else { return false }
             pendingRendererReplacementEpoch = nil
+            rendererReplacementAdmissionEpoch = epoch
             return true
         }
         if shouldRequestReplacement {
@@ -3294,6 +3396,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 "virtio-gpu device reset revoked the one-shot renderer generation"
             )
         }
+        return shouldRequestReplacement
     }
 
     public func queueStateChanged(
@@ -3350,8 +3453,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             (acceptingGuestCommands, deferredRendererWorkerControlKick)
         }
         if deferredState.1 {
-            let pending = (try? transport.queues[0].pendingCount()).map(String.init)
-                ?? "invalid"
+            let pending = transport.acceptsQueueWork
+                ? ((try? transport.queues[0].pendingCount()).map(String.init) ?? "invalid")
+                : "not-operational"
             FileHandle.standardError.write(Data((
                 "dory-gpu: deferred renderer queue state ready=\(ready) "
                     + "pending=\(pending) accepting=\(deferredState.0)\n"
@@ -3366,6 +3470,18 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     }
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
+        transport.withQueueLock {
+            guard transport.acceptsQueueWork else {
+                if queue == 0, rendererWorkerAuthorityConfigured {
+                    lifecycleLock.withLock { deferredRendererWorkerControlKick = true }
+                }
+                return
+            }
+            handleOperationalKick(queue: queue, transport: transport)
+        }
+    }
+
+    private func handleOperationalKick(queue: Int, transport: VirtioMMIOTransport) {
         guard queue == 0 || queue == 1 else { return }
         if queue == 0, rendererWorkerAuthorityConfigured {
             let pending = (try? transport.queues[0].pendingCount()).map(String.init)
@@ -3407,7 +3523,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         case .drained(let wantsInterrupt),
              .popFailed(let wantsInterrupt),
              .completionFailed(let wantsInterrupt):
-            if wantsInterrupt { transport.notifyUsed() }
+            if wantsInterrupt, transport.acceptsQueueWork { transport.notifyUsed() }
         case .pendingReadFailed:
             break
         }
@@ -3439,6 +3555,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         // while this kick is running, one notification can never monopolize the VCPU indefinitely.
         var wantsInterrupt = false
         for _ in 0..<Int(pending) {
+            guard transport.acceptsQueueWork else {
+                return .completionFailed(wantsInterrupt: wantsInterrupt)
+            }
             let chain: VirtqueueChain
             do {
                 guard let next = try virtqueue.pop() else { break }
@@ -3465,7 +3584,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 switch publishCompletion(
                     chain: chain,
                     response: nil,
-                    queue: virtqueue
+                    queue: virtqueue,
+                    transport: transport
                 ) {
                 case .published(let wants):
                     wantsInterrupt = wantsInterrupt || wants
@@ -3710,7 +3830,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         type: Response.errorInvalidParameter,
                         request: requestHeader
                     ),
-                    queue: virtqueue
+                    queue: virtqueue,
+                    transport: transport
                 ) {
                 case .published(let wants):
                     wantsInterrupt = wantsInterrupt || wants
@@ -3769,7 +3890,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     switch publishCompletion(
                         chain: chain,
                         response: writesResponse ? response : nil,
-                        queue: virtqueue
+                        queue: virtqueue,
+                        transport: transport
                     ) {
                     case .published(let wants):
                         wantsInterrupt = wantsInterrupt || wants
@@ -3787,10 +3909,12 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     /// asynchronous worker exchange after the transport lock has been released.
     private func beginRendererWorkerControlCommand() -> RendererWorkerControlCommandClaim? {
         commandLock.withLock {
-            guard rendererWorkerControlCommandClaim == nil else { return nil }
+            guard rendererWorkerControlCommandClaim == nil,
+                  let worker = rendererWorkerCandidate else { return nil }
             let generation = fenceLock.withLock { lifecycleEpoch }
             let claim = RendererWorkerControlCommandClaim(
                 generation: generation,
+                workerGeneration: worker.workerGeneration.rawValue,
                 token: nextRendererWorkerControlCommandToken
             )
             nextRendererWorkerControlCommandToken &+= 1
@@ -4978,7 +5102,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let completion: DoryRendererWorkerVirtioCommandLane.Completion = {
@@ -5042,7 +5167,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         return nil
@@ -5125,7 +5251,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             publishRendererWorkerCompletion(
                 chain: chain,
                 response: responseHeader(
-                    type: Response.errorInvalidParameter,
+                    type: error == .broker(.workerRejected(.resourceExhausted))
+                        ? Response.errorOutOfMemory : Response.errorInvalidParameter,
                     request: admission.request
                 ),
                 generation: generation,
@@ -5156,7 +5283,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let reserved = commandLock.withLock { () -> Bool in
@@ -5170,7 +5298,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let pendingFence = admission.fence.flatMap {
@@ -5193,7 +5322,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         do {
@@ -5228,7 +5358,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         type: Response.errorInvalidParameter,
                         request: admission.request
                     ),
-                    queue: transport.queues[0]
+                    queue: transport.queues[0],
+                    transport: transport
                 )
             }
             abandonRendererWorkerMutationFence(
@@ -5330,7 +5461,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             publishRendererWorkerCompletion(
                 chain: chain,
                 response: responseHeader(
-                    type: Response.errorInvalidParameter,
+                    type: error == .broker(.workerRejected(.resourceExhausted))
+                        ? Response.errorOutOfMemory : Response.errorInvalidParameter,
                     request: admission.request
                 ),
                 generation: generation,
@@ -5366,11 +5498,19 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let reserved = commandLock.withLock { () -> Bool in
             guard canAdmitResource(admission.resourceID) else { return false }
+            guard retainWorkerBacking(
+                entries: admission.entries,
+                regions: admission.regions,
+                resourceID: admission.resourceID,
+                generation: generation,
+                workerGeneration: claim.workerGeneration
+            ) else { return false }
             return rendererWorkerPendingResourceIDs.insert(admission.resourceID).inserted
         }
         guard reserved else {
@@ -5380,7 +5520,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         do {
@@ -5405,13 +5546,16 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 _ = commandLock.withLock {
                     rendererWorkerPendingResourceIDs.remove(admission.resourceID)
                 }
+                releaseWorkerBacking(resourceID: admission.resourceID, generation: generation,
+                    workerGeneration: claim.workerGeneration)
                 return publishCompletion(
                     chain: chain,
                     response: responseHeader(
                         type: Response.errorInvalidParameter,
                         request: admission.request
                     ),
-                    queue: transport.queues[0]
+                    queue: transport.queues[0],
+                    transport: transport
                 )
             }
             fenceLock.withLock {
@@ -5483,10 +5627,13 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             _ = commandLock.withLock {
                 rendererWorkerPendingResourceIDs.remove(admission.resourceID)
             }
+            releaseWorkerBacking(resourceID: admission.resourceID, generation: generation,
+                workerGeneration: claim.workerGeneration)
             publishRendererWorkerCompletion(
                 chain: chain,
                 response: responseHeader(
-                    type: Response.errorInvalidParameter,
+                    type: error == .broker(.workerRejected(.resourceExhausted))
+                        ? Response.errorOutOfMemory : Response.errorInvalidParameter,
                     request: admission.request
                 ),
                 generation: generation,
@@ -5520,13 +5667,21 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let reserved = commandLock.withLock { () -> Bool in
             guard rendererWorkerResourceGenerations[admission.resourceID]
                     == admission.resourceGeneration,
                   resourceEntries[admission.resourceID] == nil else { return false }
+            guard retainWorkerBacking(
+                entries: admission.entries,
+                regions: admission.regions,
+                resourceID: admission.resourceID,
+                generation: generation,
+                workerGeneration: claim.workerGeneration
+            ) else { return false }
             return rendererWorkerPendingBackingResourceIDs
                 .insert(admission.resourceID).inserted
         }
@@ -5537,7 +5692,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let pendingFence = admission.fence.flatMap {
@@ -5553,6 +5709,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             _ = commandLock.withLock {
                 rendererWorkerPendingBackingResourceIDs.remove(admission.resourceID)
             }
+            releaseWorkerBacking(resourceID: admission.resourceID, generation: generation,
+                workerGeneration: claim.workerGeneration)
             recordTelemetry(.fenceAdmissionRejection)
             return publishCompletion(
                 chain: chain,
@@ -5560,7 +5718,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         do {
@@ -5585,6 +5744,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 _ = commandLock.withLock {
                     rendererWorkerPendingBackingResourceIDs.remove(admission.resourceID)
                 }
+                releaseWorkerBacking(resourceID: admission.resourceID, generation: generation,
+                    workerGeneration: claim.workerGeneration)
                 abandonRendererWorkerMutationFence(
                     admission.fence,
                     pending: pendingFence,
@@ -5596,7 +5757,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         type: Response.errorInvalidParameter,
                         request: admission.request
                     ),
-                    queue: transport.queues[0]
+                    queue: transport.queues[0],
+                    transport: transport
                 )
             }
             abandonRendererWorkerMutationFence(
@@ -5677,6 +5839,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             _ = commandLock.withLock {
                 rendererWorkerPendingBackingResourceIDs.remove(admission.resourceID)
             }
+            releaseWorkerBacking(resourceID: admission.resourceID, generation: generation,
+                workerGeneration: claim.workerGeneration)
             abandonRendererWorkerMutationFence(
                 admission.fence,
                 pending: pendingFence,
@@ -5720,7 +5884,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let reserved = commandLock.withLock { () -> Bool in
@@ -5737,7 +5902,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let pendingFence = admission.fence.flatMap {
@@ -5760,7 +5926,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         do {
@@ -5795,7 +5962,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         type: Response.errorInvalidParameter,
                         request: admission.request
                     ),
-                    queue: transport.queues[0]
+                    queue: transport.queues[0],
+                    transport: transport
                 )
             }
             abandonRendererWorkerMutationFence(
@@ -5830,6 +5998,10 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         let generation = claim.generation
         switch result {
         case .success:
+            // A known teardown ACK belongs to this exact old authority even if quiescence won
+            // the table-commit race. Never let an epoch guard turn proven teardown into a leak.
+            releaseWorkerBacking(resourceID: admission.resourceID, generation: generation,
+                workerGeneration: claim.workerGeneration)
             let committed = commandLock.withLock { () -> Bool in
                 let isCurrentGeneration = fenceLock.withLock {
                     lifecycleEpoch == generation
@@ -5922,7 +6094,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let pendingFence = admission.fence.flatMap {
@@ -5942,7 +6115,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let completion: DoryRendererWorkerVirtioCommandLane.Completion = {
@@ -5991,7 +6165,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         type: Response.errorInvalidParameter,
                         request: admission.request
                     ),
-                    queue: transport.queues[0]
+                    queue: transport.queues[0],
+                    transport: transport
                 )
             }
             abandonRendererWorkerMutationFence(
@@ -6094,7 +6269,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let pendingFence = admission.fence.flatMap {
@@ -6114,7 +6290,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
 
@@ -6155,7 +6332,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         // Keep the guest-visible bindings intact while the exact display generation drains. The
@@ -6255,6 +6433,10 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         let generation = claim.generation
         switch result {
         case .success:
+            // Reconcile exact foreign ownership independently of current guest-table authority.
+            // Successor resource state remains protected by the generation checks below.
+            releaseWorkerBacking(resourceID: admission.resourceID, generation: generation,
+                workerGeneration: claim.workerGeneration)
             let removedState = commandLock.withLock { () -> (
                 cursor: Bool,
                 scanoutIDs: [UInt32]
@@ -6374,7 +6556,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let reserved = commandLock.withLock { () -> Bool in
@@ -6394,7 +6577,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         do {
@@ -6424,7 +6608,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         type: Response.errorInvalidParameter,
                         request: admission.request
                     ),
-                    queue: transport.queues[0]
+                    queue: transport.queues[0],
+                    transport: transport
                 )
             }
             fenceLock.withLock {
@@ -6587,7 +6772,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let reserved = commandLock.withLock { () -> Bool in
@@ -6606,7 +6792,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         do {
@@ -6642,7 +6829,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         type: Response.errorInvalidParameter,
                         request: admission.request
                     ),
-                    queue: transport.queues[0]
+                    queue: transport.queues[0],
+                    transport: transport
                 )
             }
             fenceLock.withLock {
@@ -6780,6 +6968,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
 
     private func startRendererWorkerSoftwareFallback(
         admission: WorkerFlushScanoutAdmission,
+        workerGeneration: UInt64,
         producerContextID: UInt32?,
         chain: VirtqueueChain,
         claim: RendererWorkerControlCommandClaim,
@@ -6792,6 +6981,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 guard let self, let transport else { return }
                 self.finishRendererWorkerSoftwareFallback(
                     admission: admission,
+                    workerGeneration: workerGeneration,
                     chain: chain,
                     claim: claim,
                     pendingFence: pendingFence,
@@ -6810,13 +7000,15 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         }
     }
 
-    private func reportStockFirstShaderCompletion() {
+    private func reportStockFirstShaderCompletion(workerGeneration: UInt64) {
         let shouldReport = commandLock.withLock { () -> Bool in
-            guard !stockFirstShaderCompletionReported else { return false }
+            guard !stockFirstShaderCompletionReported,
+                  rendererWorkerCandidate?.workerGeneration.rawValue
+                    == workerGeneration else { return false }
             stockFirstShaderCompletionReported = true
             return true
         }
-        if shouldReport { onStockFirstShaderCompletion?() }
+        if shouldReport { onStockFirstShaderCompletion?(workerGeneration) }
     }
 
     private func deferStockFallback(
@@ -6852,6 +7044,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
 
     private func finishRendererWorkerSoftwareFallback(
         admission: WorkerFlushScanoutAdmission,
+        workerGeneration: UInt64,
         chain: VirtqueueChain,
         claim: RendererWorkerControlCommandClaim,
         pendingFence: PendingFence?,
@@ -6880,7 +7073,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     dirtyRect: admission.dirtyRect
                 )
             }
-            reportStockFirstShaderCompletion()
+            reportStockFirstShaderCompletion(workerGeneration: workerGeneration)
             for frame in frames { onScanoutFrame?(frame) }
             if let fence = admission.fence {
                 guard let pendingFence else {
@@ -6950,9 +7143,11 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
+        let workerGeneration = rendererWorkerCandidate.workerGeneration.rawValue
         let remainsCurrent = commandLock.withLock {
             rendererWorkerResourceGenerations[admission.resourceID]
                 == admission.workerResourceGeneration
@@ -6970,7 +7165,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let producerContextID = commandLock.withLock { () -> UInt32? in
@@ -6988,17 +7184,23 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 }
             }
             if !producerFencePending {
-                reportStockFirstShaderCompletion()
+                reportStockFirstShaderCompletion(workerGeneration: workerGeneration)
             }
             if let outcome = verifier.observeScanoutBlobFlush(
                 resourceID: admission.resourceID,
                 resourceGeneration: admission.workerResourceGeneration,
-                producerFencePending: producerFencePending
+                producerFencePending: producerFencePending,
+                workerGeneration: workerGeneration
             ) {
                 if outcome == .violated {
-                    commandLock.withLock { stockFenceFallbackActive = true }
+                    commandLock.withLock {
+                        if self.rendererWorkerCandidate?.workerGeneration.rawValue
+                            == workerGeneration {
+                            stockFenceFallbackActive = true
+                        }
+                    }
                 }
-                onStockFenceVerification?(outcome)
+                onStockFenceVerification?(workerGeneration, outcome)
             }
         }
         let pendingFence = admission.fence.flatMap {
@@ -7018,7 +7220,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         guard !admission.targets.isEmpty else {
@@ -7037,7 +7240,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             return publishCompletion(
                 chain: chain,
                 response: responseHeader(type: Response.okNoData, request: admission.request),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         guard let surface = admission.surface else {
@@ -7056,12 +7260,14 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         if commandLock.withLock({ stockFenceFallbackActive }) {
             startRendererWorkerSoftwareFallback(
                 admission: admission,
+                workerGeneration: workerGeneration,
                 producerContextID: producerContextID,
                 chain: chain,
                 claim: claim,
@@ -7088,7 +7294,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.request
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
 
@@ -7153,7 +7360,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         type: Response.errorInvalidParameter,
                         request: admission.request
                     ),
-                    queue: transport.queues[0]
+                    queue: transport.queues[0],
+                    transport: transport
                 )
             }
             abandonRendererWorkerMutationFence(
@@ -7735,7 +7943,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.requestHeader
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         let successResponse = responseHeader(
@@ -7758,7 +7967,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         type: Response.errorInvalidParameter,
                         request: admission.requestHeader
                     ),
-                    queue: transport.queues[0]
+                    queue: transport.queues[0],
+                    transport: transport
                 )
             }
             do {
@@ -7791,7 +8001,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                         type: Response.errorInvalidParameter,
                         request: admission.requestHeader
                     ),
-                    queue: transport.queues[0]
+                    queue: transport.queues[0],
+                    transport: transport
                 )
             }
             return nil
@@ -7819,7 +8030,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     type: Response.errorInvalidParameter,
                     request: admission.requestHeader
                 ),
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             )
         }
         return nil
@@ -8059,7 +8271,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             switch publishCompletion(
                 chain: chain,
                 response: response,
-                queue: transport.queues[0]
+                queue: transport.queues[0],
+                transport: transport
             ) {
             case .published(let wantsInterrupt):
                 if let controlClaim {
@@ -8096,7 +8309,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private func rendererWorkerCandidateFailed(
         source: DoryRendererWorkerVirtioCommandLane,
         generation: UInt64,
-        error: DoryRendererWorkerVirtioCommandLaneError
+        error: DoryRendererWorkerVirtioCommandLaneError,
+        hostPresentationFailure: String? = nil
     ) {
         guard rendererWorkerCandidateLock.withLock({
             rendererWorkerCandidateStorage === source
@@ -8120,20 +8334,25 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             return count
         }
         guard let affected else { return }
+        let detail = hostPresentationFailure.map {
+            "host Metal presentation failed: \(String($0.prefix(512)))"
+        } ?? String(describing: error)
         failRendererLifecycle(
             .commandOutcomeUnknown(
                 operation: "renderer-worker",
-                detail: String(describing: error)
+                detail: detail
             ),
             epoch: generation
         )
         FileHandle.standardError.write(Data((
-            "dory-gpu: renderer worker generation \(generation) failed; "
-                + "retained \(affected) uncertain fenced chains: \(error)\n"
+            "dory-gpu: renderer worker generation \(source.workerGeneration.rawValue) "
+                + "device epoch \(generation) failed; retained \(affected) uncertain fenced "
+                + "chains: \(detail)\n"
         ).utf8))
-        onRendererWorkerFailure?(
-            "generation \(generation) failed: \(String(describing: error))"
-        )
+        let reason = "worker generation \(source.workerGeneration.rawValue) device epoch "
+            + "\(generation) failed: \(detail)"
+        onRendererWorkerUnavailable?(source.workerGeneration.rawValue, reason)
+        onRendererWorkerFailure?(reason)
         // Renderer isolation is useful only if helper death cannot become VM death. Ask the guest
         // virtio driver to reset this device while every unrelated VM device keeps running.
         lifecycleLock.withLock { attachedTransport }?.requestDeviceReset()
@@ -8305,8 +8524,13 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private func publishCompletion(
         chain: VirtqueueChain,
         response: [UInt8]?,
-        queue: Virtqueue
+        queue: Virtqueue,
+        transport: VirtioMMIOTransport
     ) -> QueueCompletionOutcome {
+        guard transport.acceptsQueueWork else {
+            recordTelemetry(.revokedCompletion)
+            return .revoked
+        }
         if let response {
             let wroteResponse = chain.withLeaseHeld { access -> Bool in
                 guard access.writableByteCount >= response.count else { return false }
@@ -8417,7 +8641,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 switch publishCompletion(
                     chain: pending.chain,
                     response: pending.response,
-                    queue: transport.queues[0]
+                    queue: transport.queues[0],
+                    transport: transport
                 ) {
                 case .published(let wants):
                     interrupt = interrupt || wants
@@ -8473,15 +8698,76 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         }
     }
 
+    /// Caller holds commandLock and lifecycleLock; resource tables have not been cleared yet.
+    private func retainRetiringBackingLocked(_ key: ResourceRetirementKey) {
+        let entries = resourceEntries[key.resourceID] ?? resources2D[key.resourceID]?.backing ?? []
+        if !entries.isEmpty {
+            retiringGuestBackings[key] = GuestBackingAuthority(entries: entries, regions: nil)
+        }
+    }
+
+    private func retainWorkerBacking(
+        entries: [VirtioGPUMemoryEntry],
+        regions: DoryRendererWorkerSharedRegionSet,
+        resourceID: UInt32,
+        generation: UInt64,
+        workerGeneration: UInt64
+    ) -> Bool {
+        guard !entries.isEmpty else { return true }
+        let key = WorkerBackingKey(workerGeneration: workerGeneration,
+            deviceGeneration: generation, resourceID: resourceID)
+        return lifecycleLock.withLock {
+            guard workerGuestBackings[key] == nil,
+                  workerGuestBackings.count < maximumTrackedResources else { return false }
+            // Publish ownership before foreign admission, not just after success. A lost reply or
+            // a stale-generation callback cannot prove the worker discarded the shared mapping.
+            workerGuestBackings[key] = GuestBackingAuthority(entries: entries, regions: regions)
+            return true
+        }
+    }
+
+    private func releaseWorkerBacking(resourceID: UInt32, generation: UInt64,
+        workerGeneration: UInt64) {
+        _ = lifecycleLock.withLock {
+            workerGuestBackings.removeValue(forKey: WorkerBackingKey(
+                workerGeneration: workerGeneration, deviceGeneration: generation,
+                resourceID: resourceID
+            ))
+        }
+    }
+
+    private func retainUnknownRendererBacking(_ command: VirtioGPURendererCommand) {
+        let entries: [VirtioGPUMemoryEntry]
+        switch command {
+        case .createResource3D(_, let backing), .createBlob(_, _, _, _, _, _, let backing),
+             .attachBacking(_, let backing):
+            entries = backing
+        default:
+            return
+        }
+        guard !entries.isEmpty else { return }
+        lifecycleLock.withLock {
+            // The executor becomes uncertain on its first unknown mutation and rejects every
+            // successor. Retain that bounded admission even if no resource-table commit happened.
+            uncertainRendererGuestBackings.append(GuestBackingAuthority(entries: entries, regions: nil))
+        }
+    }
+
     private func beginResourceRetirement(
         resourceID: UInt32,
         generation: UInt64,
         requiresBlobUnmap: Bool,
-        rendererGeneration: UInt64
+        rendererGeneration: UInt64,
+        backingEntries: [VirtioGPUMemoryEntry]
     ) {
         let inserted = lifecycleLock.withLock { () -> Bool in
             guard retiringResources[resourceID] == nil else { return false }
             retiringResources[resourceID] = generation
+            if !backingEntries.isEmpty {
+                retiringGuestBackings[ResourceRetirementKey(
+                    resourceID: resourceID, generation: generation
+                )] = GuestBackingAuthority(entries: backingEntries, regions: nil)
+            }
             return true
         }
         guard inserted else {
@@ -8514,6 +8800,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     lifecycleLock.withLock {
                         if retiringResources[resourceID] == generation {
                             retiringResources.removeValue(forKey: resourceID)
+                            retiringGuestBackings.removeValue(forKey: ResourceRetirementKey(
+                                resourceID: resourceID, generation: generation
+                            ))
                         }
                     }
                     scheduleQuiescenceCleanupIfReady()
@@ -8567,6 +8856,24 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         guard let active = lifecycleLock.withLock({
             activeQuiescence?.receipt.epoch == epoch ? activeQuiescence : nil
         }) else { return }
+
+        if let worker = active.retiringWorker {
+            // This runs only on the off-vCPU retirement queue, after every display release ACK.
+            // Revocation/connection invalidation alone is not a foreign-memory join. Wait for
+            // kernel-confirmed death of the authenticated peer before freeing any old backing
+            // or authorizing a successor. Failure retains pins and leaves admission closed.
+            guard worker.waitForRetirement(timeout: quiescenceTimeout) else {
+                failRendererLifecycle(.resetFailed(
+                    "renderer worker generation \(worker.workerGeneration.rawValue) retirement unconfirmed"
+                ), epoch: epoch)
+                return
+            }
+            lifecycleLock.withLock {
+                workerGuestBackings = workerGuestBackings.filter {
+                    $0.key.workerGeneration != worker.workerGeneration.rawValue
+                }
+            }
+        }
 
         var firstFault: VirtioGPURendererHealthFault?
         for resource in active.rendererResources.sorted(by: {
@@ -8647,6 +8954,11 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
 
         let receipt: VirtioGPUQuiescence? = lifecycleLock.withLock {
             guard activeQuiescence?.receipt.epoch == epoch else { return nil }
+            // All display acknowledgements and renderer unref/reset barriers have succeeded;
+            // a non-pristine worker also crossed its exact authenticated process-exit barrier.
+            for resource in active.rendererResources {
+                retiringGuestBackings.removeValue(forKey: resource.key)
+            }
             let receipt = activeQuiescence?.receipt
             activeQuiescence = nil
             let workerIsReady = active.receipt.reason == .deviceReset
@@ -8676,6 +8988,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 ? .notConfigured
                 : .failed(epoch: epoch, fault: fault)
             acceptingGuestCommands = false
+            pendingRendererReplacementEpoch = nil
+            rendererReplacementAdmissionEpoch = nil
             guard activeQuiescence?.receipt.epoch == epoch else { return nil }
             let receipt = activeQuiescence?.receipt
             activeQuiescence = nil
@@ -9181,11 +9495,13 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     resources2D[resourceID] = resource
                     return responseHeader(type: Response.okNoData, request: request)
                 }
-                resourceEntries[resourceID] = entries
                 _ = try executeRendererCommand(.attachBacking(
                     resourceID: resourceID,
                     entries: entries
                 ))
+                // Existing foreign backing remains authoritative until attach is known to have
+                // succeeded. Rejection keeps it; an unknown result also quarantines new entries.
+                resourceEntries[resourceID] = entries
                 return responseHeader(type: Response.okNoData, request: request)
             }
         case Command.resourceDetachBacking:
@@ -9256,7 +9572,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 try requireLength(request, 40)
                 let resourceID = request.leUInt32(at: 24)
                 let offset = request.leUInt64(at: 32)
-                guard let blob = blobResources[resourceID], let hostVisibleMemory else {
+                guard let blob = blobResources[resourceID], !blob.guestMapped,
+                      let hostVisibleMemory else {
                     FileHandle.standardError.write(Data("dory-gpu: mapBlob res=\(resourceID) missing blob/window\n".utf8))
                     throw VMError.invalidConfiguration("virtio-gpu blob map without host-visible window")
                 }
@@ -9312,13 +9629,14 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 traceResourceEvent("unref-begin", contextID: request.leUInt32(at: 16), resourceID: resourceID)
                 hostVisibleMemory?.unmap(resourceID: resourceID)
                 scanouts = scanouts.filter { $0.value.resourceID != resourceID }
-                resourceEntries.removeValue(forKey: resourceID)
+                let removedEntries = resourceEntries.removeValue(forKey: resourceID)
                 resourceGenerations.removeValue(forKey: resourceID)
                 beginResourceRetirement(
                     resourceID: resourceID,
                     generation: generation,
                     requiresBlobUnmap: removedBlob?.mapping?.requiresRendererUnmap == true,
-                    rendererGeneration: fenceLock.withLock { lifecycleEpoch }
+                    rendererGeneration: fenceLock.withLock { lifecycleEpoch },
+                    backingEntries: removedEntries ?? removed2D?.backing ?? []
                 )
                 let kind = removed2D != nil ? "2d" : (removed3D != nil ? "3d" : "blob")
                 traceResourceEvent("unref-guest-retired", resourceID: resourceID, detail: "kind=\(kind)")
@@ -9483,6 +9801,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         case .rejected(let rejection):
             throw VirtioGPURendererCommandRejected(String(describing: rejection))
         case .outcomeUnknown(let uncertainty):
+            retainUnknownRendererBacking(command)
             recordTelemetry(.rendererCommandUncertainty)
             if let failure = uncertainty.runtimeFailure {
                 recordRendererFailure(failure, generation: uncertainty.generation)
@@ -9995,12 +10314,34 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         )
     }
 
+    /// Called after the app acknowledges an in-flight CPU frame when later guest flushes were
+    /// deferred. Resolve the current binding under the command lock so reset, unref, and modeset
+    /// cannot turn the deferred signal into an old resource alias. This copies once per app receipt
+    /// instead of once per guest flush while the display is backpressured.
+    @discardableResult
+    public func publishLatestSoftwareScanoutFrame(scanoutID: UInt32) throws -> Bool {
+        try commandLock.withLock {
+            guard onScanoutFrame != nil,
+                  let binding = scanouts[scanoutID],
+                  case .resource2D = binding.source,
+                  let resource = resources2D[binding.resourceID] else { return false }
+            try publishScanoutFrames(
+                resourceID: binding.resourceID,
+                resource: resource,
+                dirtyRect: binding.rect,
+                onlyScanoutID: scanoutID
+            )
+            return true
+        }
+    }
+
     /// Publishes one copied frame at a time. Returning an array here would keep every full-damage
     /// scanout copy alive until the batch completed (up to 16 × the per-frame ceiling).
     private func publishScanoutFrames(
         resourceID: UInt32,
         resource: Resource2D,
-        dirtyRect: VirtioGPURect
+        dirtyRect: VirtioGPURect,
+        onlyScanoutID: UInt32? = nil
     ) throws {
         guard let onScanoutFrame else { return }
         guard let requiredResourceBytes = Self.rgbaByteCount(
@@ -10014,7 +10355,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         }
         let sourceStride = UInt64(resource.width) * 4
         for (scanoutID, binding) in scanouts.sorted(by: { $0.key < $1.key })
-        where binding.resourceID == resourceID {
+        where binding.resourceID == resourceID
+            && (onlyScanoutID == nil || scanoutID == onlyScanoutID) {
             guard case .resource2D = binding.source else { continue }
             guard let dirty = Self.intersection(dirtyRect, binding.rect) else { continue }
             // CPU scanout extraction happens while the virtio command lock is held. If the
@@ -10483,10 +10825,16 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 guestAddress: guestAddress
             ))
         }
-        return try Self.coalescedMemoryEntries(
+        var normalized = try Self.coalescedMemoryEntries(
             entries,
             maximumEntries: maximumMemoryEntries
         )
+        for index in normalized.indices {
+            normalized[index].memoryLease = try transport.pinGuestMemory(
+                at: normalized[index].guestAddress!, count: UInt64(normalized[index].length)
+            )
+        }
+        return normalized
     }
 
     /// Virtio-gpu guests commonly describe a single compositor buffer as one entry per guest page.
@@ -10511,7 +10859,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                     .addingReportingOverflow(UInt64(previous.length))
                 if !addressOverflow,
                    previousGuestEnd == guestAddress,
-                   previous.pointer.advanced(by: previous.length) == entry.pointer {
+                   previous.pointer.advanced(by: previous.length) == entry.pointer,
+                   previous.memoryLease == nil, entry.memoryLease == nil {
                     let (combinedLength, lengthOverflow) = previous.length
                         .addingReportingOverflow(entry.length)
                     guard !lengthOverflow else {

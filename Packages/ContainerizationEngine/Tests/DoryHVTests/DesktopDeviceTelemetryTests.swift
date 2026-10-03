@@ -185,6 +185,7 @@ import Testing
             backend: backend,
             memory: memory
         ) {}
+        finishMMIOTestDriverNegotiation(transport)
         let operationID = UUID()
         let registry = RawDeviceTelemetryRegistry(machineID: "raw-dev", operationID: operationID)
         registry.register(slot: 7, backend: backend, transport: transport)
@@ -315,6 +316,37 @@ import Testing
         let stable = registry.snapshot()
         #expect(stable.devices.first?.health == .healthy)
         #expect(stable.events.map(\.kind) == [.audioDrop])
+    }
+
+    @Test func deniedMicrophoneGrantKeepsAudioHealthDegradedWithoutPendingPCM() throws {
+        let audio = DoryMacAudioBackend(
+            log: { _ in }, microphoneAuthorizationStatus: { .denied }
+        )
+        let parameters = VirtioSoundPCMParameters(
+            bufferBytes: 8, periodBytes: 4, sampleRate: 48_000, channels: 2
+        )
+        #expect(audio.configure(streamID: 1, direction: .input, parameters: parameters))
+        #expect(!audio.start(streamID: 1, direction: .input))
+        let backend = VirtioSound(host: audio)
+        let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase, backend: backend, memory: memory
+        ) {}
+        let registry = RawDeviceTelemetryRegistry(machineID: "raw-audio-grant", operationID: UUID())
+        registry.register(
+            slot: 4, backend: backend, transport: transport,
+            audioMetrics: { [weak audio] in audio?.runtimeMetrics }
+        )
+        for _ in 0..<2 {
+            let snapshot = registry.snapshot()
+            #expect(snapshot.devices.first?.health == .degraded)
+            #expect(snapshot.devices.first?.metrics.first { $0.kind == .audioDrops }?.value == 0)
+            #expect(snapshot.events.isEmpty)
+        }
+        #expect(audio.stop(streamID: 1, direction: .input))
+        #expect(registry.snapshot().devices.first?.health == .degraded)
+        audio.reset()
+        #expect(registry.snapshot().devices.first?.health == .healthy)
     }
 
     @Test func publishesMeasuredShareInvalidationsAndPermanentFailureHealth() async throws {
@@ -555,6 +587,7 @@ import Testing
         let initial = VirtioGPUScanoutFrame(
             scanoutID: 0,
             resourceID: 41,
+            resourceGeneration: 1,
             format: 1,
             width: width,
             height: 1,
@@ -570,6 +603,7 @@ import Testing
             let appended = coalescer.append(VirtioGPUScanoutFrame(
                 scanoutID: 0,
                 resourceID: 41,
+                resourceGeneration: 1,
                 format: 1,
                 width: width,
                 height: 1,

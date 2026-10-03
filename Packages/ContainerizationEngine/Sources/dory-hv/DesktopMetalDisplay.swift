@@ -45,16 +45,26 @@ extension VirtioInput: DesktopInputSink {}
 final class DesktopPointerTopology: @unchecked Sendable {
     private let lock = NSLock()
     private var sizes: [VirtioGPUScanoutSize]
+    private var activeCount: Int
 
-    init(sizes: [VirtioGPUScanoutSize]) {
+    init(sizes: [VirtioGPUScanoutSize], activeCount: Int? = nil) {
         self.sizes = sizes
+        self.activeCount = min(sizes.count, max(0, activeCount ?? sizes.count))
     }
 
     func update(scanoutID: UInt32, width: UInt32, height: UInt32) {
         lock.withLock {
             let index = Int(scanoutID)
-            guard sizes.indices.contains(index) else { return }
+            guard index < activeCount, sizes.indices.contains(index) else { return }
             sizes[index] = VirtioGPUScanoutSize(width: width, height: height)
+        }
+    }
+
+    func updateActiveTopology(_ activeSizes: [VirtioGPUScanoutSize]) {
+        lock.withLock {
+            guard !activeSizes.isEmpty, activeSizes.count <= sizes.count else { return }
+            sizes.replaceSubrange(0..<activeSizes.count, with: activeSizes)
+            activeCount = activeSizes.count
         }
     }
 
@@ -65,14 +75,15 @@ final class DesktopPointerTopology: @unchecked Sendable {
     ) -> CGPoint {
         lock.withLock {
             let index = Int(scanoutID)
-            guard sizes.indices.contains(index), !sizes.isEmpty else {
+            guard index < activeCount, sizes.indices.contains(index) else {
                 return CGPoint(
                     x: min(1, max(0, localX)),
                     y: min(1, max(0, localY))
                 )
             }
-            let totalWidth = sizes.reduce(UInt64(0)) { $0 + UInt64($1.width) }
-            let totalHeight = sizes.map(\.height).max() ?? 1
+            let activeSizes = sizes.prefix(activeCount)
+            let totalWidth = activeSizes.reduce(UInt64(0)) { $0 + UInt64($1.width) }
+            let totalHeight = activeSizes.map(\.height).max() ?? 1
             let originX = sizes[..<index].reduce(UInt64(0)) {
                 $0 + UInt64($1.width)
             }
@@ -468,6 +479,15 @@ final class DesktopScanoutFrameCoalescer {
 
     private var surfaces: [ResourceKey: Surface] = [:]
     private var pendingOrder = [ResourceKey]()
+    private struct GenerationAdmission {
+        var highestSeen: UInt64
+        var retiredThrough: UInt64
+    }
+    // A copied frame can finish conversion after its guest resource was unref'd. Keep a bounded
+    // per-ID high-water mark so it cannot resurrect an old surface after release or ID reuse.
+    private var generationAdmissions: [UInt32: GenerationAdmission] = [:]
+    private var generationAdmissionExhausted = false
+    private static let maximumGenerationAdmissions = 1_048_576
     private let maximumSurfaceBytes: Int
     private let maximumAggregateSurfaceBytes: Int
     private let maximumDrainBytes: Int
@@ -506,6 +526,17 @@ final class DesktopScanoutFrameCoalescer {
     }
 
     func appendOutcome(_ frame: VirtioGPUScanoutFrame) -> AppendOutcome {
+        if generationAdmissionExhausted { return .budgetExceeded }
+        guard frame.resourceGeneration != 0 else { return .invalid }
+        if let admission = generationAdmissions[frame.resourceID] {
+            guard frame.resourceGeneration >= admission.highestSeen,
+                  frame.resourceGeneration > admission.retiredThrough else {
+                return .invalid
+            }
+        } else if generationAdmissions.count >= Self.maximumGenerationAdmissions {
+            generationAdmissionExhausted = true
+            return .budgetExceeded
+        }
         let sourceRowBytes = UInt64(frame.dirtyRect.width) * 4
         let requiredSourceBytes = UInt64(frame.stride) * UInt64(frame.dirtyRect.height)
         guard frame.width > 0, frame.height > 0,
@@ -659,6 +690,11 @@ final class DesktopScanoutFrameCoalescer {
         surfaces[key] = surface
         pendingOrder.removeAll { $0 == key }
         pendingOrder.append(key)
+        let previous = generationAdmissions[frame.resourceID]
+        generationAdmissions[frame.resourceID] = GenerationAdmission(
+            highestSeen: max(previous?.highestSeen ?? 0, frame.resourceGeneration),
+            retiredThrough: previous?.retiredThrough ?? 0
+        )
         return .accepted
     }
 
@@ -667,6 +703,17 @@ final class DesktopScanoutFrameCoalescer {
     }
 
     func removeOutcome(resourceID: UInt32, throughGeneration: UInt64) -> Removal {
+        if var admission = generationAdmissions[resourceID] {
+            admission.retiredThrough = max(admission.retiredThrough, throughGeneration)
+            generationAdmissions[resourceID] = admission
+        } else if generationAdmissions.count < Self.maximumGenerationAdmissions {
+            generationAdmissions[resourceID] = GenerationAdmission(
+                highestSeen: 0,
+                retiredThrough: throughGeneration
+            )
+        } else {
+            generationAdmissionExhausted = true
+        }
         let matching = surfaces.keys.filter {
             $0.resourceID == resourceID && $0.resourceGeneration <= throughGeneration
         }
@@ -1959,6 +2006,10 @@ final class DesktopFrameMailbox: @unchecked Sendable {
     /// completion independently. The mailbox still owns the exact lease lifetime through Metal.
     func submit(_ update: DoryPCVirGLScanoutUpdate) -> Bool {
         logWorkerScanoutProgress(stage: "dorypc-mailbox-submit")
+        guard update.isCurrent else {
+            update.retire()
+            return false
+        }
         lock.lock()
         guard update.flush.scanoutID == scanoutID else {
             lock.unlock()
@@ -2805,7 +2856,7 @@ final class DesktopMetalView: DesktopDisplayView {
 
     override func present(_ update: DoryPCVirGLScanoutUpdate) -> Bool {
         logWorkerScanoutProgress(stage: "dorypc-view-present")
-        guard !deviceFailed else { return false }
+        guard !deviceFailed, update.isCurrent else { return false }
         let geometry: DesktopMetalScanoutGeometry
         do {
             geometry = try DesktopMetalScanoutGeometry(
@@ -2833,6 +2884,7 @@ final class DesktopMetalView: DesktopDisplayView {
             width: Int(geometry.sourceRect.width),
             height: Int(geometry.sourceRect.height)
         )
+        let completionID = DesktopMetalCommandBufferCompletionSequencer.shared.next()
         guard render(
             texture: workerScanout.texture,
             sourceRect: geometry.sourceRect,
@@ -2842,7 +2894,8 @@ final class DesktopMetalView: DesktopDisplayView {
             workerScanout: workerScanout,
             workerGeneration: update.workerGeneration.rawValue,
             completion: { [onWorkerPresentationCompleted] completed in
-                guard completed else { return }
+                guard completed, update.isGenerationCurrent else { return }
+                update.recordPresentationCompleted(completionID: completionID)
                 onWorkerPresentationCompleted?(update.workerGeneration.rawValue)
             }
         ) else {

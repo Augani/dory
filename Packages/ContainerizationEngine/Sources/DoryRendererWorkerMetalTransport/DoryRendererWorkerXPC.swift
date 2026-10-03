@@ -17,6 +17,10 @@ public protocol DoryRendererWorkerXPCProtocol: NSObjectProtocol {
         descriptors: [FileHandle],
         withReply reply: @escaping (Data, [FileHandle], MTLSharedTextureHandle?) -> Void
     )
+    func qualificationCrash(
+        _ request: Data,
+        withReply reply: @escaping (Bool, UInt32) -> Void
+    )
 }
 
 /// Constructs the single transport interface used by both authenticated peers. Explicit class

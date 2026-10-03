@@ -65,6 +65,18 @@ public protocol DoryVMDisplayBrokerXPCProtocol: NSObjectProtocol {
         operationID: String,
         withReply reply: @escaping (Bool, String) -> Void
     )
+    func retireCPUFrames(
+        _ machineID: String,
+        operationID: String,
+        withReply reply: @escaping (Bool, String) -> Void
+    )
+    func retireCPUResource(
+        _ machineID: String,
+        operationID: String,
+        resourceID: UInt32,
+        throughGeneration: UInt64,
+        withReply reply: @escaping (Bool, String) -> Void
+    )
 }
 
 public enum DoryVMDisplayBrokerXPCInterface {

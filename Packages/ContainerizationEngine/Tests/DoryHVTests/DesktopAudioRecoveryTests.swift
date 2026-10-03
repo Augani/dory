@@ -1,4 +1,5 @@
 @preconcurrency import AVFAudio
+@preconcurrency import AVFoundation
 import DoryHV
 import Foundation
 import Testing
@@ -170,6 +171,155 @@ struct DesktopAudioRecoveryTests {
         #expect(backend.runtimeMetrics.droppedCapturePeriods == 1)
     }
 
+    @Test("PCM stop settles primed capture requests exactly once")
+    func stoppedCaptureSettlesPendingRequests() {
+        let completion = DispatchSemaphore(value: 0)
+        let result = LockedCaptureCompletion()
+        let backend = DoryMacAudioBackend(log: { _ in })
+        let parameters = captureParameters()
+        #expect(backend.configure(streamID: 1, direction: .input, parameters: parameters))
+        #expect(backend.requestCapture(byteCount: 4, parameters: parameters) { data, _ in
+            result.record(data)
+            completion.signal()
+        })
+        #expect(backend.stop(streamID: 1, direction: .input))
+        #expect(completion.wait(timeout: .now() + 1) == .success)
+        #expect(result.snapshot == (completed: true, dataWasNil: true))
+        #expect(backend.runtimeMetrics.pendingCaptureBytes == 0)
+        #expect(backend.runtimeMetrics.bufferedCaptureBytes == 0)
+        #expect(!backend.runtimeMetrics.inputRunning)
+        backend.reset()
+        #expect(completion.wait(timeout: .now() + .milliseconds(30)) == .timedOut)
+        #expect(result.completionCount == 1)
+    }
+
+    @Test("permission replies cannot reject a replacement PCM generation")
+    func retiredPermissionReplyCannotAffectReplacement() {
+        let permission = LockedMicrophonePermission()
+        let backend = DoryMacAudioBackend(
+            log: { _ in },
+            microphoneAuthorizationStatus: { permission.status },
+            microphoneAuthorizationPollingInterval: 0.01,
+            requestMicrophoneAccess: { permission.record($0) }
+        )
+        let parameters = captureParameters()
+        #expect(backend.configure(streamID: 1, direction: .input, parameters: parameters))
+        #expect(backend.start(streamID: 1, direction: .input))
+        #expect(permission.requestCount == 1)
+        #expect(backend.stop(streamID: 1, direction: .input))
+        #expect(backend.configure(streamID: 1, direction: .input, parameters: parameters))
+        #expect(backend.start(streamID: 1, direction: .input))
+        #expect(permission.requestCount == 1)
+
+        permission.respond(to: 0, granted: false)
+        // Queue synchronization through metrics drains the stale permission callback.
+        #expect(backend.runtimeMetrics.inputRunning)
+        #expect(!backend.runtimeMetrics.microphoneAccessDenied)
+        #expect(backend.requestCapture(byteCount: 4, parameters: parameters) { _, _ in })
+        let deadline = Date().addingTimeInterval(1)
+        while permission.requestCount < 2, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        #expect(permission.requestCount == 2)
+        permission.respond(to: 1, granted: false)
+        #expect(!backend.runtimeMetrics.inputRunning)
+        #expect(backend.runtimeMetrics.microphoneAccessDenied)
+        #expect(backend.runtimeMetrics.pendingCaptureBytes == 0)
+    }
+
+    @Test("a nominal permission grant is rechecked before installing capture")
+    func delayedGrantMustStillBeAuthorized() {
+        let permission = LockedMicrophonePermission()
+        let backend = DoryMacAudioBackend(
+            log: { _ in },
+            microphoneAuthorizationStatus: { permission.status },
+            requestMicrophoneAccess: { permission.record($0) }
+        )
+        let parameters = captureParameters()
+        #expect(backend.configure(streamID: 1, direction: .input, parameters: parameters))
+        #expect(backend.start(streamID: 1, direction: .input))
+        permission.status = .denied
+        permission.respond(to: 0, granted: true)
+        #expect(!backend.runtimeMetrics.inputRunning)
+        #expect(backend.runtimeMetrics.microphoneAccessDenied)
+        #expect(!backend.requestCapture(byteCount: 4, parameters: parameters) { _, _ in })
+    }
+
+    @Test("reconfiguration cannot queue unbounded host permission prompts")
+    func permissionPromptIsBoundedAcrossPCMGenerations() {
+        let permission = LockedMicrophonePermission()
+        let backend = DoryMacAudioBackend(
+            log: { _ in },
+            microphoneAuthorizationStatus: { permission.status },
+            requestMicrophoneAccess: { permission.record($0) }
+        )
+        let parameters = captureParameters()
+        for _ in 0..<100 {
+            #expect(backend.configure(streamID: 1, direction: .input, parameters: parameters))
+            #expect(backend.start(streamID: 1, direction: .input))
+            #expect(backend.stop(streamID: 1, direction: .input))
+        }
+        #expect(permission.requestCount == 1)
+        permission.respond(to: 0, granted: false)
+        #expect(!backend.runtimeMetrics.inputRunning)
+        #expect(!backend.runtimeMetrics.microphoneAccessDenied)
+    }
+
+    @Test("live permission revocation cancels capture without another guest request")
+    func permissionMonitorRevokesIdleCapture() {
+        let permission = LockedMicrophonePermission()
+        let completion = DispatchSemaphore(value: 0)
+        let result = LockedCaptureCompletion()
+        let backend = DoryMacAudioBackend(
+            log: { _ in },
+            microphoneAuthorizationStatus: { permission.status },
+            microphoneAuthorizationPollingInterval: 0.01,
+            requestMicrophoneAccess: { permission.record($0) }
+        )
+        // A two-second request gives the monitor a generous interval before silence fallback.
+        let parameters = VirtioSoundPCMParameters(
+            bufferBytes: 384_000, periodBytes: 384_000, sampleRate: 48_000, channels: 2
+        )
+        #expect(backend.configure(streamID: 1, direction: .input, parameters: parameters))
+        #expect(backend.requestCapture(byteCount: 384_000, parameters: parameters) { data, _ in
+            result.record(data)
+            completion.signal()
+        })
+        #expect(backend.start(streamID: 1, direction: .input))
+        permission.status = .restricted
+        #expect(completion.wait(timeout: .now() + 1) == .success)
+        #expect(result.snapshot == (completed: true, dataWasNil: true))
+        #expect(backend.runtimeMetrics.microphoneAccessDenied)
+        #expect(!backend.runtimeMetrics.inputRunning)
+        #expect(backend.runtimeMetrics.pendingCaptureBytes == 0)
+        permission.respond(to: 0, granted: true)
+        #expect(!backend.runtimeMetrics.inputRunning)
+        backend.reset()
+        #expect(result.completionCount == 1)
+    }
+
+    @Test("backend destruction settles capture descriptors without a live audio graph")
+    func destructionSettlesPreparedCapture() {
+        let completion = DispatchSemaphore(value: 0)
+        let result = LockedCaptureCompletion()
+        var backend: DoryMacAudioBackend? = DoryMacAudioBackend(log: { _ in })
+        let parameters = captureParameters()
+        #expect(backend!.configure(streamID: 1, direction: .input, parameters: parameters))
+        #expect(backend!.requestCapture(byteCount: 4, parameters: parameters) { data, _ in
+            result.record(data)
+            completion.signal()
+        })
+        backend = nil
+        #expect(completion.wait(timeout: .now() + 1) == .success)
+        #expect(result.snapshot == (completed: true, dataWasNil: true))
+        #expect(result.completionCount == 1)
+    }
+
+    private func captureParameters() -> VirtioSoundPCMParameters {
+        VirtioSoundPCMParameters(bufferBytes: 192_000, periodBytes: 192_000,
+            sampleRate: 48_000, channels: 2)
+    }
+
     @Test("only configured running streams recover")
     func recoveryPolicyRequiresConfiguredRunningStream() {
         let stopped = DoryMacAudioConfigurationRecoveryState(
@@ -237,10 +387,12 @@ private final class LockedCaptureCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private var completed = false
     private var dataWasNil = false
+    private var count = 0
 
     func record(_ data: Data?) {
         lock.lock()
         completed = true
+        count += 1
         dataWasNil = data == nil
         lock.unlock()
     }
@@ -249,5 +401,26 @@ private final class LockedCaptureCompletion: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return (completed, dataWasNil)
+    }
+
+    var completionCount: Int { lock.withLock { count } }
+}
+
+private final class LockedMicrophonePermission: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedStatus = AVAuthorizationStatus.notDetermined
+    private var callbacks = [@Sendable (Bool) -> Void]()
+
+    var status: AVAuthorizationStatus {
+        get { lock.withLock { storedStatus } }
+        set { lock.withLock { storedStatus = newValue } }
+    }
+    var requestCount: Int { lock.withLock { callbacks.count } }
+    func record(_ callback: @escaping @Sendable (Bool) -> Void) {
+        lock.withLock { callbacks.append(callback) }
+    }
+    func respond(to index: Int, granted: Bool) {
+        let callback = lock.withLock { callbacks[index] }
+        callback(granted)
     }
 }

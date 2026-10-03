@@ -1,13 +1,285 @@
 import Darwin
+import DoryMachinePC
 import DoryRendererWorkerContracts
 import DoryVirtio
 import Foundation
 import Metal
 import Testing
 @testable import DoryHV
+@testable import DoryOperations
 @testable import dory_hv
 
 @Suite struct DoryRendererWorkerBrokerTests {
+    @Test func localInvalidationCannotMintExactWorkerRetirementReceipt() async throws {
+        let fixture = try rendererBrokerFixture()
+        fixture.channel.confirmsRetirementOnInvalidate = false
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: fixture.broker, deviceGeneration: 1)
+        #expect(lane.rebindPristineDeviceGeneration(from: 1, to: 12))
+        lane.invalidateForRetirement()
+        #expect(lane.snapshot().state == .revoked(deviceGeneration: 12))
+        do {
+            _ = try await fixture.broker.retire(timeoutNanoseconds: 0)
+            Issue.record("local invalidate minted worker exit proof")
+        } catch {
+            #expect(error as? DoryRendererWorkerBrokerError == .retirementUnconfirmed)
+        }
+        fixture.channel.emit(.interrupted)
+        fixture.channel.emit(.invalidated)
+        #expect(!lane.waitForRetirement(timeout: 0))
+        fixture.channel.confirmRetirement(processIdentifier: 41_017)
+        let receipt = try await fixture.broker.retire(timeoutNanoseconds: 0)
+        #expect(receipt.workspaceID == fixture.bootstrap.workspaceID.rawValue)
+        #expect(receipt.workerGeneration == fixture.bootstrap.generation)
+        #expect(receipt.processIdentifier == 41_017)
+        #expect(try await fixture.broker.retire(timeoutNanoseconds: 0) == receipt)
+        #expect(lane.waitForRetirement(timeout: 0))
+    }
+
+    @Test func oldExitProofCannotAuthorizeSuccessorWorkerGeneration() async throws {
+        let old = try rendererBrokerFixture(workerGeneration: 7)
+        let fresh = try rendererBrokerFixture(workerGeneration: 8)
+        old.channel.confirmsRetirementOnInvalidate = false
+        fresh.channel.confirmsRetirementOnInvalidate = false
+        let oldLane = try DoryRendererWorkerVirtioCommandLane(broker: old.broker, deviceGeneration: 1)
+        let freshLane = try DoryRendererWorkerVirtioCommandLane(broker: fresh.broker, deviceGeneration: 1)
+        old.channel.confirmRetirement()
+        #expect(oldLane.waitForRetirement(timeout: 0))
+        #expect(!freshLane.waitForRetirement(timeout: 0))
+        old.channel.confirmRetirement()
+        #expect(!freshLane.waitForRetirement(timeout: 0))
+        fresh.channel.confirmRetirement(processIdentifier: 41_018)
+        #expect(freshLane.waitForRetirement(timeout: 0))
+    }
+
+    @Test func pcReplacementRequiresPositiveOldWorkerExitNotLocalReset() async throws {
+        let old = try rendererBrokerFixture(producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1)
+        old.channel.confirmsRetirementOnInvalidate = false
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: old.broker, deviceGeneration: 11)
+        let authority = try DoryPCVirGLRendererAuthority(lane: lane, deviceGeneration: 11)
+        defer { authority.reset() }
+        let admission = rendererBlockingOperation {
+            try authority.createContext(id: 7, capsetID: 2, name: "retirement-proof")
+        }
+        try #require(await rendererEventually { old.channel.sendCount == 1 })
+        old.channel.complete(at: 0, with: .success(.init(payload: Data(), descriptors: [])))
+        try await admission.value
+        authority.reset()
+        let fresh = try rendererBrokerFixture(workerGeneration: 8,
+            producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1)
+        let next = try DoryRendererWorkerVirtioCommandLane(broker: fresh.broker, deviceGeneration: 1)
+        do {
+            try authority.installReplacementAfterReset(lane: next)
+            Issue.record("PC reset admitted replacement without old worker exit proof")
+        } catch { }
+        #expect(next.snapshot().state == .active(deviceGeneration: 1))
+        old.channel.confirmRetirement()
+        try authority.installReplacementAfterReset(lane: next)
+        #expect(authority.acceptsGuestCommands)
+    }
+    @Test(arguments: [false, true])
+    func pcQualificationCrashLeavesInFlightGPUWorkUntouchedUntilActualLoss(venus: Bool) async throws {
+        let fixture = venus ? try rendererPCVenusFixture() : try rendererBrokerFixture(
+            producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1
+        )
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: fixture.broker, deviceGeneration: 11)
+        let authority = try DoryPCVirGLRendererAuthority(lane: lane, deviceGeneration: 11,
+            onWorkerUnavailable: { _ in })
+        let operation = rendererBlockingOperation {
+            try authority.createContext(id: 7, capsetID: venus ? 4 : 2, name: "mesa")
+        }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        let grant = DoryRuntimeQualificationFaultAuthority(
+            machineID: "campaign-pc", operationID: fixture.bootstrap.workspaceID.rawValue,
+            resolvedPlanSHA256: String(repeating: "b", count: 64),
+            campaignManifestSHA256: String(repeating: "c", count: 64),
+            expiresAt: Date().addingTimeInterval(60), policy: .init(permittedFaults: [.rendererWorkerCrash])
+        )
+        let controller = try RuntimeQualificationFaultController(authority: grant)
+        controller.connectRendererCrashHandler { [weak controller] admission in
+            try authority.requestQualificationRendererCrash(admission, acknowledgement: { [weak controller] accepted, count in
+                controller?.rendererCrashAcknowledged(challenge: admission.challenge,
+                    workerGeneration: admission.workerGeneration, accepted: accepted, inFlightCommands: count)
+            }, interrupted: { [weak controller] in
+                controller?.rendererWorkerInterrupted(challenge: admission.challenge,
+                    workerGeneration: admission.workerGeneration)
+            })
+        }
+        defer { controller.cancelPending() }
+        let challenge = UUID()
+        _ = try controller.handle(.init(action: .arm, machineID: grant.machineID, operationID: grant.operationID,
+            resolvedPlanSHA256: grant.resolvedPlanSHA256, campaignManifestSHA256: grant.campaignManifestSHA256,
+            challenge: challenge, kind: .rendererWorkerCrash, rendererWorkerGeneration: 7))
+        try #require(await rendererEventually { fixture.channel.crashRequest != nil })
+        let wire = try DoryRendererWorkerQualificationCrashRequest.decode(try #require(fixture.channel.crashRequest))
+        #expect(wire.workerGeneration == 7 && wire.challenge == challenge)
+        #expect(fixture.channel.invalidateCount == 0 && fixture.channel.sendCount == 1)
+        #expect(await fixture.broker.snapshot().inFlightCommands == 1)
+        #expect(lane.snapshot().state == .active(deviceGeneration: 11))
+        #expect(authority.canBackReplacementMachineAfterReset)
+        fixture.channel.acknowledgeCrash(accepted: true, count: 1)
+        #expect(controller.snapshot().first?.state == .crashRequested)
+        #expect(await fixture.broker.snapshot().inFlightCommands == 1)
+        fixture.channel.emit(.interrupted)
+        do { try await operation.value; Issue.record("worker loss falsely completed the GPU command") }
+        catch { }
+        #expect(await rendererEventually { !authority.canBackReplacementMachineAfterReset })
+        #expect(controller.snapshot().first?.state == .workerLost)
+        #expect(controller.snapshot().first?.isValidRuntimeObservation == true)
+        authority.reset()
+    }
+
+    @Test(arguments: ["workspace", "generation", "mixed-policy", "retired"])
+    func pcQualificationCrashRejectsWrongScopeBeforeXPC(reason: String) throws {
+        let fixture = try rendererBrokerFixture(producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1)
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: fixture.broker, deviceGeneration: 11)
+        let authority = try DoryPCVirGLRendererAuthority(lane: lane, deviceGeneration: 11)
+        let grant = DoryRuntimeQualificationFaultAuthority(
+            machineID: "campaign-pc", operationID: reason == "workspace" ? UUID() : fixture.bootstrap.workspaceID.rawValue,
+            resolvedPlanSHA256: String(repeating: "b", count: 64),
+            campaignManifestSHA256: String(repeating: "c", count: 64), expiresAt: Date().addingTimeInterval(60),
+            policy: .init(permittedFaults: reason == "mixed-policy"
+                ? [.blockFullFlushNoSpace, .rendererWorkerCrash] : [.rendererWorkerCrash])
+        )
+        let admission = try grant.rendererCrashAdmission(challenge: UUID(), workerGeneration: reason == "generation" ? 8 : 7)
+        if reason == "retired" { authority.reportWorkerPresentationFailure(workerGeneration: 7) }
+        #expect(throws: DoryRuntimeQualificationFaultError.unauthorized) {
+            try authority.requestQualificationRendererCrash(admission, acknowledgement: { _, _ in }, interrupted: {})
+        }
+        #expect(fixture.channel.crashRequest == nil)
+        #expect(fixture.channel.sendCount == 0)
+        authority.reset()
+    }
+
+    @Test func pcReplacementWorkerCannotInheritOldCrashAdmission() async throws {
+        let old = try rendererBrokerFixture(producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1)
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: old.broker, deviceGeneration: 11)
+        let authority = try DoryPCVirGLRendererAuthority(lane: lane, deviceGeneration: 11)
+        let operation = rendererBlockingOperation { try authority.createContext(id: 7, capsetID: 2, name: "mesa") }
+        try #require(await rendererEventually { old.channel.sendCount == 1 })
+        old.channel.complete(at: 0, with: .success(.init(payload: Data(), descriptors: [])))
+        try await operation.value
+        let grant = DoryRuntimeQualificationFaultAuthority(
+            machineID: "campaign-pc", operationID: old.bootstrap.workspaceID.rawValue,
+            resolvedPlanSHA256: String(repeating: "b", count: 64),
+            campaignManifestSHA256: String(repeating: "c", count: 64), expiresAt: Date().addingTimeInterval(60),
+            policy: .init(permittedFaults: [.rendererWorkerCrash])
+        )
+        let stale = try grant.rendererCrashAdmission(challenge: UUID(), workerGeneration: 7)
+        authority.reset()
+        try #require(await rendererEventually { lane.waitForRetirement(timeout: 0) })
+        let fresh = try rendererBrokerFixture(workerGeneration: 8,
+            producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1)
+        let freshLane = try DoryRendererWorkerVirtioCommandLane(broker: fresh.broker, deviceGeneration: 1)
+        try authority.installReplacementAfterReset(lane: freshLane)
+        #expect(throws: DoryRuntimeQualificationFaultError.unauthorized) {
+            try authority.requestQualificationRendererCrash(stale, acknowledgement: { _, _ in }, interrupted: {})
+        }
+        #expect(fresh.channel.crashRequest == nil && old.channel.crashRequest == nil)
+        let admission = try grant.rendererCrashAdmission(challenge: UUID(), workerGeneration: 8)
+        try authority.requestQualificationRendererCrash(admission, acknowledgement: { _, _ in }, interrupted: {})
+        try #require(await rendererEventually { fresh.channel.crashRequest != nil })
+        let wire = try DoryRendererWorkerQualificationCrashRequest.decode(try #require(fresh.channel.crashRequest))
+        #expect(wire.workerGeneration == 8 && wire.challenge == admission.challenge)
+        #expect(freshLane.snapshot().state == .active(deviceGeneration: 12))
+        #expect(old.channel.crashRequest == nil)
+        authority.reset()
+    }
+
+    @Test func qualificationCrashDoesNotQuiesceInFlightCommandAndAbruptLossRetiresIt() async throws {
+        let fixture = try rendererBrokerFixture()
+        let operation = Task {
+            try await fixture.broker.execute(operation: .createContext, contextID: 7,
+                payload: try DoryRendererContextCreatePayload(capsetID: 4, name: "venus").encoded,
+                deadlineUptimeNanoseconds: rendererFutureDeadline())
+        }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        let grant = DoryRuntimeQualificationFaultAuthority(
+            machineID: "campaign-renderer", operationID: fixture.bootstrap.workspaceID.rawValue,
+            resolvedPlanSHA256: String(repeating: "b", count: 64),
+            campaignManifestSHA256: String(repeating: "c", count: 64), expiresAt: Date().addingTimeInterval(60),
+            policy: .init(permittedFaults: [.rendererWorkerCrash])
+        )
+        let admission = try grant.rendererCrashAdmission(challenge: UUID(), workerGeneration: 7)
+        try await fixture.broker.requestQualificationCrash(admission, acknowledgement: { _, _ in }, interrupted: {})
+        #expect(fixture.channel.sendCount == 1 && fixture.channel.invalidateCount == 0)
+        #expect(await fixture.broker.snapshot().inFlightCommands == 1)
+        #expect(await fixture.broker.snapshot().state == .active)
+        fixture.channel.acknowledgeCrash(accepted: true, count: 1)
+        #expect(await fixture.broker.snapshot().inFlightCommands == 1)
+        fixture.channel.emit(.interrupted)
+        await expectRendererTaskError(.channelFailureDuring(requestID: 1, operation: .createContext,
+            failure: .interrupted), task: operation)
+        #expect(await fixture.broker.snapshot().state == .interrupted)
+        #expect(await fixture.broker.snapshot().inFlightCommands == 0)
+    }
+
+    @Test(arguments: [true, false])
+    func qualificationCrashUsesDedicatedBoundedRPCAndOnlyActualInterruptionProvesLoss(localInvalidation: Bool) async throws {
+        let fixture = try rendererBrokerFixture()
+        let grant = DoryRuntimeQualificationFaultAuthority(
+            machineID: "campaign-renderer", operationID: fixture.bootstrap.workspaceID.rawValue,
+            resolvedPlanSHA256: String(repeating: "b", count: 64),
+            campaignManifestSHA256: String(repeating: "c", count: 64), expiresAt: Date().addingTimeInterval(60),
+            policy: .init(permittedFaults: [.rendererWorkerCrash])
+        )
+        let controller = try RuntimeQualificationFaultController(authority: grant)
+        let capture = RendererCrashBrokerAdmissionHolder()
+        let challenge = UUID()
+        _ = try controller.handle(.init(action: .arm, machineID: grant.machineID, operationID: grant.operationID,
+            resolvedPlanSHA256: grant.resolvedPlanSHA256, campaignManifestSHA256: grant.campaignManifestSHA256,
+            challenge: challenge, kind: .rendererWorkerCrash, rendererWorkerGeneration: 7),
+            rendererCrash: { capture.store($0) })
+        let admission = try #require(capture.value)
+        try await fixture.broker.requestQualificationCrash(admission, acknowledgement: { accepted, count in
+            controller.rendererCrashAcknowledged(challenge: challenge, workerGeneration: 7,
+                accepted: accepted, inFlightCommands: count)
+        }, interrupted: { controller.rendererWorkerInterrupted(challenge: challenge, workerGeneration: 7) })
+        let wire = try DoryRendererWorkerQualificationCrashRequest.decode(try #require(fixture.channel.crashRequest))
+        #expect(wire.workspaceID == fixture.bootstrap.workspaceID.rawValue)
+        #expect(wire.workerGeneration == 7 && wire.challenge == challenge)
+        #expect(wire.deadlineUptimeNanoseconds == admission.dispatchDeadlineNanoseconds)
+        #expect(fixture.channel.sendCount == 0 && fixture.channel.invalidateCount == 0)
+        #expect(await fixture.broker.snapshot().state == .active)
+        fixture.channel.acknowledgeCrash(accepted: true, count: 0)
+        #expect(controller.snapshot().first?.state == .crashRequested)
+        #expect(await fixture.broker.snapshot().state == .active)
+        do {
+            try await fixture.broker.requestQualificationCrash(admission, acknowledgement: { _, _ in }, interrupted: {})
+            Issue.record("replayed crash admission was accepted")
+        } catch { #expect(error as? DoryRuntimeQualificationFaultError == .unauthorized) }
+        if localInvalidation { await fixture.broker.invalidate() }
+        fixture.channel.emit(.interrupted)
+        if localInvalidation {
+            #expect(controller.snapshot().first?.state == .crashRequested)
+            #expect(controller.snapshot().first?.rendererWorkerInterruptedNanoseconds == nil)
+        } else {
+            #expect(controller.snapshot().first?.state == .workerLost)
+            #expect(controller.snapshot().first?.isValidRuntimeObservation == true)
+            #expect(await rendererEventually { await fixture.broker.snapshot().state == .interrupted })
+        }
+    }
+
+    @Test(arguments: ["workspace", "generation", "cancelled", "expired"])
+    func qualificationCrashRejectsStaleOrRevokedGrantBeforeDispatch(reason: String) async throws {
+        let fixture = try rendererBrokerFixture()
+        let grant = DoryRuntimeQualificationFaultAuthority(
+            machineID: "campaign-renderer", operationID: reason == "workspace" ? UUID() : fixture.bootstrap.workspaceID.rawValue,
+            resolvedPlanSHA256: String(repeating: "b", count: 64),
+            campaignManifestSHA256: String(repeating: "c", count: 64), expiresAt: Date().addingTimeInterval(60),
+            policy: .init(permittedFaults: [.rendererWorkerCrash])
+        )
+        let admission = try grant.rendererCrashAdmission(challenge: UUID(), workerGeneration: reason == "generation" ? 8 : 7,
+            monotonicNanoseconds: reason == "expired" ? 0 : DispatchTime.now().uptimeNanoseconds)
+        if reason == "cancelled" { admission.cancelDispatch() }
+        do {
+            try await fixture.broker.requestQualificationCrash(admission, acknowledgement: { _, _ in }, interrupted: {})
+            Issue.record("invalid crash admission was accepted")
+        } catch { #expect(error as? DoryRuntimeQualificationFaultError == .unauthorized) }
+        #expect(fixture.channel.crashRequest == nil)
+        #expect(fixture.channel.sendCount == 0 && fixture.channel.invalidateCount == 0)
+        #expect(await fixture.broker.snapshot().state == .active)
+    }
+
     @Test func bootstrapTimeoutIsBoundedAndInvalidatesSilentWorker() async {
         let silent = SilentRendererWorkerBootstrapChannel()
         await expectRendererBrokerError(.deadlineExpired) {
@@ -485,6 +757,401 @@ import Testing
 }
 
 @Suite struct DoryRendererWorkerVirtioCommandLaneTests {
+    @Test func pcVenusFailureRetiresBlobAliasesBeforeWorkerRevocation() async throws {
+        let fixture = try rendererPCVenusFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker, deviceGeneration: 11
+        )
+        let revocations = DoryPCVirGLRevocationRecorder()
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11,
+            onGenerationRevoked: {
+                revocations.record(workerInvalidations: fixture.channel.invalidateCount)
+            }
+        )
+        let aperture = try #require(try authority.makeHostVisibleAperture())
+        revocations.bindAperture(aperture)
+        let memory = DoryVirtioGPUBlobMemoryRegion(
+            byteCount: 4_096,
+            read: { _, count in [UInt8](repeating: 0x5A, count: count) },
+            write: { _, _ in }
+        )
+        try aperture.map(.init(
+            workspaceID: fixture.bootstrap.workspaceID.rawValue,
+            resourceID: 47,
+            resourceGeneration: 1,
+            workerGeneration: fixture.bootstrap.generation.rawValue,
+            deviceGeneration: 11,
+            hostVisibleOffset: 0,
+            byteCount: 4_096,
+            mapInfo: 3,
+            memory: memory
+        ))
+        #expect(try aperture.read(offset: 0, byteCount: 1) == [0x5A])
+
+        fixture.channel.emit(.interrupted)
+        try #require(await rendererEventually { revocations.workerInvalidations.count == 1 })
+        #expect(revocations.mappedAtRevocation == [0])
+        #expect(aperture.snapshot.mappings.isEmpty)
+        #expect(throws: DoryPCHostVisibleGPUApertureError.self) {
+            _ = try aperture.read(offset: 0, byteCount: 1)
+        }
+        #expect(await rendererEventually { fixture.channel.invalidateCount == 1 })
+    }
+
+    @Test func pcVenusAuthorityResetRevokesBlobAliasesBeforeWorkerReset() async throws {
+        let fixture = try rendererPCVenusFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker, deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane, deviceGeneration: 11, onGenerationRevoked: {}
+        )
+        let aperture = try #require(try authority.makeHostVisibleAperture())
+        let context = rendererBlockingOperation {
+            try authority.createContext(id: 7, capsetID: 2, name: "mesa")
+        }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        fixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try await context.value
+        try aperture.map(.init(
+            workspaceID: fixture.bootstrap.workspaceID.rawValue,
+            resourceID: 47,
+            resourceGeneration: 1,
+            workerGeneration: fixture.bootstrap.generation.rawValue,
+            deviceGeneration: 11,
+            hostVisibleOffset: 0,
+            byteCount: 4_096,
+            mapInfo: 3,
+            memory: DoryVirtioGPUBlobMemoryRegion(
+                byteCount: 4_096,
+                read: { _, count in [UInt8](repeating: 0x5A, count: count) },
+                write: { _, _ in }
+            )
+        ))
+        #expect(try aperture.read(offset: 0, byteCount: 1) == [0x5A])
+
+        authority.reset()
+        #expect(aperture.snapshot.mappings.isEmpty)
+        #expect(throws: DoryPCHostVisibleGPUApertureError.self) {
+            _ = try aperture.read(offset: 0, byteCount: 1)
+        }
+        #expect(await rendererEventually { fixture.channel.invalidateCount == 1 })
+    }
+
+    @Test func pcVenusPendingProducerFenceFailsClosedBeforeScanout() async throws {
+        let fixture = try rendererPCVenusFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let outcomes = RendererStockFenceOutcomeRecorder()
+        let completions = DoryPCVirGLFenceCompletionRecorder()
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11,
+            scanoutSink: { _ in true },
+            onGenerationRevoked: {},
+            onVenusFenceVerification: { generation, outcome in
+                #expect(generation == fixture.bootstrap.generation.rawValue)
+                outcomes.record(outcome)
+            }
+        )
+        #expect(authority.capabilities.features.contains(.gpuResourceBlob))
+        #expect(authority.capabilities.capsets.map(\.id) == [2, 4])
+
+        let creation = rendererBlockingOperation {
+            try authority.createBlob(
+                .init(resourceID: 47, contextID: 7, blobMemory: 2,
+                      blobFlags: 1, blobID: 0, size: 16_384),
+                entries: [],
+                memory: DoryPCVirGLTestMemory(byteCount: 0x2000)
+            )
+        }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        #expect(try fixture.channel.command(
+            at: 0, limits: fixture.bootstrap.limits
+        ).operation == .createBlob)
+        var littleGeneration = UInt64(31).littleEndian
+        fixture.channel.complete(at: 0, with: .success(DoryRendererWorkerChannelReply(
+            payload: withUnsafeBytes(of: &littleGeneration) { Data($0) },
+            descriptors: []
+        )))
+        let identity = try await creation.value
+
+        try authority.createFence(
+            .init(contextID: 7, ringIndex: 0, fenceID: 1, contextFence: true),
+            completion: { completions.append($0) }
+        )
+        try #require(await rendererEventually { fixture.channel.sendCount == 2 })
+        #expect(try fixture.channel.command(
+            at: 1, limits: fixture.bootstrap.limits
+        ).operation == .createFence)
+
+        let rectangle = DoryVirtioGPURectangle(x: 0, y: 0, width: 4, height: 4)
+        let flush = DoryVirtioGPUBlobScanoutFlush(
+            scanoutID: 0,
+            resourceID: 47,
+            identity: identity,
+            sourceRectangle: rectangle,
+            damagedRectangle: rectangle,
+            width: 4,
+            height: 4,
+            format: 1,
+            stride: 16,
+            offset: 0
+        )
+        #expect(throws: DoryPCVirGLRendererAuthorityError.producerFenceViolation) {
+            try authority.flushBlobResource([flush])
+        }
+        #expect(outcomes.values == [.violated])
+        #expect(completions.values == [.outcomeUnknown])
+        #expect(!authority.canBackReplacementMachineAfterReset)
+        #expect(fixture.channel.sendCount == 2)
+        #expect(throws: DoryPCVirGLRendererAuthorityError.rendererUnavailable) {
+            try authority.flushBlobResource([flush])
+        }
+    }
+
+    @Test func pcVenusScanoutRejectionPreservesButUncertainOutcomeRevokesGeneration() async throws {
+        let fixture = try rendererPCVenusFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11,
+            scanoutSink: { _ in true },
+            onGenerationRevoked: {}
+        )
+        let creation = rendererBlockingOperation {
+            try authority.createBlob(
+                .init(resourceID: 47, contextID: 7, blobMemory: 2,
+                      blobFlags: 1, blobID: 0, size: 16_384),
+                entries: [],
+                memory: DoryPCVirGLTestMemory(byteCount: 0x2000)
+            )
+        }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        var littleGeneration = UInt64(31).littleEndian
+        fixture.channel.complete(at: 0, with: .success(DoryRendererWorkerChannelReply(
+            payload: withUnsafeBytes(of: &littleGeneration) { Data($0) },
+            descriptors: []
+        )))
+        let identity = try await creation.value
+        let rectangle = DoryVirtioGPURectangle(x: 0, y: 0, width: 4, height: 4)
+        let flush = DoryVirtioGPUBlobScanoutFlush(
+            scanoutID: 0,
+            resourceID: 47,
+            identity: identity,
+            sourceRectangle: rectangle,
+            damagedRectangle: rectangle,
+            width: 4,
+            height: 4,
+            format: 1,
+            stride: 16,
+            offset: 0
+        )
+        let present = rendererBlockingOperation { try authority.flushBlobResource([flush]) }
+        try #require(await rendererEventually { fixture.channel.sendCount == 2 })
+        fixture.channel.complete(at: 1, with: .failure(.serviceFailure(.commandRejected)))
+        do {
+            try await present.value
+            Issue.record("rejected scanout unexpectedly reached the presentation consumer")
+        } catch {
+            #expect(error as? DoryPCVirGLRendererAuthorityError == .workerCommandFailed)
+        }
+        #expect(lane.snapshot().state == .active(deviceGeneration: 11))
+        #expect(authority.canBackReplacementMachineAfterReset)
+
+        let interrupted = rendererBlockingOperation { try authority.flushBlobResource([flush]) }
+        try #require(await rendererEventually { fixture.channel.sendCount == 3 })
+        fixture.channel.emit(.interrupted)
+        do {
+            try await interrupted.value
+            Issue.record("interrupted scanout unexpectedly reached the presentation consumer")
+        } catch {
+            #expect(error as? DoryVirtioGPUAccelerationError == .generationRevoked)
+        }
+        #expect(!authority.canBackReplacementMachineAfterReset)
+    }
+
+    @Test func pcVenusProofCountsOnlyAcceptedCurrentGenerationScanouts() async throws {
+        let fixture = try rendererPCVenusFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let outcomes = RendererStockFenceOutcomeRecorder()
+        let acceptance = DoryPCVenusScanoutAcceptanceRecorder()
+        let completions = DoryPCVirGLFenceCompletionRecorder()
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11,
+            scanoutSink: { acceptance.accept($0) },
+            onGenerationRevoked: {},
+            onVenusFenceVerification: { generation, outcome in
+                #expect(generation == fixture.bootstrap.generation.rawValue)
+                outcomes.record(outcome)
+            }
+        )
+        let creation = rendererBlockingOperation {
+            try authority.createBlob(
+                .init(resourceID: 47, contextID: 7, blobMemory: 2,
+                      blobFlags: 1, blobID: 0, size: 16_384),
+                entries: [],
+                memory: DoryPCVirGLTestMemory(byteCount: 0x2000)
+            )
+        }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        var littleGeneration = UInt64(31).littleEndian
+        fixture.channel.complete(at: 0, with: .success(DoryRendererWorkerChannelReply(
+            payload: withUnsafeBytes(of: &littleGeneration) { Data($0) },
+            descriptors: []
+        )))
+        let identity = try await creation.value
+        let rectangle = DoryVirtioGPURectangle(x: 0, y: 0, width: 4, height: 4)
+        let flush = DoryVirtioGPUBlobScanoutFlush(
+            scanoutID: 0,
+            resourceID: 47,
+            identity: identity,
+            sourceRectangle: rectangle,
+            damagedRectangle: rectangle,
+            width: 4,
+            height: 4,
+            format: 1,
+            stride: 16,
+            offset: 0
+        )
+
+        for ordinal in 0...VirtioGPUStockFenceVerifier.productionCleanFlushCount {
+            let acquireIndex = 1 + ordinal * 2
+            let present = rendererBlockingOperation { try authority.flushBlobResource([flush]) }
+            try #require(await rendererEventually {
+                fixture.channel.sendCount == acquireIndex + 1
+            })
+            let acquire = try fixture.channel.command(
+                at: acquireIndex,
+                limits: fixture.bootstrap.limits
+            )
+            #expect(acquire.operation == .acquireScanoutLease)
+            #expect(acquire.resourceID == 47)
+            #expect(acquire.resourceGeneration == 31)
+            let (descriptor, fileSize) = try makeUnlinkedRegion(
+                byteCount: 4_096,
+                readOnly: false
+            )
+            let lease = try DoryRendererScanoutLease(
+                workerGeneration: fixture.bootstrap.generation,
+                resourceID: 47,
+                resourceGeneration: 31,
+                leaseID: .init(rawValue: UUID()),
+                releaseToken: .init(rawValue: UUID()),
+                sharedRegionID: .random(),
+                sharedMemoryDescriptorIndex: 0,
+                synchronization: .managedGuestProducerCompleteFlush,
+                pixelFormat: .bgra8Unorm,
+                yOriginTop: false,
+                width: 4,
+                height: 4,
+                stride: 16,
+                rowAlignment: 16,
+                storageOffset: 0,
+                declaredFileSize: fileSize,
+                leaseByteCount: 64,
+                limits: fixture.bootstrap.limits
+            )
+            fixture.channel.complete(
+                at: acquireIndex,
+                with: .success(DoryRendererWorkerChannelReply(
+                    payload: DoryRendererScanoutLeaseCodec.encode(lease),
+                    descriptors: [descriptor]
+                ))
+            )
+            if ordinal == 0 {
+                await #expect(throws: DoryPCVirGLRendererAuthorityError.rendererUnavailable) {
+                    try await present.value
+                }
+            } else {
+                try await present.value
+            }
+            try #require(await rendererEventually {
+                fixture.channel.sendCount == acquireIndex + 2
+            })
+            #expect(try fixture.channel.command(
+                at: acquireIndex + 1,
+                limits: fixture.bootstrap.limits
+            ).operation == .releaseScanoutLease)
+            fixture.channel.complete(
+                at: acquireIndex + 1,
+                with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+            )
+            if ordinal < VirtioGPUStockFenceVerifier.productionCleanFlushCount {
+                #expect(outcomes.values.isEmpty)
+            }
+        }
+        guard case .verified(let proof) = outcomes.values.first else {
+            Issue.record("PC Venus did not publish its accepted-flush fence proof")
+            return
+        }
+        #expect(outcomes.values.count == 1)
+        #expect(proof.count == 64)
+
+        try authority.createFence(
+            .init(contextID: 7, ringIndex: 0, fenceID: 1, contextFence: true),
+            completion: { completions.append($0) }
+        )
+        let fenceIndex = 1 + (VirtioGPUStockFenceVerifier.productionCleanFlushCount + 1) * 2
+        try #require(await rendererEventually { fixture.channel.sendCount == fenceIndex + 1 })
+        #expect(try fixture.channel.command(
+            at: fenceIndex,
+            limits: fixture.bootstrap.limits
+        ).operation == .createFence)
+        #expect(throws: DoryPCVirGLRendererAuthorityError.producerFenceViolation) {
+            try authority.flushBlobResource([flush])
+        }
+        #expect(outcomes.values == [.verified(proofSHA256: proof), .violated])
+        #expect(completions.values == [.outcomeUnknown])
+        #expect(!authority.canBackReplacementMachineAfterReset)
+        #expect(fixture.channel.sendCount == fenceIndex + 1)
+    }
+
+    @Test func doryPCBlobArenaRetirementDrainsAndRejectsStaleAccess() throws {
+        let lifetime = DoryPCBlobArenaAccessLifetime()
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let accessFinished = DispatchSemaphore(value: 0)
+        let retirementFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            _ = try? lifetime.withAccess {
+                entered.signal()
+                _ = release.wait(timeout: .now() + 2)
+            }
+            accessFinished.signal()
+        }
+        guard entered.wait(timeout: .now() + 2) == .success else {
+            release.signal()
+            Issue.record("blob arena access did not enter")
+            return
+        }
+        DispatchQueue.global().async {
+            lifetime.retire()
+            retirementFinished.signal()
+        }
+        #expect(retirementFinished.wait(timeout: .now() + 0.05) == .timedOut)
+        release.signal()
+        #expect(accessFinished.wait(timeout: .now() + 2) == .success)
+        #expect(retirementFinished.wait(timeout: .now() + 2) == .success)
+        #expect(throws: DoryVirtioGPUAccelerationError.generationRevoked) {
+            try lifetime.withAccess { 1 }
+        }
+    }
+
     @Test(arguments: [false, true])
     func doryPCVirGLAuthorityUsesOnlyAuthenticatedVirGLAndDescriptorBackedStaging(
         rejectSecondScanout: Bool
@@ -516,7 +1183,7 @@ import Testing
         ])
         #expect(authority.capabilities.capsets.map(\.id) == [2])
 
-        let context = Task.detached {
+        let context = rendererBlockingOperation {
             try authority.createContext(id: 7, capsetID: 2, name: "mesa")
         }
         #expect(await rendererEventually { fixture.channel.sendCount == 1 })
@@ -532,7 +1199,7 @@ import Testing
         )
         try await context.value
 
-        let resource = Task.detached {
+        let resource = rendererBlockingOperation {
             try authority.createResource3D(.init(
                 resourceID: 29,
                 target: 2,
@@ -566,7 +1233,7 @@ import Testing
         let memory = DoryPCVirGLTestMemory(byteCount: 0x2000)
         let entries = [DoryVirtioGPUBackingEntry(guestAddress: 0x1000, length: 32)]
         memory.put(Array(0..<32), at: 0x1000)
-        let attach = Task.detached {
+        let attach = rendererBlockingOperation {
             try authority.attachBacking(
                 resourceID: 29,
                 entries: entries,
@@ -597,7 +1264,22 @@ import Testing
 
         let guestUpdate = [UInt8](repeating: 0x5a, count: 32)
         memory.put(guestUpdate, at: 0x1000)
-        let toHost = Task.detached {
+        memory.shortenNextRead(at: 0x1000)
+        #expect(throws: DoryVirtioGPUError.invalidGuestMemoryResponse(
+            expected: 32, actual: 31
+        )) {
+            try authority.transfer3D(
+                .init(
+                    direction: .toHost, resourceID: 29, contextID: 7,
+                    x: 0, y: 0, z: 0, width: 4, height: 2, depth: 1,
+                    offset: 0, level: 0, stride: 16, layerStride: 32
+                ),
+                entries: entries,
+                memory: memory
+            )
+        }
+        #expect(fixture.channel.sendCount == 3)
+        let toHost = rendererBlockingOperation {
             try authority.transfer3D(
                 .init(
                     direction: .toHost,
@@ -634,7 +1316,7 @@ import Testing
         try await toHost.value
 
         let rendererUpdate = [UInt8](repeating: 0xa5, count: 32)
-        let fromHost = Task.detached {
+        let fromHost = rendererBlockingOperation {
             try authority.transfer3D(
                 .init(
                     direction: .fromHost,
@@ -700,7 +1382,7 @@ import Testing
             stride: flush.stride,
             storageOffset: flush.storageOffset
         )
-        let present = Task.detached {
+        let present = rendererBlockingOperation {
             try authority.flushResource(rejectSecondScanout ? [flush, secondFlush] : [flush])
         }
         #expect(await rendererEventually { fixture.channel.sendCount == 6 })
@@ -833,6 +1515,18 @@ import Testing
             #expect(rejected.frameSequence == published[1].frameSequence)
         }
         let update = try #require(scanoutRecorder.update)
+        #expect(update.isCurrent)
+        #expect(update.isGenerationCurrent)
+        update.recordPresentationCompleted(completionID: 123)
+        update.recordPresentationCompleted(completionID: 124)
+        let completions = graphicsTrace.values.filter {
+            $0.stage == .metalPresentationCompleted
+        }
+        #expect(completions.count == 1)
+        #expect(completions.first?.metalCommandBufferCompletionID == 123)
+        #expect(completions.first?.frameSequence == firstAccepted.frameSequence)
+        #expect(completions.first?.resourceID == firstAccepted.resourceID)
+        #expect(completions.first?.deviceGeneration == firstAccepted.deviceGeneration)
         #expect(update.flush == flush)
         #expect(try update.withSharedMemory { lease, _ in lease } == scanoutLease)
         let geometry = try DesktopMetalScanoutGeometry(update: update, expectedScanoutID: 0)
@@ -869,6 +1563,13 @@ import Testing
             with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
         )
         #expect(await rendererEventually { lane.snapshot().liveScanoutLeases == 0 })
+        authority.reset()
+        #expect(!update.isCurrent)
+        #expect(!update.isGenerationCurrent)
+        update.recordPresentationCompleted(completionID: 125)
+        #expect(graphicsTrace.values.filter {
+            $0.stage == .metalPresentationCompleted
+        }.count == 1)
     }
 
     @Test func doryPCVirGLReadbackRefreshesStagingBeforeCopyingBackToGuest() async throws {
@@ -882,7 +1583,7 @@ import Testing
             deviceGeneration: 11
         )
 
-        let context = Task.detached {
+        let context = rendererBlockingOperation {
             try authority.createContext(id: 7, capsetID: 2, name: "mesa")
         }
         #expect(await rendererEventually { fixture.channel.sendCount == 1 })
@@ -892,7 +1593,7 @@ import Testing
         )
         try await context.value
 
-        let resource = Task.detached {
+        let resource = rendererBlockingOperation {
             try authority.createResource3D(.init(
                 resourceID: 31,
                 target: 2,
@@ -926,7 +1627,7 @@ import Testing
         let originalGuestBytes = Array(UInt8(0)..<UInt8(64))
         memory.put(Array(originalGuestBytes[0..<32]), at: 0x1000)
         memory.put(Array(originalGuestBytes[32..<64]), at: 0x1100)
-        let attach = Task.detached {
+        let attach = rendererBlockingOperation {
             try authority.attachBacking(
                 resourceID: 31,
                 entries: entries,
@@ -957,7 +1658,7 @@ import Testing
         let outsideMutation = [UInt8](repeating: 0xEE, count: 64)
         memory.put(Array(outsideMutation[0..<32]), at: 0x1000)
         memory.put(Array(outsideMutation[32..<64]), at: 0x1100)
-        let readback = Task.detached {
+        let readback = rendererBlockingOperation {
             try authority.transfer3D(
                 .init(
                     direction: .fromHost,
@@ -1042,7 +1743,7 @@ import Testing
 
         authority.reset()
         #expect(authority.canBackReplacementMachineAfterReset)
-        let context = Task.detached {
+        let context = rendererBlockingOperation {
             try authority.createContext(id: 7, capsetID: 2, name: "mesa")
         }
         #expect(await rendererEventually { fixture.channel.sendCount == 1 })
@@ -1072,6 +1773,238 @@ import Testing
         #expect(await rendererEventually { fixture.channel.invalidateCount == 1 })
     }
 
+    @Test func doryPCVirGLResourceCreationReservesGuestIDUntilWorkerCommit() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(lane: lane, deviceGeneration: 11)
+        let resource = DoryVirtioGPUResource3D(
+            resourceID: 57,
+            target: 2,
+            format: 1,
+            bind: 0,
+            width: 4,
+            height: 4,
+            depth: 1,
+            arraySize: 1,
+            lastLevel: 0,
+            samples: 0,
+            flags: 0
+        )
+
+        let first = rendererBlockingOperation { try authority.createResource3D(resource) }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        #expect(try fixture.channel.command(
+            at: 0, limits: fixture.bootstrap.limits
+        ).operation == .createResource3D)
+        #expect(throws: DoryPCVirGLRendererAuthorityError.duplicateResource(57)) {
+            try authority.createResource3D(resource)
+        }
+        #expect(fixture.channel.sendCount == 1)
+
+        let generation = UInt64(19).littleEndian
+        fixture.channel.complete(at: 0, with: .success(DoryRendererWorkerChannelReply(
+            payload: Swift.withUnsafeBytes(of: generation) { Data($0) },
+            descriptors: []
+        )))
+        try await first.value
+        #expect(throws: DoryPCVirGLRendererAuthorityError.duplicateResource(57)) {
+            try authority.createResource3D(resource)
+        }
+        #expect(fixture.channel.sendCount == 1)
+
+        let unref = rendererBlockingOperation { try authority.unrefResource(resourceID: 57) }
+        try #require(await rendererEventually { fixture.channel.sendCount == 2 })
+        #expect(try fixture.channel.command(
+            at: 1, limits: fixture.bootstrap.limits
+        ).operation == .unrefResource)
+        fixture.channel.complete(at: 1, with: .success(DoryRendererWorkerChannelReply(
+            payload: Data(), descriptors: []
+        )))
+        try await unref.value
+
+        let reused = rendererBlockingOperation { try authority.createResource3D(resource) }
+        try #require(await rendererEventually { fixture.channel.sendCount == 3 })
+        let nextGeneration = UInt64(20).littleEndian
+        fixture.channel.complete(at: 2, with: .success(DoryRendererWorkerChannelReply(
+            payload: Swift.withUnsafeBytes(of: nextGeneration) { Data($0) },
+            descriptors: []
+        )))
+        try await reused.value
+    }
+
+    @Test func doryPCVirGLResourceQuotaCountsPendingAndCommittedCreations() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11,
+            resourceLimit: 1
+        )
+        @Sendable func resource(_ id: UInt32) -> DoryVirtioGPUResource3D {
+            .init(
+                resourceID: id, target: 2, format: 1, bind: 0,
+                width: 4, height: 4, depth: 1, arraySize: 1,
+                lastLevel: 0, samples: 0, flags: 0
+            )
+        }
+
+        let first = rendererBlockingOperation { try authority.createResource3D(resource(57)) }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        #expect(throws: DoryVirtioGPUAccelerationError.resourceLimitExceeded) {
+            try authority.createResource3D(resource(58))
+        }
+        #expect(fixture.channel.sendCount == 1)
+        let generation = UInt64(19).littleEndian
+        fixture.channel.complete(at: 0, with: .success(DoryRendererWorkerChannelReply(
+            payload: Swift.withUnsafeBytes(of: generation) { Data($0) },
+            descriptors: []
+        )))
+        try await first.value
+        #expect(throws: DoryVirtioGPUAccelerationError.resourceLimitExceeded) {
+            try authority.createResource3D(resource(58))
+        }
+        #expect(fixture.channel.sendCount == 1)
+    }
+
+    @Test func doryPCVirGLWorkerResourceExhaustionPreservesGenerationAndGuestID() async throws {
+        let fixture = try rendererBrokerFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(lane: lane, deviceGeneration: 11)
+        let resource = DoryVirtioGPUResource3D(
+            resourceID: 59,
+            target: 2,
+            format: 1,
+            bind: 0,
+            width: 4,
+            height: 4,
+            depth: 1,
+            arraySize: 1,
+            lastLevel: 0,
+            samples: 0,
+            flags: 0
+        )
+
+        let exhausted = rendererBlockingOperation { try authority.createResource3D(resource) }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        fixture.channel.complete(at: 0, with: .failure(.serviceFailure(.resourceExhausted)))
+        do {
+            try await exhausted.value
+            Issue.record("worker quota rejection unexpectedly created the resource")
+        } catch {
+            #expect(error as? DoryVirtioGPUAccelerationError == .resourceLimitExceeded)
+        }
+        #expect(lane.snapshot().state == .active(deviceGeneration: 11))
+
+        let retried = rendererBlockingOperation { try authority.createResource3D(resource) }
+        try #require(await rendererEventually { fixture.channel.sendCount == 2 })
+        let generation = UInt64(20).littleEndian
+        fixture.channel.complete(at: 1, with: .success(DoryRendererWorkerChannelReply(
+            payload: Swift.withUnsafeBytes(of: generation) { Data($0) },
+            descriptors: []
+        )))
+        try await retried.value
+    }
+
+    @Test func doryPCVirGLProvenCommandRejectionKeepsRendererGenerationUsable() async throws {
+        let fixture = try rendererBrokerFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(lane: lane, deviceGeneration: 11)
+
+        let rejected = rendererBlockingOperation {
+            try authority.createContext(id: 61, capsetID: 2, name: "mesa")
+        }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        fixture.channel.complete(at: 0, with: .failure(.serviceFailure(.commandRejected)))
+        do {
+            try await rejected.value
+            Issue.record("worker rejection unexpectedly created the context")
+        } catch {
+            #expect(error as? DoryPCVirGLRendererAuthorityError == .workerCommandFailed)
+        }
+        #expect(lane.snapshot().state == .active(deviceGeneration: 11))
+        #expect(authority.canBackReplacementMachineAfterReset)
+
+        let retried = rendererBlockingOperation {
+            try authority.createContext(id: 61, capsetID: 2, name: "mesa")
+        }
+        try #require(await rendererEventually { fixture.channel.sendCount == 2 })
+        fixture.channel.complete(at: 1, with: .success(DoryRendererWorkerChannelReply(
+            payload: Data(), descriptors: []
+        )))
+        try await retried.value
+    }
+
+    @Test func doryPCVirGLUncertainCommandRetiresTheRendererGeneration() async throws {
+        let fixture = try rendererBrokerFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let revocations = DoryPCVirGLRevocationRecorder()
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11,
+            commandTimeout: 0.5,
+            onGenerationRevoked: { revocations.record(
+                workerInvalidations: fixture.channel.invalidateCount
+            ) }
+        )
+
+        let pending = rendererBlockingOperation {
+            try authority.createContext(id: 62, capsetID: 2, name: "mesa")
+        }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        fixture.channel.emit(.interrupted)
+        do {
+            try await pending.value
+            Issue.record("interrupted worker unexpectedly created the context")
+        } catch {
+            #expect(error as? DoryVirtioGPUAccelerationError == .generationRevoked)
+        }
+        #expect(await rendererEventually { revocations.workerInvalidations.count == 1 })
+        #expect(!authority.canBackReplacementMachineAfterReset)
+        #expect(throws: DoryPCVirGLRendererAuthorityError.rendererUnavailable) {
+            try authority.createContext(id: 63, capsetID: 2, name: "mesa")
+        }
+    }
+
+    @Test func doryPCVirGLFenceQuotaRejectsBeforeSendingAnotherWorkerCommand() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11,
+            pendingFenceLimit: 1
+        )
+        let first = DoryVirtioGPUFenceRequest(
+            contextID: 0, ringIndex: 0, fenceID: 1, contextFence: false
+        )
+        try authority.createFence(first) { _ in }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        #expect(throws: DoryVirtioGPUAccelerationError.resourceLimitExceeded) {
+            try authority.createFence(.init(
+                contextID: 0, ringIndex: 0, fenceID: 2, contextFence: false
+            )) { _ in }
+        }
+        #expect(fixture.channel.sendCount == 1)
+        authority.reset()
+    }
+
     @Test func doryPCVirGLNonPristineResetInstallsFreshRendererGeneration() async throws {
         let oldFixture = try rendererBrokerFixture(
             limits: rendererLimits(maximumInFlight: 4),
@@ -1085,7 +2018,7 @@ import Testing
             lane: oldLane,
             deviceGeneration: 11
         )
-        let first = Task.detached {
+        let first = rendererBlockingOperation {
             try authority.createContext(id: 7, capsetID: 2, name: "mesa")
         }
         try #require(await rendererEventually { oldFixture.channel.sendCount == 1 })
@@ -1102,6 +2035,18 @@ import Testing
         #expect(!authority.canBackReplacementMachineAfterReset)
         #expect(await rendererEventually { oldFixture.channel.invalidateCount == 1 })
 
+        let foreignFixture = try rendererBrokerFixture(
+            workerGeneration: 8,
+            workspaceID: #require(UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+        )
+        let foreignLane = try DoryRendererWorkerVirtioCommandLane(
+            broker: foreignFixture.broker,
+            deviceGeneration: 1
+        )
+        #expect(throws: DoryPCVirGLRendererAuthorityError.rendererUnavailable) {
+            try authority.installReplacementAfterReset(lane: foreignLane)
+        }
+
         let newFixture = try rendererBrokerFixture(
             limits: rendererLimits(maximumInFlight: 4),
             workerGeneration: 8
@@ -1115,7 +2060,7 @@ import Testing
         #expect(newLane.snapshot().state == .active(deviceGeneration: 12))
 
         oldFixture.channel.emit(.interrupted)
-        let second = Task.detached {
+        let second = rendererBlockingOperation {
             try authority.createContext(id: 8, capsetID: 2, name: "mesa")
         }
         try #require(await rendererEventually { newFixture.channel.sendCount == 1 })
@@ -1125,6 +2070,159 @@ import Testing
             with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
         )
         try await second.value
+    }
+
+    @Test func pcRendererRestartRequiresReadyAcceleratedVMAndCoalescesWithoutRevokingWorker() throws {
+        let fixture = try rendererBrokerFixture(workerGeneration: 7)
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: fixture.broker, deviceGeneration: 11)
+        let authority = try DoryPCVirGLRendererAuthority(lane: lane, deviceGeneration: 11)
+        let device = try DoryPCVirtioGPUPCIDevice(
+            address: .init(bus: 0, device: 2, function: 0), initialBARAddress: 0xD000_0000,
+            scanouts: [.init(id: 0, rectangle: .init(x: 0, y: 0, width: 64, height: 64))],
+            accelerationAuthority: authority
+        )
+        let transport = device.transport
+        #expect(!DoryPCMode.requestRendererRestart(
+            transport: transport, authority: authority, replacementAvailable: true, stopping: false
+        ))
+        transport.deviceState.writeDriverFeatures(page: 1, value: 1)
+        try transport.writeBAR(offset: 0x14, bytes: [15])
+        let baseline = transport.deviceState.snapshot()
+        #expect(!DoryPCMode.requestRendererRestart(
+            transport: transport, authority: authority, replacementAvailable: true, stopping: true
+        ))
+        #expect(!DoryPCMode.requestRendererRestart(
+            transport: transport, authority: authority, replacementAvailable: false, stopping: false
+        ))
+        #expect(transport.deviceState.snapshot() == baseline)
+        for _ in 0..<2 {
+            #expect(DoryPCMode.requestRendererRestart(
+                transport: transport, authority: authority, replacementAvailable: true, stopping: false
+            ))
+        }
+        #expect(transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+        #expect(transport.deviceState.snapshot().lifecycleEpoch == baseline.lifecycleEpoch)
+        #expect(authority.acceptsGuestCommands)
+        #expect(authority.currentResetGeneration == 0)
+        #expect(lane.snapshot().state == .active(deviceGeneration: 11))
+        #expect(fixture.channel.sendCount == 0)
+    }
+
+    @Test func pcWorkerLossRequiresExplicitResetAndRejectsStaleReplacementEpochOrWorker() async throws {
+        let old = try rendererBrokerFixture(workerGeneration: 7)
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: old.broker, deviceGeneration: 11)
+        let losses = RendererFailureBoundaryRecorder()
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane, deviceGeneration: 11,
+            onWorkerUnavailable: { losses.record("worker lost", workerGeneration: $0) }
+        )
+        let original = authority.capabilities
+        authority.reportWorkerPresentationFailure(workerGeneration: 6)
+        #expect(authority.acceptsGuestCommands)
+        old.channel.emit(.interrupted)
+        #expect(await rendererEventually { !authority.acceptsGuestCommands && losses.entries.count == 1 })
+        #expect(losses.entries.first?.workerGeneration == 7)
+        #expect(authority.currentResetGeneration == 0)
+        let fresh = try rendererBrokerFixture(workerGeneration: 8)
+        let next = try DoryRendererWorkerVirtioCommandLane(broker: fresh.broker, deviceGeneration: 1)
+        #expect(throws: DoryPCVirGLRendererAuthorityError.rendererUnavailable) {
+            try authority.installReplacementAfterReset(lane: next)
+        }
+        authority.reset()
+        let firstReset = authority.currentResetGeneration
+        authority.reset()
+        #expect(throws: DoryPCVirGLRendererAuthorityError.rendererUnavailable) {
+            try authority.installReplacementAfterReset(lane: next, expectedResetGeneration: firstReset)
+        }
+        let stale = try rendererBrokerFixture(workerGeneration: 7)
+        let staleLane = try DoryRendererWorkerVirtioCommandLane(broker: stale.broker, deviceGeneration: 1)
+        #expect(throws: DoryPCVirGLRendererAuthorityError.rendererUnavailable) {
+            try authority.installReplacementAfterReset(lane: staleLane)
+        }
+        try authority.installReplacementAfterReset(lane: next, expectedResetGeneration: authority.currentResetGeneration)
+        #expect(authority.acceptsGuestCommands)
+        #expect(authority.capabilities == original)
+        authority.reportWorkerPresentationFailure(workerGeneration: 7)
+        #expect(authority.acceptsGuestCommands)
+        #expect(losses.entries.count == 1)
+        let create = rendererBlockingOperation { try authority.createContext(id: 17, capsetID: 2, name: "recovered") }
+        #expect(await rendererEventually { fresh.channel.sendCount == 1 })
+        fresh.channel.complete(at: 0, with: .success(.init(payload: Data(), descriptors: [])))
+        try await create.value
+        // The previous reset's admission was consumed by worker 8. Its later death must not
+        // authorize worker 9 underneath live guest resources without another explicit reset.
+        fresh.channel.emit(.interrupted)
+        try #require(await rendererEventually { !authority.acceptsGuestCommands && losses.entries.count == 2 })
+        let secondFresh = try rendererBrokerFixture(workerGeneration: 9)
+        let secondNext = try DoryRendererWorkerVirtioCommandLane(broker: secondFresh.broker, deviceGeneration: 1)
+        #expect(throws: DoryPCVirGLRendererAuthorityError.rendererUnavailable) {
+            try authority.installReplacementAfterReset(lane: secondNext, expectedResetGeneration: authority.currentResetGeneration)
+        }
+        authority.reset()
+        try authority.installReplacementAfterReset(lane: secondNext, expectedResetGeneration: authority.currentResetGeneration)
+        #expect(authority.acceptsGuestCommands)
+        #expect(authority.capabilities == original)
+    }
+
+    @Test(arguments: [false, true])
+    func pcQueuesReplayOnlyFreshChainsAfterRendererReplacement(wholeMachineResetBeforeReplacement: Bool) async throws {
+        let old = try rendererBrokerFixture(workerGeneration: 7)
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: old.broker, deviceGeneration: 11)
+        let authority = try DoryPCVirGLRendererAuthority(lane: lane, deviceGeneration: 11)
+        let device = try DoryPCVirtioGPUPCIDevice(
+            address: .init(bus: 0, device: 2, function: 0), initialBARAddress: 0xD000_0000,
+            scanouts: [.init(id: 0, rectangle: .init(x: 0, y: 0, width: 64, height: 64))],
+            accelerationAuthority: authority
+        )
+        let memory = DoryPCVirGLTestMemory(byteCount: 8192)
+        device.connectGuestMemory(memory)
+        old.channel.emit(.interrupted)
+        #expect(await rendererEventually { !authority.acceptsGuestCommands })
+        try device.transport.writeBAR(offset: 0x14, bytes: [0])
+        let epoch = device.transport.deviceState.snapshot().lifecycleEpoch
+        let features = device.transport.deviceState.offeredFeatures
+        func bytes<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
+            withUnsafeBytes(of: value.littleEndian) { Array($0) }
+        }
+        var descriptors = bytes(UInt64(0x800)) + bytes(UInt32(24)) + bytes(UInt16(1)) + bytes(UInt16(1))
+        descriptors += bytes(UInt64(0x1000)) + bytes(UInt32(512)) + bytes(UInt16(2)) + bytes(UInt16(0))
+        memory.put(descriptors, at: 0x200)
+        memory.put([0, 0, 1, 0, 0, 0], at: 0x400)
+        memory.put(bytes(UInt32(0x0100)) + [UInt8](repeating: 0, count: 20), at: 0x800)
+        device.transport.deviceState.writeDriverFeatures(page: 1, value: 1)
+        try device.transport.writeBAR(offset: 0x14, bytes: [15])
+        try device.transport.writeBAR(offset: 0x18, bytes: bytes(UInt16(8)))
+        try device.transport.writeBAR(offset: 0x20, bytes: bytes(UInt64(0x200)))
+        try device.transport.writeBAR(offset: 0x28, bytes: bytes(UInt64(0x400)))
+        try device.transport.writeBAR(offset: 0x30, bytes: bytes(UInt64(0x600)))
+        try device.transport.writeBAR(offset: 0x1C, bytes: [1, 0])
+        try device.transport.writeBAR(offset: 0x100, bytes: [0, 0])
+        #expect(try memory.read(at: 0x602, byteCount: 2) == [0, 0])
+        if wholeMachineResetBeforeReplacement {
+            // The PC host also performs status-zero retirement on an ACPI whole-machine reset.
+            // A renderer completing afterwards must never revive descriptors from that boot.
+            try device.transport.writeBAR(offset: 0x14, bytes: [0])
+            #expect(device.transport.withCompletedReset(expectedEpoch: epoch, { true }) == nil)
+        }
+        let admissionEpoch = device.transport.deviceState.snapshot().lifecycleEpoch
+        let fresh = try rendererBrokerFixture(workerGeneration: 8)
+        let next = try DoryRendererWorkerVirtioCommandLane(broker: fresh.broker, deviceGeneration: 1)
+        let installed: Void? = try device.transport.withCompletedReset(expectedEpoch: admissionEpoch) {
+            try authority.installReplacementAfterReset(lane: next, expectedResetGeneration: authority.currentResetGeneration)
+        }
+        #expect(installed != nil)
+        device.transport.processQueue(0)
+        if wholeMachineResetBeforeReplacement {
+            #expect(try memory.read(at: 0x602, byteCount: 2) == [0, 0])
+            #expect(try memory.read(at: 0x1000, byteCount: 4) == [0, 0, 0, 0])
+        } else {
+            // A fresh queue pending during preparation needs no second guest kick.
+            #expect(try memory.read(at: 0x602, byteCount: 2) == [1, 0])
+            #expect(try memory.read(at: 0x1000, byteCount: 4) == [1, 17, 0, 0])
+        }
+        #expect(device.transport.deviceState.offeredFeatures == features)
+        #expect(device.transport.deviceState.snapshot().lifecycleEpoch == admissionEpoch)
+        #expect(!device.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
     }
 
     @Test func staleGenerationRevocationPreservesReboundRendererCommands() async throws {
@@ -1137,7 +2235,7 @@ import Testing
         lane.invalidate(deviceGeneration: 11)
         #expect(!(await rendererEventually { fixture.channel.invalidateCount != 0 }))
         let authority = try DoryPCVirGLRendererAuthority(lane: lane, deviceGeneration: 12)
-        let context = Task.detached {
+        let context = rendererBlockingOperation {
             try authority.createContext(id: 7, capsetID: 2, name: "mesa")
         }
         try #require(await rendererEventually { fixture.channel.sendCount == 1 })
@@ -1158,10 +2256,14 @@ import Testing
             broker: fixture.broker,
             deviceGeneration: 11
         )
+        let revocations = DoryPCVirGLRevocationRecorder()
         let authority = try DoryPCVirGLRendererAuthority(
             lane: lane,
             deviceGeneration: 11,
-            commandTimeout: 0.01
+            commandTimeout: 0.01,
+            onGenerationRevoked: { revocations.record(
+                workerInvalidations: fixture.channel.invalidateCount
+            ) }
         )
 
         let completions = DoryPCVirGLFenceCompletionRecorder()
@@ -1179,7 +2281,7 @@ import Testing
         try #require(await rendererEventually { lane.snapshot().armedFences == 1 })
         #expect(completions.values.isEmpty)
 
-        let context = Task.detached {
+        let context = rendererBlockingOperation {
             try authority.createContext(id: 7, capsetID: 2, name: "mesa")
         }
         #expect(await rendererEventually { fixture.channel.sendCount == 2 })
@@ -1193,9 +2295,11 @@ import Testing
             try authority.createContext(id: 8, capsetID: 2, name: "mesa")
         }
         #expect(await rendererEventually { fixture.channel.invalidateCount == 1 })
+        #expect(revocations.workerInvalidations == [0])
         #expect(completions.values == [.outcomeUnknown])
         #expect(lane.snapshot().armedFences == 0)
         authority.reset()
+        #expect(revocations.workerInvalidations == [0])
         #expect(completions.values == [.outcomeUnknown])
     }
 
@@ -1324,6 +2428,236 @@ import Testing
         #expect(lane.snapshot().armedFences == 1)
         close(secondSignal)
         try #require(await rendererEventually { completions.values == [.signaled, .signaled] })
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func pcContextFenceRetirementUsesAdmissionOrderAndExactTimeline(
+        venus: Bool, signalLater: Bool
+    ) async throws {
+        let fixture = venus ? try rendererPCVenusFixture() : try rendererBrokerFixture(
+            limits: rendererLimits(maximumInFlight: 4)
+        )
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker, deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane, deviceGeneration: 11, onWorkerUnavailable: { _ in }
+        )
+        defer { authority.reset() }
+        let completions = (0..<4).map { _ in DoryPCVirGLFenceCompletionRecorder() }
+        let requests: [DoryVirtioGPUFenceRequest] = [
+            .init(contextID: 7, ringIndex: 2, fenceID: .max, contextFence: true),
+            .init(contextID: 7, ringIndex: 2, fenceID: 0, contextFence: true),
+            .init(contextID: 7, ringIndex: 3, fenceID: 1, contextFence: true),
+            .init(contextID: 8, ringIndex: 2, fenceID: 2, contextFence: true),
+        ]
+        var signals: [Int: Int32] = [:]
+        defer { for descriptor in signals.values { close(descriptor) } }
+        for (index, request) in requests.enumerated() {
+            let recorder = completions[index]
+            try authority.createFence(request) { recorder.append($0) }
+            try #require(await rendererEventually { fixture.channel.sendCount == index + 1 })
+            let command = try fixture.channel.command(at: index, limits: fixture.bootstrap.limits)
+            let payload = try DoryRendererFencePayload.decode(command.payload)
+            #expect(payload.fenceID == UInt64(index + 1))
+            #expect(payload.ringIndex == request.ringIndex)
+            #expect(command.contextID == request.contextID)
+            let (completionDescriptor, signalDescriptor) = try makeUnsignaledFenceDescriptor()
+            signals[index] = signalDescriptor
+            fixture.channel.complete(at: index, with: .success(.init(
+                payload: command.payload, descriptors: [completionDescriptor]
+            )))
+            try #require(await rendererEventually { lane.snapshot().armedFences == index + 1 })
+        }
+
+        let firstSignal = signals.removeValue(forKey: signalLater ? 1 : 0)
+        close(try #require(firstSignal))
+        try #require(await rendererEventually { completions[signalLater ? 1 : 0].values == [.signaled] })
+        #expect(completions[0].values == [.signaled])
+        #expect(completions[1].values == (signalLater ? [.signaled] : []))
+        #expect(completions[2].values.isEmpty)
+        #expect(completions[3].values.isEmpty)
+
+        // The other descriptor may arrive after a coalescing callback. It must not complete
+        // either obligation twice, even when the guest fence counter wrapped through zero.
+        let secondSignal = signals.removeValue(forKey: signalLater ? 0 : 1)
+        close(try #require(secondSignal))
+        try #require(await rendererEventually { lane.snapshot().armedFences == 2 })
+        #expect(completions[0].values == [.signaled])
+        #expect(completions[1].values == [.signaled])
+        #expect(completions[2].values.isEmpty)
+        #expect(completions[3].values.isEmpty)
+        for index in 2..<4 {
+            let signal = signals.removeValue(forKey: index)
+            close(try #require(signal))
+            try #require(await rendererEventually { completions[index].values == [.signaled] })
+        }
+        #expect(authority.acceptsGuestCommands)
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func pcNeverSignalledFenceExpiresWithoutAnotherGuestCommand(
+        venus: Bool, contextFence: Bool
+    ) async throws {
+        let fixture = venus ? try rendererPCVenusFixture() : try rendererBrokerFixture(
+            limits: rendererLimits(maximumInFlight: 4)
+        )
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker, deviceGeneration: 11,
+            fenceCompletionTimeoutNanoseconds: 50_000_000
+        )
+        let revocations = DoryPCVirGLRevocationRecorder()
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane, deviceGeneration: 11,
+            onGenerationRevoked: { revocations.record(workerInvalidations: 0) }
+        )
+        defer { authority.reset() }
+        let completions = DoryPCVirGLFenceCompletionRecorder()
+        var signals: [Int32] = []
+        defer { for descriptor in signals { close(descriptor) } }
+        for index in 0..<2 {
+            try authority.createFence(.init(
+                contextID: contextFence ? 7 : 0, ringIndex: contextFence ? 2 : 0,
+                fenceID: UInt64(index), contextFence: contextFence
+            )) { completions.append($0) }
+            try #require(await rendererEventually { fixture.channel.sendCount == index + 1 })
+            let command = try fixture.channel.command(at: index, limits: fixture.bootstrap.limits)
+            let (descriptor, signal) = try makeUnsignaledFenceDescriptor()
+            signals.append(signal)
+            fixture.channel.complete(at: index, with: .success(.init(
+                payload: command.payload, descriptors: [descriptor]
+            )))
+            try #require(await rendererEventually { lane.snapshot().armedFences == index + 1 })
+        }
+        #expect(completions.values.isEmpty)
+        try #require(await rendererEventually {
+            completions.values == [.outcomeUnknown, .outcomeUnknown]
+        })
+        #expect(lane.snapshot().state == .failed(deviceGeneration: 11))
+        #expect(lane.snapshot().armedFences == 0)
+        #expect(!authority.acceptsGuestCommands)
+        #expect(revocations.workerInvalidations.count == 1)
+        #expect(await rendererEventually { fixture.channel.invalidateCount == 1 })
+        #expect(!DoryRendererWorkerVirtioCommandLaneError.fenceCompletionTimedOut.provesNoRendererMutation)
+        for descriptor in signals { close(descriptor) }
+        signals.removeAll()
+        try await Task.sleep(nanoseconds: 60_000_000)
+        #expect(completions.values == [.outcomeUnknown, .outcomeUnknown])
+        #expect(revocations.workerInvalidations.count == 1)
+    }
+
+    @Test func expiredFenceCannotSignalOrRevokeReplacementWorker() async throws {
+        let old = try rendererBrokerFixture()
+        let oldLane = try DoryRendererWorkerVirtioCommandLane(
+            broker: old.broker, deviceGeneration: 11,
+            fenceCompletionTimeoutNanoseconds: 50_000_000
+        )
+        let authority = try DoryPCVirGLRendererAuthority(lane: oldLane, deviceGeneration: 11)
+        defer { authority.reset() }
+        let oldCompletions = DoryPCVirGLFenceCompletionRecorder()
+        try authority.createFence(.init(
+            contextID: 0, ringIndex: 0, fenceID: 0, contextFence: false
+        )) { oldCompletions.append($0) }
+        try #require(await rendererEventually { old.channel.sendCount == 1 })
+        let oldCommand = try old.channel.command(at: 0, limits: old.bootstrap.limits)
+        let (oldDescriptor, oldSignal) = try makeUnsignaledFenceDescriptor()
+        let oldWriter = FileHandle(fileDescriptor: oldSignal, closeOnDealloc: true)
+        defer { try? oldWriter.close() }
+        old.channel.complete(at: 0, with: .success(.init(
+            payload: oldCommand.payload, descriptors: [oldDescriptor]
+        )))
+        try #require(await rendererEventually { oldCompletions.values == [.outcomeUnknown] })
+        try #require(await rendererEventually { old.channel.invalidateCount == 1 })
+        authority.reset()
+        try #require(await rendererEventually { oldLane.waitForRetirement(timeout: 0) })
+
+        let fresh = try rendererBrokerFixture(workerGeneration: 8)
+        let freshLane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fresh.broker, deviceGeneration: 1,
+            fenceCompletionTimeoutNanoseconds: 200_000_000
+        )
+        try authority.installReplacementAfterReset(lane: freshLane)
+        let freshCompletions = DoryPCVirGLFenceCompletionRecorder()
+        try authority.createFence(.init(
+            contextID: 0, ringIndex: 0, fenceID: 0, contextFence: false
+        )) { freshCompletions.append($0) }
+        try #require(await rendererEventually { fresh.channel.sendCount == 1 })
+        let freshCommand = try fresh.channel.command(at: 0, limits: fresh.bootstrap.limits)
+        let (freshDescriptor, freshSignal) = try makeUnsignaledFenceDescriptor()
+        defer { close(freshSignal) }
+        fresh.channel.complete(at: 0, with: .success(.init(
+            payload: freshCommand.payload, descriptors: [freshDescriptor]
+        )))
+        try #require(await rendererEventually { freshLane.snapshot().armedFences == 1 })
+        // Late closure of the old completion pipe owns neither the replacement's generation
+        // nor its deadline source, even though both guest ID and private host token were reused.
+        var byte: UInt8 = 1
+        #expect(oldLane.snapshot().armedFences == 0)
+        try oldWriter.close()
+        try await Task.sleep(nanoseconds: 60_000_000)
+        #expect(authority.acceptsGuestCommands)
+        #expect(freshCompletions.values.isEmpty)
+        #expect(Darwin.write(freshSignal, &byte, 1) == 1)
+        try #require(await rendererEventually { freshCompletions.values == [.signaled] })
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(oldCompletions.values == [.outcomeUnknown])
+        #expect(freshCompletions.values == [.signaled])
+        #expect(authority.acceptsGuestCommands)
+        #expect(fresh.channel.invalidateCount == 0)
+    }
+
+    @Test(arguments: [false, true])
+    func fenceDeadlineDisarmsAfterSignalOrExplicitReset(reset: Bool) async throws {
+        let fixture = try rendererBrokerFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker, deviceGeneration: 11,
+            fenceCompletionTimeoutNanoseconds: 50_000_000
+        )
+        let recorder = RendererLaneRecorder()
+        lane.installCallbacks(
+            fence: { generation, contextID, ringIndex, fenceID in
+                recorder.recordFence(generation: generation, contextID: contextID,
+                                     ringIndex: ringIndex, fenceID: fenceID)
+            },
+            runtimeFailure: { _, error in recorder.recordFailure(error) }
+        )
+        defer { lane.revoke(deviceGeneration: 11) }
+        try lane.createGlobalFence(fenceID: 1, deviceGeneration: 11) { recorder.recordCommand($0) }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        let command = try fixture.channel.command(at: 0, limits: fixture.bootstrap.limits)
+        let (descriptor, signal) = try makeUnsignaledFenceDescriptor()
+        defer { close(signal) }
+        fixture.channel.complete(at: 0, with: .success(.init(
+            payload: command.payload, descriptors: [descriptor]
+        )))
+        try #require(await rendererEventually { lane.snapshot().armedFences == 1 })
+        if reset {
+            lane.revoke(deviceGeneration: 11)
+        } else {
+            var byte: UInt8 = 1
+            #expect(Darwin.write(signal, &byte, 1) == 1)
+            try #require(await rendererEventually { recorder.fences.count == 1 })
+        }
+        try await Task.sleep(nanoseconds: 80_000_000)
+        #expect(lane.snapshot().armedFences == 0)
+        #expect(lane.snapshot().state == (reset
+            ? .revoked(deviceGeneration: 11) : .active(deviceGeneration: 11)))
+        #expect(recorder.failures.isEmpty)
+        #expect(recorder.fences.count == (reset ? 0 : 1))
+        #expect(lane.snapshot().completedFences == (reset ? 0 : 1))
+    }
+
+    @Test(arguments: [UInt64(0), 30_000_000_001, .max])
+    func fenceDeadlineRejectsZeroOrUnboundedIntervals(interval: UInt64) throws {
+        let fixture = try rendererBrokerFixture()
+        #expect(throws: DoryRendererWorkerVirtioCommandLaneError.invalidSubmitRegions) {
+            try DoryRendererWorkerVirtioCommandLane(
+                broker: fixture.broker, deviceGeneration: 11,
+                fenceCompletionTimeoutNanoseconds: interval
+            )
+        }
+        #expect(fixture.channel.sendCount == 0)
+        #expect(fixture.channel.invalidateCount == 0)
     }
 
     @Test func resourceFollowupCommandsCarryExactAuthenticatedWorkerGeneration() async throws {
@@ -2041,6 +3375,185 @@ import Testing
 }
 
 @Suite(.serialized) struct DoryRendererWorkerVirtioGPUIntegrationTests {
+    @Test func publishedBackingCannotRetireWithoutPositiveWorkerExit() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        fixture.channel.confirmsRetirementOnInvalidate = false
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: fixture.broker, deviceGeneration: 1)
+        let queue = try RendererWorkerGPUQueueFixture(lane: lane, guestBase: 0x7_FC00_0000,
+            reclaimOperations: rendererBackingReclaimOperations(), quiescenceTimeout: 0.05)
+        try await publishRendererWorkerBacking(queue: queue, fixture: fixture, resourceID: 81)
+        let retirement = queue.gpu.quiesce(reason: .shutdown)
+        let result = try #require(retirement.wait(timeout: 1))
+        if case .failed = result { } else { Issue.record("unconfirmed worker exit completed GPU retirement") }
+        #expect(!lane.waitForRetirement(timeout: 0))
+        #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .rejected)
+    }
+
+    @Test(arguments: [false, true])
+    func backingRetirementRequiresBothDisplayAckAndExactWorkerExit(exitBeforeDisplayAck: Bool) async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        fixture.channel.confirmsRetirementOnInvalidate = false
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: fixture.broker, deviceGeneration: 1)
+        let releases = WorkerDeathReleaseRecorder()
+        let queue = try RendererWorkerGPUQueueFixture(lane: lane, guestBase: 0x7_FD00_0000,
+            reclaimOperations: rendererBackingReclaimOperations(), scanoutCount: 1,
+            quiescenceTimeout: 2, onScanoutResourceReleased: { releases.append($0) })
+        try await publishRendererWorkerBacking(queue: queue, fixture: fixture, resourceID: 82)
+        let retirement = queue.gpu.quiesce(reason: .shutdown)
+        let release = try #require(releases.values.last)
+        #expect(retirement.wait(timeout: 0) == nil)
+        if exitBeforeDisplayAck {
+            fixture.channel.confirmRetirement()
+            #expect(lane.waitForRetirement(timeout: 0))
+        } else {
+            release.acknowledgeAll()
+        }
+        #expect(retirement.wait(timeout: 0.01) == nil)
+        #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .rejected)
+        if exitBeforeDisplayAck { release.acknowledgeAll() }
+        else { fixture.channel.confirmRetirement() }
+        #expect(retirement.wait(timeout: 1) == .completed)
+        #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .reclaimed)
+    }
+
+    @Test func healthyReplacementsReleaseExactOldPinsWithoutExhaustingQuotaOrResourceIDReuse() async throws {
+        var fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4), workerGeneration: 7)
+        var lane = try DoryRendererWorkerVirtioCommandLane(broker: fixture.broker, deviceGeneration: 1)
+        let queue = try RendererWorkerGPUQueueFixture(lane: lane, guestBase: 0x7_FE00_0000,
+            reclaimOperations: rendererBackingReclaimOperations(), maximumTrackedResources: 1)
+        queue.gpu.deviceReady(transport: queue.transport)
+        for iteration in 0..<4 {
+            try await publishRendererWorkerBacking(queue: queue, fixture: fixture, resourceID: 83)
+            #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .rejected)
+            if iteration == 3 { break }
+            let old = fixture
+            let retiringLane = lane
+            queue.transport.write(offset: 0x070, value: 0, width: 4)
+            try #require(await rendererEventually { retiringLane.waitForRetirement(timeout: 0) })
+            #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .reclaimed)
+            #expect(queue.memory.restorePage(guestAddress: queue.backingBuffer) == .restored)
+            fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4),
+                workerGeneration: UInt64(8 + iteration))
+            lane = try DoryRendererWorkerVirtioCommandLane(broker: fixture.broker, deviceGeneration: 1)
+            try queue.gpu.installRendererWorkerReplacementAfterDeviceReset(lane)
+            try queue.initializeFreshGuestQueueRings()
+            queue.reconfigureAfterReset()
+            // Repeated old exit delivery must never release a successor's reused ID or granule.
+            old.channel.confirmRetirement()
+        }
+        #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .rejected)
+        let final = queue.gpu.quiesce(reason: .shutdown)
+        #expect(final.wait(timeout: 1) == .completed)
+        #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .reclaimed)
+    }
+
+    @Test(arguments: [false, true])
+    func unknownBackingMutationRetainsPublishedPinsAcrossWorkerRevocation(blob: Bool) async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        fixture.channel.confirmsRetirementOnInvalidate = false
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: fixture.broker, deviceGeneration: 1)
+        let queue = try RendererWorkerGPUQueueFixture(lane: lane, guestBase: 0x7_FA00_0000,
+            reclaimOperations: GuestMemoryReclaimOperations(
+                unmap: { _, _ in true }, map: { _, _, _ in true },
+                markReusable: { _, _ in true }, markInUse: { _, _ in true }
+            ), quiescenceTimeout: 0.05)
+        let resourceID: UInt32 = 71
+        if !blob {
+            try queue.submit(rendererGPUResourceCreate2DRequest(resourceID: resourceID, width: 64, height: 64))
+            try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+            let generation = UInt64(91).littleEndian
+            fixture.channel.complete(at: 0, with: .success(DoryRendererWorkerChannelReply(
+                payload: Swift.withUnsafeBytes(of: generation) { Data($0) }, descriptors: [])))
+            try #require(await rendererEventually { (try? queue.usedIndex()) == 1 })
+        }
+        let before = try queue.usedIndex()
+        let request = blob
+            ? rendererGPUCreateBlobRequest(resourceID: resourceID, contextID: 0,
+                blobMemory: 1, blobFlags: 0, blobID: 109, size: HostPage.size,
+                entries: [(queue.backingBuffer, UInt32(HostPage.size))])
+            : rendererGPUAttachBackingRequest(resourceID: resourceID,
+                entries: [(queue.backingBuffer, UInt32(HostPage.size))])
+        try queue.submit(request)
+        try #require(await rendererEventually { fixture.channel.sendCount == (blob ? 1 : 2) })
+        #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .rejected)
+        fixture.channel.emit(.interrupted)
+        try #require(await rendererEventually {
+            if case .failed = lane.snapshot().state { return true }
+            return false
+        })
+        #expect(try queue.usedIndex() == before)
+        #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .rejected)
+        let receipt = queue.gpu.quiesce(reason: .shutdown)
+        _ = receipt.wait(timeout: 2)
+        // Local revoke/reset cannot stand in for confirmed foreign mapping destruction.
+        #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .rejected)
+    }
+
+    @Test func successfulWorkerDetachReleasesOnlyItsAcknowledgedBackingPins() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: fixture.broker, deviceGeneration: 1)
+        let queue = try RendererWorkerGPUQueueFixture(lane: lane, guestBase: 0x7_FB00_0000,
+            reclaimOperations: GuestMemoryReclaimOperations(
+                unmap: { _, _ in true }, map: { _, _, _ in true },
+                markReusable: { _, _ in true }, markInUse: { _, _ in true }
+            ))
+        let resourceID: UInt32 = 72
+        try queue.submit(rendererGPUResourceCreate2DRequest(resourceID: resourceID, width: 64, height: 64))
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        let generation = UInt64(92).littleEndian
+        fixture.channel.complete(at: 0, with: .success(DoryRendererWorkerChannelReply(
+            payload: Swift.withUnsafeBytes(of: generation) { Data($0) }, descriptors: [])))
+        try #require(await rendererEventually { (try? queue.usedIndex()) == 1 })
+        try queue.submit(rendererGPUAttachBackingRequest(resourceID: resourceID,
+            entries: [(queue.backingBuffer, UInt32(HostPage.size))]))
+        try #require(await rendererEventually { fixture.channel.sendCount == 2 })
+        fixture.channel.complete(at: 1, with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: [])))
+        try #require(await rendererEventually { (try? queue.usedIndex()) == 2 })
+        #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .rejected)
+        try queue.submit(rendererGPUDetachBackingRequest(resourceID: resourceID))
+        try #require(await rendererEventually { fixture.channel.sendCount == 3 })
+        #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .rejected)
+        fixture.channel.complete(at: 2, with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: [])))
+        try #require(await rendererEventually { (try? queue.usedIndex()) == 3 })
+        #expect(queue.memory.releaseRange(guestAddress: queue.backingBuffer, length: HostPage.size) == .reclaimed)
+    }
+
+    @Test func wholeMachineResetRequestsReplacementAfterGPUQuiescence() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 1
+        )
+        let failures = RendererFailureBoundaryRecorder()
+        let queue = try RendererWorkerGPUQueueFixture(
+            lane: lane,
+            guestBase: 0x4_3000_0000,
+            onRendererWorkerFailure: { failures.record($0) }
+        )
+        failures.attach(queue.transport)
+        queue.gpu.deviceReady(transport: queue.transport)
+        try queue.submit(rendererGPUContextCreateRequest(
+            contextID: 18,
+            name: "machine-reset-boundary",
+            capsetID: 4
+        ))
+        #expect(await rendererEventually { fixture.channel.sendCount == 1 })
+        fixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 1 })
+
+        let receipt = queue.gpu.quiesce(reason: .deviceReset)
+        #expect(receipt.wait(timeout: 5) == .completed)
+        #expect(failures.entries.isEmpty)
+        #expect(queue.gpu.machineResetCompleted())
+        #expect(!queue.gpu.machineResetCompleted())
+        #expect(failures.entries.map(\.reason) == [
+            "virtio-gpu device reset revoked the one-shot renderer generation"
+        ])
+    }
+
     @Test func resetReplacementSignalRunsAfterTransportClearsQueues() async throws {
         let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
         let lane = try DoryRendererWorkerVirtioCommandLane(
@@ -2078,15 +3591,49 @@ import Testing
         )])
     }
 
-    @Test func workerDeathRequestsOnlyVirtioGPUReset() async throws {
+    @Test func controlledRestartRequestsGuestResetBeforeRevokingLiveWorker() async throws {
         let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: fixture.broker, deviceGeneration: 1)
+        let queue = try RendererWorkerGPUQueueFixture(lane: lane, guestBase: 0x4_7000_0000,
+            driverReady: false)
+        #expect(!queue.gpu.requestRendererWorkerRestart())
+        finishMMIOTestDriverNegotiation(queue.transport)
+        try queue.submit(rendererGPUContextCreateRequest(contextID: 19, name: "controlled-restart", capsetID: 4))
+        #expect(await rendererEventually { fixture.channel.sendCount == 1 })
+        fixture.channel.complete(at: 0, with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: [])))
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 1 })
+        let features = queue.gpu.deviceFeatures
+        #expect(queue.gpu.requestRendererWorkerRestart())
+        #expect(queue.gpu.requestRendererWorkerRestart())
+        #expect(queue.transport.read(offset: 0x070, width: 4) & 0x40 != 0)
+        #expect(queue.transport.read(offset: 0x060, width: 4) & 2 != 0)
+        #expect(queue.transport.read(offset: 0x0FC, width: 4) == 1)
+        #expect(queue.transport.queues[0].ready)
+        #expect(lane.snapshot().state == .active(deviceGeneration: 1))
+        #expect(queue.gpu.rendererLifecycleHealth == .ready(epoch: 1))
+        #expect(queue.gpu.deviceFeatures == features)
+        queue.transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(!queue.transport.queues[0].ready)
+        #expect(queue.transport.read(offset: 0x070, width: 4) == 0)
+        #expect(!queue.gpu.requestRendererWorkerRestart())
+    }
+
+    @Test func softwareGPUCannotRequestAuthenticatedWorkerRestart() throws {
+        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000)
+        #expect(!gpu.requestRendererWorkerRestart())
+    }
+
+    @Test func workerDeathRequestsOnlyVirtioGPUReset() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4), workerGeneration: 7)
+        let unavailable = RendererFailureBoundaryRecorder()
         let lane = try DoryRendererWorkerVirtioCommandLane(
             broker: fixture.broker,
             deviceGeneration: 1
         )
         let queue = try RendererWorkerGPUQueueFixture(
             lane: lane,
-            guestBase: 0x4_8000_0000
+            guestBase: 0x4_8000_0000,
+            onRendererWorkerUnavailable: { unavailable.record($1, workerGeneration: $0) }
         )
         queue.gpu.deviceReady(transport: queue.transport)
 
@@ -2097,6 +3644,7 @@ import Testing
         })
         #expect(queue.transport.read(offset: 0x060, width: 4) & 2 != 0)
         #expect(queue.transport.read(offset: 0x0FC, width: 4) == 1)
+        #expect(unavailable.entries.map(\.workerGeneration) == [7])
         guard case .failed(epoch: 1, _) = queue.gpu.rendererLifecycleHealth else {
             Issue.record("renderer worker death did not quarantine only the GPU generation")
             return
@@ -2104,6 +3652,7 @@ import Testing
     }
 
     @Test func failedWorkerCanBeReplacedAfterDeviceResetWithoutRebuildingVM() async throws {
+        let failures = RendererFailureBoundaryRecorder()
         let oldFixture = try rendererBrokerFixture(
             limits: rendererLimits(maximumInFlight: 4),
             workerGeneration: 7
@@ -2114,8 +3663,10 @@ import Testing
         )
         let queue = try RendererWorkerGPUQueueFixture(
             lane: oldLane,
-            guestBase: 0x4_C000_0000
+            guestBase: 0x4_C000_0000,
+            onRendererWorkerFailure: { failures.record($0) }
         )
+        failures.attach(queue.transport)
         queue.gpu.deviceReady(transport: queue.transport)
 
         oldFixture.channel.emit(.interrupted)
@@ -2127,7 +3678,10 @@ import Testing
         })
         queue.transport.write(offset: 0x070, value: 0, width: 4)
         #expect(queue.transport.read(offset: 0x070, width: 4) == 0)
-        queue.reconfigureAfterReset()
+        #expect(failures.entries.filter {
+            $0.reason == "virtio-gpu device reset revoked the one-shot renderer generation"
+        } == [.init(reason: "virtio-gpu device reset revoked the one-shot renderer generation", controlQueueReady: false)])
+        queue.reconfigureAfterReset(driverReady: false)
         queue.transport.write(offset: 0x070, value: 1, width: 4)
         queue.transport.write(offset: 0x070, value: 3, width: 4)
         // Device features are immutable across status-0. Linux probes them before the
@@ -2150,7 +3704,14 @@ import Testing
             broker: replacementFixture.broker,
             deviceGeneration: 1
         )
-        try queue.gpu.installRendererWorkerReplacementAfterDeviceReset(replacementLane)
+        try queue.gpu.installRendererWorkerReplacementAfterDeviceReset(
+            replacementLane,
+            onInstalledBeforeCommandReplay: {
+                queue.gpu.handleKick(queue: 0, transport: queue.transport)
+                #expect((try? queue.usedIndex()) == 0)
+                #expect(replacementFixture.channel.sendCount == 0)
+            }
+        )
 
         #expect(queue.gpu.rendererLifecycleHealth == .ready(epoch: 2))
         #expect(replacementLane.snapshot().state == .active(deviceGeneration: 2))
@@ -2158,6 +3719,9 @@ import Testing
         #expect(rendererGPUUInt32(queue.gpu.configSpace, at: 12) == 2)
         #expect(queue.transport.read(offset: 0x070, width: 4) == 3)
 
+        // The installed worker cannot consume a queue before the guest admits DRIVER_OK.
+        #expect(replacementFixture.channel.sendCount == 0)
+        finishMMIOTestDriverNegotiation(queue.transport)
         #expect(await rendererEventually { replacementFixture.channel.sendCount == 1 })
         #expect(oldFixture.channel.sendCount == 0)
         replacementFixture.channel.complete(
@@ -2166,6 +3730,185 @@ import Testing
         )
         #expect(await rendererEventually { (try? queue.usedIndex()) == 1 })
         #expect(try queue.responseType() == 0x1100)
+    }
+
+    @Test(arguments: [false, true])
+    func workerDeathResetDrainsConsumersBeforeReplacementAndResourceIDReuse(unrefInFlight: Bool) async throws {
+        let old = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4), workerGeneration: 7)
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: old.broker, deviceGeneration: 1)
+        let releases = WorkerDeathReleaseRecorder()
+        let failures = RendererFailureBoundaryRecorder()
+        let queue = try RendererWorkerGPUQueueFixture(
+            lane: lane, guestBase: 0x4_C200_0000, scanoutCount: 1,
+            onScanoutResourceReleased: { releases.append($0) },
+            onRendererWorkerFailure: { failures.record($0) }
+        )
+        queue.gpu.deviceReady(transport: queue.transport)
+        failures.attach(queue.transport)
+        try queue.submit(rendererGPUResourceCreate2DRequest(resourceID: 41, width: 64, height: 64))
+        #expect(await rendererEventually { old.channel.sendCount == 1 })
+        old.channel.complete(at: 0, with: .success(rendererResourceGenerationReply(41)))
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 1 })
+        if unrefInFlight {
+            try queue.submit(rendererGPUResourceUnrefRequest(resourceID: 41))
+            try #require(releases.values.first).acknowledgeAll()
+            #expect(await rendererEventually { old.channel.sendCount == 2 })
+        }
+        old.channel.emit(.interrupted)
+        #expect(await rendererEventually {
+            if case .failed = queue.gpu.rendererLifecycleHealth { return true }; return false
+        })
+        let replacement = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4), workerGeneration: 8)
+        let next = try DoryRendererWorkerVirtioCommandLane(broker: replacement.broker, deviceGeneration: 1)
+        let reset = rendererBlockingOperation { queue.transport.write(offset: 0x070, value: 0, width: 4) }
+        let releaseCount = unrefInFlight ? 2 : 1
+        #expect(await rendererEventually { releases.values.count == releaseCount })
+        let release = try #require(releases.values.last)
+        #expect(release.resourceID == 41)
+        #expect(throws: VirtioGPURendererWorkerReplacementError.deviceResetRequired) {
+            try queue.gpu.installRendererWorkerReplacementAfterDeviceReset(next)
+        }
+        #expect(!failures.entries.contains { $0.reason.hasPrefix("virtio-gpu device reset revoked") })
+        release.acknowledgeAll()
+        try await reset.value
+        #expect(queue.gpu.rendererLifecycleHealth == .notConfigured)
+        #expect(failures.entries.last?.controlQueueReady == false)
+        try queue.gpu.installRendererWorkerReplacementAfterDeviceReset(next)
+        try queue.initializeFreshGuestQueueRings()
+        queue.reconfigureAfterReset()
+        try queue.submit(rendererGPUResourceCreate2DRequest(resourceID: 41, width: 64, height: 64))
+        #expect(await rendererEventually { replacement.channel.sendCount == 1 })
+        replacement.channel.complete(at: 0, with: .success(rendererResourceGenerationReply(42)))
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 1 })
+        #expect(try queue.responseType() == 0x1100)
+        // No old uncertain completion may reach the new used ring.
+        old.channel.complete(at: unrefInFlight ? 1 : 0, with: .success(.init(payload: Data(), descriptors: [])))
+        #expect(await rendererEventually { await old.broker.snapshot().lateReplies > 0 })
+        #expect(try queue.usedIndex() == 1)
+    }
+
+    @Test func workerDeathRetirementTimeoutCannotBeBypassedByReplacement() async throws {
+        let old = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4), workerGeneration: 7)
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: old.broker, deviceGeneration: 1)
+        let releases = WorkerDeathReleaseRecorder()
+        let failures = RendererFailureBoundaryRecorder()
+        let queue = try RendererWorkerGPUQueueFixture(
+            lane: lane, guestBase: 0x4_C300_0000, scanoutCount: 1, quiescenceTimeout: 0.1,
+            onScanoutResourceReleased: { releases.append($0) },
+            onRendererWorkerFailure: { failures.record($0) }
+        )
+        queue.gpu.deviceReady(transport: queue.transport)
+        try queue.submit(rendererGPUResourceCreate2DRequest(resourceID: 41, width: 64, height: 64))
+        #expect(await rendererEventually { old.channel.sendCount == 1 })
+        old.channel.complete(at: 0, with: .success(rendererResourceGenerationReply(41)))
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 1 })
+        old.channel.emit(.interrupted)
+        #expect(await rendererEventually {
+            if case .failed = queue.gpu.rendererLifecycleHealth { return true }; return false
+        })
+        queue.transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(queue.gpu.rendererLifecycleHealth == .failed(epoch: 2, fault: .quiescenceTimedOut(epoch: 2)))
+        try #require(releases.values.last).acknowledgeAll()
+        #expect(!failures.entries.contains { $0.reason.hasPrefix("virtio-gpu device reset revoked") })
+        let replacement = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4), workerGeneration: 8)
+        let next = try DoryRendererWorkerVirtioCommandLane(broker: replacement.broker, deviceGeneration: 1)
+        #expect(throws: VirtioGPURendererWorkerReplacementError.deviceResetRequired) {
+            try queue.gpu.installRendererWorkerReplacementAfterDeviceReset(next)
+        }
+    }
+
+    @Test func workerDeathShutdownStillWaitsForDisplayConsumersWithoutRequestingReplacement() async throws {
+        let old = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4), workerGeneration: 7)
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: old.broker, deviceGeneration: 1)
+        let releases = WorkerDeathReleaseRecorder()
+        let failures = RendererFailureBoundaryRecorder()
+        let queue = try RendererWorkerGPUQueueFixture(
+            lane: lane, guestBase: 0x4_C400_0000, scanoutCount: 1,
+            onScanoutResourceReleased: { releases.append($0) },
+            onRendererWorkerFailure: { failures.record($0) }
+        )
+        queue.gpu.deviceReady(transport: queue.transport)
+        try queue.submit(rendererGPUResourceCreate2DRequest(resourceID: 41, width: 64, height: 64))
+        #expect(await rendererEventually { old.channel.sendCount == 1 })
+        old.channel.complete(at: 0, with: .success(rendererResourceGenerationReply(41)))
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 1 })
+        old.channel.emit(.interrupted)
+        #expect(await rendererEventually {
+            if case .failed = queue.gpu.rendererLifecycleHealth { return true }; return false
+        })
+        let stopped = queue.gpu.quiesce(reason: .shutdown)
+        #expect(stopped.wait(timeout: 0.01) == nil)
+        try #require(releases.values.last).acknowledgeAll()
+        #expect(stopped.wait(timeout: 1) == .completed)
+        #expect(!queue.gpu.machineResetCompleted())
+        #expect(!failures.entries.contains { $0.reason.hasPrefix("virtio-gpu device reset revoked") })
+    }
+
+    @Test func workerReplacementCannotCrossShutdownOrAnIncompleteTransportReset() async throws {
+        let old = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4), workerGeneration: 7)
+        let lane = try DoryRendererWorkerVirtioCommandLane(broker: old.broker, deviceGeneration: 1)
+        let queue = try RendererWorkerGPUQueueFixture(lane: lane, guestBase: 0x4_C500_0000)
+        queue.gpu.deviceReady(transport: queue.transport)
+        old.channel.emit(.interrupted)
+        #expect(await rendererEventually {
+            if case .failed = queue.gpu.rendererLifecycleHealth { return true }; return false
+        })
+        let nextWorker = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4), workerGeneration: 8)
+        let next = try DoryRendererWorkerVirtioCommandLane(broker: nextWorker.broker, deviceGeneration: 1)
+        let localCleanup = queue.gpu.quiesce(reason: .deviceReset)
+        #expect(localCleanup.wait(timeout: 1) == .completed)
+        // Quiescence alone is not permission to replace underneath the guest's live queues.
+        #expect(throws: VirtioGPURendererWorkerReplacementError.deviceResetRequired) {
+            try queue.gpu.installRendererWorkerReplacementAfterDeviceReset(next)
+        }
+        queue.transport.write(offset: 0x070, value: 0, width: 4)
+        // Simulate a slow provider returning after the owner has already stopped the GPU.
+        let shutdown = queue.gpu.quiesce(reason: .shutdown)
+        #expect(shutdown.wait(timeout: 1) == .completed)
+        #expect(!queue.gpu.machineResetCompleted())
+        #expect(throws: VirtioGPURendererWorkerReplacementError.deviceResetRequired) {
+            try queue.gpu.installRendererWorkerReplacementAfterDeviceReset(next)
+        }
+        #expect(next.snapshot().state == .active(deviceGeneration: 1))
+        #expect(nextWorker.channel.sendCount == 0)
+    }
+
+    @Test func metalFailureMatchesWorkerIdentityButRevokesDeviceEpoch() throws {
+        let fixture = try rendererBrokerFixture(
+            limits: rendererLimits(maximumInFlight: 4),
+            workerGeneration: 7
+        )
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 1
+        )
+        let failures = RendererFailureBoundaryRecorder()
+        let queue = try RendererWorkerGPUQueueFixture(
+            lane: lane,
+            guestBase: 0x4_C100_0000,
+            onRendererWorkerFailure: { failures.record($0) }
+        )
+        queue.gpu.deviceReady(transport: queue.transport)
+
+        queue.gpu.reportRendererWorkerPresentationFailure(
+            workerGeneration: 1,
+            reason: "stale or mismatched display callback"
+        )
+        #expect(queue.gpu.rendererLifecycleHealth == .ready(epoch: 1))
+        #expect(lane.snapshot().state == .active(deviceGeneration: 1))
+
+        queue.gpu.reportRendererWorkerPresentationFailure(
+            workerGeneration: 7,
+            reason: "Metal command buffer failed"
+        )
+        guard case .failed(epoch: 1, _) = queue.gpu.rendererLifecycleHealth else {
+            Issue.record("matching worker Metal failure did not quarantine its GPU epoch")
+            return
+        }
+        #expect(lane.snapshot().state == .revoked(deviceGeneration: 1))
+        #expect(failures.entries.count == 1)
+        #expect(failures.entries[0].reason.contains("worker generation 7 device epoch 1"))
+        #expect(failures.entries[0].reason.contains("Metal command buffer failed"))
     }
 
     @Test func replacementReplaysDeferredControlKickWhenResetQueueBecomesReady() async throws {
@@ -2251,7 +3994,7 @@ import Testing
             try queue.gpu.installRendererWorkerReplacementAfterDeviceReset(replacementLane)
         }
         #expect(replacementLane.snapshot().state == .active(deviceGeneration: 1))
-        guard case .failed = queue.gpu.rendererLifecycleHealth else {
+        guard case .notConfigured = queue.gpu.rendererLifecycleHealth else {
             Issue.record("capability drift unexpectedly reopened renderer admission")
             return
         }
@@ -2432,6 +4175,45 @@ import Testing
         #expect(queue.gpu.statistics.fences == 1)
         #expect(lane.snapshot().armedFences == 0)
         #expect(lane.snapshot().completedFences == 1)
+    }
+
+    @Test func mmioFenceDeadlineRequestsGPUResetWithoutPublishingSuccess() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker, deviceGeneration: 1,
+            fenceCompletionTimeoutNanoseconds: 50_000_000
+        )
+        let failures = RendererFailureBoundaryRecorder()
+        let queue = try RendererWorkerGPUQueueFixture(
+            lane: lane, guestBase: 0x7_1000_0000,
+            onRendererWorkerFailure: { failures.record($0) }
+        )
+        failures.attach(queue.transport)
+        queue.gpu.deviceReady(transport: queue.transport)
+        try queue.submit(rendererGPUSubmitRequest(
+            contextID: 7, command: [9, 8, 7, 6],
+            fenceID: 99, ringIndex: 3, contextFence: true
+        ))
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        fixture.channel.complete(at: 0, with: .success(.init(payload: Data(), descriptors: [])))
+        try #require(await rendererEventually { fixture.channel.sendCount == 2 })
+        let command = try fixture.channel.command(at: 1, limits: fixture.bootstrap.limits)
+        let (descriptor, signal) = try makeUnsignaledFenceDescriptor()
+        defer { close(signal) }
+        fixture.channel.complete(at: 1, with: .success(.init(
+            payload: command.payload, descriptors: [descriptor]
+        )))
+        try #require(await rendererEventually { lane.snapshot().armedFences == 1 })
+        try #require(await rendererEventually {
+            queue.transport.read(offset: 0x070, width: 4) & 0x40 != 0
+        })
+        #expect(lane.snapshot().state == .failed(deviceGeneration: 1))
+        #expect(lane.snapshot().armedFences == 0)
+        #expect(lane.snapshot().completedFences == 0)
+        #expect(try queue.usedIndex() == 0)
+        #expect(queue.gpu.statistics.rendererCommandUncertainties > 0)
+        #expect(failures.entries.count == 1)
+        #expect(await rendererEventually { fixture.channel.invalidateCount == 1 })
     }
 
     @Test func contextCreationAndSubmitShareOneOrderedWorkerLane() async throws {
@@ -3236,11 +5018,28 @@ import Testing
             at: 2,
             limits: fixture.bootstrap.limits
         ).operation == .releaseScanoutLease)
+        // Guest RESOURCE_UNREF may follow a completed RESOURCE_FLUSH before the display has
+        // retired its lease. It must wait for the worker release acknowledgement, not be sent
+        // early and rejected as a still-live resource.
+        try queue.submit(rendererGPUResourceUnrefRequest(resourceID: 31))
+        #expect(fixture.channel.sendCount == 3)
+        #expect(try queue.usedIndex() == 3)
         fixture.channel.complete(
             at: 2,
             with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
         )
         #expect(await rendererEventually { lane.snapshot().liveScanoutLeases == 0 })
+        try #require(await rendererEventually { fixture.channel.sendCount == 4 })
+        #expect(try fixture.channel.command(
+            at: 3,
+            limits: fixture.bootstrap.limits
+        ).operation == .unrefResource)
+        fixture.channel.complete(
+            at: 3,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        #expect(await rendererEventually { (try? queue.usedIndex()) == 4 })
+        #expect(try queue.responseType() == 0x1100)
         #expect(softwareFrames.values.isEmpty)
         #expect(queue.gpu.statistics.rendererWorkerScanoutCopyBytes == 0)
     }
@@ -4232,7 +6031,7 @@ import Testing
             hostVisibleMemory: hostVisibleMemory,
             onScanoutFrame: { frames.record($0) },
             onMetalScanout: { metalFrames.record($0) },
-            onStockFenceVerification: { outcomes.record($0) }
+            onStockFenceVerification: { _, outcome in outcomes.record(outcome) }
         )
         let contextID: UInt32 = 23
         let resourceID: UInt32 = 47
@@ -4790,10 +6589,48 @@ private final class RendererScanoutDisableRecorder: @unchecked Sendable {
     }
 }
 
+private func rendererResourceGenerationReply(_ generation: UInt64) -> DoryRendererWorkerChannelReply {
+    let value = generation.littleEndian
+    return DoryRendererWorkerChannelReply(payload: withUnsafeBytes(of: value) { Data($0) }, descriptors: [])
+}
+
+private func rendererBackingReclaimOperations() -> GuestMemoryReclaimOperations {
+    GuestMemoryReclaimOperations(unmap: { _, _ in true }, map: { _, _, _ in true },
+        markReusable: { _, _ in true }, markInUse: { _, _ in true })
+}
+
+private func publishRendererWorkerBacking(
+    queue: RendererWorkerGPUQueueFixture,
+    fixture: RendererBrokerFixture,
+    resourceID: UInt32
+) async throws {
+    let sends = fixture.channel.sendCount
+    let used = try queue.usedIndex()
+    try queue.submit(rendererGPUResourceCreate2DRequest(resourceID: resourceID, width: 64, height: 64))
+    try #require(await rendererEventually { fixture.channel.sendCount == sends + 1 })
+    fixture.channel.complete(at: sends, with: .success(rendererResourceGenerationReply(
+        fixture.bootstrap.generation.rawValue * 100 + UInt64(resourceID))))
+    try #require(await rendererEventually { (try? queue.usedIndex()) == used + 1 })
+    try queue.submit(rendererGPUAttachBackingRequest(resourceID: resourceID,
+        entries: [(queue.backingBuffer, UInt32(HostPage.size))]))
+    try #require(await rendererEventually { fixture.channel.sendCount == sends + 2 })
+    fixture.channel.complete(at: sends + 1, with: .success(.init(payload: Data(), descriptors: [])))
+    try #require(await rendererEventually { (try? queue.usedIndex()) == used + 2 })
+    #expect(try queue.responseType() == 0x1100)
+}
+
+private final class WorkerDeathReleaseRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = [VirtioGPUScanoutResourceRelease]()
+    var values: [VirtioGPUScanoutResourceRelease] { lock.withLock { stored } }
+    func append(_ release: VirtioGPUScanoutResourceRelease) { lock.withLock { stored.append(release) } }
+}
+
 private final class RendererFailureBoundaryRecorder: @unchecked Sendable {
     struct Entry: Equatable {
         var reason: String
         var controlQueueReady: Bool?
+        var workerGeneration: UInt64? = nil
     }
 
     private let lock = NSLock()
@@ -4804,11 +6641,12 @@ private final class RendererFailureBoundaryRecorder: @unchecked Sendable {
         lock.withLock { self.transport = transport }
     }
 
-    func record(_ reason: String) {
+    func record(_ reason: String, workerGeneration: UInt64? = nil) {
         lock.withLock {
             recorded.append(Entry(
                 reason: reason,
-                controlQueueReady: transport?.queues[0].ready
+                controlQueueReady: transport?.queues[0].ready,
+                workerGeneration: workerGeneration
             ))
         }
     }
@@ -4840,17 +6678,23 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
     init(
         lane: DoryRendererWorkerVirtioCommandLane? = nil,
         guestBase: UInt64,
+        reclaimOperations: GuestMemoryReclaimOperations? = nil,
         scanoutCount: UInt32 = 0,
         fenceTimeoutNanoseconds: UInt64 = 10_000_000_000,
+        maximumTrackedResources: Int = 4096,
+        quiescenceTimeout: TimeInterval = 5,
         graphicsTraceContext: VirtioGPUGraphicsTraceContext? = nil,
         onGraphicsTrace: (@Sendable (VirtioGPUGraphicsTraceEvent) -> Void)? = nil,
         hostVisibleMemory: VirtioGPUHostVisibleMemory? = nil,
         onScanoutFrame: (@Sendable (VirtioGPUScanoutFrame) -> Void)? = nil,
         onMetalScanout: (@Sendable (VirtioGPUMetalScanoutUpdate) -> Void)? = nil,
         onScanoutDisabled: (@Sendable (UInt32) -> Void)? = nil,
+        onScanoutResourceReleased: (@Sendable (VirtioGPUScanoutResourceRelease) -> Void)? = nil,
         onStockFenceVerification:
-            (@Sendable (VirtioGPUStockFenceVerificationOutcome) -> Void)? = nil,
-        onRendererWorkerFailure: (@Sendable (String) -> Void)? = nil
+            (@Sendable (UInt64, VirtioGPUStockFenceVerificationOutcome) -> Void)? = nil,
+        onRendererWorkerFailure: (@Sendable (String) -> Void)? = nil,
+        onRendererWorkerUnavailable: (@Sendable (UInt64, String) -> Void)? = nil,
+        driverReady: Bool = true
     ) throws {
         descriptorTable = guestBase + 0x1_000
         availableRing = guestBase + 0x4_000
@@ -4863,7 +6707,12 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
         cursorUsedRing = guestBase + 0x9_000
         cursorRequestBuffer = guestBase + 0x30_000
         cursorResponseBuffer = guestBase + 0x38_000
-        memory = try GuestMemory(guestBase: guestBase, size: 32 * HostPage.size)
+        if let reclaimOperations {
+            memory = try GuestMemory(guestBase: guestBase, size: 32 * HostPage.size,
+                reclaimOperations: reclaimOperations)
+        } else {
+            memory = try GuestMemory(guestBase: guestBase, size: 32 * HostPage.size)
+        }
         gpu = VirtioGPU(
             hostMemoryBase: guestBase + 0x1_0000_0000,
             scanoutCount: scanoutCount,
@@ -4872,16 +6721,21 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
             graphicsTraceContext: graphicsTraceContext,
             onGraphicsTrace: onGraphicsTrace,
             fenceTimeoutNanoseconds: fenceTimeoutNanoseconds,
+            maximumTrackedResources: maximumTrackedResources,
+            quiescenceTimeout: quiescenceTimeout,
             onScanoutFrame: onScanoutFrame,
             onMetalScanout: onMetalScanout,
+            onScanoutResourceReleased: onScanoutResourceReleased,
             onScanoutDisabled: onScanoutDisabled,
             onRendererWorkerFailure: onRendererWorkerFailure,
+            onRendererWorkerUnavailable: onRendererWorkerUnavailable,
             onStockFenceVerification: onStockFenceVerification
         )
-        transport = VirtioMMIOTransport(
+        transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
-            memory: memory
+            memory: memory,
+            driverReady: driverReady
         ) {}
         transport.queues[0].configure(
             size: 8,
@@ -4899,7 +6753,16 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
         transport.queues[1].setReady(true)
     }
 
-    func reconfigureAfterReset() {
+    func initializeFreshGuestQueueRings() throws {
+        availableIndex = 0
+        cursorAvailableIndex = 0
+        try memory.write(UInt16(0), at: availableRing + 2)
+        try memory.write(UInt16(0), at: usedRing + 2)
+        try memory.write(UInt16(0), at: cursorAvailableRing + 2)
+        try memory.write(UInt16(0), at: cursorUsedRing + 2)
+    }
+
+    func reconfigureAfterReset(driverReady: Bool = true) {
         transport.queues[0].configure(
             size: 8,
             descriptorTable: descriptorTable,
@@ -4914,6 +6777,7 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
             usedRing: cursorUsedRing
         )
         transport.queues[1].setReady(true)
+        if driverReady { finishMMIOTestDriverNegotiation(transport) }
     }
 
     func reconfigureControlQueueAfterReset(ready: Bool) {
@@ -4924,6 +6788,7 @@ private final class RendererWorkerGPUQueueFixture: @unchecked Sendable {
             usedRing: usedRing
         )
         transport.queues[0].setReady(ready)
+        finishMMIOTestDriverNegotiation(transport)
     }
 
     func activateControlQueueAfterReset() {
@@ -5567,11 +7432,15 @@ private func rendererGPUUInt32(_ bytes: [UInt8], at offset: Int) -> UInt32 {
 
 private func rendererBrokerFixture(
     limits: DoryRendererWorkerLimits = .production,
-    workerGeneration: UInt64 = 7
+    workerGeneration: UInt64 = 7,
+    workspaceID: UUID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+    producerFenceContract: DoryRendererProducerFenceContract = .managedLinux612106PrepareFBV1
 ) throws -> RendererBrokerFixture {
     let bootstrap = try makeRendererBootstrap(
         limits: limits,
-        workerGeneration: workerGeneration
+        workerGeneration: workerGeneration,
+        workspaceID: workspaceID,
+        producerFenceContract: producerFenceContract
     )
     let receipt = try makeRendererReceipt(bootstrap: bootstrap)
     let channel = RecordingRendererWorkerChannel()
@@ -5586,18 +7455,48 @@ private func rendererBrokerFixture(
     )
 }
 
+private func rendererPCVenusFixture() throws -> RendererBrokerFixture {
+    let bootstrap = try makeRendererBootstrap(
+        producerFenceContract: .doryPCX8664LinuxVenusPrepareFBV1,
+        hostVisibleArenaByteCount: DoryRendererWorkerBootstrap.minimumHostVisibleArenaByteCount
+    )
+    let receipt = try makeRendererReceipt(bootstrap: bootstrap)
+    let channel = RecordingRendererWorkerChannel()
+    let (descriptor, _) = try makeUnlinkedRegion(
+        byteCount: bootstrap.hostVisibleArenaByteCount,
+        readOnly: false
+    )
+    let arena = try DoryRendererWorkerHostVisibleArena(
+        generation: bootstrap.generation,
+        byteCount: bootstrap.hostVisibleArenaByteCount,
+        descriptor: descriptor
+    )
+    return try RendererBrokerFixture(
+        bootstrap: bootstrap,
+        channel: channel,
+        broker: DoryRendererWorkerBroker(
+            bootstrap: bootstrap,
+            capabilityReceipt: receipt,
+            hostVisibleArena: arena,
+            channel: channel
+        )
+    )
+}
+
 private func makeRendererBootstrap(
     limits: DoryRendererWorkerLimits = .production,
-    workerGeneration: UInt64 = 7
+    workerGeneration: UInt64 = 7,
+    workspaceID: UUID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+    producerFenceContract: DoryRendererProducerFenceContract = .managedLinux612106PrepareFBV1,
+    hostVisibleArenaByteCount: UInt64 = 0
 ) throws -> DoryRendererWorkerBootstrap {
     try DoryRendererWorkerBootstrap(
-        workspaceID: DoryRendererWorkspaceID(
-            rawValue: #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
-        ),
+        workspaceID: DoryRendererWorkspaceID(rawValue: workspaceID),
         generation: DoryRendererWorkerGeneration(rawValue: workerGeneration),
         sourceTuple: .productionCandidate,
-        producerFenceContract: .managedLinux612106PrepareFBV1,
-        requestedCapabilities: .productionAcceleration,
+        producerFenceContract: producerFenceContract,
+        requestedCapabilities: producerFenceContract == .doryPCX8664LinuxVirGL2PrepareFBV1
+            ? .pcVirGL2Acceleration : .productionAcceleration,
         artifacts: DoryRendererArtifactManifest(
             candidateInventory: rendererDigest(1),
             managedGuestKernel: rendererDigest(2),
@@ -5607,7 +7506,8 @@ private func makeRendererBootstrap(
                 bytes: Data(repeating: 5, count: DoryCodeDirectoryHash.byteCount)
             )
         ),
-        limits: limits
+        limits: limits,
+        hostVisibleArenaByteCount: hostVisibleArenaByteCount
     )
 }
 
@@ -5616,7 +7516,8 @@ private func makeRendererReceipt(
 ) throws -> DoryRendererCapabilityReceipt {
     try DoryRendererCapabilityReceipt(
         accepting: bootstrap,
-        features: .productionAcceleration,
+        features: bootstrap.producerFenceContract == .doryPCX8664LinuxVirGL2PrepareFBV1
+            ? .pcVirGL2Acceleration : .productionAcceleration,
         capsets: [
             DoryRendererCapsetAttestation(
                 id: 2,
@@ -5628,7 +7529,7 @@ private func makeRendererReceipt(
                 maximumVersion: 0,
                 data: Data(repeating: 22, count: 32)
             ),
-        ]
+        ].filter { bootstrap.producerFenceContract != .doryPCX8664LinuxVirGL2PrepareFBV1 || $0.id == 2 }
     )
 }
 
@@ -5664,6 +7565,20 @@ private func rendererEventually(
         try? await Task.sleep(nanoseconds: 1_000_000)
     }
     return false
+}
+
+/// The synchronous PC renderer adapter runs on a dedicated VM execution thread in production.
+/// Blocking cooperative test tasks can starve the broker tasks needed to complete their replies.
+private func rendererBlockingOperation<Value: Sendable>(
+    _ operation: @escaping @Sendable () throws -> Value
+) -> Task<Value, any Error> {
+    Task {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result(catching: operation))
+            }
+        }
+    }
 }
 
 private func expectRendererBrokerError<Success>(
@@ -5815,6 +7730,39 @@ private final class DoryPCVirGLFenceCompletionRecorder: @unchecked Sendable {
     }
 }
 
+private final class DoryPCVenusScanoutAcceptanceRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func accept(_ update: DoryPCVirGLScanoutUpdate) -> Bool {
+        lock.withLock {
+            count += 1
+            return count > 1
+        }
+    }
+}
+
+private final class DoryPCVirGLRevocationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Int] = []
+    private var mappingStorage: [Int] = []
+    private var aperture: DoryPCHostVisibleGPUAperture?
+
+    var workerInvalidations: [Int] { lock.withLock { storage } }
+    var mappedAtRevocation: [Int] { lock.withLock { mappingStorage } }
+
+    func bindAperture(_ aperture: DoryPCHostVisibleGPUAperture) {
+        lock.withLock { self.aperture = aperture }
+    }
+
+    func record(workerInvalidations: Int) {
+        lock.withLock {
+            storage.append(workerInvalidations)
+            if let aperture { mappingStorage.append(aperture.snapshot.mappings.count) }
+        }
+    }
+}
+
 private final class RendererLaneRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var commandSuccesses = 0
@@ -5911,11 +7859,23 @@ private final class RendererLaneRecorder: @unchecked Sendable {
 private final class DoryPCVirGLTestMemory: DoryVirtioGuestMemory, @unchecked Sendable {
     private let lock = NSLock()
     private var bytes: [UInt8]
+    private var shortReadAddress: UInt64?
 
     init(byteCount: Int) { bytes = .init(repeating: 0, count: byteCount) }
 
     func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
-        try lock.withLock { Array(bytes[try checked(address, byteCount)]) }
+        try lock.withLock {
+            let range = try checked(address, byteCount)
+            if shortReadAddress == address {
+                shortReadAddress = nil
+                return Array(bytes[range].dropLast())
+            }
+            return Array(bytes[range])
+        }
+    }
+
+    func shortenNextRead(at address: UInt64) {
+        lock.withLock { shortReadAddress = address }
     }
 
     func validate(at address: UInt64, byteCount: Int, deviceWillWrite _: Bool) throws {
@@ -5974,6 +7934,23 @@ private final class RecordingRendererWorkerChannel:
     private var lifecycleHandler: (@Sendable (DoryRendererWorkerChannelEvent) -> Void)?
     private var exchanges = [PendingExchange]()
     private var invalidations = 0
+    private var retirementHandlers = [@Sendable (Int32) -> Void]()
+    private var provenExit: Int32?
+    private var automaticRetirementProof = true
+    private var storedCrashRequest: Data?
+    private var crashAcknowledgement: (@Sendable (Bool, UInt32) -> Void)?
+    private let crashInterruption = DoryRendererWorkerConnectionInterruptionRelay()
+
+    func qualificationCrash(exactBytes: Data, acknowledgement: @escaping @Sendable (Bool, UInt32) -> Void,
+                            interrupted: @escaping @Sendable () -> Void) {
+        lock.withLock { storedCrashRequest = exactBytes; crashAcknowledgement = acknowledgement }
+        crashInterruption.install(interrupted)
+    }
+    var crashRequest: Data? { lock.withLock { storedCrashRequest } }
+    func acknowledgeCrash(accepted: Bool, count: UInt32) {
+        let callback = lock.withLock { crashAcknowledgement }
+        callback?(accepted, count)
+    }
 
     func installLifecycleHandler(
         _ handler: @escaping @Sendable (DoryRendererWorkerChannelEvent) -> Void
@@ -6007,13 +7984,46 @@ private final class RecordingRendererWorkerChannel:
     }
 
     func invalidate() {
-        lock.withLock { invalidations += 1 }
+        crashInterruption.invalidateLocally()
+        let prove = lock.withLock { () -> Bool in
+            invalidations += 1
+            return automaticRetirementProof
+        }
+        if prove { confirmRetirement() }
+    }
+
+    /// Explicit fake kernel-exit authority, not the production protocol's default behavior.
+    var confirmsRetirementOnInvalidate: Bool {
+        get { lock.withLock { automaticRetirementProof } }
+        set { lock.withLock { automaticRetirementProof = newValue } }
+    }
+
+    func installRetirementHandler(_ handler: @escaping @Sendable (Int32) -> Void) {
+        let immediate = lock.withLock { () -> Int32? in
+            if let provenExit { return provenExit }
+            retirementHandlers.append(handler)
+            return nil
+        }
+        if let immediate { handler(immediate) }
+    }
+
+    func confirmRetirement(processIdentifier: Int32 = 41_007) {
+        let handlers = lock.withLock { () -> [@Sendable (Int32) -> Void] in
+            guard provenExit == nil else { return [] }
+            provenExit = processIdentifier
+            let handlers = retirementHandlers
+            retirementHandlers.removeAll()
+            return handlers
+        }
+        for handler in handlers { handler(processIdentifier) }
     }
 
     var sendCount: Int { lock.withLock { exchanges.count } }
     var invalidateCount: Int { lock.withLock { invalidations } }
 
     func emit(_ event: DoryRendererWorkerChannelEvent) {
+        if event == .interrupted { crashInterruption.connectionInterrupted() }
+        else { crashInterruption.invalidateLocally() }
         let handler = lock.withLock { lifecycleHandler }
         handler?(event)
     }
@@ -6129,6 +8139,13 @@ private final class RecordingRendererWorkerChannel:
         let completion = lock.withLock { exchanges[index].completion }
         completion(result)
     }
+}
+
+private final class RendererCrashBrokerAdmissionHolder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: DoryRendererCrashQualificationAdmission?
+    var value: DoryRendererCrashQualificationAdmission? { lock.withLock { stored } }
+    func store(_ admission: DoryRendererCrashQualificationAdmission) { lock.withLock { stored = admission } }
 }
 
 private final class SilentRendererWorkerBootstrapChannel:

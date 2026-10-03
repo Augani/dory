@@ -129,6 +129,33 @@ import Testing
         ) == .init(x: 0.5, y: 0))
     }
 
+    @Test func pointerTopologyIgnoresReservedInactiveScanoutsAcrossHotplug() {
+        let topology = DesktopPointerTopology(
+            sizes: [
+                .init(width: 1_920, height: 1_080),
+                .init(width: 1_280, height: 800),
+                .init(width: 1_280, height: 800),
+            ],
+            activeCount: 1
+        )
+        #expect(topology.normalizedPoint(
+            scanoutID: 0, localX: 0.5, localY: 0.5
+        ) == .init(x: 0.5, y: 0.5))
+
+        topology.updateActiveTopology([
+            .init(width: 1_920, height: 1_080),
+            .init(width: 1_920, height: 1_080),
+        ])
+        #expect(topology.normalizedPoint(
+            scanoutID: 1, localX: 0, localY: 0
+        ) == .init(x: 0.5, y: 0))
+
+        topology.updateActiveTopology([.init(width: 1_920, height: 1_080)])
+        #expect(topology.normalizedPoint(
+            scanoutID: 0, localX: 0.5, localY: 0.5
+        ) == .init(x: 0.5, y: 0.5))
+    }
+
     @Test func scanoutAndPointerShareTheTopLeftOriginContract() {
         let topOrigin = DesktopScanoutTextureCoordinates.sourceUV(
             sourceRect: .init(x: 100, y: 50, width: 400, height: 200),

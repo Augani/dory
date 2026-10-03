@@ -25,11 +25,14 @@ public enum DoryVMDisplayFrameTransport: String, Codable, Sendable {
 /// early kernel modesetting). Unlike renderer leases, this transport makes no producer-fence or
 /// zero-copy claim; the runner has already copied a coherent full surface into the descriptor.
 public struct DoryVMDisplayCPUFrameLease: Codable, Equatable, Sendable {
-    public static let schemaVersion: UInt16 = 1
+    public static let schemaVersion: UInt16 = 2
 
     public var schemaVersion: UInt16
     public var leaseID: UUID
     public var releaseToken: UUID
+    public var resourceID: UInt32
+    public var resourceGeneration: UInt64
+    public var cpuEpoch: UInt64
     public var pixelFormat: UInt32
     public var yOriginTop: Bool
     public var width: UInt32
@@ -40,6 +43,9 @@ public struct DoryVMDisplayCPUFrameLease: Codable, Equatable, Sendable {
     public init(
         leaseID: UUID,
         releaseToken: UUID,
+        resourceID: UInt32,
+        resourceGeneration: UInt64,
+        cpuEpoch: UInt64,
         pixelFormat: UInt32,
         yOriginTop: Bool,
         width: UInt32,
@@ -50,6 +56,9 @@ public struct DoryVMDisplayCPUFrameLease: Codable, Equatable, Sendable {
         self.schemaVersion = Self.schemaVersion
         self.leaseID = leaseID
         self.releaseToken = releaseToken
+        self.resourceID = resourceID
+        self.resourceGeneration = resourceGeneration
+        self.cpuEpoch = cpuEpoch
         self.pixelFormat = pixelFormat
         self.yOriginTop = yOriginTop
         self.width = width
@@ -67,6 +76,7 @@ public struct DoryVMDisplayCPUFrameLease: Codable, Equatable, Sendable {
         )
         guard schemaVersion == Self.schemaVersion,
               leaseID != zero, releaseToken != zero, leaseID != releaseToken,
+              resourceID != 0, resourceGeneration != 0, cpuEpoch != 0,
               width > 0, height > 0, width <= 16_384, height <= 16_384,
               DoryRendererScanoutPixelFormat(rawValue: pixelFormat) != nil,
               !rowOverflow, !surfaceOverflow,
@@ -236,10 +246,13 @@ public struct DoryVMDisplayFrame: Codable, Equatable, Sendable {
             case .cpuCopy:
                 let lease = try DoryVMDisplayCPUFrameLeaseCodec.decode(leasePayload)
                 workerGeneration = 1
-                resourceID = 1
-                rendererResourceGeneration = 1
+                resourceID = lease.resourceID
+                rendererResourceGeneration = lease.resourceGeneration
                 width = lease.width
                 height = lease.height
+                guard displayResourceGeneration == lease.resourceGeneration else {
+                    throw DoryVMDisplayWireError.invalidFrameIdentity
+                }
             case .sharedMemory:
                 let lease = try DoryRendererScanoutLeaseCodec.decode(leasePayload)
                 workerGeneration = lease.workerGeneration.rawValue

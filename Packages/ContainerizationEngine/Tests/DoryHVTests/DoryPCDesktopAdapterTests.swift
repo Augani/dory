@@ -123,7 +123,7 @@ import Testing
             vendorID: 0x2e8a,
             productID: 0x0003,
             bcdDevice: 0x0100,
-            deviceClass: 0xff,
+            deviceClass: 0x02,
             deviceSubClass: 0,
             deviceProtocol: 0,
             configurationValue: 1,
@@ -132,6 +132,12 @@ import Testing
         )
         let candidate = HostUsbDeviceCandidate(
             descriptor: descriptor,
+            interfaces: [HostUsbInterfaceIdentity(
+                number: 0,
+                interfaceClass: 0x02,
+                interfaceSubClass: 0x02,
+                interfaceProtocol: 0x01
+            )],
             identityToken: token,
             captureDecision: .allowed
         )
@@ -140,7 +146,7 @@ import Testing
         let lease = try broker.acquire(
             machineID: "machine-a",
             identityToken: token,
-            family: .developerHardware,
+            family: .serialAdapter,
             admission: .init(userSelected: true),
             capability: capability
         )
@@ -170,6 +176,119 @@ import Testing
         #expect(try !replacement.portState(2).connected)
         #expect(broker.activeLeaseCount(machineID: "machine-a") == 0)
         #expect(capability.closeCount == 1)
+    }
+
+    @Test func pcPhysicalUSBRejectsUnqualifiedClassesBeforeOpeningHostLease() async throws {
+        enum UnexpectedOpen: Error { case called }
+        let token = DoryUSBPhysicalIdentityToken(rawValue: String(repeating: "b", count: 64))!
+        let storage = HostUsbInterfaceIdentity(
+            number: 0, interfaceClass: 0x08, interfaceSubClass: 0x06, interfaceProtocol: 0x50
+        )
+        let keyboard = HostUsbInterfaceIdentity(
+            number: 1, interfaceClass: 0x03, interfaceSubClass: 0x01, interfaceProtocol: 0x01
+        )
+        let camera = HostUsbInterfaceIdentity(
+            number: 0, interfaceClass: 0x0e, interfaceSubClass: 0x01, interfaceProtocol: 0
+        )
+        let unknown = HostUsbInterfaceIdentity(
+            number: 0, interfaceClass: 0xff, interfaceSubClass: 0, interfaceProtocol: 0
+        )
+        let cases: [(UInt8, [HostUsbInterfaceIdentity], UInt8)] = [
+            (0xff, [unknown], 1),
+            (0x00, [storage, keyboard], 2),
+            (0x0e, [camera], 1),
+            (0x08, [storage], 2), // One interface is missing from discovery.
+            (0x03, [keyboard], 1)
+        ]
+        for (deviceClass, interfaces, interfaceCount) in cases {
+            let descriptor = UsbipDeviceDescriptor(
+                path: "test-device",
+                busID: "3-2",
+                busNumber: 3,
+                deviceNumber: 2,
+                speed: 5,
+                vendorID: 0x2e8a,
+                productID: 0x0003,
+                bcdDevice: 0x0100,
+                deviceClass: deviceClass,
+                deviceSubClass: 0,
+                deviceProtocol: 0,
+                configurationValue: 1,
+                configurationCount: 1,
+                interfaceCount: interfaceCount
+            )
+            let candidate = HostUsbDeviceCandidate(
+                descriptor: descriptor,
+                interfaces: interfaces,
+                identityToken: token,
+                hostStorageUnmounted: true,
+                captureDecision: .allowed
+            )
+            let handler = DoryPCUSBControlHandler(
+                controller: try DoryPCXHCIController(),
+                machineID: "machine-a",
+                lookupCandidate: { _ in candidate },
+                openLease: { _, _ in throw UnexpectedOpen.called }
+            )
+            await #expect(throws: UsbControlError.self) {
+                try await handler.attach(
+                    busID: "3-2",
+                    expectedIdentity: token,
+                    mode: .userAuthorized
+                )
+            }
+        }
+    }
+
+    @Test func pcPhysicalUSBRechecksClassAndConfigurationOnCaptureAndReopen() {
+        let token = DoryUSBPhysicalIdentityToken(rawValue: String(repeating: "c", count: 64))!
+        let control = HostUsbInterfaceIdentity(
+            number: 0, interfaceClass: 0x02, interfaceSubClass: 0x02, interfaceProtocol: 0x01
+        )
+        let data = HostUsbInterfaceIdentity(
+            number: 1, interfaceClass: 0x0a, interfaceSubClass: 0, interfaceProtocol: 0
+        )
+        let descriptor = UsbipDeviceDescriptor(
+            path: "test-device", busID: "3-2", busNumber: 3, deviceNumber: 2, speed: 5,
+            vendorID: 0x2e8a, productID: 0x0003, bcdDevice: 0x0100,
+            deviceClass: 0x02, deviceSubClass: 0, deviceProtocol: 0,
+            configurationValue: 1, configurationCount: 1, interfaceCount: 2
+        )
+        let selected = HostUsbDeviceCandidate(
+            descriptor: descriptor, interfaces: [control, data],
+            identityToken: token, captureDecision: .allowed
+        )
+        #expect(DoryPCUSBControlHandler.hasSameAdmittedConfiguration(
+            selected: selected, current: selected
+        ))
+
+        var changed = selected
+        changed.interfaces[1].interfaceClass = 0x03
+        #expect(!DoryPCUSBControlHandler.hasSameAdmittedConfiguration(
+            selected: selected, current: changed
+        ))
+        changed = selected
+        changed.descriptor.speed = 3
+        #expect(!DoryPCUSBControlHandler.hasSameAdmittedConfiguration(
+            selected: selected, current: changed
+        ))
+        changed = selected
+        changed.descriptor.configurationValue = 2
+        #expect(!DoryPCUSBControlHandler.hasSameAdmittedConfiguration(
+            selected: selected, current: changed
+        ))
+        changed = selected
+        changed.captureDecision = .blocked(.internalHostDevice)
+        #expect(!DoryPCUSBControlHandler.hasSameAdmittedConfiguration(
+            selected: selected, current: changed
+        ))
+        changed = selected
+        changed.identityToken = DoryUSBPhysicalIdentityToken(
+            rawValue: String(repeating: "d", count: 64)
+        )!
+        #expect(!DoryPCUSBControlHandler.hasSameAdmittedConfiguration(
+            selected: selected, current: changed
+        ))
     }
 
     @Test func macAudioAdapterPacesAndMapsDoryPCStreams() throws {
@@ -271,6 +390,7 @@ import Testing
         let converted = try #require(sink.convert(DoryVirtioGPUFrame(
             scanoutID: 0,
             resourceID: 9,
+            resourceGeneration: 1,
             scanoutRectangle: .init(x: 1, y: 1, width: 3, height: 2),
             damagedRectangle: .init(x: 2, y: 0, width: 3, height: 3),
             resourceWidth: 4,
@@ -286,12 +406,13 @@ import Testing
         #expect(converted.bytes == Data(pixels[24..<32] + pixels[40..<48]))
     }
 
-    @Test func softwareFrameGenerationAdvancesOnlyWhenResourceIdentityChanges() throws {
+    @Test func softwareFramesUseSourceGenerationEvenWhenAnIDAndGeometryAreReused() throws {
         let sink = DoryPCSoftwareDisplaySink(mailbox: DesktopFrameMailbox(scanoutID: 0))
-        func frame(width: UInt32, height: UInt32) -> DoryVirtioGPUFrame {
+        func frame(width: UInt32, height: UInt32, generation: UInt64) -> DoryVirtioGPUFrame {
             DoryVirtioGPUFrame(
                 scanoutID: 0,
                 resourceID: 7,
+                resourceGeneration: generation,
                 scanoutRectangle: .init(x: 0, y: 0, width: width, height: height),
                 damagedRectangle: .init(x: 0, y: 0, width: width, height: height),
                 resourceWidth: width,
@@ -301,11 +422,38 @@ import Testing
             )
         }
 
-        let first = try #require(sink.convert(frame(width: 2, height: 2)))
-        let second = try #require(sink.convert(frame(width: 2, height: 2)))
-        let replacement = try #require(sink.convert(frame(width: 3, height: 2)))
+        let first = try #require(sink.convert(frame(width: 2, height: 2, generation: 11)))
+        let second = try #require(sink.convert(frame(width: 2, height: 2, generation: 11)))
+        let replacement = try #require(sink.convert(frame(width: 2, height: 2, generation: 12)))
         #expect(first.resourceGeneration == second.resourceGeneration)
         #expect(replacement.resourceGeneration == first.resourceGeneration + 1)
+        #expect(sink.convert(frame(width: 2, height: 2, generation: 11)) == nil)
+        #expect(sink.convert(frame(width: 3, height: 2, generation: 12)) == nil)
+        sink.retireResource(resourceID: 7, resourceGeneration: 12)
+        #expect(sink.convert(frame(width: 2, height: 2, generation: 12)) == nil)
+        #expect(sink.convert(frame(width: 2, height: 2, generation: 13)) != nil)
+    }
+
+    @Test func softwareResourceUnrefReleasesItsLocalMailboxSurface() {
+        let mailbox = DesktopFrameMailbox(scanoutID: 0)
+        let sink = DoryPCSoftwareDisplaySink(mailbox: mailbox)
+        let frame = DoryVirtioGPUFrame(
+            scanoutID: 0,
+            resourceID: 21,
+            resourceGeneration: 7,
+            scanoutRectangle: .init(x: 0, y: 0, width: 2, height: 2),
+            damagedRectangle: .init(x: 0, y: 0, width: 2, height: 2),
+            resourceWidth: 2,
+            resourceHeight: 2,
+            format: .b8g8r8a8UNorm,
+            pixels: [UInt8](repeating: 0x40, count: 16)
+        )
+        sink.present(frame)
+        #expect(mailbox.metrics.pendingFrameBytes == 16)
+        sink.retireResource(resourceID: 21, resourceGeneration: 7)
+        #expect(mailbox.metrics.pendingFrameBytes == 0)
+        sink.present(frame)
+        #expect(mailbox.metrics.pendingFrameBytes == 0)
     }
 
     @Test func softwareDisplayReadinessWaitsForHostPresentedVisibleFramebufferContent() throws {
@@ -326,6 +474,7 @@ import Testing
             DoryVirtioGPUFrame(
                 scanoutID: 0,
                 resourceID: 7,
+                resourceGeneration: 1,
                 scanoutRectangle: .init(x: 0, y: 0, width: 2, height: 1),
                 damagedRectangle: .init(x: 0, y: 0, width: 2, height: 1),
                 resourceWidth: 2,
@@ -357,6 +506,98 @@ import Testing
             visibleFrames: 2,
             receivedFrameBytes: 32
         ))
+    }
+
+    @Test func resetRejectsOldAppPresentationForReusedResourceIdentity() throws {
+        let sink = DoryPCSoftwareDisplaySink(
+            publishFrame: { _ in }
+        )
+        let frame = DoryVirtioGPUFrame(
+            scanoutID: 0,
+            resourceID: 7,
+            resourceGeneration: 1,
+            scanoutRectangle: .init(x: 0, y: 0, width: 2, height: 1),
+            damagedRectangle: .init(x: 0, y: 0, width: 2, height: 1),
+            resourceWidth: 2,
+            resourceHeight: 1,
+            format: .b8g8r8a8UNorm,
+            pixels: [0, 0, 0, 255, 255, 255, 255, 255]
+        )
+        let old = try #require(sink.convert(frame))
+        sink.resetResources()
+        sink.hostDidPresent(old)
+        #expect(sink.metrics.visibleFrames == 0)
+
+        let replacementFrame = DoryVirtioGPUFrame(
+            scanoutID: 0,
+            resourceID: 7,
+            resourceGeneration: 2,
+            scanoutRectangle: frame.scanoutRectangle,
+            damagedRectangle: frame.damagedRectangle,
+            resourceWidth: frame.resourceWidth,
+            resourceHeight: frame.resourceHeight,
+            format: frame.format,
+            pixels: frame.pixels
+        )
+        let replacement = try #require(sink.convert(replacementFrame))
+        #expect(replacement.resourceGeneration > old.resourceGeneration)
+        sink.hostDidPresent(replacement)
+        #expect(sink.metrics.visibleFrames == 1)
+    }
+
+    @Test func softwareCursorConversionPublishesCopiedPixelsAndHide() throws {
+        final class CursorRecorder: @unchecked Sendable {
+            private let lock = NSLock()
+            private var storage = [VirtioGPUCursorUpdate?]()
+            var values: [VirtioGPUCursorUpdate?] { lock.withLock { storage } }
+            func append(_ update: VirtioGPUCursorUpdate?) {
+                lock.withLock { storage.append(update) }
+            }
+        }
+        let recorder = CursorRecorder()
+        let sink = DoryPCSoftwareDisplaySink(
+            publishFrame: { _ in },
+            publishCursor: { recorder.append($0) }
+        )
+        let pixels = [UInt8](repeating: 0x7f, count: 64 * 64 * 4)
+        sink.presentCursor(DoryVirtioGPUCursorUpdate(
+            scanoutID: 0,
+            resourceID: 12,
+            x: 40,
+            y: 50,
+            hotX: 3,
+            hotY: 4,
+            bytes: pixels
+        ))
+        let published = try #require(recorder.values.first ?? nil)
+        #expect(published.resourceID == 12)
+        #expect(published.x == 40)
+        #expect(published.y == 50)
+        #expect(published.hotX == 3)
+        #expect(published.hotY == 4)
+        #expect(published.bytes == Data(pixels))
+        sink.presentCursor(.hidden(scanoutID: 0))
+        #expect(recorder.values.count == 2)
+        #expect(recorder.values[1] == nil)
+    }
+
+    @Test func softwareCursorHideTargetsOnlyItsScanout() {
+        final class CursorHideRecorder: @unchecked Sendable {
+            private let lock = NSLock()
+            private var storage: [UInt32] = []
+            var scanoutIDs: [UInt32] { lock.withLock { storage } }
+            func append(_ scanoutID: UInt32) {
+                lock.withLock { storage.append(scanoutID) }
+            }
+        }
+        let recorder = CursorHideRecorder()
+        let sink = DoryPCSoftwareDisplaySink(
+            publishFrame: { _ in },
+            hideCursor: { recorder.append($0) }
+        )
+
+        sink.presentCursor(.hidden(scanoutID: 1))
+        #expect(recorder.scanoutIDs == [1])
     }
 
     @Test func pcTelemetryPublishesExecutionGPUAndVisibleFrameProgress() throws {
@@ -408,6 +649,7 @@ import Testing
         let frame = DoryVirtioGPUFrame(
             scanoutID: 0,
             resourceID: 1,
+            resourceGeneration: 1,
             scanoutRectangle: .init(x: 0, y: 0, width: 2, height: 2),
             damagedRectangle: .init(x: 0, y: 0, width: 2, height: 2),
             resourceWidth: 2,
@@ -416,6 +658,35 @@ import Testing
             pixels: [UInt8](repeating: 0, count: 15)
         )
         #expect(sink.convert(frame) == nil)
+    }
+
+    @Test func softwareFrameConversionRejectsOverflowingGuestGeometryWithoutTrapping() {
+        let sink = DoryPCSoftwareDisplaySink(mailbox: DesktopFrameMailbox(scanoutID: 0))
+        let frame = DoryVirtioGPUFrame(
+            scanoutID: 0,
+            resourceID: 1,
+            resourceGeneration: 1,
+            scanoutRectangle: .init(x: 0, y: 0, width: .max, height: .max),
+            damagedRectangle: .init(x: 0, y: 0, width: .max, height: .max),
+            resourceWidth: .max,
+            resourceHeight: .max,
+            format: .b8g8r8a8UNorm,
+            pixels: []
+        )
+        #expect(sink.convert(frame) == nil)
+        #expect(sink.metrics.receivedFrames == 0)
+    }
+
+    @Test func softwareScanoutUsesTheRelaySurfaceBudgetBeforeCopying() {
+        #expect(DoryPCSoftwareDisplaySink.canRelayScanout(
+            width: 4_096, height: 4_096, bytesPerPixel: 4
+        ))
+        #expect(!DoryPCSoftwareDisplaySink.canRelayScanout(
+            width: 16_384, height: 16_384, bytesPerPixel: 4
+        ))
+        #expect(!DoryPCSoftwareDisplaySink.canRelayScanout(
+            width: .max, height: .max, bytesPerPixel: 4
+        ))
     }
 }
 

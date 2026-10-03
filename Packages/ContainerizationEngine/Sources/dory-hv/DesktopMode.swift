@@ -14,7 +14,7 @@ import Foundation
 /// Writes a campaign-only trace as one JSON value per line. The renderer and display queues may
 /// report the same frame from different threads, so serialize file writes without making trace
 /// delivery part of the guest completion path.
-private final class DesktopGraphicsTraceWriter: @unchecked Sendable {
+final class DesktopGraphicsTraceWriter: @unchecked Sendable {
     private let lock = NSLock()
     private let handle: FileHandle
 
@@ -447,6 +447,10 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                         health = .degraded
                     }
                     entries[index].previousAudioDrops = drops
+                    // A saved "microphone enabled" preference is not a live host grant. Keep
+                    // app/CLI device health degraded after denial/revocation, even when no guest
+                    // descriptor was pending and there is therefore no new audio-drop event.
+                    if audio.microphoneAccessDenied { health = .degraded }
                 }
                 if let share = entries[index].sharedDirectory?.statistics {
                     let performance = entries[index].sharedDirectory?.performanceStatistics
@@ -1048,9 +1052,14 @@ enum DesktopMode {
             }
         }
 
-        func makeBackend(queueCount: Int) throws -> VirtioBlk {
+        func makeBackend(
+            queueCount: Int, qualificationFaultController: RuntimeQualificationFaultController? = nil
+        ) throws -> VirtioBlk {
             switch self {
             case .legacyPath(let path):
+                guard qualificationFaultController == nil else {
+                    throw DoryRuntimeQualificationFaultError.unauthorized
+                }
                 return try VirtioBlk(
                     path: path,
                     identity: "dory-rootfs",
@@ -1072,7 +1081,8 @@ enum DesktopMode {
                 return try VirtioBlk(
                     fileDescriptor: descriptor,
                     identity: "dory-rootfs",
-                    queueCount: queueCount
+                    queueCount: queueCount,
+                    qualificationFaults: qualificationFaultController
                 )
             }
         }
@@ -1116,6 +1126,7 @@ enum DesktopMode {
         /// A nil value retains the diagnostic helper-owned AppKit window.
         var displayRelayServiceName: String? = nil
         var reconnectIdentity: DoryRuntimeReconnectLaunchIdentity
+        var qualificationFaultAuthority: DoryRuntimeQualificationFaultAuthority? = nil
 
         /// Shares actually materialized by the resolved directory-sharing policy. Guest setup must
         /// consume this same inventory so it cannot try to mount a tag whose device was omitted.
@@ -1415,9 +1426,13 @@ enum DesktopMode {
         private let serialConsoleInput: RawHVSerialConsoleInput
         #endif
         private var machine: Machine!
-        private var machineRunner: RawHVMachineRunner
+        private var machineRunner: RawHVMachineRunner!
+        private var retiringMachineExecution:
+            RawHVGuestExecutionRetirement<RawHVMachineRunner>?
         private let savedMachineConfiguration: MachineConfiguration
-        private var virtioAttachments: [(slot: Int, backend: any VirtioDeviceBackend)] = []
+        private var virtioAttachments: [(
+            slot: Int, backend: any VirtioDeviceBackend, transport: VirtioMMIOTransport
+        )] = []
         /// Shared holder so the lifecycle receipt server's Sendable closures can observe
         /// the current `machine` without capturing a main-actor-isolated `var`.
         private let currentMachineHolder = CurrentMachineHolder()
@@ -1450,10 +1465,12 @@ enum DesktopMode {
         private let cameraAttachment: DoryDesktopCameraAttachment?
         private let usbControlServer: UsbControlServer?
         private let clipboard: DoryDesktopClipboardCoordinator?
+        private let clipboardFocus = DoryDesktopClipboardFocusLease()
         private let firstFrame: FirstFrameGate
         private let firstCompletedPresentation: FirstFrameGate
         private let deviceTelemetry: RawDeviceTelemetryRegistry
         private let lifecycleReceiptServer: VmmLifecycleReceiptServer
+        private let qualificationFaultController: RuntimeQualificationFaultController?
         private let graphicsReadinessState: DesktopRuntimeGraphicsReadinessState
         private let guestFSEventBridge: GuestFSEventBridge?
         private var filesystemWorker: DoryFilesystemWorkerLaunch?
@@ -1466,6 +1483,9 @@ enum DesktopMode {
         private var gpuShutdownWaitScheduled = false
         private var machineExecutionState = DesktopMachineExecutionState.notStarted
         private var rendererRestartInProgress = false
+        private var guestMachineResetPending = false
+        private var readinessTask: Task<Void, Never>?
+        private var readinessCompletion: DispatchGroup?
         private let signalQueue = DispatchQueue(
             label: "dev.dory.dory-hv.desktop-signals",
             qos: .userInitiated
@@ -1601,10 +1621,33 @@ enum DesktopMode {
                     cpuCount: configuration.cpuCount
                 )
             }
-            let machine = try Machine(configuration: machineConfiguration)
+            let faultController = try configuration.qualificationFaultAuthority.map { authority in
+                guard authority.machineID == configuration.machineID,
+                      authority.operationID == configuration.operationID,
+                      authority.resolvedPlanSHA256 == configuration.resolvedPlanSHA256,
+                      authority.expiresAt > Date(),
+                      case .resolvedDescriptor = configuration.rootDisk else {
+                    throw DoryRuntimeQualificationFaultError.unauthorized
+                }
+                return try RuntimeQualificationFaultController(authority: authority)
+            }
+            self.qualificationFaultController = faultController
+            let machine = try Machine(configuration: machineConfiguration, qualificationFaults: faultController)
             self.machine = machine
             self.savedMachineConfiguration = machineConfiguration
             currentMachineHolder.machine = machine
+            let faultHandler: (@Sendable (DoryRuntimeQualificationFaultRequest) throws
+                -> DoryRuntimeQualificationFaultObservation)?
+            if let faultController {
+                faultHandler = { [weak currentMachineHolder] request in
+                    if request.action == .arm {
+                        guard currentMachineHolder?.machine?.executionState == .running else {
+                            throw DoryRuntimeQualificationFaultError.unauthorized
+                        }
+                    }
+                    return try faultController.handle(request, memory: currentMachineHolder?.machine?.memory)
+                }
+            } else { faultHandler = nil }
             self.lifecycleReceiptServer = VmmLifecycleReceiptServer(
                 socketPath: configuration.controlSocketPath,
                 deviceTelemetryProvider: { deviceTelemetry.snapshot() },
@@ -1616,7 +1659,8 @@ enum DesktopMode {
                     guard let machine = currentMachineHolder?.machine else { return }
                     if action == .preparePause { try machine.pauseGuestExecution() }
                     else { try machine.resumeGuestExecution() }
-                }
+                },
+                qualificationFaultHandler: faultHandler
             )
             self.machineRunner = RawHVMachineRunner(
                 machine: machine,
@@ -1649,11 +1693,12 @@ enum DesktopMode {
             let initialPointerSizes = displayPlans.map {
                 VirtioGPUScanoutSize(width: $0.widthPixels, height: $0.heightPixels)
             }
-            let pointerTopology = DesktopPointerTopology(sizes:
-                initialPointerSizes + Array(
+            let pointerTopology = DesktopPointerTopology(
+                sizes: initialPointerSizes + Array(
                     repeating: VirtioGPUScanoutSize(width: 1_280, height: 800),
                     count: presentationScanoutCount - initialPointerSizes.count
-                )
+                ),
+                activeCount: initialPointerSizes.count
             )
             for index in 0..<presentationScanoutCount {
                 let plan = displayPlans.indices.contains(index) ? displayPlans[index] : nil
@@ -1696,12 +1741,15 @@ enum DesktopMode {
                             graphicsReadinessState,
                             firstCompletedPresentation,
                         ] workerGeneration in
-                        rendererWorkerLaunchStore.current(
+                        guard let currentLaunch = rendererWorkerLaunchStore.current(
                             matchingWorkerGeneration: workerGeneration
-                        )?.recordSynchronizedPresentation(
+                        ) else { return }
+                        currentLaunch.recordSynchronizedPresentation(
                             workerGeneration: workerGeneration
                         )
-                        graphicsReadinessState.recordFirstPresentationCompletion()
+                        graphicsReadinessState.recordFirstPresentationCompletion(
+                            workerGeneration: workerGeneration
+                        )
                         firstCompletedPresentation.signal(scanoutID: plan.scanoutID)
                     }
                     let display: DesktopDisplayView = metalDisplay
@@ -1828,8 +1876,6 @@ enum DesktopMode {
                 },
                 onRendererWorkerFailure: {
                     [
-                        rendererWorkerLaunchStore,
-                        rendererRuntimeFailureLatch,
                         graphicsReadinessState,
                         rendererRestartRequests,
                     ] reason in
@@ -1843,28 +1889,50 @@ enum DesktopMode {
                         )
                         return
                     }
+                },
+                onRendererWorkerUnavailable: {
+                    [rendererWorkerLaunchStore, rendererRuntimeFailureLatch, graphicsReadinessState]
+                    workerGeneration, reason in
+                    guard let failedLaunch = rendererWorkerLaunchStore.current(
+                        matchingWorkerGeneration: workerGeneration
+                    ) else { return }
                     rendererRuntimeFailureLatch?.record(
                         kind: .worker,
                         reason: reason
                     )
-                    rendererWorkerLaunchStore.current()?
-                        .failSynchronizedPresentation(reason)
-                    rendererWorkerLaunchStore.teardown(reason: reason)
-                    graphicsReadinessState.publishRuntimeDetail(
-                        "Graphics renderer stopped; the VM is still running. \(reason)"
+                    failedLaunch.teardown(reason: reason)
+                    graphicsReadinessState.rendererBecameUnavailable(
+                        workerGeneration: workerGeneration,
+                        detail: "Graphics renderer stopped; the VM is still running. \(reason)"
                     )
                     Self.log(
                         "dory-hv desktop: renderer worker isolated; VM remains running: \(reason)"
                     )
                 },
-                onStockFenceVerification: { [graphicsReadinessState] outcome in
-                    graphicsReadinessState.apply(outcome)
+                onStockFenceVerification: { [graphicsReadinessState] workerGeneration, outcome in
+                    graphicsReadinessState.apply(
+                        outcome,
+                        workerGeneration: workerGeneration
+                    )
                 },
-                onStockFirstShaderCompletion: { [graphicsReadinessState] in
-                    graphicsReadinessState.recordFirstShaderCompletion()
+                onStockFirstShaderCompletion: { [graphicsReadinessState] workerGeneration in
+                    graphicsReadinessState.recordFirstShaderCompletion(
+                        workerGeneration: workerGeneration
+                    )
                 }
             )
             self.gpu = gpu
+            faultController?.connectRendererCrashHandler { [weak gpu, weak faultController] admission in
+                guard let gpu else { throw DoryRuntimeQualificationFaultError.unauthorized }
+                try gpu.requestQualificationRendererCrash(admission,
+                    acknowledgement: { [weak faultController] accepted, count in
+                        faultController?.rendererCrashAcknowledged(challenge: admission.challenge,
+                            workerGeneration: admission.workerGeneration, accepted: accepted, inFlightCommands: count)
+                    }, interrupted: { [weak faultController] in
+                        faultController?.rendererWorkerInterrupted(challenge: admission.challenge,
+                            workerGeneration: admission.workerGeneration)
+                    })
+            }
             if let serviceName = configuration.displayRelayServiceName {
                 let relay = DoryVMDisplayRunnerRelay.connect(
                     machineID: configuration.machineID,
@@ -1895,8 +1963,17 @@ enum DesktopMode {
                         topology: { [displayRelayResizeTarget] in
                             displayRelayResizeTarget.apply(topology: $0)
                         },
-                        restartGraphics: { [rendererRestartRequests] in
-                            rendererRestartRequests.request()
+                        restartGraphics: { [gpu] in
+                            gpu.requestRendererWorkerRestart()
+                        },
+                        focus: { [clipboardFocus] in
+                            clipboardFocus.update(leaseID: $0, active: $1, expiresAtUptimeNanoseconds: $2)
+                        },
+                        revokeFocus: { [clipboardFocus] in clipboardFocus.invalidate() },
+                        releaseInput: { [keyboardInput, pointerInput, relativePointerInput] in
+                            keyboardInput.releaseAllPressedKeys()
+                            pointerInput.releaseAllPressedKeys()
+                            relativePointerInput.releaseAllPressedKeys()
                         }
                     ),
                     onPresentationCompleted: {
@@ -1906,12 +1983,15 @@ enum DesktopMode {
                             firstCompletedPresentation,
                         ]
                         workerGeneration, scanoutID in
-                        rendererWorkerLaunchStore.current(
+                        guard let currentLaunch = rendererWorkerLaunchStore.current(
                             matchingWorkerGeneration: workerGeneration
-                        )?.recordSynchronizedPresentation(
+                        ) else { return }
+                        currentLaunch.recordSynchronizedPresentation(
                             workerGeneration: workerGeneration
                         )
-                        graphicsReadinessState.recordFirstPresentationCompletion()
+                        graphicsReadinessState.recordFirstPresentationCompletion(
+                            workerGeneration: workerGeneration
+                        )
                         firstCompletedPresentation.signal(scanoutID: scanoutID)
                     },
                     onPresentationFailed: { [weak gpu] workerGeneration, reason in
@@ -1920,8 +2000,17 @@ enum DesktopMode {
                             reason: "app-owned display rejected frame: \(reason)"
                         )
                     },
-                    onCPUPresentationCompleted: { [firstCompletedPresentation] scanoutID in
-                        firstCompletedPresentation.signal(scanoutID: scanoutID)
+                    onCPUPresentationCompleted: { [firstCompletedPresentation] completion in
+                        firstCompletedPresentation.signal(scanoutID: completion.scanoutID)
+                    },
+                    onDeferredCPUFrameRefresh: { [weak gpu] scanoutID in
+                        do {
+                            _ = try gpu?.publishLatestSoftwareScanoutFrame(scanoutID: scanoutID)
+                        } catch {
+                            Self.log(
+                                "dory-hv desktop: deferred CPU scanout refresh failed: \(error)"
+                            )
+                        }
                     },
                     log: Self.log
                 )
@@ -2115,7 +2204,8 @@ enum DesktopMode {
             }
             do {
                 let rootDisk = try configuration.rootDisk.makeBackend(
-                    queueCount: configuration.systemDiskQueueCount
+                    queueCount: configuration.systemDiskQueueCount,
+                    qualificationFaultController: qualificationFaultController
                 )
                 let installerDisk: VirtioBlk?
                 switch configuration.boot {
@@ -2378,7 +2468,9 @@ enum DesktopMode {
                         to: machine,
                         slot: slot
                     )
-                    self.virtioAttachments.append((slot: slot, backend: backend))
+                    self.virtioAttachments.append((
+                        slot: slot, backend: backend, transport: transport
+                    ))
                     let audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)?
                     if let sound, backend === sound {
                         audioMetrics = { [weak audio] in audio?.runtimeMetrics }
@@ -2547,6 +2639,7 @@ enum DesktopMode {
                         get: { try clipboardControl.clipboardGet(mimeType: $0) },
                         set: { try clipboardControl.clipboardSet(mimeType: $0, data: $1) }
                     ),
+                    focusLease: clipboardFocus,
                     sendShortcut: { keyCode in
                         clipboardInput.send(frame: [
                             VirtioInputEvent(type: 1, code: 125, value: 0),
@@ -2624,6 +2717,14 @@ enum DesktopMode {
                     clipboard?.handleMacShortcut(event) ?? false
                 }
             }
+            if !usesDisplayRelay {
+                clipboard?.observeLocalDisplayFocus { [weak self] in
+                    guard let self, NSApp.isActive else { return false }
+                    return self.windows.enumerated().contains { index, window in
+                        window.isKeyWindow && window.firstResponder === self.displays[index]
+                    }
+                }
+            }
             clipboard?.start()
             initializationRollback.commit()
         }
@@ -2688,21 +2789,34 @@ enum DesktopMode {
                 do {
                     let prepared = try await provider.prepareReplacement(after: previousLaunch)
                     replacementLaunch = prepared
+                    guard launchStore.replacementSource() === previousLaunch else {
+                        throw CancellationError()
+                    }
                     // The guest's status-0 write already completed the device-reset quiescence
                     // before it requested this replacement. Repeating that boundary here races
                     // Linux's fresh probe and can erase resources submitted by the new queue
                     // generation while the isolated worker is launching.
                     try gpu.installRendererWorkerReplacementAfterDeviceReset(
-                        prepared.commandLane
+                        prepared.commandLane,
+                        onInstalledBeforeCommandReplay: {
+                            guard launchStore.replace(prepared, replacing: previousLaunch) else {
+                                throw CancellationError()
+                            }
+                            readinessState.prepareRendererReplacement(prepared)
+                            readinessState.resumeGuestMachinePresentation()
+                        }
                     )
                     previousLaunch.teardown(
                         reason: "renderer generation replaced without restarting the VM"
                     )
-                    launchStore.replace(prepared)
                     replacementLaunch = nil
                     DesktopAppRunLoop.perform { [weak self] in
+                        guard launchStore.current() === prepared else { return }
                         self?.rendererRestartInProgress = false
-                        readinessState.prepareRendererReplacement(prepared)
+                        if self?.guestMachineResetPending == true {
+                            self?.handleGuestReset()
+                            return
+                        }
                         readinessState.publishRuntimeDetail(
                             "Graphics renderer restarted with generation "
                                 + "\(prepared.workerGeneration.rawValue); the VM stayed running."
@@ -2713,11 +2827,19 @@ enum DesktopMode {
                         )
                     }
                 } catch {
+                    let failedReplacement = replacementLaunch
                     replacementLaunch?.teardown(
                         reason: "renderer replacement failed: \(error)"
                     )
                     DesktopAppRunLoop.perform { [weak self] in
+                        guard launchStore.replacementSource() === previousLaunch
+                            || failedReplacement.map({ launchStore.current() === $0 }) == true
+                        else { return }
                         self?.rendererRestartInProgress = false
+                        if self?.guestMachineResetPending == true {
+                            self?.handleGuestReset()
+                            return
+                        }
                         readinessState.publishRuntimeDetail(
                             "Graphics restart failed; the VM is still running. \(error)"
                         )
@@ -2846,10 +2968,16 @@ enum DesktopMode {
             let guestFSEventBridge = self.guestFSEventBridge
             let filesystemWorker = self.filesystemWorker
             let graphicsReadinessState = self.graphicsReadinessState
+            let readinessEpoch = graphicsReadinessState.currentGuestMachineEpoch
             let rendererWorkerLaunchStore = self.rendererWorkerLaunchStore
             let rendererRestartRequests = self.rendererRestartRequests
-            Task.detached(priority: .userInitiated) { [weak self] in
+            let readinessCompletion = DispatchGroup()
+            readinessCompletion.enter()
+            self.readinessCompletion = readinessCompletion
+            readinessTask = Task.detached(priority: .userInitiated) { [weak self] in
+                defer { readinessCompletion.leave() }
                 do {
+                    try Task.checkCancellation()
                     if let guestFSEventBridge {
                         try await guestFSEventBridge.establishReadiness()
                         Self.log(
@@ -2857,6 +2985,7 @@ enum DesktopMode {
                         )
                     }
                     try filesystemWorker?.client.activateCoherence()
+                    try Task.checkCancellation()
                     if filesystemWorker != nil {
                         Self.log("dory-hv desktop: host-share coherence delivery active")
                     }
@@ -2890,6 +3019,7 @@ enum DesktopMode {
                                 }
                             },
                             publish: { integration in
+                                try Task.checkCancellation()
                                 switch integration {
                                 case let .tools(info, shareState):
                                     DesktopAppRunLoop.perform { [weak self] in
@@ -2918,7 +3048,8 @@ enum DesktopMode {
                                             desktopVisible: true,
                                             workloadReady: true,
                                             detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics and Dory Tools protocol \(info.protocolVersion)\(shareState.detailSuffix)"
-                                        )
+                                        ),
+                                        expectedGuestMachineEpoch: readinessEpoch
                                     )
                                 case .unavailable:
                                     let shareState = GenericGuestShareReadiness
@@ -2943,7 +3074,8 @@ enum DesktopMode {
                                             desktopVisible: true,
                                             workloadReady: true,
                                             detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics; guest tools are not installed\(shareState.detailSuffix)"
-                                        )
+                                        ),
+                                        expectedGuestMachineEpoch: readinessEpoch
                                     )
                                 }
                             },
@@ -2956,6 +3088,7 @@ enum DesktopMode {
                                 }
                             }
                         )
+                        try Task.checkCancellation()
                         rendererRestartRequests.activate()
                         return
                     }
@@ -2982,6 +3115,7 @@ enum DesktopMode {
                             }
                         },
                         publish: { info in
+                            try Task.checkCancellation()
                             DesktopAppRunLoop.perform { [weak self] in
                                 self?.clipboard?.markGuestReady()
                             }
@@ -3008,15 +3142,21 @@ enum DesktopMode {
                                     desktopVisible: true,
                                     workloadReady: true,
                                     detail: "raw-HV desktop running with \(graphicsDisplayName) graphics; dory-agent answered protocol \(info.protocolVersion)"
-                                )
+                                ),
+                                expectedGuestMachineEpoch: readinessEpoch
                             )
                         },
                         activateOptionalCapabilities: { _ in
                             _ = await cameraAttachment?.attachIfAvailable()
                         }
                     )
+                    try Task.checkCancellation()
                     rendererRestartRequests.activate()
                 } catch {
+                    guard !Task.isCancelled,
+                          graphicsReadinessState.currentGuestMachineEpoch == readinessEpoch else {
+                        return
+                    }
                     rendererWorkerLaunchStore.teardown(
                         reason: "desktop readiness failed: \(error)"
                     )
@@ -3040,6 +3180,7 @@ enum DesktopMode {
             let deadline = Date().addingTimeInterval(timeout)
             var lastToolsError: Error?
             repeat {
+                try Task.checkCancellation()
                 let control = AgentControl(configuration: .init(
                     directSocketPath: configuration.agentSocketPath
                 ))
@@ -3047,6 +3188,7 @@ enum DesktopMode {
                 do {
                     defer { control.disconnect() }
                     let info = try control.info()
+                    try Task.checkCancellation()
                     toolsAnswered = true
                     guard info.protocolVersion == DoryCore.protocolVersion() else {
                         throw AgentControlError.incompatibleProtocol(
@@ -3069,6 +3211,7 @@ enum DesktopMode {
                         )
                     }
                     for share in configuration.attachedShares {
+                        try Task.checkCancellation()
                         _ = try control.virtioFSMount(
                             tag: share.tag,
                             mountPath: share.guestPath,
@@ -3077,6 +3220,7 @@ enum DesktopMode {
                     }
                     return .tools(info, .mounted(configuration.attachedShares.count))
                 } catch {
+                    try Task.checkCancellation()
                     if toolsAnswered {
                         // The typed operation is idempotent. A lost response can therefore retry
                         // until readiness expires without an Exec fallback or an extra mount layer.
@@ -3135,6 +3279,7 @@ enum DesktopMode {
             if machineExecutionEnded {
                 machineExecutionState = .ended
             }
+            readinessTask?.cancel()
             if stopError == nil {
                 stopError = rendererRuntimeFailureLatch?.failure ?? error
             }
@@ -3218,19 +3363,36 @@ enum DesktopMode {
         }
 
         private func cleanup() {
+            readinessTask?.cancel()
             for display in displays { display.releasePressedInput() }
             if machineExecutionState == .running {
                 machine.requestStop(.crash("AppKit run loop ended before guest execution"))
             }
             if machineExecutionState != .notStarted {
                 do {
-                    _ = try machineRunner.wait()
+                    if let machineRunner {
+                        _ = try machineRunner.wait()
+                    } else {
+                        try retiringMachineExecution?.wait()
+                    }
                 } catch {
                     Self.log("dory-hv desktop: machine owner-thread join failed: \(error)")
                     if stopError == nil { stopError = error }
                 }
                 machineExecutionState = .ended
             }
+            if readinessCompletion?.wait(timeout: .now() + 45) == .timedOut {
+                let error = VMError.bootFailure(
+                    "desktop readiness task did not retire before controller cleanup"
+                )
+                Self.log("dory-hv desktop: \(error)")
+                if stopError == nil { stopError = error }
+                // Keep the worker, sockets and VM-owned memory alive rather than tearing
+                // them down under an in-flight guest RPC. Process exit will reclaim them.
+                return
+            }
+            readinessTask = nil
+            readinessCompletion = nil
             filesystemWorker?.client.close()
             filesystemWorker = nil
             hostShareCoherence = nil
@@ -3316,11 +3478,13 @@ enum DesktopMode {
             let deadline = Date().addingTimeInterval(90)
             var lastError: Error?
             while Date() < deadline {
+                try Task.checkCancellation()
                 do {
                     let control = AgentControl(configuration: .init(
                         directSocketPath: configuration.agentSocketPath
                     ))
                     let info = try control.info()
+                    try Task.checkCancellation()
                     let operationToken = DoryOperationIdentity.canonical(
                         configuration.operationID
                     )
@@ -3336,6 +3500,7 @@ enum DesktopMode {
                         timeoutMs: 10_000,
                         outputLimitBytes: 16 * 1_024
                     ), operation: "bind lifecycle operation")
+                    try Task.checkCancellation()
                     if let display = configuration.resolvedDevices?.display {
                         guard let command = DoryVMMGuestDisplayScale.persistenceCommand(
                             scaleFactor: display.guestUIScaleFactor
@@ -3349,6 +3514,7 @@ enum DesktopMode {
                             timeoutMs: 10_000,
                             outputLimitBytes: 64 * 1_024
                         ), operation: "persist guest UI scale")
+                        try Task.checkCancellation()
                     }
                     var guestEnvironment = configuration.environment
                     guestEnvironment["DORY_OPERATION_ID"] = operationToken
@@ -3360,7 +3526,9 @@ enum DesktopMode {
                         timeoutMs: 30_000,
                         outputLimitBytes: 64 * 1024
                     ), operation: "guest account configuration")
+                    try Task.checkCancellation()
                     for share in configuration.attachedShares {
+                        try Task.checkCancellation()
                         _ = try control.virtioFSMount(
                             tag: share.tag,
                             mountPath: share.guestPath,
@@ -3372,8 +3540,10 @@ enum DesktopMode {
                         timeoutMs: 10_000,
                         outputLimitBytes: 64 * 1024
                     ), operation: "complete desktop configuration")
+                    try Task.checkCancellation()
                     return info
                 } catch {
+                    try Task.checkCancellation()
                     lastError = error
                     Thread.sleep(forTimeInterval: 0.25)
                 }
@@ -3828,25 +3998,116 @@ enum DesktopMode {
         /// same configuration, virtio backends are re-attached to fresh MMIO transports,
         /// and a new single-use `RawHVMachineRunner` starts the boot vCPU.
         private func handleGuestReset() {
-            Self.log("dory-hv desktop: guest requested reset — relaunching VM")
-            // Wait for the old runner's owner thread to fully exit before creating
-            // a new VM. The completion handler runs on the owner thread before it
-            // returns, so the thread is still alive when we get here. We must join
-            // it before hv_vm_destroy() runs (in oldMachine's deinit) to avoid
-            // racing a live vCPU thread.
-            do {
-                _ = try machineRunner.wait()
-            } catch {
-                Self.log("dory-hv desktop: old runner join failed during reset: \(error)")
+            if rendererRestartInProgress {
+                // The current replacement still owns the renderer cutover. Defer the whole-VM
+                // reset until it settles so the two retirement barriers cannot interleave.
+                guestMachineResetPending = true
+                return
             }
+            guestMachineResetPending = false
+            Self.log("dory-hv desktop: guest requested reset — relaunching VM")
+            graphicsReadinessState.prepareGuestMachineReset()
+            firstFrame.resetForNewGuestMachine()
+            firstCompletedPresentation.resetForNewGuestMachine()
+            let oldReadinessTask = readinessTask
+            let oldReadinessCompletion = readinessCompletion
+            readinessTask = nil
+            readinessCompletion = nil
+            oldReadinessTask?.cancel()
+            // The display broker can still own a copied framebuffer from the old guest. Its
+            // XPC retirement needs a bounded reply, but the AppKit run loop must remain free to
+            // drain presentation and lifecycle callbacks while that reply is pending.
+            let displayRelaySlot = self.displayRelaySlot
+            let gpu = self.gpu
+            // Transfer, rather than copy, the runner. Its operation closure strongly retains
+            // the old VM even after wait() returns, so neither this controller nor the worker
+            // may keep the runner alive when the replacement's hv_vm_create begins.
+            let retiredExecution = RawHVGuestExecutionRetirement(owner: machineRunner!) {
+                _ = try $0.wait()
+            }
+            retiringMachineExecution = retiredExecution
+            machineRunner = nil
+            let oldDeviceTransports = virtioAttachments.compactMap { attachment in
+                attachment.backend === gpu ? nil : attachment.transport
+            }
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                do {
+                    try retiredExecution.wait()
+                } catch {
+                    let detail = String(describing: error)
+                    DesktopAppRunLoop.perform { [weak self] in
+                        self?.finish(
+                            error: VMError.bootFailure(
+                                "ARM guest reset could not join the old vCPU: \(detail)"
+                            ),
+                            machineExecutionEnded: true
+                        )
+                    }
+                    return
+                }
+                guard oldReadinessCompletion?.wait(timeout: .now() + 45) != .timedOut else {
+                    DesktopAppRunLoop.perform { [weak self] in
+                        self?.finish(
+                            error: VMError.bootFailure(
+                                "ARM guest reset could not retire the previous boot's readiness task"
+                            ),
+                            machineExecutionEnded: true
+                        )
+                    }
+                    return
+                }
+                let retired = displayRelaySlot.resetCPUFrames()
+                // The old queue objects still refer to the previous VM's memory. Give every
+                // non-GPU backend its normal status-zero cancellation boundary before releasing
+                // that memory; the GPU uses the explicit asynchronous quiescence below.
+                for transport in oldDeviceTransports {
+                    transport.write(offset: 0x070, value: 0, width: 4)
+                }
+                // PSCI reset does not write virtio status zero. Retire old guest-memory aliases,
+                // scanout leases, fences and contexts before the VM's RAM can be destroyed.
+                let gpuResetOutcome = gpu.quiesce(reason: .deviceReset).wait(timeout: 15)
+                DesktopAppRunLoop.perform { [weak self] in
+                    guard let self else { return }
+                    guard retired else {
+                        self.finish(
+                            error: VMError.bootFailure(
+                                "ARM guest reset could not retire the previous boot's display frames"
+                            ),
+                            machineExecutionEnded: true
+                        )
+                        return
+                    }
+                    guard gpuResetOutcome == .completed else {
+                        self.finish(
+                            error: VMError.bootFailure(
+                                "ARM guest reset could not quiesce the previous boot's GPU: \(String(describing: gpuResetOutcome))"
+                            ),
+                            machineExecutionEnded: true
+                        )
+                        return
+                    }
+                    self.resumeGuestReset()
+                }
+            }
+        }
+
+        private func resumeGuestReset() {
+            guard !stopping else {
+                finish(error: nil, machineExecutionEnded: true)
+                return
+            }
+            // handleGuestReset joined the old vCPU and reset every old transport before
+            // dispatching this continuation. Only now may the old VM's RAM be released.
             // Release the old machine so hv_vm_destroy() runs before hvCreateVM().
             // Hypervisor.framework allows only one VM per process; hv_vm_create
             // returns HV_BUSY if the prior VM has not been destroyed.
+            retiringMachineExecution = nil
             machine = nil
             // Create the new Machine from the saved configuration. This calls hvCreateVM().
             let newMachine: Machine
             do {
-                newMachine = try Machine(configuration: savedMachineConfiguration)
+                newMachine = try Machine(configuration: savedMachineConfiguration,
+                                         qualificationFaults: qualificationFaultController)
             } catch {
                 Self.log("dory-hv desktop: VM recreation failed during reset: \(error)")
                 finish(error: error, machineExecutionEnded: true)
@@ -3869,15 +4130,16 @@ enum DesktopMode {
                     let replacement = VirtioBalloon(memory: newMachine.memory) { message in
                         Self.log(message)
                     }
-                    virtioAttachments[index] = (slot: slot, backend: replacement)
+                    virtioAttachments[index].backend = replacement
                     backend = replacement
                 }
                 do {
-                    _ = try Self.attachBackend(
+                    let transport = try Self.attachBackend(
                         backend,
                         to: newMachine,
                         slot: slot
                     )
+                    virtioAttachments[index].transport = transport
                 } catch {
                     Self.log("dory-hv desktop: virtio re-attach failed during reset: \(error)")
                     finish(error: error, machineExecutionEnded: true)
@@ -3901,26 +4163,20 @@ enum DesktopMode {
                 machine: newMachine,
                 threadName: "dory-hv.desktop.vcpu0"
             )
+            // The first reset woke waiters from the retired boot. Quiescence can still
+            // deliver one last old-frame callback, so clear both gates again before the
+            // replacement vCPU can produce its first frame.
+            firstFrame.resetForNewGuestMachine()
+            firstCompletedPresentation.resetForNewGuestMachine()
             do {
-                try machineRunner.start { [weak self] result in
-                    DesktopAppRunLoop.perform {
-                        guard let self else { return }
-                        switch result {
-                        case .success(let reason):
-                            switch reason {
-                            case .reset:
-                                self.handleGuestReset()
-                            default:
-                                self.finish(
-                                    error: Self.error(for: reason),
-                                    machineExecutionEnded: true
-                                )
-                            }
-                        case .failure(let error):
-                            self.finish(error: error, machineExecutionEnded: true)
-                        }
-                    }
+                if gpu.machineResetCompleted() {
+                    // The old boot can no longer produce the initial handoff frame. Do not keep
+                    // this replacement queued behind readiness that now depends on it.
+                    rendererRestartRequests.activate()
+                } else {
+                    graphicsReadinessState.resumeGuestMachinePresentation()
                 }
+                try startMachine()
             } catch {
                 Self.log("dory-hv desktop: runner start failed during reset: \(error)")
                 finish(error: error, machineExecutionEnded: true)
@@ -3933,10 +4189,11 @@ enum DesktopMode {
     }
 }
 
-private final class FirstFrameGate: @unchecked Sendable {
+final class FirstFrameGate: @unchecked Sendable {
     private let condition = NSCondition()
     private let requiredScanoutCount: Int
     private var readyScanoutIDs = Set<UInt32>()
+    private var guestMachineEpoch: UInt64 = 1
 
     init(requiredScanoutCount: Int = 1) {
         self.requiredScanoutCount = max(1, requiredScanoutCount)
@@ -3949,13 +4206,24 @@ private final class FirstFrameGate: @unchecked Sendable {
         condition.unlock()
     }
 
+    func resetForNewGuestMachine() {
+        condition.lock()
+        guestMachineEpoch = guestMachineEpoch == .max ? 1 : guestMachineEpoch + 1
+        readyScanoutIDs.removeAll()
+        condition.broadcast()
+        condition.unlock()
+    }
+
     func wait(timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         condition.lock()
-        while readyScanoutIDs.count < requiredScanoutCount {
+        let expectedEpoch = guestMachineEpoch
+        while readyScanoutIDs.count < requiredScanoutCount,
+              guestMachineEpoch == expectedEpoch {
             if !condition.wait(until: deadline) { break }
         }
-        let result = readyScanoutIDs.count >= requiredScanoutCount
+        let result = guestMachineEpoch == expectedEpoch
+            && readyScanoutIDs.count >= requiredScanoutCount
         condition.unlock()
         return result
     }

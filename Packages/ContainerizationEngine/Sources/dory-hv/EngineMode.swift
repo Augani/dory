@@ -836,7 +836,8 @@ enum EngineMode {
             return try await DesktopRendererWorkerLaunch.prepare(
                 resolvedGraphics: nil,
                 rendererBootstrapAuthority: configuration.rendererBootstrapAuthority,
-                exactManagedKernelSHA256: configuration.exactManagedKernelSHA256
+                exactManagedKernelSHA256: configuration.exactManagedKernelSHA256,
+                requiredWorkspaceID: nil
             )
         case .venus:
             let resolvedGraphics = resolvedGraphicsLevel(
@@ -846,7 +847,8 @@ enum EngineMode {
                 guard let launch = try await DesktopRendererWorkerLaunch.prepare(
                     resolvedGraphics: resolvedGraphics,
                     rendererBootstrapAuthority: configuration.rendererBootstrapAuthority,
-                    exactManagedKernelSHA256: configuration.exactManagedKernelSHA256
+                    exactManagedKernelSHA256: configuration.exactManagedKernelSHA256,
+                    requiredWorkspaceID: nil
                 ) else {
                     throw VMError.invalidConfiguration(
                         "gpu=venus did not produce a renderer worker launch"

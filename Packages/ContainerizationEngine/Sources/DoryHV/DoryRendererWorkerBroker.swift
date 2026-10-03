@@ -1,6 +1,7 @@
 import Darwin
 import DoryGuestMemoryShim
 import DoryRendererWorkerContracts
+import DoryOperations
 import Foundation
 import Metal
 
@@ -75,6 +76,49 @@ public enum DoryRendererWorkerBrokerError: Error, Equatable, Sendable {
     case replyIdentityMismatch
     case invalidReplyDescriptor(index: Int)
     case workerOutcomeUnknown(DoryRendererWorkerCommandDiagnostic)
+    case retirementUnconfirmed
+}
+
+/// Positive kernel-exit evidence for the exact authenticated bootstrap peer. This is not an
+/// invalidation acknowledgement: only the channel's armed process-exit observer can publish it.
+public struct DoryRendererWorkerRetirementReceipt: Equatable, Sendable {
+    public let workspaceID: UUID
+    public let workerGeneration: DoryRendererWorkerGeneration
+    public let processIdentifier: Int32
+
+    fileprivate init(bootstrap: DoryRendererWorkerBootstrap, processIdentifier: Int32) {
+        workspaceID = bootstrap.workspaceID.rawValue
+        workerGeneration = bootstrap.generation
+        self.processIdentifier = processIdentifier
+    }
+}
+
+private final class DoryRendererWorkerRetirementRelay: @unchecked Sendable {
+    private let lock = NSLock()
+    private let exitGroup = DispatchGroup()
+    private var receipt: DoryRendererWorkerRetirementReceipt?
+
+    init() { exitGroup.enter() }
+
+    func publish(bootstrap: DoryRendererWorkerBootstrap, processIdentifier: Int32) {
+        guard processIdentifier > 0 else { return }
+        let published = lock.withLock { () -> Bool in
+            guard receipt == nil else { return false }
+            receipt = DoryRendererWorkerRetirementReceipt(
+                bootstrap: bootstrap, processIdentifier: processIdentifier)
+            return true
+        }
+        if published { exitGroup.leave() }
+    }
+
+    func wait(timeout: TimeInterval) -> DoryRendererWorkerRetirementReceipt? {
+        if let receipt = lock.withLock({ receipt }) { return receipt }
+        guard timeout.isFinite, timeout > 0,
+              timeout <= TimeInterval(DoryRendererWorkerBroker.maximumAdmissionDeadlineNanoseconds)
+                / 1_000_000_000 else { return nil }
+        guard exitGroup.wait(timeout: .now() + timeout) == .success else { return nil }
+        return lock.withLock { receipt }
+    }
 }
 
 public struct DoryRendererWorkerFenceReceipt: @unchecked Sendable {
@@ -99,7 +143,7 @@ public final class DoryRendererWorkerHostVisibleArena: @unchecked Sendable {
 
     private let descriptor: FileHandle
 
-    fileprivate init(
+    init(
         generation: DoryRendererWorkerGeneration,
         byteCount: UInt64,
         descriptor: FileHandle
@@ -251,6 +295,8 @@ public actor DoryRendererWorkerBroker {
 
     private let channel: any DoryRendererWorkerChannel
     private nonisolated let terminalRelay = DoryRendererWorkerBrokerTerminalRelay()
+    private nonisolated let retirementRelay = DoryRendererWorkerRetirementRelay()
+    private var channelInvalidationRequested = false
     private var state: DoryRendererWorkerBrokerState = .active
     private var nextRequestID: UInt64 = 1
     private var pendingByRequestID = [UInt64: PendingCommand]()
@@ -262,6 +308,7 @@ public actor DoryRendererWorkerBroker {
     private var rejectedAdmissions: UInt64 = 0
     private var protocolViolations: UInt64 = 0
     private var lateReplies: UInt64 = 0
+    private var qualificationCrashChallenge: UUID?
 
     public init(
         bootstrap: DoryRendererWorkerBootstrap,
@@ -292,6 +339,9 @@ public actor DoryRendererWorkerBroker {
         self.capabilityReceipt = capabilityReceipt
         self.hostVisibleArena = hostVisibleArena
         self.channel = channel
+        channel.installRetirementHandler { [retirementRelay, bootstrap] processIdentifier in
+            retirementRelay.publish(bootstrap: bootstrap, processIdentifier: processIdentifier)
+        }
         channel.installLifecycleHandler { [weak self] event in
             guard let self else { return }
             Task { await self.receiveChannelEvent(event) }
@@ -532,7 +582,69 @@ public actor DoryRendererWorkerBroker {
 
     public func invalidate() {
         transitionToTerminal(.invalidated, error: .notActive(.invalidated))
+        invalidateChannelOnce()
+    }
+
+    private func invalidateChannelOnce() {
+        guard !channelInvalidationRequested else { return }
+        channelInvalidationRequested = true
         channel.invalidate()
+    }
+
+    /// Requests terminal peer shutdown and joins positive exit proof without blocking an actor
+    /// executor. Failure never authorizes guest-backing release; a later exact proof remains
+    /// observable by callers even after this particular bounded wait expired.
+    public func retire(
+        timeoutNanoseconds: UInt64 = 5_000_000_000
+    ) async throws -> DoryRendererWorkerRetirementReceipt {
+        guard timeoutNanoseconds <= Self.maximumAdmissionDeadlineNanoseconds else {
+            throw DoryRendererWorkerBrokerError.deadlineTooDistant(
+                limitNanoseconds: Self.maximumAdmissionDeadlineNanoseconds,
+                actualNanoseconds: timeoutNanoseconds)
+        }
+        invalidate()
+        let relay = retirementRelay
+        let timeout = TimeInterval(timeoutNanoseconds) / 1_000_000_000
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                if let receipt = relay.wait(timeout: timeout) {
+                    continuation.resume(returning: receipt)
+                } else {
+                    continuation.resume(throwing: DoryRendererWorkerBrokerError.retirementUnconfirmed)
+                }
+            }
+        }
+    }
+
+    /// Synchronous retirement-queue seam, never a vCPU/UI wait. Timeout zero is an exact snapshot.
+    public nonisolated func waitForRetirement(
+        timeout: TimeInterval
+    ) -> DoryRendererWorkerRetirementReceipt? {
+        retirementRelay.wait(timeout: timeout)
+    }
+
+    /// Campaign-only fault, never a VirtIO command and never a graceful reset. Admission does
+    /// not wait for in-flight commands or quiesce the device: normal unexpected-loss handling runs.
+    public func requestQualificationCrash(
+        _ admission: DoryRendererCrashQualificationAdmission,
+        acknowledgement: @escaping @Sendable (Bool, UInt32) -> Void,
+        interrupted: @escaping @Sendable () -> Void
+    ) throws {
+        guard state == .active,
+              admission.permits(workspaceID: bootstrap.workspaceID.rawValue,
+                                workerGeneration: bootstrap.generation.rawValue),
+              qualificationCrashChallenge == nil else {
+            throw DoryRuntimeQualificationFaultError.unauthorized
+        }
+        let bytes = try DoryRendererWorkerQualificationCrashRequest(
+            workspaceID: bootstrap.workspaceID.rawValue, workerGeneration: bootstrap.generation.rawValue,
+            challenge: admission.challenge, deadlineUptimeNanoseconds: admission.dispatchDeadlineNanoseconds
+        ).encoded()
+        guard admission.claimDispatchPermission() else { throw DoryRuntimeQualificationFaultError.unauthorized }
+        qualificationCrashChallenge = admission.challenge
+        channel.qualificationCrash(exactBytes: bytes, acknowledgement: { [bootstrap] accepted, count in
+            acknowledgement(accepted && count <= UInt32(bootstrap.limits.maximumInFlightCommands), count)
+        }, interrupted: interrupted)
     }
 
     /// Installs a one-shot terminal-generation observer without an actor hop. This is required by
@@ -592,7 +704,7 @@ public actor DoryRendererWorkerBroker {
                     status: .backendOutcomeUnknown
                 ))
             )
-            channel.invalidate()
+            invalidateChannelOnce()
         case .failure(let failure):
             let terminal: DoryRendererWorkerBrokerState = switch failure {
             case .interrupted: .interrupted
@@ -611,7 +723,7 @@ public actor DoryRendererWorkerBroker {
                     failure: failure
                 )
             )
-            channel.invalidate()
+            invalidateChannelOnce()
         case .success(let reply):
             do {
                 let decoded = try decodeReply(reply, accepting: pending.command)
@@ -621,12 +733,12 @@ public actor DoryRendererWorkerBroker {
                 Self.close(reply.descriptors)
                 protocolViolations = Self.saturatingAdd(protocolViolations, 1)
                 transitionToTerminal(.protocolViolation, error: error)
-                channel.invalidate()
+                invalidateChannelOnce()
             } catch {
                 Self.close(reply.descriptors)
                 protocolViolations = Self.saturatingAdd(protocolViolations, 1)
                 transitionToTerminal(.protocolViolation, error: .replyIdentityMismatch)
-                channel.invalidate()
+                invalidateChannelOnce()
             }
         }
     }
@@ -780,7 +892,7 @@ public actor DoryRendererWorkerBroker {
                 status: .deadlineExpired
             ))
         )
-        channel.invalidate()
+        invalidateChannelOnce()
     }
 
     private func commandDiagnostic(

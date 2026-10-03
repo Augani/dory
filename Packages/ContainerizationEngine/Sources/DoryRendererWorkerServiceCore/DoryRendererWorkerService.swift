@@ -12,6 +12,8 @@ public enum DoryRendererWorkerBackendExecution: @unchecked Sendable {
         sharedTextureHandle: MTLSharedTextureHandle? = nil
     )
     case rejected
+    /// A bounded guest request exceeded this worker generation's resource budget.
+    case resourceExhausted
     case outcomeUnknown
 }
 
@@ -139,6 +141,8 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
 
     private let backend: any DoryRendererWorkerBackend
     private let lock = NSLock()
+    private let asynchronousAdmissionLock = NSLock()
+    private let executionQueueIdentity = DispatchSpecificKey<UInt8>()
     private let executionQueue = DispatchQueue(
         label: "dev.dory.renderer-worker.admission",
         qos: .userInteractive
@@ -149,9 +153,13 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
     /// Accessed only on executionQueue. Strict increase gives replay protection without an
     /// attacker-controlled, generation-long Set of request identities.
     private var highestAdmittedRequestID: UInt64 = 0
+    /// Foreign cleanup belongs to executionQueue, independently of prompt admission revocation.
+    private var backendInvalidated = false
+    private var qualificationCrashAdmitted = false
 
     public init(backend: any DoryRendererWorkerBackend) {
         self.backend = backend
+        executionQueue.setSpecific(key: executionQueueIdentity, value: 1)
     }
 
     public func bootstrap(exactBytes: Data) -> Data {
@@ -171,6 +179,22 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
         }
         guard claimed else {
             return (failure(.bootstrapAlreadyAttempted), [])
+        }
+        // Bootstrap, exchanges and cleanup share one foreign-state owner. State revocation is
+        // separate so invalidate can close admission while activation/export is still blocked.
+        if DispatchQueue.getSpecific(key: executionQueueIdentity) != nil {
+            return bootstrapOnExecutionQueue(exactBytes: exactBytes)
+        }
+        return executionQueue.sync { bootstrapOnExecutionQueue(exactBytes: exactBytes) }
+    }
+
+    private func bootstrapOnExecutionQueue(exactBytes: Data) -> (
+        result: Data,
+        descriptors: [FileHandle]
+    ) {
+        guard lock.withLock({ if case .bootstrapping = state { return true }; return false }) else {
+            invalidateBackendOnExecutionQueue()
+            return (failure(.capabilityUnavailable), [])
         }
         let bootstrap: DoryRendererWorkerBootstrap
         do {
@@ -197,6 +221,10 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
             } catch {
                 throw DoryRendererWorkerBackendActivationError.capabilityReceipt
             }
+            guard lock.withLock({ if case .bootstrapping = state { return true }; return false }) else {
+                invalidateBackendOnExecutionQueue()
+                return (failure(.capabilityUnavailable), [])
+            }
             guard receipt.isAdmissible(for: bootstrap) else {
                 failGeneration()
                 return (
@@ -207,15 +235,30 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
                 )
             }
             let arenaDescriptors = try bootstrapArenaDescriptors(accepting: bootstrap)
-            highestAdmittedRequestID = 0
-            lock.withLock { state = .active(bootstrap) }
+            var transferredDescriptors = false
+            defer {
+                if !transferredDescriptors {
+                    for descriptor in arenaDescriptors { try? descriptor.close() }
+                }
+            }
+            let result = try DoryRendererWorkerRPCResultCodec.encode(
+                .success(payload: receiptBytes, descriptorCount: UInt16(arenaDescriptors.count))
+            )
+            let committed = lock.withLock { () -> Bool in
+                guard case .bootstrapping = state else { return false }
+                highestAdmittedRequestID = 0
+                state = .active(bootstrap)
+                return true
+            }
+            guard committed else {
+                // A late export is not a successor generation's authority. Close it and retire
+                // the just-activated backend without publishing an admissible capability receipt.
+                invalidateBackendOnExecutionQueue()
+                return (failure(.capabilityUnavailable), [])
+            }
+            transferredDescriptors = true
             return (
-                try DoryRendererWorkerRPCResultCodec.encode(
-                    .success(
-                        payload: receiptBytes,
-                        descriptorCount: UInt16(arenaDescriptors.count)
-                    )
-                ),
+                result,
                 arenaDescriptors
             )
         } catch let error as DoryRendererWorkerBackendActivationError {
@@ -283,6 +326,31 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
         }
     }
 
+    /// The XPC entry point must return without waiting for foreign execution. Reserve its bounded
+    /// queue slot synchronously, then enqueue in admission order on the same foreign-state owner.
+    /// Completion runs on that serial executor and must not synchronously reenter it.
+    public func exchangeAsynchronously(
+        exactFrame: Data, descriptors: [FileHandle],
+        completion: @escaping @Sendable (Data, [FileHandle], MTLSharedTextureHandle?) -> Void
+    ) {
+        let enqueuedAt = DispatchTime.now().uptimeNanoseconds
+        let rejected: DoryRendererWorkerRPCFailureCode? = asynchronousAdmissionLock.withLock {
+            let admission = reserveExchange(controlByteCount: exactFrame.count)
+            guard case .admitted(let bootstrap) = admission else {
+                if case .rejected(let code) = admission { return code }
+                return .internalFailure
+            }
+            executionQueue.async { [self] in
+                recordAdmissionLatency(since: enqueuedAt)
+                let result = executeAdmitted(exactFrame: exactFrame, descriptors: descriptors, bootstrap: bootstrap)
+                releaseExchange()
+                completion(result.result, result.descriptors, result.sharedTextureHandle)
+            }
+            return nil
+        }
+        if let rejected { completion(failure(rejected), [], nil) }
+    }
+
     public func metricsSnapshot() -> DoryRendererWorkerServiceMetrics {
         lock.withLock {
             DoryRendererWorkerServiceMetrics(
@@ -300,8 +368,35 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
         }
     }
 
+    /// This does not acquire executionQueue or retire foreign resources: the fault must remain
+    /// abrupt even while an exchange is executing. The XPC adapter alone terminates its process.
+    public func admitQualificationCrash(exactBytes: Data) -> (accepted: Bool, inFlightCommands: UInt32) {
+        guard let request = try? DoryRendererWorkerQualificationCrashRequest.decode(exactBytes) else {
+            return (false, 0)
+        }
+        return lock.withLock {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard case .active(let bootstrap) = state, !qualificationCrashAdmitted,
+                  bootstrap.workspaceID.rawValue == request.workspaceID,
+                  bootstrap.generation.rawValue == request.workerGeneration,
+                  request.deadlineUptimeNanoseconds > now,
+                  (25_000_000...30_000_000_000).contains(request.deadlineUptimeNanoseconds - now)
+            else { return (false, 0) }
+            qualificationCrashAdmitted = true
+            return (true, UInt32(pendingCommands))
+        }
+    }
+
     public func invalidate() {
-        executionQueue.sync { failGeneration() }
+        // Do not wait behind foreign execution to revoke new commands or a late bootstrap commit.
+        lock.withLock { state = .failed }
+        if DispatchQueue.getSpecific(key: executionQueueIdentity) != nil {
+            // Backends/reply callbacks may reenter on the owner. Cleanup must run after the
+            // current foreign call unwinds, never recursively tear down its borrowed pointers.
+            executionQueue.async { [self] in invalidateBackendOnExecutionQueue() }
+        } else {
+            executionQueue.sync { invalidateBackendOnExecutionQueue() }
+        }
     }
 
     private func executeAdmitted(
@@ -339,8 +434,22 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
             if command.operation == .submit3D {
                 recordDescriptorBackedCommandBytes(command.sharedRegions[0].length)
             }
-            switch try backend.execute(command: command, descriptors: descriptors) {
+            let execution = try backend.execute(command: command, descriptors: descriptors)
+            guard case .active(let current) = lock.withLock({ state }),
+                  current.generation == bootstrap.generation else {
+                if case .success(_, let replyDescriptors, _) = execution {
+                    for descriptor in replyDescriptors { try? descriptor.close() }
+                }
+                return (failure(.capabilityUnavailable), [], nil)
+            }
+            switch execution {
             case let .success(payload, replyDescriptors, sharedTextureHandle):
+                var transferredReplyDescriptors = false
+                defer {
+                    if !transferredReplyDescriptors {
+                        for descriptor in replyDescriptors { try? descriptor.close() }
+                    }
+                }
                 guard replyDescriptors.count <= Int(UInt16.max) else {
                     failGeneration()
                     return (failure(.protocolViolation), [], nil)
@@ -358,9 +467,12 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
                     ),
                     maximumPayloadBytes: bootstrap.limits.maximumCommandBytes
                 )
+                transferredReplyDescriptors = true
                 return (frame, replyDescriptors, sharedTextureHandle)
             case .rejected:
                 return (failure(.commandRejected), [], nil)
+            case .resourceExhausted:
+                return (failure(.resourceExhausted), [], nil)
             case .outcomeUnknown:
                 failGeneration()
                 return (failure(.outcomeUnknown), [], nil)
@@ -518,14 +630,16 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
     }
 
     private func failGeneration() {
-        let shouldInvalidate = lock.withLock {
-            guard case .failed = state else {
-                state = .failed
-                return true
-            }
-            return false
-        }
-        if shouldInvalidate { backend.invalidate() }
+        lock.withLock { state = .failed }
+        invalidateBackendOnExecutionQueue()
+    }
+
+    private func invalidateBackendOnExecutionQueue() {
+        guard !backendInvalidated else { return }
+        backendInvalidated = true
+        // This closes service-local foreign ownership; it is not a GPU completion or process-exit
+        // proof. The host must still obtain exact worker retirement evidence before backing reuse.
+        backend.invalidate()
     }
 
     private func failure(_ code: DoryRendererWorkerRPCFailureCode) -> Data {

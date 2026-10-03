@@ -19,6 +19,22 @@ private enum DoryRendererWorkerBackendFactory {
     }
 }
 
+/// Owns a native XPC reply block across the service's serial execution handoff. A lock claims it
+/// exactly once; arbitrary callback code is never invoked while the lock is held.
+private final class DoryRendererWorkerExchangeReply: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reply: ((Data, [FileHandle], MTLSharedTextureHandle?) -> Void)?
+    init(_ reply: @escaping (Data, [FileHandle], MTLSharedTextureHandle?) -> Void) { self.reply = reply }
+    func send(_ bytes: Data, _ descriptors: [FileHandle], _ texture: MTLSharedTextureHandle?) {
+        let delivery = lock.withLock { let delivery = reply; reply = nil; return delivery }
+        guard let delivery else {
+            for descriptor in descriptors { try? descriptor.close() }
+            return
+        }
+        delivery(bytes, descriptors, texture)
+    }
+}
+
 private final class DoryRendererWorkerXPCAdapter:
     NSObject,
     DoryRendererWorkerXPCProtocol
@@ -40,8 +56,24 @@ private final class DoryRendererWorkerXPCAdapter:
         descriptors: [FileHandle],
         withReply reply: @escaping (Data, [FileHandle], MTLSharedTextureHandle?) -> Void
     ) {
-        let result = service.exchange(exactFrame: frame, descriptors: descriptors)
-        reply(result.result, result.descriptors, result.sharedTextureHandle)
+        let reply = DoryRendererWorkerExchangeReply(reply)
+        service.exchangeAsynchronously(exactFrame: frame, descriptors: descriptors) { bytes, descriptors, texture in
+            reply.send(bytes, descriptors, texture)
+        }
+    }
+
+    func qualificationCrash(_ request: Data, withReply reply: @escaping (Bool, UInt32) -> Void) {
+        let admission = service.admitQualificationCrash(exactBytes: request)
+        reply(admission.accepted, admission.inFlightCommands)
+        guard admission.accepted,
+              let intent = try? DoryRendererWorkerQualificationCrashRequest.decode(request) else { return }
+        // Let the acknowledgement leave XPC, then die without resetting/quiescing the backend.
+        // getpid() targets only this authenticated worker instance; no caller supplies a PID.
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + .milliseconds(25)) {
+            guard DispatchTime.now().uptimeNanoseconds < intent.deadlineUptimeNanoseconds else { return }
+            Darwin.kill(Darwin.getpid(), SIGKILL)
+            Darwin._exit(EXIT_FAILURE)
+        }
     }
 }
 

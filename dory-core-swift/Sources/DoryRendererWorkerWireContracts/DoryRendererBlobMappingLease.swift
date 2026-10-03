@@ -37,7 +37,7 @@ public struct DoryRendererBlobMappingLease: Equatable, Sendable {
         limits: DoryRendererWorkerLimits = .production
     ) throws {
         guard resourceID != 0, resourceGeneration != 0,
-              (1...3).contains(mapInfo),
+              (0...3).contains(mapInfo),
               declaredFileSize != 0,
               mappingByteCount != 0,
               mappingByteCount <= declaredFileSize,

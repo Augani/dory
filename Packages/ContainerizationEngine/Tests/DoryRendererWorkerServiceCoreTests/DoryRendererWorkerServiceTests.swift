@@ -6,6 +6,123 @@ import Foundation
 import Testing
 
 @Suite struct DoryRendererWorkerServiceTests {
+    @Test func asynchronousXPCAdmissionPreservesFIFOAndBackpressureWhileCrashControlRemainsResponsive() throws {
+        let production = DoryRendererWorkerLimits.production
+        let limits = try DoryRendererWorkerLimits(maximumCommandBytes: production.maximumCommandBytes,
+            maximumSharedRegions: production.maximumSharedRegions, maximumReferencedBytes: production.maximumReferencedBytes,
+            maximumInFlightCommands: 2, maximumLiveScanoutLeases: production.maximumLiveScanoutLeases,
+            maximumScanoutBytes: production.maximumScanoutBytes)
+        let bootstrap = try makeBootstrap(limits: limits)
+        let backend = AdmissibleBackend(blockExecution: true)
+        let service = DoryRendererWorkerService(backend: backend)
+        _ = service.bootstrap(exactBytes: DoryRendererWorkerBootstrapCodec.encode(bootstrap))
+        let replies = AsyncServiceReplies()
+        let finished = DispatchSemaphore(value: 0)
+        defer { backend.releaseExecution.signal(); backend.releaseExecution.signal() }
+        for requestID in UInt64(1)...2 {
+            let bytes = try DoryRendererWorkerCommandCodec.encode(resetCommand(bootstrap: bootstrap, requestID: requestID))
+            service.exchangeAsynchronously(exactFrame: bytes, descriptors: []) { bytes, descriptors, texture in
+                #expect(descriptors.isEmpty && texture == nil)
+                replies.record(requestID: requestID, bytes: bytes)
+                finished.signal()
+            }
+        }
+        try #require(backend.executeStarted.wait(timeout: .now() + 2) == .success)
+        #expect(service.metricsSnapshot().currentQueueDepth == 2)
+        #expect(replies.values.isEmpty)
+        let rejected = AsyncServiceReplies()
+        service.exchangeAsynchronously(exactFrame: try DoryRendererWorkerCommandCodec.encode(
+            resetCommand(bootstrap: bootstrap, requestID: 3)), descriptors: []) { bytes, _, _ in
+            rejected.record(requestID: 3, bytes: bytes)
+        }
+        #expect(try DoryRendererWorkerRPCResultCodec.decode(try #require(rejected.values.first?.bytes))
+            == .failure(.resourceExhausted))
+        #expect(service.metricsSnapshot().backpressureRejections == 1)
+        let crash = DoryRendererWorkerQualificationCrashRequest(workspaceID: bootstrap.workspaceID.rawValue,
+            workerGeneration: bootstrap.generation.rawValue, challenge: UUID(),
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+        let admission = service.admitQualificationCrash(exactBytes: try crash.encoded())
+        #expect(admission.accepted && admission.inFlightCommands == 2)
+        #expect(replies.values.isEmpty)
+        backend.releaseExecution.signal()
+        try #require(finished.wait(timeout: .now() + 2) == .success)
+        try #require(backend.executeStarted.wait(timeout: .now() + 2) == .success)
+        backend.releaseExecution.signal()
+        try #require(finished.wait(timeout: .now() + 2) == .success)
+        #expect(replies.values.map(\.requestID) == [1, 2])
+        for reply in replies.values {
+            #expect(try DoryRendererWorkerRPCResultCodec.decode(reply.bytes) == .success(payload: Data(), descriptorCount: 0))
+        }
+        #expect(service.metricsSnapshot().currentQueueDepth == 0)
+        #expect(service.metricsSnapshot().xpcBatchCount == 2)
+    }
+
+    @Test func qualificationCrashRejectsWrongWorkspaceGenerationMalformedAndRepeatedRequests() throws {
+        let bootstrap = try makeBootstrap()
+        let service = DoryRendererWorkerService(backend: AdmissibleBackend())
+        let request = DoryRendererWorkerQualificationCrashRequest(workspaceID: bootstrap.workspaceID.rawValue,
+            workerGeneration: bootstrap.generation.rawValue, challenge: UUID(),
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+        #expect(!service.admitQualificationCrash(exactBytes: try request.encoded()).accepted)
+        _ = service.bootstrap(exactBytes: DoryRendererWorkerBootstrapCodec.encode(bootstrap))
+        #expect(!service.admitQualificationCrash(exactBytes: Data([0])).accepted)
+        for invalid in [
+            DoryRendererWorkerQualificationCrashRequest(workspaceID: UUID(),
+                workerGeneration: bootstrap.generation.rawValue, challenge: UUID(),
+                deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 2_000_000_000),
+            DoryRendererWorkerQualificationCrashRequest(workspaceID: bootstrap.workspaceID.rawValue,
+                workerGeneration: bootstrap.generation.rawValue + 1, challenge: UUID(),
+                deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+        ] { #expect(!service.admitQualificationCrash(exactBytes: try invalid.encoded()).accepted) }
+        let accepted = service.admitQualificationCrash(exactBytes: try request.encoded())
+        #expect(accepted.accepted)
+        #expect(accepted.inFlightCommands == 0)
+        #expect(service.metricsSnapshot().xpcBatchCount == 0)
+        #expect(!service.admitQualificationCrash(exactBytes: try request.encoded()).accepted)
+        service.invalidate()
+        #expect(!service.admitQualificationCrash(exactBytes: try request.encoded()).accepted)
+    }
+
+    @Test func qualificationCrashDoesNotWaitForOrQuiesceAnInFlightExchange() throws {
+        let bootstrap = try makeBootstrap()
+        let backend = AdmissibleBackend(blockExecution: true)
+        let service = DoryRendererWorkerService(backend: backend)
+        _ = service.bootstrap(exactBytes: DoryRendererWorkerBootstrapCodec.encode(bootstrap))
+        let frame = try DoryRendererWorkerCommandCodec.encode(resetCommand(bootstrap: bootstrap, requestID: 1))
+        let finished = DispatchSemaphore(value: 0)
+        Thread {
+            _ = service.exchange(exactFrame: frame, descriptors: [])
+            finished.signal()
+        }.start()
+        defer { backend.releaseExecution.signal() }
+        try #require(backend.executeStarted.wait(timeout: .now() + 2) == .success)
+        let request = DoryRendererWorkerQualificationCrashRequest(workspaceID: bootstrap.workspaceID.rawValue,
+            workerGeneration: bootstrap.generation.rawValue, challenge: UUID(),
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+        let accepted = service.admitQualificationCrash(exactBytes: try request.encoded())
+        #expect(accepted.accepted)
+        #expect(accepted.inFlightCommands == 1)
+        #expect(finished.wait(timeout: .now() + 0.01) == .timedOut)
+        backend.releaseExecution.signal()
+        #expect(finished.wait(timeout: .now() + 2) == .success)
+    }
+
+    @Test func qualificationCrashRejectsExpiredTooShortOrUnboundedDeadlinesWithoutConsumingAdmission() throws {
+        let bootstrap = try makeBootstrap()
+        let service = DoryRendererWorkerService(backend: AdmissibleBackend())
+        _ = service.bootstrap(exactBytes: DoryRendererWorkerBootstrapCodec.encode(bootstrap))
+        let now = DispatchTime.now().uptimeNanoseconds
+        for deadline in [now - 1, now + 1_000_000, now + 31_000_000_000] {
+            let request = DoryRendererWorkerQualificationCrashRequest(workspaceID: bootstrap.workspaceID.rawValue,
+                workerGeneration: bootstrap.generation.rawValue, challenge: UUID(), deadlineUptimeNanoseconds: deadline)
+            #expect(!service.admitQualificationCrash(exactBytes: try request.encoded()).accepted)
+        }
+        let valid = DoryRendererWorkerQualificationCrashRequest(workspaceID: bootstrap.workspaceID.rawValue,
+            workerGeneration: bootstrap.generation.rawValue, challenge: UUID(),
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+        #expect(service.admitQualificationCrash(exactBytes: try valid.encoded()).accepted)
+    }
+
     @Test func failClosedExecutableNeverAdvertisesPartialAcceleration() throws {
         let bootstrap = try makeBootstrap()
         let service = DoryRendererWorkerService(
@@ -158,6 +275,54 @@ import Testing
         #expect(metrics.replayRejections == 1)
         #expect(metrics.currentQueueDepth == 0)
         #expect(metrics.scanoutCopyBytes == 0)
+    }
+
+    @Test func rejectedGuestResourceDoesNotFailTheWorkerGeneration() throws {
+        let bootstrap = try makeBootstrap()
+        let service = DoryRendererWorkerService(
+            backend: AdmissibleBackend(rejectRequestID: 1)
+        )
+        _ = service.bootstrap(exactBytes: DoryRendererWorkerBootstrapCodec.encode(bootstrap))
+        let rejected = service.exchange(
+            exactFrame: try DoryRendererWorkerCommandCodec.encode(
+                resetCommand(bootstrap: bootstrap, requestID: 1)
+            ),
+            descriptors: []
+        )
+        #expect(try DoryRendererWorkerRPCResultCodec.decode(rejected.result)
+            == .failure(.commandRejected))
+        let later = service.exchange(
+            exactFrame: try DoryRendererWorkerCommandCodec.encode(
+                resetCommand(bootstrap: bootstrap, requestID: 2)
+            ),
+            descriptors: []
+        )
+        #expect(try DoryRendererWorkerRPCResultCodec.decode(later.result)
+            == .success(payload: Data(), descriptorCount: 0))
+    }
+
+    @Test func exhaustedGuestResourcePreservesTypedFailureAndWorkerGeneration() throws {
+        let bootstrap = try makeBootstrap()
+        let service = DoryRendererWorkerService(
+            backend: AdmissibleBackend(exhaustRequestID: 1)
+        )
+        _ = service.bootstrap(exactBytes: DoryRendererWorkerBootstrapCodec.encode(bootstrap))
+        let exhausted = service.exchange(
+            exactFrame: try DoryRendererWorkerCommandCodec.encode(
+                resetCommand(bootstrap: bootstrap, requestID: 1)
+            ),
+            descriptors: []
+        )
+        #expect(try DoryRendererWorkerRPCResultCodec.decode(exhausted.result)
+            == .failure(.resourceExhausted))
+        let later = service.exchange(
+            exactFrame: try DoryRendererWorkerCommandCodec.encode(
+                resetCommand(bootstrap: bootstrap, requestID: 2)
+            ),
+            descriptors: []
+        )
+        #expect(try DoryRendererWorkerRPCResultCodec.decode(later.result)
+            == .success(payload: Data(), descriptorCount: 0))
     }
 
     @Test func maximumInFlightCommandsBoundsTheSerializedAdmissionQueue() async throws {
@@ -388,14 +553,31 @@ import Testing
     }
 }
 
+private final class AsyncServiceReplies: @unchecked Sendable {
+    struct Reply: Sendable { let requestID: UInt64; let bytes: Data }
+    private let lock = NSLock()
+    private var stored = [Reply]()
+    var values: [Reply] { lock.withLock { stored } }
+    func record(requestID: UInt64, bytes: Data) { lock.withLock { stored.append(.init(requestID: requestID, bytes: bytes)) } }
+}
+
 private final class AdmissibleBackend: DoryRendererWorkerBackend, @unchecked Sendable {
     let executeStarted = DispatchSemaphore(value: 0)
     let releaseExecution = DispatchSemaphore(value: 0)
     private let blockExecution: Bool
+    private let rejectRequestID: UInt64?
+    private let exhaustRequestID: UInt64?
     private let arenaDescriptor: Int32
 
-    init(blockExecution: Bool = false, arenaByteCount: UInt64 = 0) throws {
+    init(
+        blockExecution: Bool = false,
+        arenaByteCount: UInt64 = 0,
+        rejectRequestID: UInt64? = nil,
+        exhaustRequestID: UInt64? = nil
+    ) throws {
         self.blockExecution = blockExecution
+        self.rejectRequestID = rejectRequestID
+        self.exhaustRequestID = exhaustRequestID
         guard arenaByteCount > 0 else {
             arenaDescriptor = -1
             return
@@ -412,8 +594,17 @@ private final class AdmissibleBackend: DoryRendererWorkerBackend, @unchecked Sen
         arenaDescriptor = descriptor
     }
 
-    convenience init(blockExecution: Bool = false) {
-        try! self.init(blockExecution: blockExecution, arenaByteCount: 0)
+    convenience init(
+        blockExecution: Bool = false,
+        rejectRequestID: UInt64? = nil,
+        exhaustRequestID: UInt64? = nil
+    ) {
+        try! self.init(
+            blockExecution: blockExecution,
+            arenaByteCount: 0,
+            rejectRequestID: rejectRequestID,
+            exhaustRequestID: exhaustRequestID
+        )
     }
 
     deinit { if arenaDescriptor >= 0 { close(arenaDescriptor) } }
@@ -429,12 +620,16 @@ private final class AdmissibleBackend: DoryRendererWorkerBackend, @unchecked Sen
     }
 
     func execute(
-        command _: DoryRendererWorkerCommand,
+        command: DoryRendererWorkerCommand,
         descriptors _: [FileHandle]
     ) throws -> DoryRendererWorkerBackendExecution {
         executeStarted.signal()
         if blockExecution {
             _ = releaseExecution.wait(timeout: .now() + 5)
+        }
+        if let rejectRequestID, command.requestID == rejectRequestID { return .rejected }
+        if let exhaustRequestID, command.requestID == exhaustRequestID {
+            return .resourceExhausted
         }
         return .success(payload: Data(), descriptors: [])
     }

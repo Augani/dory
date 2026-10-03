@@ -85,4 +85,106 @@ import Testing
         })
         #expect(fcntl(regions.descriptors[0].fileDescriptor, F_GETFL) & O_ACCMODE == O_RDWR)
     }
+
+    @Test func discontiguousBackingPinsOnlyEntryGranulesUntilLastRegionSetCopyRetires() throws {
+        let guestBase: UInt64 = 0x8200_0000
+        let (memory, unmaps) = try makeMockReclaimMemory(guestBase: guestBase)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: VirtioRng(),
+            memory: memory,
+            interrupt: {}
+        )
+        let first = guestBase + HostPage.size + 13
+        let second = guestBase + 6 * HostPage.size - 8
+        var regions: DoryRendererWorkerSharedRegionSet? = try DoryRendererWorkerSharedRegionSet.guestBacking(
+            entries: [
+                VirtioGPUMemoryEntry(
+                    pointer: try memory.hostPointer(at: first, count: 33),
+                    length: 33, guestAddress: first
+                ),
+                VirtioGPUMemoryEntry(
+                    pointer: try memory.hostPointer(at: second, count: 16),
+                    length: 16, guestAddress: second
+                ),
+            ],
+            transport: transport
+        )
+        #expect(regions?.references.count == 2)
+        #expect(regions?.descriptors.count == 1)
+        withExtendedLifetime(regions) {
+            // Neither offset entry covers a whole page, but all overlapping granules are pinned.
+            for page in [UInt64(1), 5, 6] {
+                #expect(memory.releaseRange(
+                    guestAddress: guestBase + page * HostPage.size, length: HostPage.size
+                ) == .rejected)
+            }
+            #expect(unmaps.load() == 0)
+            // Sharing one descriptor must not pin the untouched gap between its entry ranges.
+            #expect(memory.releaseRange(
+                guestAddress: guestBase + 3 * HostPage.size, length: HostPage.size
+            ) == .reclaimed)
+        }
+        #expect(unmaps.load() == 1)
+
+        var retainedCopy = regions
+        regions = nil
+        withExtendedLifetime(retainedCopy) {
+            #expect(retainedCopy?.references.count == 2)
+            #expect(memory.releaseRange(
+                guestAddress: guestBase + HostPage.size, length: HostPage.size
+            ) == .rejected)
+        }
+        retainedCopy = nil
+        for page in [UInt64(1), 5, 6] {
+            #expect(memory.releaseRange(
+                guestAddress: guestBase + page * HostPage.size, length: HostPage.size
+            ) == .reclaimed)
+        }
+        #expect(unmaps.load() == 4)
+    }
+
+    @Test func rejectedBackingSetReleasesPinsAdmittedBeforeTheInvalidEntry() throws {
+        let guestBase: UInt64 = 0x8300_0000
+        let (memory, unmaps) = try makeMockReclaimMemory(guestBase: guestBase)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: VirtioRng(),
+            memory: memory,
+            interrupt: {}
+        )
+        let address = guestBase + 2 * HostPage.size + 32
+        let pointer = try memory.hostPointer(at: address, count: 64)
+        #expect(throws: VMError.self) {
+            _ = try DoryRendererWorkerSharedRegionSet.guestBacking(
+                entries: [
+                    VirtioGPUMemoryEntry(pointer: pointer, length: 64, guestAddress: address),
+                    VirtioGPUMemoryEntry(pointer: pointer, length: 0, guestAddress: address),
+                ],
+                transport: transport
+            )
+        }
+        #expect(memory.releaseRange(
+            guestAddress: guestBase + 2 * HostPage.size, length: HostPage.size
+        ) == .reclaimed)
+        #expect(unmaps.load() == 1)
+    }
+
+    private func makeMockReclaimMemory(guestBase: UInt64) throws -> (GuestMemory, ByteCounter) {
+        let unmaps = ByteCounter()
+        let memory = try GuestMemory(
+            guestBase: guestBase,
+            size: 8 * HostPage.size,
+            reclaimOperations: GuestMemoryReclaimOperations(
+                unmap: { _, _ in
+                    unmaps.add(1)
+                    return true
+                },
+                map: { _, _, _ in true },
+                markReusable: { _, _ in true },
+                markInUse: { _, _ in true }
+            )
+        )
+        return (memory, unmaps)
+    }
 }

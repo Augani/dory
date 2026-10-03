@@ -19,11 +19,19 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
         let lease: DoryHostUSBLeaseDevice
     }
 
+    private struct PendingAttachment: Equatable {
+        let port: Int
+        let id = UUID()
+    }
+
     private let lock = NSLock()
     private var controller: DoryPCXHCIController
     private let lookupCandidate: CandidateLookup
     private let openLease: LeaseOpener
     private var attachments = [String: Attachment]()
+    private var pendingAttachments = [String: PendingAttachment]()
+    private var retiringPorts = Set<Int>()
+    private var stopped = false
 
     init(
         controller: DoryPCXHCIController,
@@ -42,11 +50,17 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
             return candidate
         }
         self.openLease = openLease ?? { candidate, identity in
-            let family = Self.family(candidate)
+            let family = try Self.supportedFamily(candidate)
             let capability = try DoryIOUSBHostTransferCapability.capture(
                 expectedIdentityToken: identity,
                 speed: Self.portSpeed(candidate.descriptor.speed),
-                requireUnmountedStorage: family == .storage
+                requireUnmountedStorage: family == .storage,
+                serviceAllowed: { service in
+                    guard let current = HostUsbDiscovery.candidate(ioService: service) else {
+                        return false
+                    }
+                    return Self.hasSameAdmittedConfiguration(selected: candidate, current: current)
+                }
             )
             do {
                 return try broker.acquire(
@@ -68,6 +82,9 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
 
     func replaceController(_ replacement: DoryPCXHCIController) throws {
         try lock.withLock {
+            guard !stopped else {
+                throw UsbControlError.managerStoppedDuringTransition("controller-reset")
+            }
             var connectedPorts = [Int]()
             do {
                 for attachment in attachments.values.sorted(by: { $0.port < $1.port }) {
@@ -93,12 +110,22 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
         guard mode == .userAuthorized else {
             throw UsbControlError.openModeNotAllowed(mode)
         }
-        let admitted = try lock.withLock { () -> (DoryUSBControlV1.Attachment, DoryHostUSBLeaseDevice) in
+        // Reserve admission under the lifecycle lock, but do not hold it across discovery or
+        // capture. Stop must revoke an in-flight capture before that platform call returns.
+        let reservation = try lock.withLock { () -> PendingAttachment in
+            guard !stopped else {
+                throw UsbControlError.managerStoppedDuringTransition(busID)
+            }
             guard attachments[busID] == nil else {
                 throw UsbControlError.alreadyAttached(busID)
             }
+            guard pendingAttachments[busID] == nil else {
+                throw UsbControlError.transitionInProgress(busID: busID, operation: "attaching")
+            }
             guard let port = (2...DoryPCXHCIController.portCount).first(where: { candidate in
                 !attachments.values.contains(where: { $0.port == candidate })
+                    && !pendingAttachments.values.contains(where: { $0.port == candidate })
+                    && !retiringPorts.contains(candidate)
             }) else {
                 throw UsbControlError.mutationRejected(
                     operation: .attach,
@@ -106,7 +133,19 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
                     detail: "all DoryPC xHCI passthrough ports are occupied"
                 )
             }
-            let candidate = try lookupCandidate(busID)
+            let reservation = PendingAttachment(port: port)
+            pendingAttachments[busID] = reservation
+            return reservation
+        }
+        defer {
+            lock.withLock {
+                if pendingAttachments[busID] == reservation {
+                    pendingAttachments.removeValue(forKey: busID)
+                }
+            }
+        }
+        let port = reservation.port
+        let candidate = try lookupCandidate(busID)
             guard candidate.descriptor.busID == busID else {
                 throw UsbControlError.deviceIdentityMismatch(
                     expected: busID,
@@ -126,6 +165,9 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
                     reason: candidate.captureDecision.blockReason ?? .internalHostDevice
                 )
             }
+            // A physical capture claims every interface, not just the first supported one.
+            // Check the complete class composition before the opener touches IOKit.
+            _ = try Self.supportedFamily(candidate)
             let descriptor = candidate.descriptor
             guard descriptor.busNumber <= UInt32(UInt16.max),
                   descriptor.deviceNumber > 0,
@@ -136,8 +178,16 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
                     deviceNumber: descriptor.deviceNumber
                 )
             }
+            // A discovery callback may itself outlive stop. Avoid invoking the privileged
+            // opener at all if that earlier stage has already lost admission.
+            try lock.withLock {
+                guard !stopped, pendingAttachments[busID] == reservation else {
+                    throw UsbControlError.managerStoppedDuringTransition(busID)
+                }
+            }
             let lease = try openLease(candidate, expectedIdentity)
             let deviceID = (descriptor.busNumber << 16) | descriptor.deviceNumber
+            let admitted: DoryUSBControlV1.Attachment
             do {
                 let wireAttachment = try DoryUSBControlV1.Attachment(
                     port: port,
@@ -145,23 +195,40 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
                     deviceID: deviceID,
                     speed: descriptor.speed
                 )
-                try controller.connect(port: port, device: lease)
-                attachments[busID] = Attachment(
-                    port: port,
-                    lease: lease
-                )
-                return (wireAttachment, lease)
+                try lock.withLock {
+                    guard !stopped, pendingAttachments[busID] == reservation else {
+                        throw UsbControlError.managerStoppedDuringTransition(busID)
+                    }
+                    guard lease.isActive else {
+                        throw UsbControlError.mutationRejected(
+                            operation: .attach, busID: busID, detail: "host USB lease was revoked during capture"
+                        )
+                    }
+                    try controller.connect(port: port, device: lease)
+                    attachments[busID] = Attachment(port: port, lease: lease)
+                    pendingAttachments.removeValue(forKey: busID)
+                }
+                admitted = wireAttachment
             } catch {
                 lease.setRevocationHandler(nil)
                 lease.release()
                 throw error
             }
-        }
-        admitted.1.setRevocationHandler { [weak self, weak lease = admitted.1] in
+        lease.setRevocationHandler { [weak self, weak lease] in
             guard let lease else { return }
             self?.leaseRevoked(busID: busID, leaseID: lease.leaseID)
         }
-        return admitted.0
+        let stillAttached = lock.withLock {
+            !stopped && attachments[busID]?.lease.leaseID == lease.leaseID && lease.isActive
+        }
+        guard stillAttached else {
+            lease.setRevocationHandler(nil)
+            lease.release()
+            throw UsbControlError.mutationRejected(
+                operation: .attach, busID: busID, detail: "host USB lease was revoked before attachment completed"
+            )
+        }
+        return admitted
     }
 
     func detach(busID: String) async throws {
@@ -170,8 +237,10 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
                 throw UsbControlError.notAttached(busID)
             }
             attachment.lease.setRevocationHandler(nil)
+            retiringPorts.insert(attachment.port)
             return (controller, attachment)
         }
+        defer { lock.withLock { _ = retiringPorts.remove(detached.1.port) } }
         do {
             try detached.0.disconnect(port: detached.1.port)
         } catch {
@@ -179,22 +248,33 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
             throw UsbControlError.outcomeUnknown(
                 operation: .detach,
                 busID: busID,
-                detail: "host lease was released but xHCI disconnect failed: \(error)"
+                detail: "host lease revocation began but xHCI disconnect failed: \(error)"
             )
         }
         detached.1.lease.release()
+        guard detached.1.lease.waitForRetirement(timeout: 1) else {
+            throw UsbControlError.outcomeUnknown(
+                operation: .detach,
+                busID: busID,
+                detail: "guest port disconnected, but an in-flight host USB operation still holds the physical lease"
+            )
+        }
     }
 
     func stop() {
         let retired = lock.withLock { () -> (DoryPCXHCIController, [Attachment]) in
+            stopped = true
+            pendingAttachments.removeAll()
             let result = attachments.values.sorted(by: { $0.port < $1.port })
             attachments.removeAll()
             result.forEach { $0.lease.setRevocationHandler(nil) }
+            retiringPorts.formUnion(result.map(\.port))
             return (controller, result)
         }
         for attachment in retired.1 {
             try? retired.0.disconnect(port: attachment.port)
             attachment.lease.release()
+            lock.withLock { _ = retiringPorts.remove(attachment.port) }
         }
     }
 
@@ -204,9 +284,13 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
                 return nil
             }
             attachments.removeValue(forKey: busID)
+            retiringPorts.insert(attachment.port)
             return (controller, attachment)
         }
-        if let detached { try? detached.0.disconnect(port: detached.1.port) }
+        if let detached {
+            try? detached.0.disconnect(port: detached.1.port)
+            lock.withLock { _ = retiringPorts.remove(detached.1.port) }
+        }
     }
 
     private static func portSpeed(_ rawValue: UInt32) -> DoryPCXHCIPortSpeed {
@@ -220,19 +304,55 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
         }
     }
 
-    private static func family(_ candidate: HostUsbDeviceCandidate) -> DoryHostUSBDeviceFamily {
-        let identities = [(candidate.descriptor.deviceClass, candidate.descriptor.deviceProtocol)]
-            + candidate.interfaces.map { ($0.interfaceClass, $0.interfaceProtocol) }
-        if identities.contains(where: { $0.0 == 0x08 }) { return .storage }
-        if identities.contains(where: { $0.0 == 0x0b }) { return .smartCard }
-        if identities.contains(where: { $0.0 == 0x0e }) { return .camera }
-        if identities.contains(where: { $0.0 == 0x01 }) { return .audio }
-        if identities.contains(where: { $0 == (0x03, 0x01) }) { return .keyboard }
-        if identities.contains(where: { $0 == (0x03, 0x02) }) { return .pointingDevice }
-        if identities.contains(where: { $0.0 == 0x02 || $0.0 == 0x0a }) {
+    /// The selected stable token does not include USB class, configuration or interface layout.
+    /// Reset/reopen must preserve all of them before the host grants capture authority again.
+    static func hasSameAdmittedConfiguration(
+        selected: HostUsbDeviceCandidate,
+        current: HostUsbDeviceCandidate
+    ) -> Bool {
+        guard let selectedFamily = try? supportedFamily(selected),
+              let currentFamily = try? supportedFamily(current),
+              selectedFamily == currentFamily,
+              current.captureDecision.allowed,
+              current.identityToken != nil,
+              current.identityToken == selected.identityToken,
+              current.descriptor.deviceClass == selected.descriptor.deviceClass,
+              current.descriptor.deviceSubClass == selected.descriptor.deviceSubClass,
+              current.descriptor.deviceProtocol == selected.descriptor.deviceProtocol,
+              current.descriptor.configurationValue == selected.descriptor.configurationValue,
+              current.descriptor.configurationCount == selected.descriptor.configurationCount,
+              current.descriptor.interfaceCount == selected.descriptor.interfaceCount,
+              current.descriptor.speed == selected.descriptor.speed,
+              current.interfaces == selected.interfaces else { return false }
+        return true
+    }
+
+    /// PC physical passthrough admission table. Storage and CDC serial use the implemented
+    /// control/bulk/interrupt path. HID, UVC, audio, smart cards and vendor-specific devices
+    /// remain unavailable until their endpoint behavior and revocation are qualified.
+    private static func supportedFamily(
+        _ candidate: HostUsbDeviceCandidate
+    ) throws -> DoryHostUSBDeviceFamily {
+        let descriptor = candidate.descriptor
+        func reject(_ detail: String) -> UsbControlError {
+            .mutationRejected(operation: .attach, busID: descriptor.busID, detail: detail)
+        }
+        let interfaces = candidate.interfaces
+        guard !interfaces.isEmpty,
+              interfaces.count == Int(descriptor.interfaceCount),
+              Set(interfaces.map(\.number)).count == interfaces.count else {
+            throw reject("complete USB interface identities are required before physical capture")
+        }
+        let classes = Set(interfaces.map(\.interfaceClass))
+        let deviceClass = descriptor.deviceClass
+        if classes == [0x08], [0x00, 0x08].contains(deviceClass) {
+            return .storage
+        }
+        if classes.isSubset(of: [0x02, 0x0a]), classes.contains(0x02),
+           [0x00, 0x02, 0xef].contains(deviceClass) {
             return .serialAdapter
         }
-        return .other
+        throw reject("USB class composition is not supported for PC physical passthrough (storage and CDC serial only; mixed, HID, camera, audio and vendor-specific devices are unavailable)")
     }
 
     deinit { stop() }

@@ -63,6 +63,8 @@ struct DoryMacAudioRuntimeMetrics: Equatable, Sendable {
     var droppedCapturePeriods: UInt64
     var discardedCaptureBytes: UInt64
     var configurationChanges: Int
+    var inputRunning: Bool
+    var microphoneAccessDenied: Bool
 }
 
 /// Bridges the raw Hypervisor.framework virtio-snd device to Core Audio. Guest PCM remains the
@@ -76,6 +78,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
 
     private struct CaptureRequest {
         var id: UInt64
+        var generation: UUID
         var byteCount: Int
         var fallbackArmed: Bool
         var completion: @Sendable (Data?, UInt32) -> Void
@@ -105,6 +108,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     private let log: @Sendable (String) -> Void
     private let notificationCenter: NotificationCenter
     private let microphoneAuthorizationStatus: @Sendable () -> AVAuthorizationStatus
+    private let microphoneAuthorizationPollingInterval: TimeInterval
     private let requestMicrophoneAccess: @Sendable (
         @escaping @Sendable (Bool) -> Void
     ) -> Void
@@ -117,6 +121,13 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     private var inputTapInstalled = false
     private var microphoneAccessDenied = false
     private var permissionRequestInFlight = false
+    private var permissionRequestID: UUID?
+    // A PCM configuration/stop boundary owns a distinct generation. Tap callbacks and permission
+    // responses from a retired stream cannot authorize or publish bytes into its successor.
+    private var inputGeneration: UUID?
+    private var inputTapGeneration: UUID?
+    private var microphoneGrantObserved = false
+    private var microphoneAuthorizationMonitor: DispatchSourceTimer?
     private var captureBytes = Data()
     private var captureRequests = [CaptureRequest]()
     private var pendingCaptureBytes = 0
@@ -138,15 +149,20 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
         microphoneAuthorizationStatus: @escaping @Sendable () -> AVAuthorizationStatus = {
             AVCaptureDevice.authorizationStatus(for: .audio)
         },
+        microphoneAuthorizationPollingInterval: TimeInterval = 0.1,
         requestMicrophoneAccess: @escaping @Sendable (
             @escaping @Sendable (Bool) -> Void
         ) -> Void = { completion in
             AVCaptureDevice.requestAccess(for: .audio, completionHandler: completion)
         }
     ) {
+        precondition(microphoneAuthorizationPollingInterval.isFinite
+            && microphoneAuthorizationPollingInterval > 0
+            && microphoneAuthorizationPollingInterval <= 1)
         self.log = log
         self.notificationCenter = notificationCenter
         self.microphoneAuthorizationStatus = microphoneAuthorizationStatus
+        self.microphoneAuthorizationPollingInterval = microphoneAuthorizationPollingInterval
         self.requestMicrophoneAccess = requestMicrophoneAccess
         outputEngine.attach(player)
         configurationObservers = [
@@ -168,6 +184,15 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     }
 
     deinit {
+        microphoneAuthorizationMonitor?.cancel()
+        removeInputTap()
+        inputEngine.stop()
+        player.stop()
+        outputEngine.stop()
+        // No other call can own the backend once deinit begins. Settle prepared descriptors too;
+        // their callbacks must not depend on a tap or permission response that will never arrive.
+        failCaptureRequests()
+        failPlaybackRequests()
         for observer in configurationObservers {
             notificationCenter.removeObserver(observer)
         }
@@ -184,7 +209,9 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 droppedPlaybackPeriods: droppedPlaybackPeriods,
                 droppedCapturePeriods: droppedCapturePeriods,
                 discardedCaptureBytes: discardedCaptureBytes,
-                configurationChanges: observedConfigurationChanges
+                configurationChanges: observedConfigurationChanges,
+                inputRunning: inputRunning,
+                microphoneAccessDenied: microphoneAccessDenied
             )
         }
     }
@@ -206,7 +233,9 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 outputParameters = parameters
                 outputRunning = false
             case .input:
+                invalidateInputGeneration()
                 removeInputTap()
+                inputEngine.stop()
                 failCaptureRequests()
                 captureBytes.removeAll(keepingCapacity: true)
                 captureTapCount = 0
@@ -214,6 +243,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 nextCaptureFallbackUptime = 0
                 microphoneAccessDenied = false
                 inputParameters = parameters
+                inputGeneration = UUID()
                 inputRunning = false
             }
             return true
@@ -252,13 +282,20 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 return true
             case .input:
                 guard inputParameters != nil else { return false }
+                if inputGeneration == nil { inputGeneration = UUID() }
                 inputRunning = true
                 guard startInputWhenAuthorized() else {
+                    inputRunning = false
+                    invalidateInputGeneration()
+                    removeInputTap()
+                    inputEngine.stop()
+                    captureBytes.removeAll(keepingCapacity: false)
                     failCaptureRequests()
                     return false
                 }
                 satisfyCaptureRequests()
                 armCaptureFallbacks()
+                monitorMicrophoneAuthorization()
                 return true
             }
         }
@@ -272,9 +309,18 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 outputRunning = false
             case .input:
                 inputRunning = false
-                microphoneAccessDenied = false
+                invalidateInputGeneration()
+                // PCM_STOP is not a new host permission grant. Keep an observed denial visible
+                // until authorization really changes or the guest releases/reconfigures input.
+                if microphoneAccessDenied {
+                    microphoneAccessDenied = microphoneAuthorizationStatus() != .authorized
+                }
                 removeInputTap()
                 inputEngine.stop()
+                captureBytes.removeAll(keepingCapacity: false)
+                failCaptureRequests()
+                // ALSA may prime fresh descriptors while stopped, before its next PCM_START.
+                inputGeneration = UUID()
                 nextCaptureFallbackUptime = 0
             }
             return true
@@ -292,6 +338,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 outputParameters = nil
             case .input:
                 inputRunning = false
+                invalidateInputGeneration()
                 microphoneAccessDenied = false
                 removeInputTap()
                 inputEngine.stop()
@@ -367,6 +414,8 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
             guard byteCount > 0,
                   inputParameters == parameters,
                   !microphoneAccessDenied else { return false }
+            if inputRunning, !validateLiveMicrophoneAuthorization() { return false }
+            guard let generation = inputGeneration else { return false }
             guard DoryMacAudioQueueCapacity.accepts(
                 currentBytes: pendingCaptureBytes,
                 requestBytes: byteCount,
@@ -380,6 +429,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
             pendingCaptureBytes += byteCount
             captureRequests.append(CaptureRequest(
                 id: requestID,
+                generation: generation,
                 byteCount: byteCount,
                 fallbackArmed: false,
                 completion: completion
@@ -393,6 +443,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     func reset() {
         queue.sync {
             player.stop()
+            invalidateInputGeneration()
             removeInputTap()
             outputEngine.stop()
             inputEngine.stop()
@@ -412,24 +463,31 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
         switch microphoneAuthorizationStatus() {
         case .authorized:
             microphoneAccessDenied = false
+            microphoneGrantObserved = true
             return installInputTapAndStartEngine()
         case .notDetermined:
             microphoneAccessDenied = false
             guard !permissionRequestInFlight else { return true }
+            guard let generation = inputGeneration else { return false }
+            let requestID = UUID()
             permissionRequestInFlight = true
+            permissionRequestID = requestID
             log("requesting Mac microphone access; Linux capture will provide paced silence until permission is resolved")
             requestMicrophoneAccess { [weak self] granted in
                 guard let self else { return }
                 self.queue.async {
+                    guard self.permissionRequestID == requestID else { return }
                     self.permissionRequestInFlight = false
+                    self.permissionRequestID = nil
+                    guard self.inputGeneration == generation else { return }
                     guard self.inputRunning else { return }
-                    guard granted else {
-                        self.inputRunning = false
-                        self.microphoneAccessDenied = true
-                        self.log("microphone access was denied; Linux capture requests were stopped")
-                        self.failCaptureRequests()
+                    // A callback is not a lasting grant: permission can change while the reply
+                    // waits for this queue, including a denial from an earlier macOS prompt.
+                    guard granted, self.microphoneAuthorizationStatus() == .authorized else {
+                        self.revokeMicrophoneAuthorization()
                         return
                     }
+                    self.microphoneGrantObserved = true
                     if self.installInputTapAndStartEngine() { return }
                     self.log("microphone access is unavailable; Linux capture will continue with paced silence")
                     self.armCaptureFallbacks()
@@ -437,15 +495,72 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
             }
             return true
         case .denied, .restricted:
-            microphoneAccessDenied = true
-            log("microphone access is denied; enable it for Dory in System Settings > Privacy & Security > Microphone")
-            inputRunning = false
+            revokeMicrophoneAuthorization()
             return false
         @unknown default:
-            microphoneAccessDenied = true
-            inputRunning = false
+            revokeMicrophoneAuthorization()
             return false
         }
+    }
+
+    private func invalidateInputGeneration() {
+        inputGeneration = nil
+        inputTapGeneration = nil
+        microphoneGrantObserved = false
+        // Keep one physical macOS prompt in flight across PCM reconfiguration. Retiring the
+        // caller does not cancel AVCaptureDevice's request; repeated guest starts must not pile
+        // up permission callbacks. Its stale result only frees this bounded request slot.
+        microphoneAuthorizationMonitor?.cancel()
+        microphoneAuthorizationMonitor = nil
+    }
+
+    private func monitorMicrophoneAuthorization() {
+        guard inputRunning, microphoneAuthorizationMonitor == nil else { return }
+        let monitor = DispatchSource.makeTimerSource(queue: queue)
+        monitor.setEventHandler { [weak self] in
+            guard let self, self.inputRunning else { return }
+            _ = self.validateLiveMicrophoneAuthorization()
+        }
+        monitor.schedule(
+            deadline: .now() + microphoneAuthorizationPollingInterval,
+            repeating: microphoneAuthorizationPollingInterval,
+            leeway: .milliseconds(5)
+        )
+        monitor.resume()
+        microphoneAuthorizationMonitor = monitor
+    }
+
+    /// Check the live grant even when the guest stops posting capture descriptors, rather than
+    /// depending on another engine-configuration callback. Recheck publication edges as well.
+    @discardableResult
+    private func validateLiveMicrophoneAuthorization() -> Bool {
+        switch microphoneAuthorizationStatus() {
+        case .authorized:
+            if !microphoneGrantObserved, !permissionRequestInFlight {
+                microphoneGrantObserved = true
+                _ = installInputTapAndStartEngine()
+            }
+            return true
+        case .notDetermined where !microphoneGrantObserved:
+            // A stale response may have freed the one host prompt slot. Reacquire from this
+            // generation's current authorization state, never from that retired response.
+            return permissionRequestInFlight || startInputWhenAuthorized()
+        default:
+            revokeMicrophoneAuthorization()
+            return false
+        }
+    }
+
+    private func revokeMicrophoneAuthorization() {
+        inputRunning = false
+        microphoneAccessDenied = true
+        invalidateInputGeneration()
+        removeInputTap()
+        inputEngine.stop()
+        captureBytes.removeAll(keepingCapacity: false)
+        nextCaptureFallbackUptime = 0
+        failCaptureRequests()
+        log("microphone access is unavailable or revoked; Linux capture was stopped and queued audio discarded")
     }
 
     private func scheduleConfigurationRecovery(for direction: VirtioSoundDirection) {
@@ -471,12 +586,15 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                     log("Mac audio output is waiting for a usable host device after configuration changed")
                 }
             case .rebuildInput:
+                invalidateInputGeneration()
                 removeInputTap()
                 inputEngine.stop()
+                failCaptureRequests()
                 captureBytes.removeAll(keepingCapacity: true)
                 captureTapCount = 0
                 captureFallbackLogged = false
                 nextCaptureFallbackUptime = 0
+                inputGeneration = UUID()
                 if startInputWhenAuthorized() {
                     log("Mac audio input recovered after the host device configuration changed")
                 } else {
@@ -485,6 +603,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 satisfyCaptureRequests()
                 if inputRunning {
                     armCaptureFallbacks()
+                    monitorMicrophoneAuthorization()
                 } else {
                     failCaptureRequests()
                 }
@@ -493,8 +612,12 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     }
 
     private func installInputTapAndStartEngine() -> Bool {
-        guard inputRunning, let parameters = inputParameters else { return false }
+        guard inputRunning, let generation = inputGeneration,
+              let parameters = inputParameters,
+              microphoneAuthorizationStatus() == .authorized else { return false }
         if !inputTapInstalled {
+            let tapGeneration = UUID()
+            inputTapGeneration = tapGeneration
             let input = inputEngine.inputNode
             let nativeFormat = input.outputFormat(forBus: 0)
             guard nativeFormat.channelCount > 0,
@@ -514,7 +637,10 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 )
                 let inputFrames = buffer.frameLength
                 self?.queue.async { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.inputRunning,
+                          self.inputGeneration == generation,
+                          self.inputTapGeneration == tapGeneration,
+                          self.validateLiveMicrophoneAuthorization() else { return }
                     self.captureTapCount += 1
                     if self.captureTapCount == 1 {
                         self.log("Mac microphone stream active (inputFrames=\(inputFrames), convertedBytes=\(data?.count ?? 0))")
@@ -556,6 +682,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     }
 
     private func removeInputTap() {
+        inputTapGeneration = nil
         guard inputTapInstalled else { return }
         inputEngine.inputNode.removeTap(onBus: 0)
         inputTapInstalled = false
@@ -576,13 +703,14 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     }
 
     private func satisfyCaptureRequests() {
+        guard !inputRunning || validateLiveMicrophoneAuthorization() else { return }
         while let request = captureRequests.first, captureBytes.count >= request.byteCount {
             captureRequests.removeFirst()
             pendingCaptureBytes = max(0, pendingCaptureBytes - request.byteCount)
             let data = Data(captureBytes.prefix(request.byteCount))
             captureBytes.removeFirst(request.byteCount)
             let latency = UInt32(clamping: captureBytes.count)
-            Self.deliver { request.completion(data, latency) }
+            deliverCapture(request, data: data, latency: latency)
         }
         if captureRequests.isEmpty { nextCaptureFallbackUptime = 0 }
     }
@@ -615,6 +743,8 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
         nextCaptureFallbackUptime = deadline
         queue.asyncAfter(deadline: .now() + max(0, deadline - now)) { [weak self] in
             guard let self,
+                  self.inputRunning,
+                  self.validateLiveMicrophoneAuthorization(),
                   let pendingIndex = self.captureRequests.firstIndex(where: { $0.id == requestID }) else {
                 return
             }
@@ -625,7 +755,19 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 self.log("Mac microphone frames are pending; Linux capture is using paced silence")
             }
             if self.captureRequests.isEmpty { self.nextCaptureFallbackUptime = 0 }
-            Self.deliver { request.completion(Data(count: request.byteCount), 0) }
+            self.deliverCapture(request, data: Data(count: request.byteCount), latency: 0)
+        }
+    }
+
+    private func deliverCapture(_ request: CaptureRequest, data: Data, latency: UInt32) {
+        Self.deliver { [weak self] in
+            guard let self else { request.completion(nil, 0); return }
+            let admitted = self.queue.sync {
+                self.inputGeneration == request.generation
+                    && !self.microphoneAccessDenied
+                    && (!self.inputRunning || self.validateLiveMicrophoneAuthorization())
+            }
+            request.completion(admitted ? data : nil, admitted ? latency : 0)
         }
     }
 

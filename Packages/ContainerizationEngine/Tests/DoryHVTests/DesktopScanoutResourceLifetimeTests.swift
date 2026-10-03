@@ -64,6 +64,23 @@ import Testing
         #expect(!reboundOld)
     }
 
+    @Test func copiedFrameCannotResurrectAfterReleaseOrNewerIncarnation() {
+        let coalescer = DesktopScanoutFrameCoalescer(
+            maximumSurfaceBytes: 16,
+            maximumAggregateSurfaceBytes: 32,
+            maximumDrainBytes: 16
+        )
+        let old = Self.makeFrame(resourceID: 9, generation: 3, width: 2, height: 2)
+        let replacement = Self.makeFrame(resourceID: 9, generation: 4, width: 2, height: 2)
+        #expect(coalescer.appendOutcome(old) == .accepted)
+        #expect(coalescer.remove(resourceID: 9, throughGeneration: 3) == 1)
+        #expect(coalescer.appendOutcome(old) == .invalid)
+        #expect(coalescer.appendOutcome(replacement) == .accepted)
+        #expect(coalescer.appendOutcome(old) == .invalid)
+        #expect(coalescer.remove(resourceID: 9, throughGeneration: 3) == 0)
+        #expect(coalescer.residentSurfaceBytes == 16)
+    }
+
     @Test func copiedSurfaceBudgetsRejectMaximumGeometryAndGenerationChurnBeforeAllocation() {
         let coalescer = DesktopScanoutFrameCoalescer(
             maximumSurfaceBytes: 16,
