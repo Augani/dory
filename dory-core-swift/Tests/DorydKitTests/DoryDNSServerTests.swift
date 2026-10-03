@@ -1,8 +1,106 @@
 import Darwin
+import Foundation
 @testable import DorydKit
 import XCTest
 
 final class DoryDNSServerTests: XCTestCase {
+    func testCancelledDatagramOwnerRetainsItsDescriptorUntilTheWorkerRetires() throws {
+        var pair = [Int32](repeating: -1, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_DGRAM, 0, &pair), 0)
+        let descriptor = pair[0]
+        defer { close(pair[1]) }
+        let owner = DoryDNSListener(descriptor)
+        owner.cancel()
+        XCTAssertGreaterThanOrEqual(fcntl(descriptor, F_GETFD), 0)
+        var published = false
+        owner.withActiveDescriptor { _ in published = true }
+        XCTAssertFalse(published)
+        owner.workerFinished()
+        owner.waitForRetirement()
+        XCTAssertEqual(fcntl(descriptor, F_GETFD), -1)
+        XCTAssertEqual(errno, EBADF)
+        let replacement = dup(pair[1])
+        XCTAssertGreaterThanOrEqual(replacement, 0)
+        defer { close(replacement) }
+        owner.workerFinished()
+        XCTAssertGreaterThanOrEqual(fcntl(replacement, F_GETFD), 0)
+    }
+
+    func testEveryStopCallerJoinsACapturedResponseAndSuppressesItsLateSend() throws {
+        let pause = DNSResponsePause()
+        let server = DoryDNSServer(port: 0, routes: [
+            DomainRoute(hostname: "web.dory.local", address: "127.0.0.42")
+        ], beforeResponsePublication: { pause.holdFirstResponse() })
+        try server.start()
+        defer { pause.resume.signal(); server.stop() }
+        let client = try sendDNSQuery(hostname: "web.dory.local", port: server.port)
+        defer { close(client) }
+        XCTAssertEqual(pause.entered.wait(timeout: .now() + 1), .success)
+        let stopped = DispatchSemaphore(value: 0)
+        for _ in 0..<2 {
+            DispatchQueue.global().async { server.stop(); stopped.signal() }
+        }
+        XCTAssertEqual(stopped.wait(timeout: .now() + .milliseconds(50)), .timedOut)
+        let revokeDeadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while server.isRunning, ContinuousClock.now < revokeDeadline { usleep(1_000) }
+        XCTAssertFalse(server.isRunning, "release the held response only after stop revokes admission")
+        pause.resume.signal()
+        XCTAssertEqual(stopped.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(stopped.wait(timeout: .now() + 1), .success)
+        XCTAssertFalse(server.isRunning)
+        var response = [UInt8](repeating: 0, count: 512)
+        let count = response.withUnsafeMutableBytes { recv(client, $0.baseAddress, 512, 0) }
+        XCTAssertEqual(count, -1)
+        XCTAssertTrue(errno == EAGAIN || errno == EWOULDBLOCK)
+        try server.start()
+        XCTAssertEqual(try queryDNS(hostname: "web.dory.local", port: server.port).answers, ["127.0.0.42"])
+    }
+
+    func testConcurrentStartsPublishOnlyOneListener() throws {
+        let server = DoryDNSServer(port: 0, routes: [
+            DomainRoute(hostname: "web.dory.local", address: "127.0.0.42")
+        ])
+        defer { server.stop() }
+        let observations = DNSStartObservations()
+        DispatchQueue.concurrentPerform(iterations: 16) { _ in
+            do { try server.start(); observations.record(port: server.port) }
+            catch { observations.record(error: error) }
+        }
+        XCTAssertTrue(observations.errors.isEmpty)
+        XCTAssertEqual(observations.ports.count, 16)
+        XCTAssertEqual(Set(observations.ports), [server.port])
+        XCTAssertNotEqual(server.port, 0)
+        XCTAssertEqual(try queryDNS(hostname: "web.dory.local", port: server.port).answers, ["127.0.0.42"])
+    }
+
+    func testIdleStopAndFixedPortRestartsRetireTheirListenerBeforeReuse() throws {
+        let initial = DoryDNSServer(port: 0)
+        try initial.start()
+        let port = initial.port
+        let stoppedAt = ContinuousClock.now
+        initial.stop()
+        XCTAssertLessThan(stoppedAt.duration(to: .now), .seconds(1))
+        let server = DoryDNSServer(port: port, routes: [
+            DomainRoute(hostname: "web.dory.local", address: "127.0.0.42")
+        ])
+        defer { server.stop() }
+        for _ in 0..<8 {
+            try server.start()
+            XCTAssertEqual(server.port, port)
+            XCTAssertEqual(try queryDNS(hostname: "web.dory.local", port: port).answers, ["127.0.0.42"])
+            server.stop()
+            XCTAssertFalse(server.isRunning)
+        }
+    }
+
+    func testDroppingAnIdleServerDoesNotLeaveItsWorkerRetainingIt() throws {
+        var server: DoryDNSServer? = .init(port: 0)
+        weak var releasedServer = server
+        try server?.start()
+        server = nil
+        XCTAssertNil(releasedServer)
+    }
+
     func testHighPortDNSServerResolvesARecord() throws {
         let server = DoryDNSServer(port: 0, routes: [
             DomainRoute(hostname: "web.dory.local", address: "127.0.0.42"),
@@ -53,6 +151,59 @@ final class DoryDNSServerTests: XCTestCase {
 
         XCTAssertEqual(response.answers, ["127.0.0.7"])
     }
+}
+
+private final class DNSResponsePause: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let resume = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var used = false
+    func holdFirstResponse() {
+        let first = lock.withLock {
+            guard !used else { return false }
+            used = true
+            return true
+        }
+        guard first else { return }
+        entered.signal()
+        _ = resume.wait(timeout: .now() + 2)
+    }
+}
+
+private final class DNSStartObservations: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedPorts: [UInt16] = []
+    private var storedErrors: [any Error] = []
+    var ports: [UInt16] { lock.withLock { storedPorts } }
+    var errors: [any Error] { lock.withLock { storedErrors } }
+    func record(port: UInt16) { lock.withLock { storedPorts.append(port) } }
+    func record(error: any Error) { lock.withLock { storedErrors.append(error) } }
+}
+
+private func sendDNSQuery(hostname: String, port: UInt16) throws -> Int32 {
+    let descriptor = socket(AF_INET, SOCK_DGRAM, 0)
+    guard descriptor >= 0 else { throw DNSTestError.syscall("socket", errno) }
+    var timeout = timeval(tv_sec: 0, tv_usec: 100_000)
+    setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    let packet = dnsQuery(hostname: hostname, qtype: 1)
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    inet_pton(AF_INET, "127.0.0.1", &address.sin_addr)
+    let sent = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { raw in
+            packet.withUnsafeBytes {
+                sendto(descriptor, $0.baseAddress, packet.count, 0, raw, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+    }
+    guard sent == packet.count else {
+        let error = errno
+        close(descriptor)
+        throw DNSTestError.syscall("sendto", error)
+    }
+    return descriptor
 }
 
 private struct DNSParsedResponse {

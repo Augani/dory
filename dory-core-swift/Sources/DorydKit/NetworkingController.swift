@@ -94,6 +94,7 @@ public final class NetworkingController: @unchecked Sendable {
     private let httpProxy: DoryHTTPProxyServer
     private let loopbackTCPForwarders: LoopbackTCPForwarderSet
     private let controlLock = NSLock()
+    private var started = false
     private var tlsProxy: DoryTLSProxyServer?
     private var additionalPrivilegedTCPForwards: [PrivilegedTCPForward] = []
     private var lastPrivilegedTCPForwardResult = LoopbackTCPForwardReconcileResult(active: [], failures: [:])
@@ -126,6 +127,7 @@ public final class NetworkingController: @unchecked Sendable {
     }
 
     private func startLocked() throws {
+        guard !started else { return }
         do {
             try dnsServer.start()
             try httpProxy.start()
@@ -136,6 +138,7 @@ public final class NetworkingController: @unchecked Sendable {
                 tlsRouteNames = routeNames
             }
             lastPrivilegedTCPForwardResult = reconcileLoopbackTCPForwardersLocked()
+            started = true
         } catch {
             dnsServer.stop()
             httpProxy.stop()
@@ -153,6 +156,7 @@ public final class NetworkingController: @unchecked Sendable {
     }
 
     private func stopLocked() {
+        started = false
         dnsServer.stop()
         httpProxy.stop()
         tlsProxy?.stop()
@@ -203,6 +207,7 @@ public final class NetworkingController: @unchecked Sendable {
     public func repair(_ target: NetworkingRepairTarget) throws -> NetworkingStatus {
         controlLock.lock()
         defer { controlLock.unlock() }
+        guard started else { throw NetworkingControllerError.stopped }
         switch target {
         case .dns:
             dnsServer.stop()
@@ -274,7 +279,7 @@ public final class NetworkingController: @unchecked Sendable {
     }
 
     private func refreshTLSProxyLocked(routes: [DomainRoute]) {
-        guard configuration.localCACertificatePath != nil else { return }
+        guard started, configuration.localCACertificatePath != nil else { return }
         let desiredNames = tlsNames(for: routes)
         guard !desiredNames.isSubset(of: tlsRouteNames) else {
             tlsProxy?.updateRoutes(routes)
@@ -361,4 +366,5 @@ public final class NetworkingController: @unchecked Sendable {
 
 private enum NetworkingControllerError: Error {
     case tlsUnavailable
+    case stopped
 }

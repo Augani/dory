@@ -19,10 +19,12 @@ public final class DoryDNSServer: @unchecked Sendable {
     private let bindAddress: String
     private let requestedPort: UInt16
     private let router: DomainRouter
+    private let lifecycleLock = NSLock()
     private let lock = NSLock()
     private var routes: [DomainRoute]
-    private var fd: Int32 = -1
-    private var loopQueue: DispatchQueue?
+    private var listener: DoryDNSListener?
+    private let queueKey = DispatchSpecificKey<UUID>()
+    private var beforeResponsePublication: (@Sendable () -> Void)?
     private var activePort: UInt16 = 0
 
     public init(
@@ -37,6 +39,18 @@ public final class DoryDNSServer: @unchecked Sendable {
         self.routes = routes
     }
 
+    /// Isolated transport timing seam; public callers never supply a host callback.
+    convenience init(
+        bindAddress: String = "127.0.0.1",
+        port: UInt16,
+        router: DomainRouter = DomainRouter(),
+        routes: [DomainRoute] = [],
+        beforeResponsePublication: @escaping @Sendable () -> Void
+    ) {
+        self.init(bindAddress: bindAddress, port: port, router: router, routes: routes)
+        self.beforeResponsePublication = beforeResponsePublication
+    }
+
     public var port: UInt16 {
         lock.lock()
         defer { lock.unlock() }
@@ -46,7 +60,7 @@ public final class DoryDNSServer: @unchecked Sendable {
     public var isRunning: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return fd >= 0
+        return listener?.isActive == true
     }
 
     public func updateRoutes(_ routes: [DomainRoute]) {
@@ -62,8 +76,10 @@ public final class DoryDNSServer: @unchecked Sendable {
     }
 
     public func start() throws {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         lock.lock()
-        guard fd < 0 else {
+        guard listener == nil else {
             lock.unlock()
             return
         }
@@ -97,16 +113,32 @@ public final class DoryDNSServer: @unchecked Sendable {
             guard gotName == 0 else {
                 throw DoryDNSServerError.syscall("getsockname", errno)
             }
+            let flags = fcntl(socketFD, F_GETFL, 0)
+            guard flags >= 0, fcntl(socketFD, F_SETFL, flags | O_NONBLOCK) == 0 else {
+                throw DoryDNSServerError.syscall("fcntl(O_NONBLOCK)", errno)
+            }
 
+            let listener = DoryDNSListener(socketFD)
+            let queue = DispatchQueue(label: "dev.dory.doryd.dns.\(listener.id)")
+            queue.setSpecific(key: queueKey, value: listener.id)
             lock.lock()
-            fd = socketFD
+            self.listener = listener
             activePort = UInt16(bigEndian: actual.sin_port)
-            let queue = DispatchQueue(label: "dev.dory.doryd.dns.\(socketFD)")
-            loopQueue = queue
             lock.unlock()
 
-            queue.async { [weak self] in
-                self?.serveLoop(socketFD)
+            queue.async { [weak self, listener] in
+                defer {
+                    listener.workerFinished()
+                    self?.listenerRetired(listener)
+                }
+                // Do not retain the server across an idle poll. Its deinit must be able to
+                // revoke the worker even when nobody sends another DNS datagram.
+                Self.serveLoop(listener) { [weak self] packet in
+                    guard let self else { listener.cancel(); return nil }
+                    let response = self.response(for: packet, listener: listener)
+                    if response != nil { self.beforeResponsePublication?() }
+                    return response
+                }
             }
         } catch {
             close(socketFD)
@@ -115,24 +147,48 @@ public final class DoryDNSServer: @unchecked Sendable {
     }
 
     public func stop() {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         lock.lock()
-        let currentFD = fd
-        fd = -1
+        let current = listener
+        listener = nil
         activePort = 0
-        loopQueue = nil
         lock.unlock()
-        if currentFD >= 0 {
-            close(currentFD)
+        current?.cancel()
+        // Cancellation-aware poll bounds the idle join; only the worker closes its fd.
+        // A final server reference may be released inside its own response callback.
+        if let current, DispatchQueue.getSpecific(key: queueKey) != current.id {
+            current.waitForRetirement()
         }
     }
 
-    private func serveLoop(_ socketFD: Int32) {
+    private func listenerRetired(_ retired: DoryDNSListener) {
+        lock.withLock {
+            guard listener === retired else { return }
+            listener = nil
+            activePort = 0
+        }
+    }
+
+    private static func serveLoop(
+        _ listener: DoryDNSListener,
+        response: ([UInt8]) -> [UInt8]?
+    ) {
+        let socketFD = listener.descriptor
         var buffer = [UInt8](repeating: 0, count: 512)
-        while true {
-            lock.lock()
-            let running = fd == socketFD
-            lock.unlock()
-            guard running else { return }
+        while listener.isActive {
+            var ready = pollfd(fd: socketFD, events: Int16(POLLIN), revents: 0)
+            let polled = poll(&ready, 1, 50)
+            guard listener.isActive else { return }
+            if polled < 0 {
+                if errno == EINTR { continue }
+                return
+            }
+            guard polled > 0 else { continue }
+            guard ready.revents & Int16(POLLIN | POLLERR) != 0 else {
+                if ready.revents & Int16(POLLHUP | POLLNVAL) != 0 { return }
+                continue
+            }
 
             var peer = sockaddr_storage()
             var peerLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
@@ -161,20 +217,23 @@ public final class DoryDNSServer: @unchecked Sendable {
             }
             guard count > 0 else { continue }
             let packet = Array(buffer.prefix(count))
-            guard let response = response(for: packet) else { continue }
-            withUnsafePointer(to: &peer) { pointer in
-                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { rawPeer in
-                    response.withUnsafeBytes { rawResponse in
-                        _ = sendto(socketFD, rawResponse.baseAddress!, response.count, 0, rawPeer, peerLength)
+            guard let reply = response(packet) else { continue }
+            listener.withActiveDescriptor { descriptor in
+                withUnsafePointer(to: &peer) { pointer in
+                    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { rawPeer in
+                        reply.withUnsafeBytes { rawResponse in
+                            _ = sendto(descriptor, rawResponse.baseAddress!, reply.count, 0, rawPeer, peerLength)
+                        }
                     }
                 }
             }
         }
     }
 
-    private func response(for packet: [UInt8]) -> [UInt8]? {
+    private func response(for packet: [UInt8], listener: DoryDNSListener) -> [UInt8]? {
         guard let query = DNSQuery(packet) else { return nil }
         lock.lock()
+        guard self.listener === listener, listener.isActive else { lock.unlock(); return nil }
         let currentRoutes = routes
         lock.unlock()
         let routeAddress = router.resolve(query.hostname, in: currentRoutes).flatMap(IPv4Address.init)
@@ -191,6 +250,47 @@ public final class DoryDNSServer: @unchecked Sendable {
     deinit {
         stop()
     }
+}
+
+/// A per-start UDP owner. Revocation never closes a descriptor underneath recvfrom/sendto;
+/// worker retirement is the only close edge, and all stop callers can join the same owner.
+final class DoryDNSListener: @unchecked Sendable {
+    let id = UUID()
+    let descriptor: Int32
+    private let lock = NSLock()
+    private let retired = DispatchGroup()
+    private var cancelled = false
+    private var closed = false
+
+    init(_ descriptor: Int32) {
+        self.descriptor = descriptor
+        retired.enter()
+    }
+
+    var isActive: Bool { lock.withLock { !cancelled && !closed } }
+
+    func cancel() { lock.withLock { cancelled = true } }
+
+    func withActiveDescriptor(_ operation: (Int32) -> Void) {
+        lock.withLock {
+            guard !cancelled, !closed else { return }
+            operation(descriptor)
+        }
+    }
+
+    func workerFinished() {
+        let finished = lock.withLock {
+            guard !closed else { return false }
+            closed = true
+            close(descriptor)
+            return true
+        }
+        if finished { retired.leave() }
+    }
+
+    func waitForRetirement() { retired.wait() }
+
+    deinit { workerFinished() }
 }
 
 private struct DNSQuery {

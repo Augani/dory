@@ -117,10 +117,13 @@ public final class LoopbackTCPForwarderSet: @unchecked Sendable {
 
 final class LoopbackTCPForwarder: @unchecked Sendable {
     let listenPort: UInt16
+    private let lifecycleLock = NSLock()
     private let lock = NSLock()
     private let connectionBudget: DoryConnectionBudget
     private var currentTargetPort: UInt16
-    private var listenerFDs: Set<Int32> = []
+    private var listeners: [DoryTCPListener] = []
+    private var generation: UUID?
+    private var connections: [UUID: DoryTCPConnection] = [:]
 
     init(listenPort: UInt16, targetPort: UInt16, maximumConnections: Int = 256) {
         self.listenPort = listenPort
@@ -137,22 +140,32 @@ final class LoopbackTCPForwarder: @unchecked Sendable {
     var isRunning: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return !listenerFDs.isEmpty
+        return listeners.contains { $0.isActive }
     }
+
+    var activeConnectionCount: Int { connectionBudget.activeCount }
 
     func updateTargetPort(_ port: UInt16) {
         guard port > 0 else { return }
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         lock.lock()
+        guard currentTargetPort != port else { lock.unlock(); return }
         currentTargetPort = port
+        let previous = Array(connections.values)
         lock.unlock()
+        // Connections admitted for the removed route cannot retain its authority.
+        for connection in previous { connection.cancel() }
     }
 
     func start() throws {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         guard listenPort > 0, targetPort > 0 else {
             throw LoopbackTCPForwarderError.invalidPort(listenPort)
         }
         lock.lock()
-        guard listenerFDs.isEmpty else {
+        guard listeners.isEmpty else {
             lock.unlock()
             return
         }
@@ -165,12 +178,38 @@ final class LoopbackTCPForwarder: @unchecked Sendable {
             let ipv6 = try Self.makeIPv6Listener(port: listenPort)
             opened.append(ipv6)
 
+            let owned = opened.map(DoryTCPListener.init)
+            let generation = UUID()
             lock.lock()
-            listenerFDs = Set(opened)
+            listeners = owned
+            self.generation = generation
             lock.unlock()
-            for descriptor in opened {
-                Thread.detachNewThread { [weak self] in
-                    self?.acceptLoop(descriptor)
+            for listener in owned {
+                Thread.detachNewThread { [weak self, listener] in
+                    defer { listener.acceptWorkerFinished() }
+                    while self?.accepts(listener, generation: generation) == true {
+                        var peer = sockaddr_storage()
+                        var peerLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
+                        let client = withUnsafeMutablePointer(to: &peer) { pointer in
+                            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { raw in
+                                accept(listener.descriptor, raw, &peerLength)
+                            }
+                        }
+                        if client < 0 {
+                            switch errno {
+                            case EINTR, ECONNABORTED, EAGAIN, EWOULDBLOCK: continue
+                            case EMFILE, ENFILE: usleep(50_000); continue
+                            default: return
+                            }
+                        }
+                        guard let self else {
+                            shutdown(client, SHUT_RDWR)
+                            close(client)
+                            return
+                        }
+                        self.admit(client, peer: peer, length: peerLength,
+                                   listener: listener, generation: generation)
+                    }
                 }
             }
         } catch {
@@ -183,73 +222,53 @@ final class LoopbackTCPForwarder: @unchecked Sendable {
     }
 
     func stop() {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         lock.lock()
-        let descriptors = Array(listenerFDs)
-        listenerFDs.removeAll()
+        let current = listeners
+        let active = Array(connections.values)
+        listeners.removeAll()
+        generation = nil
         lock.unlock()
-        for descriptor in descriptors {
-            shutdown(descriptor, SHUT_RDWR)
-            close(descriptor)
+        for listener in current { listener.cancel() }
+        for connection in active { connection.cancel() }
+    }
+
+    private func accepts(_ listener: DoryTCPListener, generation: UUID) -> Bool {
+        lock.withLock {
+            self.generation == generation && listeners.contains { $0 === listener }
         }
     }
 
-    private func acceptLoop(_ listenerFD: Int32) {
-        while true {
-            lock.lock()
-            let running = listenerFDs.contains(listenerFD)
-            lock.unlock()
-            guard running else { return }
-
-            var peer = sockaddr_storage()
-            var peerLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
-            let client = withUnsafeMutablePointer(to: &peer) { pointer in
-                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { raw in
-                    accept(listenerFD, raw, &peerLength)
-                }
-            }
-            if client < 0 {
-                switch errno {
-                case EINTR, ECONNABORTED, EAGAIN, EWOULDBLOCK:
-                    continue
-                case EMFILE, ENFILE:
-                    usleep(50_000)
-                    continue
-                default:
-                    return
-                }
-            }
-            guard Self.isLoopbackPeer(peer, length: peerLength),
-                  let lease = connectionBudget.tryAcquire() else {
-                shutdown(client, SHUT_RDWR)
-                close(client)
-                continue
-            }
-            Thread.detachNewThread { [weak self, lease] in
-                guard let self else {
-                    shutdown(client, SHUT_RDWR)
-                    close(client)
-                    lease.release()
-                    return
-                }
-                self.connectAndRelay(client, lease: lease)
-            }
-        }
-    }
-
-    private func connectAndRelay(_ client: Int32, lease: DoryConnectionLease) {
-        guard let upstream = DoryTCP.connect(host: "127.0.0.1", port: targetPort) else {
+    private func admit(_ client: Int32, peer: sockaddr_storage, length: socklen_t,
+                       listener: DoryTCPListener, generation: UUID) {
+        guard Self.isLoopbackPeer(peer, length: length),
+              let lease = connectionBudget.tryAcquire() else {
             shutdown(client, SHUT_RDWR)
             close(client)
-            lease.release()
             return
         }
-        DoryTCP.configureRelayTimeout(client)
-        DoryTCP.configureRelayTimeout(upstream)
-        DoryTCP.bidirectionalCopy(
-            client: client,
-            upstream: upstream,
-            onClose: { lease.release() }
-        )
+        let connection = DoryTCPConnection(client: client) { [weak self, lease] id in
+            if let self { _ = self.lock.withLock { self.connections.removeValue(forKey: id) } }
+            lease.release()
+        }
+        let target: UInt16? = lock.withLock {
+            guard self.generation == generation, listeners.contains(where: { $0 === listener }) else {
+                return nil
+            }
+            connections[connection.id] = connection
+            return currentTargetPort
+        }
+        guard let target else { connection.cancel(); connection.workerFinished(); return }
+        Thread.detachNewThread { [connection] in
+            defer { connection.workerFinished() }
+            guard connection.isActive,
+                  let upstream = DoryTCP.connect(host: "127.0.0.1", port: target,
+                                                 connection: connection) else { return }
+            DoryTCP.configureRelayTimeout(client)
+            DoryTCP.configureRelayTimeout(upstream)
+            DoryTCP.bidirectionalCopy(connection: connection)
+        }
     }
 
     static func isLoopbackAddress(_ value: String) -> Bool {

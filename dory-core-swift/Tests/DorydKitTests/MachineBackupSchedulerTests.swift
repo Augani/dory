@@ -284,6 +284,314 @@ final class MachineBackupSchedulerTests: XCTestCase {
         XCTAssertEqual(status.consecutiveFailures, 1)
         XCTAssertEqual(status.lastError, "the daemon stopped during the previous backup attempt")
     }
+
+    func testPartialRetentionFailureKeepsCommittedRecoveryCopyAndDurableSuccess() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let scheduler = try fixture.scheduler()
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev", keepLocal: 3))
+        for _ in 0..<3 {
+            _ = try scheduler.runNow(machineID: "dev")
+            fixture.clock.date = fixture.clock.date.addingTimeInterval(3_600)
+        }
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev", keepLocal: 1))
+        fixture.manager.failScheduledDeletionAfter = 1
+        fixture.manager.onScheduledSnapshotDeletion = {
+            let data = try Data(contentsOf: URL(fileURLWithPath: fixture.root + "/schedules.json"))
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let row = try XCTUnwrap((body["statuses"] as? [[String: Any]])?.first)
+            XCTAssertEqual(row["successfulRuns"] as? Int, 4, "success must be durable before any prune")
+            XCTAssertEqual(row["inProgress"] as? Bool, false)
+            let archive = try XCTUnwrap(row["lastArchivePath"] as? String)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: archive))
+            XCTAssertThrowsError(try scheduler.remove(machineID: "dev"), "the maintenance owner remains busy")
+        }
+
+        let completed = try scheduler.runNow(machineID: "dev")
+        XCTAssertEqual(completed.successfulRuns, 4)
+        XCTAssertEqual(completed.consecutiveFailures, 0)
+        XCTAssertTrue(completed.lastError?.contains("snapshot retention") == true)
+        XCTAssertEqual(completed.retainedSnapshots, 3)
+        XCTAssertEqual(completed.retainedArchives, 1)
+        let snapshotID = try XCTUnwrap(completed.lastSnapshotID)
+        XCTAssertTrue(try fixture.manager.listSnapshots(machineID: "dev").contains { $0.id == snapshotID })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(completed.lastArchivePath)))
+        XCTAssertEqual(try fixture.scheduler().list().first, completed)
+    }
+
+    func testClockRollbackCannotPruneNewlyCommittedSnapshotOrArchive() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let scheduler = try fixture.scheduler()
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev", keepLocal: 1))
+        let first = try scheduler.runNow(machineID: "dev")
+        fixture.clock.date = fixture.clock.date.addingTimeInterval(-86_400)
+        fixture.manager.returnSnapshotsOldestFirst = true
+
+        let completed = try scheduler.runNow(machineID: "dev")
+        let snapshots = try fixture.manager.listSnapshots(machineID: "dev")
+            .filter { $0.note.hasPrefix(MachineBackupScheduler.managedNotePrefix) }
+        XCTAssertEqual(snapshots.map(\.id), [try XCTUnwrap(completed.lastSnapshotID)])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(completed.lastArchivePath)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(first.lastArchivePath)))
+        XCTAssertNil(completed.lastError)
+    }
+
+    func testArchiveShapedDirectoryIsNotRecursivelyDeletedByRetention() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let scheduler = try fixture.scheduler()
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev", keepLocal: 1))
+        let first = try scheduler.runNow(machineID: "dev")
+        let unexpected = fixture.root + "/archives/dev/dev--0000--external.dorymachine"
+        try FileManager.default.createDirectory(atPath: unexpected, withIntermediateDirectories: false)
+        let sentinel = unexpected + "/must-preserve"
+        try Data("external contents".utf8).write(to: URL(fileURLWithPath: sentinel))
+        fixture.clock.date = fixture.clock.date.addingTimeInterval(3_600)
+
+        let completed = try scheduler.runNow(machineID: "dev")
+        XCTAssertEqual(completed.successfulRuns, 2)
+        XCTAssertTrue(completed.lastError?.contains("archive retention") == true)
+        XCTAssertEqual(completed.retainedArchives, 2, "an unsafe directory is not a recovery archive")
+        XCTAssertEqual(try String(contentsOfFile: sentinel, encoding: .utf8), "external contents")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(first.lastArchivePath)))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(completed.lastArchivePath)))
+    }
+
+    func testFailureToCommitSuccessRecordNeverRunsRetentionOrDeletesLastGood() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let scheduler = try fixture.scheduler()
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev", keepLocal: 1))
+        let first = try scheduler.runNow(machineID: "dev")
+        var deletionCount = 0
+        fixture.manager.onScheduledSnapshotDeletion = { deletionCount += 1 }
+        fixture.manager.afterExport = {
+            let path = fixture.root + "/schedules.json"
+            try FileManager.default.moveItem(atPath: path, toPath: path + ".saved")
+            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: false)
+        }
+        fixture.clock.date = fixture.clock.date.addingTimeInterval(3_600)
+
+        XCTAssertThrowsError(try scheduler.runNow(machineID: "dev"))
+        XCTAssertEqual(deletionCount, 0, "no prune is allowed without the durable completion record")
+        let failed = try XCTUnwrap(scheduler.list().first)
+        XCTAssertEqual(failed.successfulRuns, 1)
+        XCTAssertEqual(failed.lastSnapshotID, first.lastSnapshotID)
+        XCTAssertEqual(failed.lastArchivePath, first.lastArchivePath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(first.lastArchivePath)))
+        XCTAssertTrue(try fixture.manager.listSnapshots(machineID: "dev").contains { $0.id == first.lastSnapshotID })
+    }
+
+    func testLinkedExportCannotChangeExternalFilePermissionsOrBecomeABackup() throws {
+        for symbolic in [true, false] {
+            let fixture = try Fixture()
+            defer { fixture.cleanup() }
+            let scheduler = try fixture.scheduler()
+            _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev"))
+            let external = fixture.root + "/external-source"
+            try Data("preserve external file".utf8).write(to: URL(fileURLWithPath: external))
+            XCTAssertEqual(chmod(external, 0o640), 0)
+            fixture.manager.afterExport = {
+                let directory = fixture.root + "/archives/dev"
+                let name = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: directory)
+                    .first { $0.hasSuffix(".partial") })
+                let path = directory + "/" + name
+                try FileManager.default.removeItem(atPath: path)
+                if symbolic {
+                    try FileManager.default.createSymbolicLink(atPath: path, withDestinationPath: external)
+                } else {
+                    try FileManager.default.linkItem(atPath: external, toPath: path)
+                }
+            }
+
+            XCTAssertThrowsError(try scheduler.runNow(machineID: "dev"))
+            XCTAssertEqual(try fixture.mode(of: external) & 0o777, 0o640)
+            XCTAssertEqual(try String(contentsOfFile: external, encoding: .utf8), "preserve external file")
+            XCTAssertEqual(fixture.manager.importCount, 0)
+            XCTAssertEqual(scheduler.list().first?.successfulRuns, 0)
+        }
+    }
+
+    func testArchivePublicationNeverOverwritesAnExistingDestination() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let scheduler = try fixture.scheduler()
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev", keepLocal: 1))
+        let first = try scheduler.runNow(machineID: "dev")
+        var collisionPath: String?
+        fixture.manager.afterExport = {
+            let directory = fixture.root + "/archives/dev"
+            let partial = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: directory)
+                .first { $0.hasSuffix(".partial") })
+            let archiveSuffix = try XCTUnwrap(partial.range(of: ".dorymachine"))
+            let name = String(partial[partial.index(after: partial.startIndex)..<archiveSuffix.upperBound])
+            let path = directory + "/" + name
+            collisionPath = path
+            try Data("pre-existing archive".utf8).write(to: URL(fileURLWithPath: path))
+            XCTAssertEqual(chmod(path, 0o600), 0)
+        }
+        fixture.clock.date = fixture.clock.date.addingTimeInterval(3_600)
+
+        XCTAssertThrowsError(try scheduler.runNow(machineID: "dev"))
+        XCTAssertEqual(try String(contentsOfFile: XCTUnwrap(collisionPath), encoding: .utf8), "pre-existing archive")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(first.lastArchivePath)))
+        XCTAssertEqual(scheduler.list().first?.lastArchivePath, first.lastArchivePath)
+    }
+
+    func testUnrelatedScheduleWriteCannotOverwriteCommittedSuccessDuringRetention() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        fixture.manager.availableMachineIDs.insert("other")
+        let scheduler = try fixture.scheduler()
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev", keepLocal: 1))
+        let first = try scheduler.runNow(machineID: "dev")
+        fixture.manager.onScheduledSnapshotDeletion = {
+            _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "other", enabled: false))
+            let data = try Data(contentsOf: URL(fileURLWithPath: fixture.root + "/schedules.json"))
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let rows = try XCTUnwrap(body["statuses"] as? [[String: Any]])
+            let committed = try XCTUnwrap(rows.first { $0["lastSnapshotID"] as? String == "scheduled-2" })
+            XCTAssertEqual(committed["successfulRuns"] as? Int, 2)
+            XCTAssertEqual(committed["inProgress"] as? Bool, false)
+            XCTAssertNotEqual(committed["lastArchivePath"] as? String, first.lastArchivePath)
+            XCTAssertThrowsError(try scheduler.runNow(machineID: "dev"))
+            XCTAssertThrowsError(try scheduler.remove(machineID: "dev"))
+        }
+        fixture.clock.date = fixture.clock.date.addingTimeInterval(3_600)
+
+        let completed = try scheduler.runNow(machineID: "dev")
+        XCTAssertEqual(completed.successfulRuns, 2)
+        XCTAssertEqual(try fixture.scheduler().list().first { $0.schedule.machineID == "dev" }, completed)
+        XCTAssertTrue(scheduler.list().contains { $0.schedule.machineID == "other" })
+    }
+
+    func testReplacedExportDirectoryNeverImportsSecuresOrDeletesSuccessorFiles() throws {
+        for exporterThrows in [false, true] {
+            let fixture = try Fixture()
+            defer { fixture.cleanup() }
+            let scheduler = try fixture.scheduler()
+            _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev", keepLocal: 1))
+            let first = try scheduler.runNow(machineID: "dev")
+            let originalImports = fixture.manager.importCount
+            let directory = fixture.root + "/archives/dev"
+            let retired = fixture.root + "/retired-archives"
+            var partialName: String?
+            fixture.manager.afterExport = {
+                let name = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: directory)
+                    .first { $0.hasSuffix(".partial") })
+                partialName = name
+                try FileManager.default.moveItem(atPath: directory, toPath: retired)
+                try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: false)
+                XCTAssertEqual(chmod(directory, 0o700), 0)
+                let successor = directory + "/" + name
+                try Data("successor must survive".utf8).write(to: URL(fileURLWithPath: successor))
+                XCTAssertEqual(chmod(successor, 0o640), 0)
+                if exporterThrows { throw MachineBackupSchedulerError.persistence("injected exporter failure") }
+            }
+            fixture.clock.date = fixture.clock.date.addingTimeInterval(3_600)
+
+            XCTAssertThrowsError(try scheduler.runNow(machineID: "dev"))
+            let name = try XCTUnwrap(partialName)
+            let successor = directory + "/" + name
+            XCTAssertEqual(try String(contentsOfFile: successor, encoding: .utf8), "successor must survive")
+            XCTAssertEqual(try fixture.mode(of: successor) & 0o777, 0o640)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: retired + "/" + name), "only the pinned partial is cleaned")
+            let previousName = URL(fileURLWithPath: try XCTUnwrap(first.lastArchivePath)).lastPathComponent
+            XCTAssertTrue(FileManager.default.fileExists(atPath: retired + "/" + previousName))
+            XCTAssertEqual(fixture.manager.importCount, originalImports)
+            XCTAssertEqual(scheduler.list().first?.successfulRuns, 1)
+            XCTAssertEqual(try fixture.manager.listSnapshots(machineID: "dev")
+                .filter { $0.note == "\(MachineBackupScheduler.managedNotePrefix) dev" }.map(\.id),
+                [try XCTUnwrap(first.lastSnapshotID)])
+        }
+    }
+
+    func testRetentionCannotPruneAReplacementDirectory() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let scheduler = try fixture.scheduler()
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev", keepLocal: 1))
+        _ = try scheduler.runNow(machineID: "dev")
+        let directory = fixture.root + "/archives/dev"
+        let retired = fixture.root + "/retired-archives"
+        var successorNames: [String] = []
+        fixture.manager.onScheduledSnapshotDeletion = {
+            successorNames = try FileManager.default.contentsOfDirectory(atPath: directory)
+                .filter { $0.hasSuffix(".dorymachine") }
+            try FileManager.default.moveItem(atPath: directory, toPath: retired)
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: false)
+            XCTAssertEqual(chmod(directory, 0o700), 0)
+            for name in successorNames {
+                let path = directory + "/" + name
+                try Data("foreign archive".utf8).write(to: URL(fileURLWithPath: path))
+                XCTAssertEqual(chmod(path, 0o600), 0)
+            }
+        }
+        fixture.clock.date = fixture.clock.date.addingTimeInterval(3_600)
+
+        let completed = try scheduler.runNow(machineID: "dev")
+        XCTAssertEqual(completed.successfulRuns, 2)
+        XCTAssertTrue(completed.lastError?.contains("ownership changed") == true)
+        XCTAssertEqual(successorNames.count, 2)
+        for name in successorNames {
+            XCTAssertEqual(try String(contentsOfFile: directory + "/" + name, encoding: .utf8), "foreign archive")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: retired + "/" + name))
+        }
+        XCTAssertTrue(try fixture.manager.listSnapshots(machineID: "dev")
+            .contains { $0.id == completed.lastSnapshotID })
+        XCTAssertEqual(try fixture.scheduler().list().first?.successfulRuns, 2)
+    }
+
+    func testScheduleDatabaseCannotPublishIntoAReplacementRoot() throws {
+        for removal in [false, true] {
+            let fixture = try Fixture()
+            defer { fixture.cleanup() }
+            let scheduler = try fixture.scheduler()
+            let original = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev"))
+            let retired = fixture.root + ".retired"
+            defer { try? FileManager.default.removeItem(atPath: retired) }
+            let originalData = try Data(contentsOf: URL(fileURLWithPath: fixture.root + "/schedules.json"))
+            try FileManager.default.moveItem(atPath: fixture.root, toPath: retired)
+            try FileManager.default.createDirectory(atPath: fixture.root, withIntermediateDirectories: false)
+            XCTAssertEqual(chmod(fixture.root, 0o700), 0)
+            let successorPath = fixture.root + "/schedules.json"
+            try Data("foreign state".utf8).write(to: URL(fileURLWithPath: successorPath))
+            XCTAssertEqual(chmod(successorPath, 0o600), 0)
+
+            if removal {
+                XCTAssertThrowsError(try scheduler.remove(machineID: "dev"))
+            } else {
+                XCTAssertThrowsError(try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev", enabled: false)))
+            }
+            XCTAssertEqual(scheduler.list(), [original])
+            XCTAssertEqual(try String(contentsOfFile: successorPath, encoding: .utf8), "foreign state")
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: retired + "/schedules.json")), originalData)
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.root), ["schedules.json"])
+        }
+    }
+
+    func testRejectedScheduleUpdateOrRemovalPreservesItsInMemoryState() throws {
+        for removal in [false, true] {
+            let fixture = try Fixture()
+            defer { fixture.cleanup() }
+            let scheduler = try fixture.scheduler()
+            let original = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev", keepLocal: 3))
+            let path = fixture.root + "/schedules.json"
+            try FileManager.default.moveItem(atPath: path, toPath: path + ".saved")
+            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: false)
+
+            if removal {
+                XCTAssertThrowsError(try scheduler.remove(machineID: "dev"))
+            } else {
+                XCTAssertThrowsError(try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev", enabled: false)))
+            }
+            XCTAssertEqual(scheduler.list(), [original])
+            try FileManager.default.removeItem(atPath: path)
+            try FileManager.default.moveItem(atPath: path + ".saved", toPath: path)
+            XCTAssertEqual(try fixture.scheduler().list(), [original])
+        }
+    }
 }
 
 /// Keeps the tiny bundle/ABI fixture on the explicit diagnostic staging path. Public
@@ -347,6 +655,12 @@ private final class FakeMachineBackupManager: MachineBackupManaging, @unchecked 
     var failReadiness = false
     var returnForeignClone = false
     var returnForeignStartOperation = false
+    var availableMachineIDs: Set<String> = ["dev"]
+    var returnSnapshotsOldestFirst = false
+    var failScheduledDeletionAfter: Int?
+    var onScheduledSnapshotDeletion: (() throws -> Void)?
+    var afterExport: (() throws -> Void)?
+    private var scheduledDeletionCount = 0
 
     init(directory: String) {
         self.directory = directory
@@ -368,7 +682,7 @@ private final class FakeMachineBackupManager: MachineBackupManaging, @unchecked 
 
     func status(id: String) -> DoryMachineStatus? {
         lock.withLock {
-            if id == "dev" { return DoryMachineStatus(id: id, state: .running) }
+            if availableMachineIDs.contains(id) { return DoryMachineStatus(id: id, state: .running) }
             guard clonedMachineIDs.contains(id) else { return nil }
             guard startedMachineIDs.contains(id) else { return DoryMachineStatus(id: id, state: .stopped) }
             _verificationObservationCount += 1
@@ -394,7 +708,7 @@ private final class FakeMachineBackupManager: MachineBackupManaging, @unchecked 
     }
 
     func listSnapshots(machineID: String?) throws -> [DoryMachineSnapshot] {
-        lock.withLock { snapshots }
+        lock.withLock { returnSnapshotsOldestFirst ? Array(snapshots.reversed()) : snapshots }
     }
 
     func cloneSnapshot(machineID: String, snapshotID: String, newID: String) throws -> DoryMachineStatus {
@@ -440,7 +754,16 @@ private final class FakeMachineBackupManager: MachineBackupManaging, @unchecked 
     }
 
     func deleteSnapshot(machineID: String, snapshotID: String) throws {
-        lock.withLock { snapshots.removeAll { $0.id == snapshotID } }
+        if snapshotID.hasPrefix("scheduled-") { try onScheduledSnapshotDeletion?() }
+        try lock.withLock {
+            if snapshotID.hasPrefix("scheduled-") {
+                if let failScheduledDeletionAfter, scheduledDeletionCount >= failScheduledDeletionAfter {
+                    throw MachineBackupSchedulerError.persistence("injected retention failure")
+                }
+                scheduledDeletionCount += 1
+            }
+            snapshots.removeAll { $0.id == snapshotID }
+        }
     }
 
     func exportSnapshot(machineID: String, snapshotID: String, toPath path: String) throws {
@@ -449,6 +772,7 @@ private final class FakeMachineBackupManager: MachineBackupManaging, @unchecked 
         guard FileManager.default.createFile(atPath: path, contents: data) else {
             throw MachineBackupSchedulerError.persistence("fixture export failed")
         }
+        try afterExport?()
     }
 
     func importSnapshot(fromPath path: String) throws -> DoryMachineSnapshot {

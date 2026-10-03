@@ -207,11 +207,15 @@ public final class MachineBackupScheduler: @unchecked Sendable {
     private let machines: any MachineBackupManaging
     private let rootDirectory: String
     private let databasePath: String
+    private let databaseDirectory: BackupDirectoryAuthority
     private let queue: DispatchQueue
     private let lock = NSLock()
     private let now: @Sendable () -> Date
     private let incidentWriter: IncidentWriter?
     private var statuses: [String: DoryMachineBackupStatus] = [:]
+    // Every writer must preserve a durable success while its in-memory run is still busy
+    // pruning. Unrelated schedule updates otherwise overwrite it with the old running row.
+    private var committedRetentionStatuses: [String: DoryMachineBackupStatus] = [:]
     private var timer: DispatchSourceTimer?
 
     public convenience init(
@@ -246,7 +250,9 @@ public final class MachineBackupScheduler: @unchecked Sendable {
         self.now = now
         self.incidentWriter = incidentWriter
         try Self.ensurePrivateDirectory(self.rootDirectory)
+        databaseDirectory = try BackupDirectoryAuthority(path: self.rootDirectory)
         statuses = try Self.loadDatabase(path: databasePath)
+        try databaseDirectory.validateCurrentPath()
         for key in Array(statuses.keys) where statuses[key]?.inProgress == true {
             statuses[key]?.inProgress = false
             statuses[key]?.consecutiveFailures += 1
@@ -299,8 +305,14 @@ public final class MachineBackupScheduler: @unchecked Sendable {
         }
         status.schedule = schedule
         status.nextRunISO = nextRunISO(status: status, relativeTo: now())
+        let previous = statuses[schedule.machineID]
         statuses[schedule.machineID] = status
-        try persistLocked()
+        do {
+            try persistLocked()
+        } catch {
+            statuses[schedule.machineID] = previous
+            throw error
+        }
         return status
     }
 
@@ -317,7 +329,12 @@ public final class MachineBackupScheduler: @unchecked Sendable {
             throw MachineBackupSchedulerError.scheduleBusy(machineID)
         }
         statuses.removeValue(forKey: machineID)
-        try persistLocked()
+        do {
+            try persistLocked()
+        } catch {
+            statuses[machineID] = status
+            throw error
+        }
     }
 
     @discardableResult
@@ -388,6 +405,7 @@ private extension MachineBackupScheduler {
                 runNumber: runNumber,
                 at: date
             )
+            try result.directory.validateCurrentPath()
             lock.lock()
             guard var completed = statuses[machineID] else {
                 lock.unlock()
@@ -405,14 +423,36 @@ private extension MachineBackupScheduler {
             completed.retainedSnapshots = result.retainedSnapshots
             completed.retainedArchives = result.retainedArchives
             completed.nextRunISO = nextRunISO(status: completed, relativeTo: date)
-            statuses[machineID] = completed
             do {
-                try persistLocked()
+                // Publish the recovery copy and its success record before deleting any older
+                // artifact. Keep the in-memory run busy until maintenance has finished.
+                try persistLocked(completedStatus: completed)
+                committedRetentionStatuses[machineID] = completed
             } catch {
                 lock.unlock()
                 throw error
             }
             lock.unlock()
+            let retention = maintainRetention(schedule: schedule, protecting: result)
+            completed.retainedSnapshots = retention.snapshots
+            completed.retainedArchives = retention.archives
+            completed.lastError = retention.warning
+            lock.lock()
+            statuses[machineID] = completed
+            committedRetentionStatuses.removeValue(forKey: machineID)
+            do {
+                try persistLocked()
+            } catch {
+                // The success record is already durable. A maintenance/statistics write
+                // failure must not turn it into a rollback after older copies were pruned.
+                let warning = "backup completed; retention state could not be persisted: \(error)"
+                completed.lastError = [completed.lastError, warning].compactMap { $0 }.joined(separator: "; ")
+                statuses[machineID] = completed
+            }
+            lock.unlock()
+            if let warning = completed.lastError {
+                incidentWriter?.record(type: "machine.backup_retention_failed", detail: "\(machineID): \(warning)")
+            }
             incidentWriter?.record(
                 type: "machine.backup_completed",
                 detail: "\(machineID) \(result.snapshot.id) verified=\(result.bootVerified)"
@@ -437,6 +477,7 @@ private extension MachineBackupScheduler {
     struct BackupResult {
         let snapshot: DoryMachineSnapshot
         let archivePath: String
+        let directory: BackupDirectoryAuthority
         let bootVerified: Bool
         let retainedSnapshots: Int
         let retainedArchives: Int
@@ -450,6 +491,12 @@ private extension MachineBackupScheduler {
         guard machines.status(id: schedule.machineID) != nil else {
             throw MachineBackupSchedulerError.machineUnavailable(schedule.machineID)
         }
+        try databaseDirectory.validateCurrentPath()
+        let destination = try Self.canonicalPath(
+            schedule.destinationDirectory ?? "\(rootDirectory)/archives/\(schedule.machineID)"
+        )
+        try Self.ensurePrivateDirectory(destination)
+        let directory = try BackupDirectoryAuthority(path: destination)
         let note = "\(Self.managedNotePrefix) \(schedule.machineID)"
         let snapshot = try machines.snapshot(
             id: schedule.machineID,
@@ -457,24 +504,26 @@ private extension MachineBackupScheduler {
             createdISO: Self.iso(date),
             snapshotID: nil
         )
-        let destination = try Self.canonicalPath(
-            schedule.destinationDirectory ?? "\(rootDirectory)/archives/\(schedule.machineID)"
-        )
-        try Self.ensurePrivateDirectory(destination)
         let archiveName = Self.archiveName(snapshot: snapshot)
         let archivePath = "\(destination)/\(archiveName)"
-        let partialPath = "\(destination)/.\(archiveName).\(UUID().uuidString).partial"
+        let partialName = ".\(archiveName).\(UUID().uuidString).partial"
+        let partialPath = "\(destination)/\(partialName)"
         var importedSnapshot: DoryMachineSnapshot?
         var verificationMachineID: String?
         var publishedArchive = false
         do {
+            try directory.validateLeaf(archiveName)
+            try directory.validateLeaf(partialName)
+            try directory.validateCurrentPath()
             try machines.exportSnapshot(
                 machineID: schedule.machineID,
                 snapshotID: snapshot.id,
                 toPath: partialPath
             )
-            try Self.syncPrivateFile(partialPath)
+            try directory.validateCurrentPath()
+            try directory.syncPrivateFile(partialName)
             importedSnapshot = try machines.importSnapshot(fromPath: partialPath)
+            try directory.validateCurrentPath()
             let shouldBootVerify = runNumber == 1 || runNumber % schedule.verifyEveryRuns == 0
             if shouldBootVerify, let importedSnapshot {
                 let verifyID = "backup-verify-\(UUID().uuidString.lowercased().prefix(12))"
@@ -504,18 +553,16 @@ private extension MachineBackupScheduler {
                 )
             }
             importedSnapshot = nil
-            guard rename(partialPath, archivePath) == 0 else {
-                throw MachineBackupSchedulerError.persistence(
-                    "publish archive failed with errno \(errno)"
-                )
-            }
+            try directory.publish(partialName, as: archiveName, exclusively: true)
             publishedArchive = true
-            try Self.syncDirectory(destination)
-            let retainedSnapshots = try retainSnapshots(schedule: schedule)
-            let retainedArchives = try retainArchives(schedule: schedule, directory: destination)
+            try directory.synchronize()
+            try directory.validateCurrentPath()
+            let retainedSnapshots = try managedSnapshots(schedule: schedule).count
+            let retainedArchives = try managedArchiveCount(schedule: schedule, directory: directory)
             return BackupResult(
                 snapshot: snapshot,
                 archivePath: archivePath,
+                directory: directory,
                 bootVerified: shouldBootVerify,
                 retainedSnapshots: retainedSnapshots,
                 retainedArchives: retainedArchives
@@ -531,10 +578,12 @@ private extension MachineBackupScheduler {
                     snapshotID: importedSnapshot.id
                 )
             }
-            try? FileManager.default.removeItem(atPath: partialPath)
+            // The exporter is only authorized to produce a regular-file leaf. Never turn
+            // error cleanup into recursive deletion if that pathname was replaced.
+            directory.removeIfPresent(partialName)
             if publishedArchive {
-                try? FileManager.default.removeItem(atPath: archivePath)
-                try? Self.syncDirectory(destination)
+                directory.removeIfPresent(archiveName)
+                try? directory.synchronize()
             }
             try? machines.deleteSnapshot(
                 machineID: schedule.machineID,
@@ -577,28 +626,98 @@ private extension MachineBackupScheduler {
         }
     }
 
-    func retainSnapshots(schedule: DoryMachineBackupSchedule) throws -> Int {
-        let managed = try machines.listSnapshots(machineID: schedule.machineID).filter {
-            $0.note == "\(Self.managedNotePrefix) \(schedule.machineID)"
+    func managedSnapshots(schedule: DoryMachineBackupSchedule) throws -> [DoryMachineSnapshot] {
+        try machines.listSnapshots(machineID: schedule.machineID).filter {
+            $0.machineID == schedule.machineID && $0.note == "\(Self.managedNotePrefix) \(schedule.machineID)"
+        }.sorted {
+            $0.createdISO == $1.createdISO ? $0.id > $1.id : $0.createdISO > $1.createdISO
         }
-        for snapshot in managed.dropFirst(schedule.keepLocal) {
+    }
+
+    func retainSnapshots(
+        schedule: DoryMachineBackupSchedule,
+        protecting snapshotID: String,
+        directory: BackupDirectoryAuthority
+    ) throws -> Int {
+        let managed = try managedSnapshots(schedule: schedule)
+        guard managed.contains(where: { $0.id == snapshotID }) else {
+            throw MachineBackupSchedulerError.persistence("committed recovery snapshot is missing")
+        }
+        // The newly committed copy wins over wall-clock ordering, including a clock rollback.
+        let older = managed.filter { $0.id != snapshotID }
+        for snapshot in older.dropFirst(schedule.keepLocal - 1) {
+            try directory.validateCurrentPath()
             try machines.deleteSnapshot(machineID: schedule.machineID, snapshotID: snapshot.id)
+            try directory.validateCurrentPath()
         }
         return min(managed.count, schedule.keepLocal)
     }
 
-    func retainArchives(
+    func managedArchives(
         schedule: DoryMachineBackupSchedule,
-        directory: String
-    ) throws -> Int {
+        directory: BackupDirectoryAuthority
+    ) throws -> [String] {
         let prefix = "\(schedule.machineID)--"
-        let entries = try FileManager.default.contentsOfDirectory(atPath: directory).filter {
+        return try directory.entries().filter {
             $0.hasPrefix(prefix) && $0.hasSuffix(".dorymachine")
         }.sorted(by: >)
-        for entry in entries.dropFirst(schedule.keepLocal) {
-            try FileManager.default.removeItem(atPath: "\(directory)/\(entry)")
+    }
+
+    func retainArchives(
+        schedule: DoryMachineBackupSchedule,
+        directory: BackupDirectoryAuthority,
+        protecting archivePath: String
+    ) throws -> Int {
+        let entries = try managedArchives(schedule: schedule, directory: directory)
+        let protectedName = URL(fileURLWithPath: archivePath).lastPathComponent
+        guard entries.contains(protectedName) else {
+            throw MachineBackupSchedulerError.persistence("committed recovery archive is missing")
         }
+        // Never recursively remove a directory or follow a link merely because its name
+        // resembles a scheduler archive. Validate the entire candidate set before pruning.
+        for entry in entries { try directory.validatePrivateRegularFile(entry) }
+        for entry in entries.filter({ $0 != protectedName }).dropFirst(schedule.keepLocal - 1) {
+            try directory.validateCurrentPath()
+            try directory.remove(entry)
+        }
+        try directory.synchronize()
         return min(entries.count, schedule.keepLocal)
+    }
+
+    func managedArchiveCount(schedule: DoryMachineBackupSchedule, directory: BackupDirectoryAuthority) throws -> Int {
+        try managedArchives(schedule: schedule, directory: directory).filter {
+            (try? directory.validatePrivateRegularFile($0)) != nil
+        }.count
+    }
+
+    func maintainRetention(
+        schedule: DoryMachineBackupSchedule,
+        protecting result: BackupResult
+    ) -> (snapshots: Int, archives: Int, warning: String?) {
+        let directory = result.directory
+        var snapshots = result.retainedSnapshots
+        var archives = result.retainedArchives
+        var warnings: [String] = []
+        do {
+            // Losing the published destination revokes all pruning, including local
+            // snapshots. A successor at the same pathname is never the recovery copy.
+            try directory.validateCurrentPath()
+        } catch {
+            return (snapshots, archives, "backup completed; retention directory: \(error)")
+        }
+        do {
+            snapshots = try retainSnapshots(schedule: schedule, protecting: result.snapshot.id, directory: directory)
+        } catch {
+            snapshots = (try? managedSnapshots(schedule: schedule).count) ?? snapshots
+            warnings.append("snapshot retention: \(error)")
+        }
+        do {
+            archives = try retainArchives(schedule: schedule, directory: directory, protecting: result.archivePath)
+        } catch {
+            archives = (try? managedArchiveCount(schedule: schedule, directory: directory)) ?? archives
+            warnings.append("archive retention: \(error)")
+        }
+        return (snapshots, archives, warnings.isEmpty ? nil : "backup completed; " + warnings.joined(separator: "; "))
     }
 
     func isDue(_ status: DoryMachineBackupStatus, at date: Date) -> Bool {
@@ -616,13 +735,16 @@ private extension MachineBackupScheduler {
         return Self.iso(last.addingTimeInterval(status.schedule.frequency.interval))
     }
 
-    func persistLocked() throws {
+    func persistLocked(completedStatus: DoryMachineBackupStatus? = nil) throws {
+        var values = statuses
+        values.merge(committedRetentionStatuses) { _, committed in committed }
+        if let completedStatus { values[completedStatus.schedule.machineID] = completedStatus }
         let database = MachineBackupDatabase(
-            statuses: statuses.values.sorted { $0.schedule.machineID < $1.schedule.machineID }
+            statuses: values.values.sorted { $0.schedule.machineID < $1.schedule.machineID }
         )
         do {
             let data = try JSONEncoder.canonical.encode(database)
-            try Self.publishPrivateFile(data, to: databasePath)
+            try Self.publishPrivateFile(data, name: "schedules.json", directory: databaseDirectory)
         } catch let error as MachineBackupSchedulerError {
             throw error
         } catch {
@@ -679,59 +801,53 @@ private extension MachineBackupScheduler {
                 )
             }
         }
-        guard chmod(normalized, 0o700) == 0 else {
+        let descriptor = open(normalized, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw MachineBackupSchedulerError.persistence("open private directory failed with errno \(errno)")
+        }
+        defer { close(descriptor) }
+        var value = stat()
+        guard fstat(descriptor, &value) == 0, value.st_uid == geteuid() else {
+            throw MachineBackupSchedulerError.invalidDestination(normalized)
+        }
+        guard fchmod(descriptor, 0o700) == 0 else {
             throw MachineBackupSchedulerError.persistence("chmod directory failed with errno \(errno)")
         }
     }
 
-    static func publishPrivateFile(_ data: Data, to path: String) throws {
-        let partial = "\(path).\(UUID().uuidString).partial"
-        let descriptor = open(partial, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+    static func publishPrivateFile(_ data: Data, name: String, directory: BackupDirectoryAuthority) throws {
+        try directory.validateCurrentPath()
+        let partial = "\(name).\(UUID().uuidString).partial"
+        let descriptor = try directory.createPrivateFile(partial)
         guard descriptor >= 0 else {
             throw MachineBackupSchedulerError.persistence("create schedule state failed with errno \(errno)")
         }
-        var closeDescriptor = true
-        do {
-            try data.withUnsafeBytes { rawBuffer in
-                guard let base = rawBuffer.baseAddress else { return }
-                var offset = 0
-                while offset < rawBuffer.count {
-                    let written = Darwin.write(descriptor, base.advanced(by: offset), rawBuffer.count - offset)
-                    guard written > 0 else {
-                        throw MachineBackupSchedulerError.persistence("write schedule state failed with errno \(errno)")
-                    }
-                    offset += written
+        var published = false
+        defer {
+            close(descriptor)
+            if !published { directory.removeIfPresent(partial) }
+        }
+        try data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            var offset = 0
+            while offset < rawBuffer.count {
+                let written = Darwin.write(descriptor, base.advanced(by: offset), rawBuffer.count - offset)
+                if written < 0, errno == EINTR { continue }
+                guard written > 0 else {
+                    throw MachineBackupSchedulerError.persistence("write schedule state failed with errno \(written == 0 ? EIO : errno)")
                 }
+                offset += written
             }
-            guard fsync(descriptor) == 0, close(descriptor) == 0 else {
-                closeDescriptor = false
+        }
+        while fsync(descriptor) != 0 {
+            guard errno == EINTR else {
                 throw MachineBackupSchedulerError.persistence("sync schedule state failed with errno \(errno)")
             }
-            closeDescriptor = false
-            guard rename(partial, path) == 0 else {
-                throw MachineBackupSchedulerError.persistence("publish schedule state failed with errno \(errno)")
-            }
-            try syncDirectory(URL(fileURLWithPath: path).deletingLastPathComponent().path)
-        } catch {
-            if closeDescriptor { close(descriptor) }
-            try? FileManager.default.removeItem(atPath: partial)
-            throw error
         }
-    }
-
-    static func syncPrivateFile(_ path: String) throws {
-        guard chmod(path, 0o600) == 0 else {
-            throw MachineBackupSchedulerError.persistence("chmod archive failed with errno \(errno)")
-        }
-        try validatePrivateRegularFile(path)
-        let descriptor = open(path, O_RDONLY | O_NOFOLLOW)
-        guard descriptor >= 0 else {
-            throw MachineBackupSchedulerError.persistence("open archive failed with errno \(errno)")
-        }
-        defer { close(descriptor) }
-        guard fsync(descriptor) == 0 else {
-            throw MachineBackupSchedulerError.persistence("sync archive failed with errno \(errno)")
-        }
+        try directory.publish(partial, as: name, exclusively: false)
+        published = true
+        try directory.synchronize()
+        try directory.validateCurrentPath()
     }
 
     static func validatePrivateRegularFile(_ path: String) throws {
@@ -739,19 +855,9 @@ private extension MachineBackupScheduler {
         guard lstat(path, &value) == 0,
               (value.st_mode & S_IFMT) == S_IFREG,
               value.st_uid == geteuid(),
+              value.st_nlink == 1,
               (value.st_mode & 0o077) == 0 else {
             throw MachineBackupSchedulerError.persistence("unsafe private file: \(path)")
-        }
-    }
-
-    static func syncDirectory(_ path: String) throws {
-        let descriptor = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
-        guard descriptor >= 0 else {
-            throw MachineBackupSchedulerError.persistence("open backup directory failed with errno \(errno)")
-        }
-        defer { close(descriptor) }
-        guard fsync(descriptor) == 0 else {
-            throw MachineBackupSchedulerError.persistence("sync backup directory failed with errno \(errno)")
         }
     }
 
@@ -794,6 +900,154 @@ private extension MachineBackupScheduler {
 
     static func iso(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
+    }
+}
+
+/// Pins one private directory object for a complete publication/retention lifetime.
+/// Path checks revoke new work if that name changes; cleanup always targets the pinned
+/// object, never a replacement reached through the old absolute pathname.
+final class BackupDirectoryAuthority: @unchecked Sendable {
+    let path: String
+    private let descriptor: Int32
+    private let device: dev_t
+    private let inode: ino_t
+
+    init(path: String) throws {
+        let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw Self.failure("open backup directory") }
+        var value = stat()
+        guard fstat(fd, &value) == 0, Self.isPrivateDirectory(value) else {
+            close(fd)
+            throw Self.failure("unsafe backup directory")
+        }
+        var namedValue = stat()
+        guard lstat(path, &namedValue) == 0, Self.isPrivateDirectory(namedValue),
+              namedValue.st_dev == value.st_dev, namedValue.st_ino == value.st_ino else {
+            close(fd)
+            throw MachineBackupSchedulerError.persistence("backup directory ownership changed: \(path)")
+        }
+        self.path = path
+        descriptor = fd
+        device = value.st_dev
+        inode = value.st_ino
+    }
+
+    deinit { close(descriptor) }
+
+    func validateCurrentPath() throws {
+        var value = stat()
+        guard lstat(path, &value) == 0, Self.isPrivateDirectory(value),
+              value.st_dev == device, value.st_ino == inode else {
+            throw MachineBackupSchedulerError.persistence("backup directory ownership changed: \(path)")
+        }
+    }
+
+    func validateLeaf(_ name: String) throws {
+        guard !name.isEmpty, name != ".", name != "..",
+              !name.contains("/"), !name.contains("\0") else {
+            throw MachineBackupSchedulerError.persistence("invalid backup filename")
+        }
+    }
+
+    func createPrivateFile(_ name: String) throws -> Int32 {
+        try validateLeaf(name)
+        try validateCurrentPath()
+        let fd = openat(descriptor, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw Self.failure("create schedule state") }
+        return fd
+    }
+
+    func syncPrivateFile(_ name: String) throws {
+        try validateLeaf(name)
+        try validateCurrentPath()
+        let fd = openat(descriptor, name, O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { throw Self.failure("open archive") }
+        defer { close(fd) }
+        var value = stat()
+        guard fstat(fd, &value) == 0, Self.isPrivateRegularFile(value, requirePrivateMode: false) else {
+            throw MachineBackupSchedulerError.persistence("unsafe private archive: \(name)")
+        }
+        guard fchmod(fd, 0o600) == 0 else { throw Self.failure("chmod archive") }
+        try Self.synchronize(fd)
+    }
+
+    func validatePrivateRegularFile(_ name: String) throws {
+        try validateLeaf(name)
+        var value = stat()
+        guard fstatat(descriptor, name, &value, AT_SYMLINK_NOFOLLOW) == 0,
+              Self.isPrivateRegularFile(value) else {
+            throw MachineBackupSchedulerError.persistence("unsafe private file: \(name)")
+        }
+    }
+
+    func publish(_ partial: String, as name: String, exclusively: Bool) throws {
+        try validateLeaf(partial)
+        try validateLeaf(name)
+        try validateCurrentPath()
+        try validatePrivateRegularFile(partial)
+        guard renameatx_np(descriptor, partial, descriptor, name, exclusively ? UInt32(RENAME_EXCL) : 0) == 0 else {
+            throw Self.failure("publish backup file")
+        }
+    }
+
+    func remove(_ name: String) throws {
+        try validateLeaf(name)
+        guard unlinkat(descriptor, name, 0) == 0 else { throw Self.failure("remove old archive") }
+    }
+
+    func removeIfPresent(_ name: String) {
+        guard (try? validateLeaf(name)) != nil else { return }
+        _ = unlinkat(descriptor, name, 0)
+    }
+
+    func entries() throws -> [String] {
+        try validateCurrentPath()
+        // A separate open file description gives each scan its own directory offset.
+        let scanFD = openat(descriptor, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard scanFD >= 0 else { throw Self.failure("open archive scan") }
+        guard let stream = fdopendir(scanFD) else {
+            let savedError = errno
+            close(scanFD)
+            throw Self.failure("open archive scan", error: savedError)
+        }
+        defer { closedir(stream) }
+        var names: [String] = []
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw Self.failure("read archive directory") }
+                break
+            }
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) {
+                    String(cString: $0)
+                }
+            }
+            if name != ".", name != ".." { names.append(name) }
+        }
+        try validateCurrentPath()
+        return names
+    }
+
+    func synchronize() throws { try Self.synchronize(descriptor) }
+
+    private static func synchronize(_ fd: Int32) throws {
+        while fsync(fd) != 0 {
+            guard errno == EINTR else { throw failure("sync backup object") }
+        }
+    }
+
+    private static func isPrivateDirectory(_ value: stat) -> Bool {
+        value.st_mode & S_IFMT == S_IFDIR && value.st_uid == geteuid() && value.st_mode & 0o077 == 0
+    }
+
+    private static func isPrivateRegularFile(_ value: stat, requirePrivateMode: Bool = true) -> Bool {
+        value.st_mode & S_IFMT == S_IFREG && value.st_uid == geteuid() && value.st_nlink == 1
+            && (!requirePrivateMode || value.st_mode & 0o077 == 0)
+    }
+
+    private static func failure(_ operation: String, error: Int32 = errno) -> MachineBackupSchedulerError {
+        .persistence("\(operation) failed with errno \(error)")
     }
 }
 

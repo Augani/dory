@@ -1,8 +1,117 @@
 import Darwin
+import Network
+import Security
 @testable import DorydKit
 import XCTest
 
 final class DoryTLSProxyServerTests: XCTestCase {
+    func testStopRevokesEstablishedTLSUpstreamAndRetainsBudgetUntilPumpsExit() throws {
+        try withLifetimeProxy { proxy, backend, route in
+            let client = try lifetimeClient(port: proxy.port)
+            defer { client.cancel() }
+            try primeRelay(client)
+            XCTAssertEqual(proxy.activeConnectionCount, 1)
+            proxy.updateRoutes([route])
+            XCTAssertEqual(proxy.activeConnectionCount, 1)
+            proxy.stop()
+            wait(for: [backend.closed], timeout: 2)
+            awaitClientEOF(client)
+            try awaitNoConnections(proxy)
+        }
+    }
+
+    func testRouteRemovalRevokesEstablishedTLSUpstreamWithoutStoppingListener() throws {
+        try withLifetimeProxy { proxy, backend, _ in
+            let client = try lifetimeClient(port: proxy.port)
+            defer { client.cancel() }
+            try primeRelay(client)
+            proxy.updateRoutes([])
+            wait(for: [backend.closed], timeout: 2)
+            awaitClientEOF(client)
+            try awaitNoConnections(proxy)
+            XCTAssertTrue(proxy.isRunning)
+        }
+    }
+
+    func testStopRevokesTLSClientStillAwaitingItsHeader() throws {
+        try withLifetimeProxy { proxy, _, _ in
+            let client = try lifetimeClient(port: proxy.port)
+            defer { client.cancel() }
+            XCTAssertEqual(proxy.activeConnectionCount, 1)
+            proxy.stop()
+            awaitClientEOF(client)
+            try awaitNoConnections(proxy)
+        }
+    }
+
+    private func withLifetimeProxy(
+        _ body: (DoryTLSProxyServer, HeldRelayBackend, DomainRoute) throws -> Void
+    ) throws {
+        let base = NSTemporaryDirectory() + "doryd-tls-lifetime-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let ca = DoryLocalCA(directory: URL(fileURLWithPath: base).appendingPathComponent("ca"))
+        let p12 = try ca.issuePKCS12(domain: "dory.local", password: "test-password")
+        let backend = try HeldRelayBackend()
+        defer { backend.stop() }
+        let route = DomainRoute(hostname: "web.dory.local", address: "127.0.0.1", port: backend.port)
+        let proxy = try DoryTLSProxyServer(port: 0, p12Path: p12.path,
+                                           password: "test-password", routes: [route])
+        try proxy.start()
+        defer { proxy.stop() }
+        try body(proxy, backend, route)
+    }
+
+    private func lifetimeClient(port: UInt16) throws -> NWConnection {
+        let ready = expectation(description: "TLS client ready")
+        let options = NWProtocolTLS.Options()
+        let queue = DispatchQueue(label: "dory.tls-lifetime-test")
+        // Skip certificate validation only on this isolated temporary-CA test connection.
+        sec_protocol_options_set_verify_block(options.securityProtocolOptions, { _, _, complete in
+            complete(true)
+        }, queue)
+        let client = NWConnection(host: "127.0.0.1", port: try XCTUnwrap(NWEndpoint.Port(rawValue: port)),
+                                  using: NWParameters(tls: options))
+        client.stateUpdateHandler = { state in
+            if case .ready = state { ready.fulfill() }
+        }
+        client.start(queue: queue)
+        wait(for: [ready], timeout: 3)
+        return client
+    }
+
+    private func primeRelay(_ client: NWConnection) throws {
+        client.send(content: Data("GET / HTTP/1.1\r\nHost: web.dory.local\r\n\r\n".utf8),
+                    completion: .contentProcessed { _ in })
+        let received = expectation(description: "TLS relay returned upstream marker")
+        client.receive(minimumIncompleteLength: 5, maximumLength: 5) { data, _, _, error in
+            XCTAssertNil(error)
+            XCTAssertEqual(data, Data("ready".utf8))
+            received.fulfill()
+        }
+        wait(for: [received], timeout: 3)
+    }
+
+    private func awaitClientEOF(_ client: NWConnection) {
+        let ended = expectation(description: "TLS client ended after revoke")
+        client.receive(minimumIncompleteLength: 1, maximumLength: 1_024) { data, _, complete, error in
+            XCTAssertTrue(complete || error != nil)
+            XCTAssertTrue(data?.isEmpty != false)
+            ended.fulfill()
+        }
+        wait(for: [ended], timeout: 3)
+    }
+
+    private func awaitNoConnections(_ proxy: DoryTLSProxyServer) throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while proxy.activeConnectionCount != 0 {
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                XCTFail("TLS relay retained connection budget after cancellation")
+                return
+            }
+            usleep(1_000)
+        }
+    }
+
     func testTemporaryKeychainFallbackUsesPrivateFileAndDeletesIt() throws {
         let base = NSTemporaryDirectory() + "doryd-tls-keychain-\(getpid())-\(UUID().uuidString)"
         let ca = DoryLocalCA(directory: URL(fileURLWithPath: base).appendingPathComponent("ca"))

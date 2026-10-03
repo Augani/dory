@@ -22,13 +22,16 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
     private let identityStorage: DoryTLSIdentityStorage
     private let router: DomainRouter
     private let connectionBudget: DoryConnectionBudget
+    private let lifecycleLock = NSRecursiveLock()
     private let lock = NSLock()
     private var routes: [DomainRoute]
     private var listener: NWListener?
     private var listenerState: TLSListenerState?
-    private var activeConnections: [ObjectIdentifier: ActiveTLSConnection] = [:]
+    private var listenerGeneration: UUID?
+    private var activeConnections: [UUID: ActiveTLSConnection] = [:]
     private var activePort: UInt16 = 0
     private let queue = DispatchQueue(label: "dev.dory.doryd.tls-proxy")
+    private let queueKey = DispatchSpecificKey<Bool>()
 
     public init(
         port: UInt16,
@@ -46,6 +49,7 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         self.router = router
         self.routes = routes
         self.connectionBudget = DoryConnectionBudget(limit: maximumConnections)
+        queue.setSpecific(key: queueKey, value: true)
     }
 
     public var port: UInt16 {
@@ -67,7 +71,16 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
     public func updateRoutes(_ routes: [DomainRoute]) {
         lock.lock()
         self.routes = routes
+        var revoked: [ActiveTLSConnection] = []
+        for (identifier, var active) in activeConnections {
+            guard !active.revoked, let hostname = active.hostname, let route = active.route,
+                  routeLocked(for: hostname) != route else { continue }
+            active.revoked = true
+            activeConnections[identifier] = active
+            revoked.append(active)
+        }
         lock.unlock()
+        for active in revoked { active.upstream?.cancel(); active.connection.cancel() }
     }
 
     public func currentRoutes() -> [DomainRoute] {
@@ -77,6 +90,8 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
     }
 
     public func start() throws {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         lock.lock()
         guard listener == nil else {
             lock.unlock()
@@ -97,12 +112,15 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         let listener = try NWListener(using: parameters, on: nwPort)
         let ready = DispatchSemaphore(value: 0)
         let startState = TLSListenerState(ready: ready)
+        let generation = UUID()
         listener.stateUpdateHandler = { [weak self, weak listener] state in
             switch state {
             case .ready:
                 if let self, let listener {
                     self.lock.lock()
-                    self.activePort = listener.port?.rawValue ?? self.requestedPort
+                    if self.listener === listener, self.listenerGeneration == generation {
+                        self.activePort = listener.port?.rawValue ?? self.requestedPort
+                    }
                     self.lock.unlock()
                 }
                 startState.signal()
@@ -114,16 +132,18 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
                 break
             }
         }
-        listener.newConnectionHandler = { [weak self] connection in
-            self?.accept(connection)
+        listener.newConnectionHandler = { [weak self, weak listener] connection in
+            guard let self, let listener else { connection.cancel(); return }
+            self.accept(connection, listener: listener, generation: generation)
         }
-        listener.start(queue: queue)
 
         lock.lock()
         self.listener = listener
         self.listenerState = startState
+        self.listenerGeneration = generation
         self.activePort = requestedPort
         lock.unlock()
+        listener.start(queue: queue)
 
         if ready.wait(timeout: .now() + 5) == .timedOut {
             stop()
@@ -136,33 +156,36 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
     }
 
     public func stop() {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         lock.lock()
         let current = listener
         let currentState = listenerState
         let connections = Array(activeConnections.values)
         listener = nil
         listenerState = nil
+        listenerGeneration = nil
         activeConnections.removeAll()
         activePort = 0
         lock.unlock()
         current?.cancel()
         for active in connections {
-            active.lease.release()
+            active.upstream?.cancel()
             active.connection.cancel()
         }
-        if current != nil {
+        if current != nil, DispatchQueue.getSpecific(key: queueKey) != true {
             _ = currentState?.waitUntilCancelled()
         }
     }
 
-    private func accept(_ client: NWConnection) {
+    private func accept(_ client: NWConnection, listener: NWListener, generation: UUID) {
         guard let lease = connectionBudget.tryAcquire() else {
             client.cancel()
             return
         }
-        let identifier = ObjectIdentifier(client)
+        let identifier = UUID()
         lock.lock()
-        guard listener != nil else {
+        guard self.listener === listener, listenerGeneration == generation else {
             lock.unlock()
             lease.release()
             client.cancel()
@@ -174,23 +197,27 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
             awaitingHeader: true
         )
         lock.unlock()
-        client.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .failed, .cancelled:
-                self?.finishConnection(identifier)
-            default:
-                break
+        client.stateUpdateHandler = { [weak self, lease] state in
+            withExtendedLifetime(lease) {
+                switch state {
+                case .failed, .cancelled:
+                    self?.finishConnection(identifier)
+                default:
+                    break
+                }
             }
         }
         client.start(queue: queue)
         queue.asyncAfter(deadline: .now() + 15) { [weak self] in
             self?.cancelIfAwaitingHeader(identifier)
         }
-        readHead(client, identifier: identifier, buffer: Data())
+        readHead(client, identifier: identifier, lease: lease, buffer: Data())
     }
 
-    private func readHead(_ client: NWConnection, identifier: ObjectIdentifier, buffer: Data) {
+    private func readHead(_ client: NWConnection, identifier: UUID,
+                          lease: DoryConnectionLease, buffer: Data) {
         client.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [weak self] data, _, isComplete, error in
+            defer { withExtendedLifetime(lease) {} }
             guard let self else {
                 client.cancel()
                 return
@@ -204,27 +231,27 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
                     client.cancel()
                     return
                 }
-                self.route(client, head: accumulated)
+                self.route(client, identifier: identifier, head: accumulated)
                 return
             }
             if isComplete || error != nil || accumulated.count > 65_536 {
                 client.cancel()
                 return
             }
-            self.readHead(client, identifier: identifier, buffer: accumulated)
+            self.readHead(client, identifier: identifier, lease: lease, buffer: accumulated)
         }
     }
 
-    private func markHeaderReceived(_ identifier: ObjectIdentifier) -> Bool {
+    private func markHeaderReceived(_ identifier: UUID) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard var active = activeConnections[identifier] else { return false }
+        guard var active = activeConnections[identifier], !active.revoked else { return false }
         active.awaitingHeader = false
         activeConnections[identifier] = active
         return true
     }
 
-    private func cancelIfAwaitingHeader(_ identifier: ObjectIdentifier) {
+    private func cancelIfAwaitingHeader(_ identifier: UUID) {
         lock.lock()
         let connection = activeConnections[identifier].flatMap {
             $0.awaitingHeader ? $0.connection : nil
@@ -233,27 +260,59 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         connection?.cancel()
     }
 
-    private func finishConnection(_ identifier: ObjectIdentifier) {
+    private func finishConnection(_ identifier: UUID) {
         lock.lock()
         let active = activeConnections.removeValue(forKey: identifier)
         lock.unlock()
-        active?.lease.release()
+        // A relay's worker-held owner also retains the lease until both pumps have unwound.
+        active?.upstream?.cancel()
     }
 
-    private func route(_ client: NWConnection, head: Data) {
-        guard let host = DoryHTTPProxyServer.hostHeader(head), let route = route(for: host) else {
+    private func route(_ client: NWConnection, identifier: UUID, head: Data) {
+        let selected: (DomainRoute, DoryConnectionLease)? = lock.withLock {
+            guard var active = activeConnections[identifier], !active.revoked,
+                  let host = DoryHTTPProxyServer.hostHeader(head),
+                  let route = routeLocked(for: host) else { return nil }
+            active.hostname = DomainRouter.normalize(host)
+            active.route = route
+            activeConnections[identifier] = active
+            return (route, active.lease)
+        }
+        guard let (route, lease) = selected else {
             writeBadGateway(client, body: "Dory: no backend for that domain\n")
             return
         }
+        // Connect/write must not block the serial Network.framework cancellation queue. This
+        // worker retains its budget even if stop removes the accepted connection meanwhile.
+        Thread.detachNewThread { [weak self, client, lease] in
+            guard let self else { client.cancel(); return }
+            self.connectAndRelay(client, identifier: identifier, route: route, head: head, lease: lease)
+        }
+    }
+
+    private func connectAndRelay(_ client: NWConnection, identifier: UUID,
+                                 route: DomainRoute, head: Data, lease: DoryConnectionLease) {
+        guard lock.withLock({
+            activeConnections[identifier]?.lease === lease && activeConnections[identifier]?.revoked == false
+        }) else { return }
         let request = route.pathPrefix.isEmpty ? head : DoryHTTPProxyServer.rewriteRequest(head, pathPrefix: route.pathPrefix)
-        guard let upstreamFD = DoryTCP.connect(host: route.address, port: route.port) else {
+        let upstream = TLSUpstreamOwner(lease: lease)
+        let admitted = lock.withLock {
+            guard var active = activeConnections[identifier], !active.revoked, active.lease === lease,
+                  let hostname = active.hostname, routeLocked(for: hostname) == route else { return false }
+            active.upstream = upstream
+            activeConnections[identifier] = active
+            return true
+        }
+        guard admitted else { upstream.closeNow(); client.cancel(); return }
+        guard let upstreamFD = DoryTCP.connect(host: route.address, port: route.port,
+                                               connection: upstream) else {
+            upstream.closeNow()
             writeBadGateway(client, body: "Dory: backend unavailable\n")
             return
         }
         DoryTCP.configureRelayTimeout(upstreamFD)
-        // Own the fd before the first write so a failed write cannot leak it.
-        let upstream = FDOwner(upstreamFD)
-        guard (try? DoryTCP.writeAll(upstream.raw, request)) != nil else {
+        guard upstream.isActive, (try? DoryTCP.writeAll(upstream.raw, request)) != nil else {
             upstream.closeNow()
             writeBadGateway(client, body: "Dory: backend unavailable\n")
             return
@@ -262,12 +321,9 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         pumpClientToUpstream(client, upstream)
     }
 
-    private func route(for host: String) -> DomainRoute? {
+    private func routeLocked(for host: String) -> DomainRoute? {
         let normalized = DomainRouter.normalize(host)
-        lock.lock()
-        let currentRoutes = routes
-        lock.unlock()
-        return currentRoutes.compactMap { route -> (specificity: Int, route: DomainRoute)? in
+        return routes.compactMap { route -> (specificity: Int, route: DomainRoute)? in
             let hostname = DomainRouter.normalize(route.hostname)
             guard let specificity = DomainRouter.matchSpecificity(pattern: hostname, hostname: normalized),
                   router.owns(hostname)
@@ -287,13 +343,15 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         })
     }
 
-    private func pumpUpstreamToClient(_ upstream: FDOwner, _ client: NWConnection) {
+    private func pumpUpstreamToClient(_ upstream: TLSUpstreamOwner, _ client: NWConnection) {
         Thread.detachNewThread {
             let fd = upstream.raw
             var buffer = [UInt8](repeating: 0, count: 32 * 1024)
-            while true {
+            while upstream.isActive {
                 let count = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, 32 * 1024) }
+                if count < 0, errno == EINTR { continue }
                 if count <= 0 { break }
+                guard upstream.isActive else { break }
                 let chunk = Data(buffer[0..<count])
                 let sent = DispatchSemaphore(value: 0)
                 client.send(content: chunk, completion: .contentProcessed { _ in
@@ -311,8 +369,9 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         }
     }
 
-    private func pumpClientToUpstream(_ client: NWConnection, _ upstream: FDOwner) {
+    private func pumpClientToUpstream(_ client: NWConnection, _ upstream: TLSUpstreamOwner) {
         client.receive(minimumIncompleteLength: 1, maximumLength: 32 * 1024) { [weak self] data, _, isComplete, error in
+            guard upstream.isActive else { upstream.release(); return }
             if let data, !data.isEmpty {
                 _ = try? DoryTCP.writeAll(upstream.raw, data)
             }
@@ -384,43 +443,6 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         )
     }
 
-    private final class FDOwner: @unchecked Sendable {
-        let raw: Int32
-        private let lock = NSLock()
-        private var refs = 2
-        private var closed = false
-
-        init(_ raw: Int32) {
-            self.raw = raw
-        }
-
-        func release() {
-            lock.lock()
-            refs -= 1
-            let shouldClose = refs <= 0 && !closed
-            if shouldClose {
-                closed = true
-            }
-            lock.unlock()
-            if shouldClose {
-                shutdown(raw, SHUT_RDWR)
-                close(raw)
-            }
-        }
-
-        func closeNow() {
-            lock.lock()
-            let shouldClose = !closed
-            closed = true
-            refs = 0
-            lock.unlock()
-            if shouldClose {
-                shutdown(raw, SHUT_RDWR)
-                close(raw)
-            }
-        }
-    }
-
     deinit {
         stop()
     }
@@ -455,6 +477,68 @@ private struct ActiveTLSConnection {
     var connection: NWConnection
     var lease: DoryConnectionLease
     var awaitingHeader: Bool
+    var revoked = false
+    var hostname: String?
+    var route: DomainRoute?
+    var upstream: TLSUpstreamOwner?
+}
+
+/// Stop shuts down immediately; only joined pump ownership closes the descriptor. The strong
+/// lease remains charged while a header/connect worker or either relay callback can still run.
+private final class TLSUpstreamOwner: DoryTCPUpstreamOwnership, @unchecked Sendable {
+    private var descriptor: Int32?
+    private let lease: DoryConnectionLease
+    private let lock = NSLock()
+    private var refs = 2
+    private var cancelled = false
+    private var closed = false
+
+    init(lease: DoryConnectionLease) { self.lease = lease }
+    var raw: Int32 { lock.withLock { descriptor! } }
+    var isActive: Bool { lock.withLock { !cancelled && !closed } }
+
+    func adoptUpstream(_ descriptor: Int32) -> Bool {
+        lock.withLock {
+            guard !cancelled, !closed, self.descriptor == nil else { return false }
+            self.descriptor = descriptor
+            return true
+        }
+    }
+
+    func performConnect(_ operation: () -> Int32) -> Int32? {
+        lock.withLock {
+            guard !cancelled, !closed, descriptor != nil else { return nil }
+            return operation()
+        }
+    }
+
+    func cancel() {
+        lock.withLock {
+            guard !cancelled, !closed else { return }
+            cancelled = true
+            if let descriptor { shutdown(descriptor, SHUT_RDWR) }
+        }
+    }
+
+    func release() {
+        lock.withLock {
+            guard !closed else { return }
+            precondition(refs > 0)
+            refs -= 1
+            if refs == 0 { closeLocked() }
+        }
+    }
+
+    // Used only before pump handoff (or by deinit once no worker references remain).
+    func closeNow() { lock.withLock { if !closed { closeLocked() } } }
+    private func closeLocked() {
+        closed = true
+        if let descriptor {
+            shutdown(descriptor, SHUT_RDWR)
+            close(descriptor)
+        }
+    }
+    deinit { closeNow() }
 }
 
 private final class TLSListenerState: @unchecked Sendable {

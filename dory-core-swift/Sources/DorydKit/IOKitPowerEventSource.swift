@@ -2,160 +2,313 @@ import Foundation
 import IOKit
 import IOKit.pwr_mgt
 
-public final class IOKitPowerEventSource: PowerEventSource, @unchecked Sendable {
-    private let lock = NSLock()
-    private var notifyPort: IONotificationPortRef?
-    private var notifier: io_object_t = 0
-    private var rootPort: io_connect_t = 0
-    private var onWillSleep: (@Sendable () -> Void)?
-    private var onWake: (@Sendable () -> Void)?
-    private var runLoop: CFRunLoop?
-    private var workerThread: Thread?
-    private var cancelled = false
-    private let exited = DispatchSemaphore(value: 0)
+enum IOKitPowerObserverEvent: Sendable {
+    case willSleep
+    case wake
+}
 
-    public init() {}
+/// Registration, run-loop delivery, and teardown all belong to the observer worker. Stop is
+/// the only cross-thread operation; it must also wake a run loop that has not entered run yet.
+protocol IOKitPowerObserverConnection: AnyObject, Sendable {
+    func run()
+    func stop()
+    func close()
+}
+
+public final class IOKitPowerEventSource: PowerEventSource, @unchecked Sendable {
+    typealias ObserverFactory = @Sendable (
+        @escaping @Sendable (IOKitPowerObserverEvent) -> Void
+    ) throws -> any IOKitPowerObserverConnection
+
+    private let lock = NSLock()
+    private let observerFactory: ObserverFactory
+    private let observerRevokedForTesting: (@Sendable () -> Void)?
+    private var observer: PowerObserverLifetime?
+
+    public convenience init() {
+        self.init(observerFactory: { try SystemPowerObserverConnection(callback: $0) })
+    }
+
+    /// Internal transport injection keeps lifecycle regression tests independent of host power.
+    init(
+        observerFactory: @escaping ObserverFactory,
+        observerRevokedForTesting: (@Sendable () -> Void)? = nil
+    ) {
+        self.observerFactory = observerFactory
+        self.observerRevokedForTesting = observerRevokedForTesting
+    }
 
     public func start(
         onWillSleep: @escaping @Sendable () -> Void,
         onWake: @escaping @Sendable () -> Void
     ) throws {
-        lock.lock()
-        if rootPort != 0 {
-            self.onWillSleep = onWillSleep
-            self.onWake = onWake
+        let lifetime: PowerObserverLifetime
+        while true {
+            lock.lock()
+            if let existing = observer {
+                if existing.replaceCallbacks(onWillSleep: onWillSleep, onWake: onWake) {
+                    lifetime = existing
+                    lock.unlock()
+                    break
+                }
+                lock.unlock()
+                // A callback can stop its own observer, but cannot synchronously join and replace
+                // that same worker. Leave the revoked generation in place until it exits.
+                guard !existing.isWorkerThread else { throw PowerObserverError.registrationFailed }
+                existing.join()
+                retire(existing)
+                continue
+            }
+            let created = PowerObserverLifetime(
+                factory: observerFactory,
+                revokedForTesting: observerRevokedForTesting,
+                onWillSleep: onWillSleep,
+                onWake: onWake
+            )
+            observer = created
+            lifetime = created
             lock.unlock()
-            return
+            created.launch()
+            break
         }
-        self.onWillSleep = onWillSleep
-        self.onWake = onWake
-        cancelled = false
-        lock.unlock()
 
-        let start = PowerObserverStart()
-        let thread = Thread { [weak self] in
-            self?.runPowerObserver(start: start)
-        }
-        thread.name = "dev.dory.doryd.power-observer"
-        lock.lock()
-        workerThread = thread
-        lock.unlock()
-        thread.start()
-
-        guard start.wait(timeout: 5) else {
-            stop()
-            throw PowerObserverError.registrationFailed
-        }
-        if let error = start.error {
-            stop()
-            throw error
+        guard lifetime.waitUntilStarted(timeout: 5), lifetime.isAcceptingEvents else {
+            stop(lifetime)
+            throw lifetime.startError ?? PowerObserverError.registrationFailed
         }
     }
 
     public func stop() {
         lock.lock()
-        cancelled = true
-        let worker = workerThread
-        workerThread = nil
-        let localRunLoop = runLoop
+        let lifetime = observer
         lock.unlock()
+        if let lifetime { stop(lifetime) }
+    }
 
-        // Wake the worker's run loop so CFRunLoopRun() returns and the worker tears down
-        // the IOKit resources on the same thread that created them.
-        if let localRunLoop {
-            CFRunLoopStop(localRunLoop)
-        }
+    private func stop(_ lifetime: PowerObserverLifetime) {
+        lifetime.cancel()
+        // Every caller joins the exact same generation. A shared, consumable semaphore or clearing
+        // the worker before joining lets a second stop return while a control callback is active.
+        guard !lifetime.isWorkerThread else { return }
+        lifetime.join()
+        retire(lifetime)
+    }
 
-        // Join the worker so no callback (which holds an unretained reference to self)
-        // can run after stop() returns. Skip if we are already on the worker thread.
-        if let worker, worker != Thread.current {
-            _ = exited.wait(timeout: .now() + 5)
-        }
-
+    private func retire(_ lifetime: PowerObserverLifetime) {
         lock.lock()
+        if observer === lifetime { observer = nil }
+        lock.unlock()
+    }
+
+    deinit { stop() }
+}
+
+private final class PowerObserverLifetime: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let exited = DispatchGroup()
+    private let factory: IOKitPowerEventSource.ObserverFactory
+    private let revokedForTesting: (@Sendable () -> Void)?
+    private var worker: Thread?
+    private var connection: (any IOKitPowerObserverConnection)?
+    private var cancelled = false
+    private var started = false
+    private var error: Error?
+    private var onWillSleep: (@Sendable () -> Void)?
+    private var onWake: (@Sendable () -> Void)?
+
+    init(
+        factory: @escaping IOKitPowerEventSource.ObserverFactory,
+        revokedForTesting: (@Sendable () -> Void)?,
+        onWillSleep: @escaping @Sendable () -> Void,
+        onWake: @escaping @Sendable () -> Void
+    ) {
+        self.factory = factory
+        self.revokedForTesting = revokedForTesting
+        self.onWillSleep = onWillSleep
+        self.onWake = onWake
+        exited.enter()
+    }
+
+    func launch() {
+        let thread = Thread { [self] in run() }
+        thread.name = "dev.dory.doryd.power-observer"
+        condition.lock()
+        worker = thread
+        condition.unlock()
+        thread.start()
+    }
+
+    var isWorkerThread: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return worker === Thread.current
+    }
+
+    var isAcceptingEvents: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return started && error == nil && !cancelled
+    }
+
+    var startError: Error? {
+        condition.lock()
+        defer { condition.unlock() }
+        return error
+    }
+
+    func replaceCallbacks(
+        onWillSleep: @escaping @Sendable () -> Void,
+        onWake: @escaping @Sendable () -> Void
+    ) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        guard !cancelled else { return false }
+        self.onWillSleep = onWillSleep
+        self.onWake = onWake
+        return true
+    }
+
+    func waitUntilStarted(timeout: TimeInterval) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while !started {
+            if !condition.wait(until: deadline), !started { return false }
+        }
+        return true
+    }
+
+    func cancel() {
+        condition.lock()
+        let newlyCancelled = !cancelled
+        cancelled = true
         onWillSleep = nil
         onWake = nil
-        lock.unlock()
+        let activeConnection = connection
+        condition.unlock()
+        if newlyCancelled { revokedForTesting?() }
+        activeConnection?.stop()
     }
 
-    private func runPowerObserver(start: PowerObserverStart) {
-        var localNotifyPort: IONotificationPortRef?
-        var localNotifier: io_object_t = 0
-        let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        let port = IORegisterForSystemPower(
-            context,
-            &localNotifyPort,
-            powerCallback,
-            &localNotifier
-        )
-        guard port != 0, let localNotifyPort else {
-            start.complete(error: PowerObserverError.registrationFailed)
-            exited.signal()
+    func join() { exited.wait() }
+
+    private func run() {
+        defer {
+            condition.lock()
+            cancelled = true
+            onWillSleep = nil
+            onWake = nil
+            connection = nil
+            worker = nil
+            condition.unlock()
+            exited.leave()
+        }
+
+        condition.lock()
+        let wasCancelled = cancelled
+        condition.unlock()
+        guard !wasCancelled else {
+            completeStart(error: PowerObserverError.registrationFailed)
             return
         }
 
-        // stop() may have run during the (up to 5s) registration; if so, tear the freshly
-        // registered resources down here instead of leaking them and entering the loop.
-        lock.lock()
+        do {
+            let registered = try factory { [weak self] event in self?.handle(event) }
+            defer { registered.close() }
+            condition.lock()
+            if cancelled {
+                condition.unlock()
+                completeStart(error: PowerObserverError.registrationFailed)
+                return
+            }
+            connection = registered
+            condition.unlock()
+            completeStart(error: nil)
+            registered.run()
+        } catch {
+            completeStart(error: error)
+        }
+    }
+
+    private func completeStart(error: Error?) {
+        condition.lock()
+        self.error = error
+        started = true
+        // Concurrent start callers coalesce onto one registration and all must be released.
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    private func handle(_ event: IOKitPowerObserverEvent) {
+        condition.lock()
+        let callback: (@Sendable () -> Void)?
         if cancelled {
-            lock.unlock()
-            teardownResources(notifyPort: localNotifyPort, notifier: localNotifier, rootPort: port, runLoop: nil, source: nil)
-            start.complete(error: PowerObserverError.registrationFailed)
-            exited.signal()
-            return
+            callback = nil
+        } else {
+            switch event {
+            case .willSleep: callback = onWillSleep
+            case .wake: callback = onWake
+            }
         }
-        let currentRunLoop = CFRunLoopGetCurrent()
-        let source = IONotificationPortGetRunLoopSource(localNotifyPort).takeUnretainedValue()
-        CFRunLoopAddSource(currentRunLoop, source, .commonModes)
-        rootPort = port
-        notifyPort = localNotifyPort
-        notifier = localNotifier
-        runLoop = currentRunLoop
-        lock.unlock()
+        condition.unlock()
+        // The callback runs on this generation's worker. Stop revokes future admission first and
+        // then joins the worker, including a callback selected immediately before cancellation.
+        callback?()
+    }
+}
 
-        start.complete(error: nil)
-        CFRunLoopRun()
+private final class SystemPowerObserverConnection: IOKitPowerObserverConnection, @unchecked Sendable {
+    private let callback: @Sendable (IOKitPowerObserverEvent) -> Void
+    private let runLoop: CFRunLoop
+    private let stopLock = NSLock()
+    private var stopRequested = false
+    private var notifyPort: IONotificationPortRef?
+    private var notifier: io_object_t = 0
+    private var rootPort: io_connect_t = 0
+    private var source: CFRunLoopSource?
 
-        // Run loop stopped by stop(): tear down on this thread, then release the join.
-        lock.lock()
-        let teardownNotifyPort = notifyPort
-        let teardownNotifier = notifier
-        let teardownRootPort = rootPort
-        let teardownRunLoop = runLoop
-        notifyPort = nil
+    init(callback: @escaping @Sendable (IOKitPowerObserverEvent) -> Void) throws {
+        self.callback = callback
+        runLoop = CFRunLoopGetCurrent()
+        rootPort = IORegisterForSystemPower(
+            UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()),
+            &notifyPort,
+            systemPowerCallback,
+            &notifier
+        )
+        guard rootPort != 0, let notifyPort else {
+            close()
+            throw PowerObserverError.registrationFailed
+        }
+        let source = IONotificationPortGetRunLoopSource(notifyPort).takeUnretainedValue()
+        CFRunLoopAddSource(runLoop, source, .commonModes)
+        self.source = source
+    }
+
+    func run() { CFRunLoopRun() }
+
+    func stop() {
+        stopLock.lock()
+        guard !stopRequested else { stopLock.unlock(); return }
+        stopRequested = true
+        stopLock.unlock()
+        // Queue the stop as well as waking the loop: CFRunLoopStop alone can be lost when stop
+        // races the gap between successful registration and the first CFRunLoopRun call.
+        CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue) {
+            CFRunLoopStop(CFRunLoopGetCurrent())
+        }
+        CFRunLoopWakeUp(runLoop)
+    }
+
+    func close() {
+        if let source { CFRunLoopRemoveSource(runLoop, source, .commonModes) }
+        if notifier != 0 { IOObjectRelease(notifier) }
+        if rootPort != 0 { IOServiceClose(rootPort) }
+        if let notifyPort { IONotificationPortDestroy(notifyPort) }
+        source = nil
         notifier = 0
         rootPort = 0
-        runLoop = nil
-        lock.unlock()
-        teardownResources(
-            notifyPort: teardownNotifyPort,
-            notifier: teardownNotifier,
-            rootPort: teardownRootPort,
-            runLoop: teardownRunLoop,
-            source: source
-        )
-        exited.signal()
-    }
-
-    private func teardownResources(
-        notifyPort: IONotificationPortRef?,
-        notifier: io_object_t,
-        rootPort: io_connect_t,
-        runLoop: CFRunLoop?,
-        source: CFRunLoopSource?
-    ) {
-        if let notifyPort {
-            if let runLoop, let source {
-                CFRunLoopRemoveSource(runLoop, source, .commonModes)
-            }
-            IONotificationPortDestroy(notifyPort)
-        }
-        if notifier != 0 {
-            IOObjectRelease(notifier)
-        }
-        if rootPort != 0 {
-            IOServiceClose(rootPort)
-        }
+        notifyPort = nil
     }
 
     fileprivate func handle(messageType: UInt32, messageArgument: UnsafeMutableRawPointer?) {
@@ -163,31 +316,18 @@ public final class IOKitPowerEventSource: PowerEventSource, @unchecked Sendable 
         case ioMessageCanSystemSleep:
             allowPowerChange(messageArgument)
         case ioMessageSystemWillSleep:
-            lock.lock()
-            let callback = onWillSleep
-            lock.unlock()
-            callback?()
+            callback(.willSleep)
             allowPowerChange(messageArgument)
         case ioMessageSystemHasPoweredOn:
-            lock.lock()
-            let callback = onWake
-            lock.unlock()
-            callback?()
+            callback(.wake)
         default:
             break
         }
     }
 
-    private func allowPowerChange(_ messageArgument: UnsafeMutableRawPointer?) {
-        lock.lock()
-        let port = rootPort
-        lock.unlock()
-        guard port != 0 else { return }
-        IOAllowPowerChange(port, Int(bitPattern: messageArgument))
-    }
-
-    deinit {
-        stop()
+    private func allowPowerChange(_ argument: UnsafeMutableRawPointer?) {
+        // This port belongs to the callback's exact registration, never a successor observer.
+        if rootPort != 0 { IOAllowPowerChange(rootPort, Int(bitPattern: argument)) }
     }
 }
 
@@ -195,33 +335,10 @@ public enum PowerObserverError: Error, Sendable, Equatable {
     case registrationFailed
 }
 
-private final class PowerObserverStart: @unchecked Sendable {
-    private let semaphore = DispatchSemaphore(value: 0)
-    private let lock = NSLock()
-    private var storedError: Error?
-
-    var error: Error? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedError
-    }
-
-    func complete(error: Error?) {
-        lock.lock()
-        storedError = error
-        lock.unlock()
-        semaphore.signal()
-    }
-
-    func wait(timeout seconds: TimeInterval) -> Bool {
-        semaphore.wait(timeout: .now() + seconds) == .success
-    }
-}
-
-private let powerCallback: IOServiceInterestCallback = { context, _, messageType, messageArgument in
+private let systemPowerCallback: IOServiceInterestCallback = { context, _, type, argument in
     guard let context else { return }
-    let source = Unmanaged<IOKitPowerEventSource>.fromOpaque(context).takeUnretainedValue()
-    source.handle(messageType: messageType, messageArgument: messageArgument)
+    let connection = Unmanaged<SystemPowerObserverConnection>.fromOpaque(context).takeUnretainedValue()
+    connection.handle(messageType: type, messageArgument: argument)
 }
 
 private let ioMessageCanSystemSleep: UInt32 = 0xE000_0270
