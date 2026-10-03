@@ -52,6 +52,21 @@ import Testing
     #expect(chain.writableByteCount == 32)
     #expect(queue.snapshot().outstandingHeads == [0])
 
+    let forged = DoryVirtioDescriptorChain(
+      headIndex: chain.headIndex,
+      descriptors: chain.descriptors,
+      readableByteCount: chain.readableByteCount,
+      writableByteCount: chain.writableByteCount
+    )
+    #expect(throws: DoryVirtioQueueError.duplicateCompletion(0)) {
+      try queue.validateCompletionWrites(forged, memory: memory)
+    }
+    #expect(throws: DoryVirtioQueueError.duplicateCompletion(0)) {
+      _ = try queue.complete(
+        forged, bytesWritten: 12, memory: memory, eventIndexNegotiated: false)
+    }
+    try queue.validateCompletionWrites(chain, memory: memory)
+
     #expect(
       try queue.complete(chain, bytesWritten: 12, memory: memory, eventIndexNegotiated: false))
     #expect(memory.get(UInt32.self, at: 0x304) == 0)

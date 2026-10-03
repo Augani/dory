@@ -62,6 +62,12 @@ import Testing
         try memory.write(UInt16(0), at: availableRing + 4)
         try memory.write(UInt16(0), at: usedRing + 2)
 
+        transport.write(offset: 0x070, value: 1, width: 4)
+        transport.write(offset: 0x070, value: 3, width: 4)
+        transport.write(offset: 0x024, value: 1, width: 4)
+        transport.write(offset: 0x020, value: 1, width: 4) // VERSION_1
+        transport.write(offset: 0x070, value: 0x0B, width: 4)
+        transport.write(offset: 0x070, value: 0x0F, width: 4)
         device.handleKick(queue: 1, transport: transport)
 
         #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
@@ -109,7 +115,7 @@ import Testing
         try memory.write(UInt16(0), at: availableRing)
         try memory.write(UInt16(0), at: availableRing + 2) // no RX buffers yet
         try memory.write(UInt16(0), at: usedRing + 2)
-        device.deviceReady(transport: transport)
+        finishMMIOTestDriverNegotiation(transport)
 
         let ethernetFrame = Array(0..<64).map(UInt8.init)
         try sendDatagram(ethernetFrame, from: proxyFD, to: devicePath)
@@ -223,6 +229,7 @@ import Testing
         let frameStride: UInt64 = 1_024
         let frame = [UInt8](repeating: 0, count: 12) + [UInt8](repeating: 0xA5, count: 512)
 
+        finishMMIOTestDriverNegotiation(transport)
         transport.queues[1].configure(
             size: frameCount,
             descriptorTable: descriptorTable,
@@ -493,6 +500,7 @@ import Testing
         transport: VirtioMMIOTransport
     ) throws -> (available: UInt64, used: UInt64) {
         precondition(!frames.isEmpty && frames.count <= Int(Virtqueue.maximumSize))
+        finishMMIOTestDriverNegotiation(transport)
         var queueSize: UInt16 = 1
         while queueSize < UInt16(frames.count) { queueSize *= 2 }
         let descriptorTable = guestBase + 0x1_0000

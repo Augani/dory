@@ -16,6 +16,139 @@ import Testing
         let used: UInt64
     }
 
+    @Test(arguments: [false, true])
+    func disconnectedBackendDirectKickRequiresLiveQueueAuthority(needsReset: Bool) throws {
+        let device = VirtioDisconnectedNet(maximumTransmissionUnit: 1_500)
+        let base: UInt64 = 0xE700_0000
+        let memory = try GuestMemory(guestBase: base, size: 1 << 20)
+        let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase,
+            backend: device, memory: memory) {}
+        let queue = QueueLayout(descriptors: base + 0x1_0000,
+            available: base + 0x1_1000, used: base + 0x1_2000)
+        try configureQueue(transport.queues[1], layout: queue, size: 8, memory: memory)
+        try installDescriptor(index: 0, address: base + 0x2_0000, length: 64,
+            flags: 0, next: 0, layout: queue, memory: memory)
+        try publishAvailableHeads([0], layout: queue, memory: memory)
+        device.handleKick(queue: 1, transport: transport)
+        #expect(try transport.queues[1].pendingCount() == 1)
+        negotiateQueueWork(transport)
+        failTransport(transport, needsReset: needsReset)
+        device.handleKick(queue: 1, transport: transport)
+        #expect(try transport.queues[1].pendingCount() == 1)
+        #expect(try memory.read(UInt16.self, at: queue.used + 2) == 0)
+        transport.write(offset: 0x070, value: 0, width: 4)
+        try configureQueue(transport.queues[1], layout: queue, size: 8, memory: memory)
+        try publishAvailableHeads([0], layout: queue, memory: memory)
+        negotiateQueueWork(transport)
+        device.handleKick(queue: 1, transport: transport)
+        #expect(try memory.read(UInt16.self, at: queue.used + 2) == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func queuedTransmitRejectsTerminalStatusUntilStatusZeroReset(needsReset: Bool) throws {
+        let paths = try makeSocketPaths("txterminal")
+        defer { try? FileManager.default.removeItem(atPath: paths.directory) }
+        let proxyFD = try bindUnixDatagram(path: paths.proxy)
+        defer { close(proxyFD) }
+        let device = try VirtioNet(socketPath: paths.device, remotePath: paths.proxy,
+            maximumTransmissionUnit: 1_500)
+        try consumeMagic(from: proxyFD)
+        let base: UInt64 = 0xE500_0000
+        let memory = try GuestMemory(guestBase: base, size: 1 << 20)
+        let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase,
+            backend: device, memory: memory) {}
+        let queue = QueueLayout(descriptors: base + 0x1_0000,
+            available: base + 0x1_1000, used: base + 0x1_2000)
+        try configureQueue(transport.queues[1], layout: queue, size: 8, memory: memory)
+        let packet = transmitPacket(frame: ethernetFrame(marker: 0x61, count: 64))
+        try memory.write(packet, at: base + 0x2_0000)
+        try installDescriptor(index: 0, address: base + 0x2_0000, length: packet.count,
+            flags: 0, next: 0, layout: queue, memory: memory)
+        try publishAvailableHeads([0], layout: queue, memory: memory)
+        activateDevice(device, transport: transport)
+        // The work is queued while operational, but the executor cannot inspect RAM until
+        // this serialized turn returns. No timing or threadpool scheduling assumption.
+        device.withTransmitQueueSerializedForTesting {
+            device.handleKick(queue: 1, transport: transport)
+            failTransport(transport, needsReset: needsReset)
+        }
+        device.synchronizeTransmitQueueForTesting()
+        #expect(try transport.queues[1].pendingCount() == 1)
+        #expect(try memory.read(UInt16.self, at: queue.used + 2) == 0)
+        #expect(device.statistics.transmitPackets == 0)
+        #expect(device.statistics.transmitCompletions == 0)
+        #expect(noDatagramAvailable(from: proxyFD))
+        transport.write(offset: 0x070, value: 0x0F, width: 4)
+        device.handleKick(queue: 1, transport: transport) // Even a direct late backend kick.
+        device.synchronizeTransmitQueueForTesting()
+        #expect(try memory.read(UInt16.self, at: queue.used + 2) == 0)
+        #expect(noDatagramAvailable(from: proxyFD))
+        transport.write(offset: 0x070, value: 0, width: 4)
+        try configureQueue(transport.queues[1], layout: queue, size: 8, memory: memory)
+        try publishAvailableHeads([0], layout: queue, memory: memory)
+        activateDevice(device, transport: transport)
+        device.handleKick(queue: 1, transport: transport)
+        device.synchronizeTransmitQueueForTesting()
+        #expect(try memory.read(UInt16.self, at: queue.used + 2) == 1)
+        #expect(try receiveDatagram(from: proxyFD, maximum: 2_048) == Array(packet.dropFirst(12)))
+    }
+
+    @Test(arguments: [false, true])
+    func deferredReceiveCannotDMAThroughTerminalStatus(needsReset: Bool) throws {
+        let paths = try makeSocketPaths("rxterminal")
+        defer { try? FileManager.default.removeItem(atPath: paths.directory) }
+        let proxyFD = try bindUnixDatagram(path: paths.proxy)
+        defer { close(proxyFD) }
+        let device = try VirtioNet(socketPath: paths.device, remotePath: paths.proxy,
+            maximumTransmissionUnit: 1_500)
+        try consumeMagic(from: proxyFD)
+        let base: UInt64 = 0xE600_0000
+        let memory = try GuestMemory(guestBase: base, size: 1 << 20)
+        let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase,
+            backend: device, memory: memory) {}
+        let queue = QueueLayout(descriptors: base + 0x1_0000,
+            available: base + 0x1_1000, used: base + 0x1_2000)
+        try configureQueue(transport.queues[0], layout: queue, size: 8, memory: memory)
+        activateDevice(device, transport: transport)
+        try sendDatagram(ethernetFrame(marker: 0x62, count: 64), from: proxyFD, to: paths.device)
+        #expect(waitUntil { device.deferredReceiveResourceSnapshotForTesting.frames == 1 })
+        // These counters record the host datagram read, not guest RX publication.
+        let receivedBeforeTerminal = device.statistics
+        #expect(receivedBeforeTerminal.receivePackets == 1)
+        // Revoke before offering a head: an already queued receive drain must never win
+        // a scheduling race against this test's terminal transition.
+        failTransport(transport, needsReset: needsReset)
+        let buffer = base + 0x2_0000
+        try memory.write([UInt8](repeating: 0xA5, count: 2_048), at: buffer)
+        try installDescriptor(index: 0, address: buffer, length: 2_048,
+            flags: 2, next: 0, layout: queue, memory: memory)
+        try publishAvailableHeads([0], layout: queue, memory: memory)
+        device.handleKick(queue: 0, transport: transport)
+        device.synchronizeReceiveQueueForTesting()
+        #expect(try transport.queues[0].pendingCount() == 1)
+        #expect(try memory.read(UInt16.self, at: queue.used + 2) == 0)
+        #expect(try memory.readBytes(at: buffer, count: 2_048) == [UInt8](repeating: 0xA5, count: 2_048))
+        #expect(device.statistics.receivePackets == receivedBeforeTerminal.receivePackets)
+        #expect(device.statistics.receiveBytes == receivedBeforeTerminal.receiveBytes)
+        transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(device.deferredReceiveResourceSnapshotForTesting.frames == 0)
+        try configureQueue(transport.queues[0], layout: queue, size: 8, memory: memory)
+        try publishAvailableHeads([0], layout: queue, memory: memory)
+        activateDevice(device, transport: transport)
+        let successor = ethernetFrame(marker: 0x63, count: 64)
+        try sendDatagram(successor, from: proxyFD, to: paths.device)
+        #expect(waitUntil { (try? memory.read(UInt16.self, at: queue.used + 2)) == 1 })
+        let length = Int(try memory.read(UInt32.self, at: queue.used + 8))
+        #expect(Array(try memory.readBytes(at: buffer, count: length).dropFirst(12)) == successor)
+    }
+
+    private func failTransport(_ transport: VirtioMMIOTransport, needsReset: Bool) {
+        if needsReset { transport.requestDeviceReset() }
+        else { transport.write(offset: 0x070, value: 0x80, width: 4) }
+        let accepts = transport.withQueueLock { transport.acceptsQueueWork }
+        #expect(!accepts)
+    }
+
     @Test func requiredMTUsProduceExactEthernetContracts() throws {
         let paths = try makeSocketPaths("mtu")
         defer { try? FileManager.default.removeItem(atPath: paths.directory) }
@@ -87,6 +220,7 @@ import Testing
             used: guestBase + 0x1_4000
         )
         try configureQueue(transport.queues[1], layout: queue, size: 16, memory: memory)
+        activateDevice(device, transport: transport)
 
         // A half-megabyte readable chain is valid guest memory but exceeds the protocol ceiling.
         // The backend must classify it from readableByteCount without copying it.
@@ -276,7 +410,7 @@ import Testing
         try installDescriptor(index: 1, address: tooSmall, length: 20, flags: 2, next: 0,
                               layout: queue, memory: memory)
         try publishAvailableHeads([0, 1], layout: queue, memory: memory)
-        device.deviceReady(transport: transport)
+        activateDevice(device, transport: transport)
 
         let frame = ethernetFrame(marker: 0x52, count: 64)
         try sendDatagram(frame, from: proxyFD, to: paths.device)
@@ -342,7 +476,7 @@ import Testing
             backend: device,
             memory: memory
         ) {}
-        device.deviceReady(transport: transport)
+        activateDevice(device, transport: transport)
 
         try sendDatagram([UInt8](repeating: 0xAB, count: 1_500), from: proxyFD, to: paths.device)
         #expect(waitUntil { device.statistics.receiveTruncations == 1 })
@@ -384,7 +518,7 @@ import Testing
                 used: guestBase + 0x1_2000
             )
             try configureQueue(transport.queues[0], layout: queue, size: 8, memory: memory)
-            device.deviceReady(transport: transport)
+            activateDevice(device, transport: transport)
 
             let frames = (0..<3).map { ethernetFrame(marker: UInt8(0x60 + $0), count: 64) }
             for frame in frames {
@@ -443,7 +577,7 @@ import Testing
                 used: 0xE100_0000 + 0x1_2000
             )
             try configureQueue(transport.queues[0], layout: queue, size: 8, memory: memory)
-            device.deviceReady(transport: transport)
+            activateDevice(device, transport: transport)
             try sendDatagram(ethernetFrame(marker: 1, count: 64), from: proxyFD, to: paths.device)
             try sendDatagram(ethernetFrame(marker: 2, count: 64), from: proxyFD, to: paths.device)
             #expect(waitUntil { device.statistics.receiveBacklogDrops == 1 })
@@ -476,7 +610,7 @@ import Testing
             used: guestBase + 0x1_2000
         )
         try configureQueue(transport.queues[0], layout: queue, size: 8, memory: memory)
-        device.deviceReady(transport: transport)
+        activateDevice(device, transport: transport)
 
         let oldFrame = ethernetFrame(marker: 0x11, count: 64)
         try sendDatagram(oldFrame, from: proxyFD, to: paths.device)
@@ -493,7 +627,7 @@ import Testing
         try installDescriptor(index: 0, address: guestBase + 0x2_0000, length: 2_048,
                               flags: 2, next: 0, layout: queue, memory: memory)
         try publishAvailableHeads([0], layout: queue, memory: memory)
-        device.deviceReady(transport: transport)
+        activateDevice(device, transport: transport)
         let newFrame = ethernetFrame(marker: 0x33, count: 64)
         try sendDatagram(newFrame, from: proxyFD, to: paths.device)
         #expect(waitUntil { (try? memory.read(UInt16.self, at: queue.used + 2)) == 1 })
@@ -533,7 +667,7 @@ import Testing
             used: guestBase + 0x1_2000
         )
         try configureQueue(transport.queues[0], layout: queue, size: 8, memory: memory)
-        device.deviceReady(transport: transport)
+        activateDevice(device, transport: transport)
 
         let oldFrame = ethernetFrame(marker: 0x41, count: 64)
         try sendDatagram(oldFrame, from: proxyFD, to: paths.device)
@@ -622,7 +756,7 @@ import Testing
                 to: paths.device
             )
         }
-        device.deviceReady(transport: transport)
+        activateDevice(device, transport: transport)
 
         #expect(waitUntil {
             device.statistics.receiveInactiveDrops == 3
@@ -676,7 +810,7 @@ import Testing
             )
         }
 
-        device.deviceReady(transport: transport)
+        activateDevice(device, transport: transport)
 
         #expect(waitUntil { device.isReceiveTerminalForTesting })
         #expect(device.statistics.receiveActivationFailures == 1)
@@ -701,7 +835,7 @@ import Testing
             backend: device,
             memory: memory
         ) {}
-        device.deviceReady(transport: transport)
+        activateDevice(device, transport: transport)
 
         device.handleSocketReceiveFailure(EIO)
         #expect(device.isReceiveTerminalForTesting)
@@ -710,7 +844,7 @@ import Testing
 
         // A queued late callback or an attempted second DRIVER_OK cannot spin or double-account.
         device.handleSocketReceiveFailure(EBADF)
-        device.deviceReady(transport: transport)
+        activateDevice(device, transport: transport)
         #expect(device.statistics.receiveSocketErrors == 1)
         #expect(device.deferredReceiveResourceSnapshotForTesting.frames == 0)
     }
@@ -828,7 +962,7 @@ import Testing
             backend: device!,
             memory: memory
         ) {}
-        device?.deviceReady(transport: transport!)
+        activateDevice(device!, transport: transport!)
 
         #expect(unlink(paths.device) == 0)
         let replacementFD = try bindUnixDatagram(path: paths.device)
@@ -861,7 +995,7 @@ import Testing
             backend: device!,
             memory: memory
         ) {}
-        device?.deviceReady(transport: transport!)
+        activateDevice(device!, transport: transport!)
         device?.synchronizeReceiveQueueForTesting()
         weak let weakDevice = device
 
@@ -1083,6 +1217,23 @@ import Testing
         try memory.write(UInt16(0), at: layout.available)
         try memory.write(UInt16(0), at: layout.available + 2)
         try memory.write(UInt16(0), at: layout.used + 2)
+    }
+
+    private func activateDevice(_ device: VirtioNet, transport: VirtioMMIOTransport) {
+        if transport.withQueueLock({ transport.acceptsQueueWork }) {
+            device.deviceReady(transport: transport)
+            return
+        }
+        negotiateQueueWork(transport)
+    }
+
+    private func negotiateQueueWork(_ transport: VirtioMMIOTransport) {
+        transport.write(offset: 0x070, value: 1, width: 4)
+        transport.write(offset: 0x070, value: 3, width: 4)
+        transport.write(offset: 0x024, value: 1, width: 4)
+        transport.write(offset: 0x020, value: 1, width: 4) // VERSION_1
+        transport.write(offset: 0x070, value: 0x0B, width: 4)
+        transport.write(offset: 0x070, value: 0x0F, width: 4)
     }
 
     private func installDescriptor(

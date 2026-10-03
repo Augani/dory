@@ -137,6 +137,8 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
   public let maximumPendingEvents: Int
 
   private let lock = NSLock()
+  // Serialize guest-memory publication, independently of host input admission/revocation.
+  private let publicationLock = NSLock()
   private weak var statusSink: (any DoryVirtioInputStatusSink)?
   private var pendingEvents: [DoryVirtioInputEvent] = []
   private var eventReadySink: (@Sendable () -> Void)?
@@ -145,6 +147,13 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
   // batch is successfully enqueued. Used to synthesize deterministic release
   // events on host focus loss so the guest cannot be left with a stuck key.
   private var pressedKeys: Set<UInt16> = []
+  // Cleanup has its own bounded key ledger, not a competing normal-event queue allocation.
+  // Revoke unconsumed events, then publish releases and SYN before accepting new input.
+  private var pendingReleaseCodes: [UInt16] = []
+  private var pendingReleaseSynchronize = false
+  private var publishedKeys: Set<UInt16> = []
+  private var inFlightPress: UInt16?
+  private var eventInFlight = false
 
   public init(
     descriptor: DoryVirtioInputDescriptor,
@@ -167,15 +176,20 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
   }
 
   public var offeredFeatures: DoryVirtioFeatures { [] }
-  public var hasPendingEvent: Bool { lock.withLock { !pendingEvents.isEmpty } }
+  public var hasPendingEvent: Bool {
+    lock.withLock { !pendingEvents.isEmpty || !pendingReleaseCodes.isEmpty || pendingReleaseSynchronize }
+  }
   public var pendingEventCount: Int { lock.withLock { pendingEvents.count } }
+  public var pendingReleaseEventCount: Int {
+    lock.withLock { pendingReleaseCodes.count + (pendingReleaseSynchronize ? 1 : 0) }
+  }
   public var droppedEventCount: Int { lock.withLock { droppedEvents } }
   public var pressedKeyCount: Int { lock.withLock { pressedKeys.count } }
 
   public func connectEventReadySink(_ sink: @escaping @Sendable () -> Void) {
     let ready = lock.withLock {
       eventReadySink = sink
-      return !pendingEvents.isEmpty
+      return !pendingEvents.isEmpty || !pendingReleaseCodes.isEmpty || pendingReleaseSynchronize
     }
     if ready { sink() }
   }
@@ -184,7 +198,8 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
   public func enqueue(_ events: [DoryVirtioInputEvent]) -> Bool {
     guard !events.isEmpty else { return true }
     let delivery: (Bool, (@Sendable () -> Void)?) = lock.withLock {
-      guard events.count <= maximumPendingEvents - pendingEvents.count else {
+      guard pendingReleaseCodes.isEmpty, !pendingReleaseSynchronize,
+        events.count <= maximumPendingEvents - pendingEvents.count else {
         droppedEvents += events.count
         return (false, nil)
       }
@@ -240,6 +255,27 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
     return delivery.0
   }
 
+  /// Registers durable release debt even when the normal queue is full. A finite UInt16 key
+  /// ledger bounds cleanup independently of queue capacity; repeated requests cannot duplicate
+  /// it. Unconsumed events are revoked, and any already selected press is included. New input is rejected
+  /// until cleanup's final SYN, preventing an old release from erasing a successor's new press.
+  public func releaseAllPressedKeys() {
+    let sink = lock.withLock { () -> (@Sendable () -> Void)? in
+      var possible = Set(pendingReleaseCodes).union(publishedKeys)
+      if let inFlightPress { possible.insert(inFlightPress) }
+      if !possible.isEmpty || !pendingEvents.isEmpty || eventInFlight {
+        pendingReleaseCodes = possible.sorted()
+        pendingReleaseSynchronize = true
+      }
+      droppedEvents += pendingEvents.count
+      pendingEvents.removeAll(keepingCapacity: true)
+      pressedKeys.removeAll(keepingCapacity: true)
+      return !pendingEvents.isEmpty || !pendingReleaseCodes.isEmpty || pendingReleaseSynchronize
+        ? eventReadySink : nil
+    }
+    sink?()
+  }
+
   public func configuration(select: UInt8, subselect: UInt8) -> [UInt8] {
     var payload: [UInt8]
     switch select {
@@ -275,6 +311,8 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
     _ chain: DoryVirtioDescriptorChain,
     memory: any DoryVirtioGuestMemory
   ) throws -> UInt32 {
+    publicationLock.lock()
+    defer { publicationLock.unlock() }
     guard !chain.descriptors.isEmpty, chain.readableByteCount == 0,
       chain.descriptors.allSatisfy(\.deviceWillWrite)
     else { throw DoryVirtioInputError.invalidDescriptorDirection }
@@ -294,13 +332,35 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
         deviceWillWrite: true
       )
     }
-    guard let event = lock.withLock({ pendingEvents.first }) else {
+    let selection = lock.withLock { () -> (DoryVirtioInputEvent, Bool)? in
+      let selected: (DoryVirtioInputEvent, Bool)?
+      if let event = pendingEvents.first { selected = (event, false) }
+      else if let code = pendingReleaseCodes.first { selected = (.init(type: 1, code: code, value: 0), true) }
+      else { selected = pendingReleaseSynchronize ? (.synchronize, true) : nil }
+      if let (event, _) = selected {
+        eventInFlight = true
+        if event.type == 1, event.value > 0 { inFlightPress = event.code }
+      }
+      return selected
+    }
+    guard let (event, isRelease) = selection else {
       throw DoryVirtioInputError.noPendingEvent
     }
+    defer { lock.withLock { eventInFlight = false; inFlightPress = nil } }
     let bytes = eventBytes(event)
     try scatter(bytes, into: chain.descriptors, memory: memory)
     lock.withLock {
-      if pendingEvents.first == event { pendingEvents.removeFirst() }
+      if event.type == 1 {
+        if event.value == 0 { publishedKeys.remove(event.code) }
+        else { publishedKeys.insert(event.code) }
+      }
+      if isRelease {
+        if event == .synchronize {
+          pendingReleaseSynchronize = false
+        } else if pendingReleaseCodes.first == event.code {
+          pendingReleaseCodes.removeFirst()
+        }
+      } else if pendingEvents.first == event { pendingEvents.removeFirst() }
     }
     return UInt32(bytes.count)
   }
@@ -337,9 +397,14 @@ public final class DoryVirtioInputDevice: @unchecked Sendable {
   }
 
   public func reset() {
+    publicationLock.lock()
+    defer { publicationLock.unlock() }
     lock.withLock {
       pendingEvents.removeAll(keepingCapacity: true)
       pressedKeys.removeAll()
+      pendingReleaseCodes.removeAll(keepingCapacity: true)
+      pendingReleaseSynchronize = false
+      publishedKeys.removeAll(keepingCapacity: true)
     }
   }
 

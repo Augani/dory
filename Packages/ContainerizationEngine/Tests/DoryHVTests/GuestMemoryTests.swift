@@ -120,4 +120,88 @@ import Testing
             differentlySizedRegion.descriptor.fileDescriptor
         ))
     }
+
+    @Test func sharedRegionRetainsEveryOverlappingHostGranuleUntilItsLastCopyRetires() throws {
+        let base: UInt64 = 0x8400_0000
+        let (memory, unmaps) = try makeMockReclaimMemory(guestBase: base)
+        var region: GuestMemorySharedRegion? = try memory.duplicateSharedRegion(
+            at: base + HostPage.size - 8,
+            count: 16
+        )
+        #expect(region?.length == 16)
+        for page in [UInt64(0), 1] {
+            #expect(memory.releaseRange(
+                guestAddress: base + page * HostPage.size, length: HostPage.size
+            ) == .rejected)
+        }
+        #expect(unmaps.load() == 0)
+        #expect(memory.releaseRange(
+            guestAddress: base + 2 * HostPage.size, length: HostPage.size
+        ) == .reclaimed)
+
+        var retainedCopy = region
+        region = nil
+        try withExtendedLifetime(retainedCopy) {
+            #expect(retainedCopy?.offset == 2 * HostPage.size - 8)
+            // Closing transport alone is not proof that every guest-RAM consumer retired.
+            try retainedCopy?.descriptor.close()
+            for page in [UInt64(0), 1] {
+                #expect(memory.releaseRange(
+                    guestAddress: base + page * HostPage.size, length: HostPage.size
+                ) == .rejected)
+            }
+        }
+        retainedCopy = nil
+        for page in [UInt64(0), 1] {
+            #expect(memory.releaseRange(
+                guestAddress: base + page * HostPage.size, length: HostPage.size
+            ) == .reclaimed)
+        }
+        #expect(unmaps.load() == 3)
+    }
+
+    @Test func retiringOneSharedRegionCannotUnpinAnotherExportOfTheSameHostGranule() throws {
+        let base: UInt64 = 0x8500_0000
+        let (memory, unmaps) = try makeMockReclaimMemory(guestBase: base)
+        var first: GuestMemorySharedRegion? = try memory.duplicateSharedRegion(
+            at: base + HostPage.size + 16,
+            count: 32
+        )
+        var second: GuestMemorySharedRegion? = try memory.duplicateSharedRegion(
+            at: base + HostPage.size + 128,
+            count: 64
+        )
+        #expect(first?.length == 32)
+        #expect(second?.length == 64)
+        first = nil
+        withExtendedLifetime(second) {
+            #expect(memory.releaseRange(
+                guestAddress: base + HostPage.size, length: HostPage.size
+            ) == .rejected)
+        }
+        #expect(unmaps.load() == 0)
+        second = nil
+        #expect(memory.releaseRange(
+            guestAddress: base + HostPage.size, length: HostPage.size
+        ) == .reclaimed)
+        #expect(unmaps.load() == 1)
+    }
+
+    private func makeMockReclaimMemory(guestBase: UInt64) throws -> (GuestMemory, ByteCounter) {
+        let unmaps = ByteCounter()
+        let memory = try GuestMemory(
+            guestBase: guestBase,
+            size: 4 * HostPage.size,
+            reclaimOperations: GuestMemoryReclaimOperations(
+                unmap: { _, _ in
+                    unmaps.add(1)
+                    return true
+                },
+                map: { _, _, _ in true },
+                markReusable: { _, _ in true },
+                markInUse: { _, _ in true }
+            )
+        )
+        return (memory, unmaps)
+    }
 }

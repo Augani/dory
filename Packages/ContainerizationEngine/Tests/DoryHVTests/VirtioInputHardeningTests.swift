@@ -3,6 +3,16 @@ import Testing
 @testable import DoryHV
 
 @Suite(.serialized) struct VirtioInputHardeningTests {
+    private final class FocusPublicationGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var first = true
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        func waitOnce() {
+            let wait = lock.withLock { let value = first; first = false; return value }
+            if wait { entered.signal(); _ = resume.wait(timeout: .now() + 2) }
+        }
+    }
     private final class EventBox: @unchecked Sendable {
         private let lock = NSLock()
         private var storage = [VirtioInputEvent]()
@@ -217,6 +227,88 @@ import Testing
         #expect(try readEvent(at: buffers + 5 * 8, harness: harness) == .synchronize)
         #expect(harness.device.statistics.stateReconciliationEvents == 1)
         #expect(harness.device.statistics.publishedFrames == 3)
+    }
+
+    @Test func durableFocusCleanupRevokesFullQueueAndRejectedDesiredPresses() throws {
+        let harness = try makeHarness(profile: .keyboard, limits: .init(
+            maximumEventsPerFrame: 8, maximumPendingFrames: 1, maximumChainsPerWorkerTurn: 8
+        ))
+        let queue = harness.queues[0]
+        let buffers = harness.guestBase + 0x30_000
+        for index in UInt16(0)..<6 {
+            try installDescriptor(queue: queue, index: index,
+                address: buffers + UInt64(index) * 8, length: 8, flags: 2, next: 0, harness: harness)
+        }
+        harness.device.deviceReady(transport: harness.transport)
+        try publish([0, 1], queue: queue, startingAt: 0, harness: harness)
+        #expect(harness.device.submit(frame: [VirtioInputEvent(type: 1, code: 30, value: 1)]))
+        #expect(waitUntil { (try? usedIndex(queue: queue, harness: harness)) == 2 })
+        #expect(harness.device.submit(frame: [VirtioInputEvent(type: 1, code: 48, value: 1)]))
+        #expect(!harness.device.submit(frame: [VirtioInputEvent(type: 1, code: 46, value: 1)]))
+        harness.device.releaseAllPressedKeys()
+        harness.device.releaseAllPressedKeys()
+        // A successor must not overwrite the desired-empty cleanup target with the same key.
+        #expect(!harness.device.submit(frame: [VirtioInputEvent(type: 1, code: 30, value: 1)]))
+        #expect(harness.device.statistics.pendingFrameDepth == 0)
+        try publish([2, 3], queue: queue, startingAt: 2, harness: harness)
+        harness.device.handleKick(queue: 0, transport: harness.transport)
+        #expect(waitUntil { (try? usedIndex(queue: queue, harness: harness)) == 4 })
+        #expect(try readEvent(at: buffers + 2 * 8, harness: harness)
+            == VirtioInputEvent(type: 1, code: 30, value: 0))
+        #expect(try readEvent(at: buffers + 3 * 8, harness: harness) == .synchronize)
+        #expect(harness.device.statistics.stateReconciliationEvents == 1)
+        #expect(harness.device.submit(frame: [VirtioInputEvent(type: 1, code: 30, value: 1)]))
+        try publish([4, 5], queue: queue, startingAt: 4, harness: harness)
+        harness.device.handleKick(queue: 0, transport: harness.transport)
+        #expect(waitUntil { (try? usedIndex(queue: queue, harness: harness)) == 6 })
+        #expect(try readEvent(at: buffers + 4 * 8, harness: harness)
+            == VirtioInputEvent(type: 1, code: 30, value: 1))
+        #expect(harness.device.statistics.stateReconciliationEvents == 1)
+    }
+
+    @Test func durableCleanupAccountsForAnAlreadySelectedPublication() throws {
+        let gate = FocusPublicationGate()
+        let harness = try makeHarness(profile: .keyboard, limits: .init(
+            maximumEventsPerFrame: 8, maximumPendingFrames: 1, maximumChainsPerWorkerTurn: 8
+        ), workerHooks: VirtioInputWorkerHooks(beforeWorkerTurn: nil,
+            beforeEventPublication: { gate.waitOnce() }))
+        let queue = harness.queues[0]
+        let buffers = harness.guestBase + 0x30_000
+        for index in UInt16(0)..<4 {
+            try installDescriptor(queue: queue, index: index,
+                address: buffers + UInt64(index) * 8, length: 8, flags: 2, next: 0, harness: harness)
+        }
+        try publish([0, 1, 2, 3], queue: queue, startingAt: 0, harness: harness)
+        harness.device.deviceReady(transport: harness.transport)
+        #expect(harness.device.submit(frame: [VirtioInputEvent(type: 1, code: 30, value: 1)]))
+        #expect(gate.entered.wait(timeout: .now() + 1) == .success)
+        harness.device.releaseAllPressedKeys()
+        #expect(!harness.device.submit(frame: [VirtioInputEvent(type: 1, code: 30, value: 1)]))
+        gate.resume.signal()
+        #expect(waitUntil { (try? usedIndex(queue: queue, harness: harness)) == 4 })
+        #expect(try readEvent(at: buffers, harness: harness)
+            == VirtioInputEvent(type: 1, code: 30, value: 1))
+        #expect(try readEvent(at: buffers + 2 * 8, harness: harness)
+            == VirtioInputEvent(type: 1, code: 30, value: 0))
+        #expect(try readEvent(at: buffers + 3 * 8, harness: harness) == .synchronize)
+        #expect(harness.device.submit(frame: [VirtioInputEvent(type: 1, code: 30, value: 1)]))
+    }
+
+    @Test func emptyFocusCleanupStillDrainsItsSYNBarrierBeforeSuccessorInput() throws {
+        let harness = try makeHarness(profile: .keyboard, limits: .init(
+            maximumEventsPerFrame: 8, maximumPendingFrames: 1, maximumChainsPerWorkerTurn: 8
+        ))
+        let queue = harness.queues[0]
+        let buffers = harness.guestBase + 0x30_000
+        try installDescriptor(queue: queue, index: 0, address: buffers,
+            length: 8, flags: 2, next: 0, harness: harness)
+        harness.device.releaseAllPressedKeys()
+        #expect(!harness.device.submit(frame: [VirtioInputEvent(type: 1, code: 30, value: 1)]))
+        try publish([0], queue: queue, startingAt: 0, harness: harness)
+        harness.device.deviceReady(transport: harness.transport)
+        #expect(waitUntil { (try? usedIndex(queue: queue, harness: harness)) == 1 })
+        #expect(try readEvent(at: buffers, harness: harness) == .synchronize)
+        #expect(harness.device.submit(frame: [VirtioInputEvent(type: 1, code: 30, value: 1)]))
     }
 
     @Test func oversizedOrUnsupportedHostFramesAreRejectedAsWholeFrames() throws {
@@ -588,6 +680,46 @@ import Testing
         #expect(harness.device.statistics.publishedFrames == 0)
     }
 
+    @Test(arguments: [false, true], [0, 1])
+    func terminalStatusRejectsTheActualQueuedInputWorker(failed: Bool, queueIndex: Int) throws {
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        let events = EventBox()
+        let harness = try makeHarness(profile: .keyboard,
+            limits: .init(maximumEventsPerFrame: 8, maximumPendingFrames: 8,
+                maximumChainsPerWorkerTurn: 8),
+            statusHandler: { events.append($0) },
+            workerHooks: .init(beforeWorkerTurn: {
+                entered.signal(); _ = resume.wait(timeout: .now() + 2)
+            }, beforeEventPublication: nil))
+        defer { resume.signal() }
+        let queue = harness.queues[queueIndex]
+        let buffer = harness.guestBase + 0x30_000
+        let sentinel: [UInt8] = queueIndex == 0
+            ? Array(repeating: 0xA5, count: 8)
+            : [17, 0, 0, 0, 1, 0, 0, 0]
+        try harness.memory.write(sentinel, at: buffer)
+        try installDescriptor(queue: queue, index: 0, address: buffer, length: 8,
+            flags: queueIndex == 0 ? 2 : 0, next: 0, harness: harness)
+        try publish([0], queue: queue, startingAt: 0, harness: harness)
+        harness.device.handleKick(queue: queueIndex, transport: harness.transport)
+        #expect(entered.wait(timeout: .now() + 1) == .success)
+        harness.device.send(frame: [VirtioInputEvent(type: 1, code: 30, value: 1)])
+        if failed { harness.transport.write(offset: 0x070, value: 0x80, width: 4) }
+        else { harness.transport.requestDeviceReset() }
+        resume.signal()
+        #expect(waitUntil { harness.device.statistics.revokedWorkerTurns > 0 })
+        harness.device.handleKick(queue: queueIndex, transport: harness.transport)
+        #expect(try usedIndex(queue: queue, harness: harness) == 0)
+        #expect(try harness.memory.readBytes(at: buffer, count: 8) == sentinel)
+        #expect(events.values.isEmpty)
+        #expect(harness.device.statistics.availableEventBufferDepth == 0)
+        #expect(harness.device.statistics.publishedFrames == 0)
+        #expect(harness.transport.statistics.usedInterrupts == 0)
+        harness.transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(harness.transport.read(offset: 0x070, width: 4) == 0)
+    }
+
     private func makeHarness(
         profile: VirtioInput.Profile,
         limits: VirtioInputLimits,
@@ -630,7 +762,7 @@ import Testing
             try memory.write(UInt16(0), at: queue.available + 2)
             try memory.write(UInt16(0), at: queue.used + 2)
         }
-        device.deviceReady(transport: transport)
+        finishMMIOTestDriverNegotiation(transport)
         return Harness(
             guestBase: guestBase,
             memory: memory,

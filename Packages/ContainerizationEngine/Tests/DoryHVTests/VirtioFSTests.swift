@@ -234,6 +234,136 @@ struct VirtioFSTests {
         #expect(await harness.broker.snapshot().state == .invalidated)
     }
 
+    @Test(arguments: [false, true], [false, true])
+    func terminalTransportStatusRejectsUnlockedAndDirectRequestAdmission(
+        failed: Bool, mmioDoorbell: Bool
+    ) async throws {
+        let harness = try VirtioFSNotificationHarness()
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+        if failed {
+            harness.transport.write(offset: 0x070, value: 0x80, width: 4)
+        } else {
+            harness.transport.requestDeviceReset()
+        }
+        let pending = try harness.enqueueFuseRequest(
+            makeFuseRequest(opcode: .statfs, unique: 410), queue: 1, kick: false)
+        // Direct kicks model a previously dispatched doorbell or an asynchronous self-redrain:
+        // neither gets to treat the still-ready ring as a fresh operational admission.
+        for _ in 0..<2 {
+            if mmioDoorbell {
+                harness.transport.write(offset: 0x050, value: 1, width: 4)
+            } else {
+                harness.fs.handleKick(queue: 1, transport: harness.transport)
+            }
+            harness.transport.write(offset: 0x070, value: 0x0F, width: 4)
+        }
+        #expect(harness.transport.read(offset: 0x070, width: 4) == (failed ? 0x8F : 0x4F))
+        #expect(harness.fs.frontendStatistics.executedRequests == 0)
+        #expect(harness.broker.workspaceAdmissionSnapshot.inFlightRequests == 0)
+        #expect(harness.transport.withQueueLock { try? harness.transport.queues[1].pendingCount() } == 1)
+        #expect(try harness.usedIndex(queue: 1) == 0)
+        #expect(try harness.responseLength(pending) == 0)
+
+        // An established FS connection is fail-stop across status zero, unlike an entropy device.
+        // Rebuilding the old ring cannot resurrect its one-shot worker; only a fresh backend can.
+        harness.transport.write(offset: 0x070, value: 0, width: 4)
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+        #expect(await eventually { await harness.broker.snapshot().state == .invalidated })
+        #expect(try harness.usedIndex(queue: 1) == 0)
+        let successor = try VirtioFSNotificationHarness()
+        try successor.configureQueue(1)
+        successor.setDriverReady(notifications: false)
+        let response = try successor.enqueueFuseRequest(
+            makeFuseRequest(opcode: .statfs, unique: 411), queue: 1)
+        #expect(try FuseProtocol.decodeOutHeader(successor.waitForFuseResponse(response)).unique == 411)
+    }
+
+    @Test(arguments: [false, true])
+    func terminalTransportStatusDiscardsHeldResponseAndReleasesRequestDebt(failed: Bool) async throws {
+        let harness = try VirtioFSNotificationHarness()
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+        let encoded = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        harness.fs.responseFenceTestHook = { header, _ in
+            guard header.unique == 412 else { return }
+            encoded.signal()
+            _ = release.wait(timeout: .now() + 5)
+        }
+        defer {
+            harness.fs.responseFenceTestHook = nil
+            release.signal()
+        }
+        let pending = try harness.enqueueFuseRequest(
+            makeFuseRequest(opcode: .statfs, unique: 412), queue: 1)
+        try #require(await semaphoreSignals(encoded))
+        if failed {
+            harness.transport.write(offset: 0x070, value: 0x80, width: 4)
+        } else {
+            harness.transport.requestDeviceReset()
+        }
+        release.signal()
+        #expect(await eventually {
+            let brokerSnapshot = await harness.broker.snapshot()
+            return harness.fs.performanceStatistics.inFlightRequests == 0
+                && harness.broker.workspaceAdmissionSnapshot.inFlightRequests == 0
+                && brokerSnapshot.pendingPublications == 0
+        })
+        // Completion counts successful guest publication, not a host reply discarded at admission.
+        #expect(harness.fs.performanceStatistics.completedRequests == 0)
+        #expect(harness.fs.performanceStatistics.failedRequests == 1)
+        #expect(try harness.usedIndex(queue: 1) == 0)
+        #expect(try harness.responseLength(pending) == 0)
+    }
+
+    @Test(arguments: [false, true])
+    func terminalTransportStatusRejectsDeferredCapacityWakeWithoutLeakingItsLease(failed: Bool) async throws {
+        let harness = try VirtioFSNotificationHarness(
+            requestQueueCount: 2,
+            shareResourceLimits: fsShareResourceLimits(maximumInFlightRequests: 1))
+        try harness.configureQueue(1)
+        try harness.configureQueue(2)
+        harness.setDriverReady(notifications: false)
+        let encoded = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        harness.fs.responseFenceTestHook = { header, _ in
+            guard header.unique == 413 else { return }
+            encoded.signal()
+            _ = release.wait(timeout: .now() + 5)
+        }
+        defer {
+            harness.fs.responseFenceTestHook = nil
+            release.signal()
+        }
+        let first = try harness.enqueueFuseRequest(
+            makeFuseRequest(opcode: .statfs, unique: 413), queue: 1)
+        try #require(await semaphoreSignals(encoded))
+        let deferred = try harness.enqueueFuseRequest(
+            makeFuseRequest(opcode: .statfs, unique: 414), queue: 2)
+        try #require(harness.fs.capacityDeferredRequestQueueSnapshot == Set([2]))
+        try #require(harness.broker.workspaceAdmissionSnapshot.inFlightRequests == 1)
+        if failed {
+            harness.transport.write(offset: 0x070, value: 0x80, width: 4)
+        } else {
+            harness.transport.requestDeviceReset()
+        }
+        release.signal()
+        #expect(await eventually {
+            harness.fs.performanceStatistics.inFlightRequests == 0
+                && harness.broker.workspaceAdmissionSnapshot.inFlightRequests == 0
+                && harness.fs.capacityDeferredRequestQueueSnapshot.isEmpty
+        })
+        #expect(harness.fs.frontendStatistics.executedRequests == 1)
+        #expect(harness.broker.workspaceAdmissionSnapshot.deferredWaiters == 0)
+        #expect(harness.transport.withQueueLock { try? harness.transport.queues[2].pendingCount() } == 1)
+        #expect(try harness.usedIndex(queue: 1) == 0)
+        #expect(try harness.usedIndex(queue: 2) == 0)
+        #expect(try harness.responseLength(first) == 0)
+        #expect(try harness.responseLength(deferred) == 0)
+    }
+
     @Test func notificationEncodersMatchFuseWireLayout() throws {
         let inode = try VirtioFSInvalidation.inode(
             nodeID: 0x0102_0304_0506_0708,

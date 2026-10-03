@@ -776,7 +776,13 @@ public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
         var wantsInterrupt = false
         var stoppedOnQueueFault = false
         defer {
-            if wantsInterrupt { transport.notifyUsed() }
+            if wantsInterrupt {
+                transport.withQueueLock {
+                    guard transport.acceptsQueueWork,
+                          isCurrentTransmitEpoch(generation, transport: transport) else { return }
+                    transport.notifyUsed()
+                }
+            }
         }
 
         while operations < limits.maximumTransmitOperationsPerTurn {
@@ -904,7 +910,8 @@ public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
         observedAt: UInt64
     ) -> TransmitPreparation {
         transport.withQueueLock {
-            guard isCurrentTransmitEpoch(generation, transport: transport) else { return .stale }
+            guard transport.acceptsQueueWork,
+                  isCurrentTransmitEpoch(generation, transport: transport) else { return .stale }
             let virtqueue = transport.queues[1]
             let depth: Int
             do {
@@ -1041,7 +1048,8 @@ public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
         transport: VirtioMMIOTransport
     ) -> TransmitFinalization {
         transport.withQueueLock {
-            guard isCurrentTransmitEpoch(generation, transport: transport) else { return .stale }
+            guard transport.acceptsQueueWork,
+                  isCurrentTransmitEpoch(generation, transport: transport) else { return .stale }
             let virtqueue = transport.queues[1]
             do {
                 guard let popped = try virtqueue.pop(), Self.sameChain(popped, expected) else {
@@ -1413,7 +1421,7 @@ public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
 
     private func deliver(_ frame: [UInt8], ready: ReadyTransport) -> DeliveryResult {
         ready.transport.withQueueLock {
-            guard isCurrent(ready) else { return .stale }
+            guard ready.transport.acceptsQueueWork, isCurrent(ready) else { return .stale }
             let virtqueue = ready.transport.queues[0]
             var wantsInterrupt = false
 
@@ -1505,7 +1513,7 @@ public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
     private func notifyUsedIfCurrent(_ wantsInterrupt: Bool, ready: ReadyTransport) {
         guard wantsInterrupt else { return }
         ready.transport.withQueueLock {
-            guard isCurrent(ready) else { return }
+            guard ready.transport.acceptsQueueWork, isCurrent(ready) else { return }
             ready.transport.notifyUsed()
         }
     }
@@ -2150,6 +2158,12 @@ public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
         transmitQueue.sync {}
     }
 
+    func withTransmitQueueSerializedForTesting<Result>(
+        _ body: () throws -> Result
+    ) rethrows -> Result {
+        try transmitQueue.sync(execute: body)
+    }
+
     @discardableResult
     func triggerTransmitRetryForTesting() -> Bool {
         guard let target = transmitState.withLock({ state in
@@ -2193,19 +2207,21 @@ public final class VirtioDisconnectedNet: VirtioDeviceBackend, @unchecked Sendab
     }
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
-        guard queue == 1 else { return }
-        let virtqueue = transport.queues[1]
-        var interrupt = false
-        while true {
-            do {
-                guard let chain = try virtqueue.pop() else { break }
-                interrupt = try virtqueue.push(chain, written: 0) || interrupt
-            } catch {
-                // A malformed disconnected TX queue cannot be completed safely; stop this drain
-                // instead of conflating the fault with an empty queue and walking later entries.
-                break
+        transport.withQueueLock {
+            guard transport.acceptsQueueWork, queue == 1 else { return }
+            let virtqueue = transport.queues[1]
+            var interrupt = false
+            while true {
+                do {
+                    guard let chain = try virtqueue.pop() else { break }
+                    interrupt = try virtqueue.push(chain, written: 0) || interrupt
+                } catch {
+                    // A malformed disconnected TX queue cannot be completed safely; stop this drain
+                    // instead of conflating the fault with an empty queue and walking later entries.
+                    break
+                }
             }
+            if interrupt { transport.notifyUsed() }
         }
-        if interrupt { transport.notifyUsed() }
     }
 }

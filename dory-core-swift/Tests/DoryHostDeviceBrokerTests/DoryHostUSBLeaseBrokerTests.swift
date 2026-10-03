@@ -109,6 +109,28 @@ import Testing
     #expect(broker.activeLeaseCount(machineID: "machine-c") == 0)
   }
 
+  @Test func physicalLeaseRejectsIsochronousTransfersWithoutHostIO() throws {
+    let token = identityToken("9")
+    let capability = RecordingCapability(identityToken: token)
+    let lease = try DoryHostUSBLeaseBroker().acquire(
+      machineID: "machine-iso",
+      identityToken: token,
+      family: .serialAdapter,
+      admission: .init(userSelected: true),
+      capability: capability
+    )
+    defer { lease.release() }
+    let transfer = try DoryPCUSBTransfer(
+      type: .isochronous,
+      direction: .in,
+      endpoint: 1,
+      maximumResponseBytes: 64
+    )
+
+    #expect(lease.perform(transfer).status == .stalled)
+    #expect(capability.transfers.isEmpty)
+  }
+
   @Test func resetFailureRevokesTheLease() throws {
     let token = identityToken("d")
     let capability = RecordingCapability(identityToken: token, resetResult: false)
@@ -145,6 +167,113 @@ import Testing
     lease.surpriseRemove()
     #expect(notifications.value == 1)
   }
+
+  @Test func revocationQuarantinesPhysicalLeaseUntilBlockedTransferReturns() throws {
+    let token = identityToken("f")
+    let capability = BlockingCapability(identityToken: token)
+    let broker = DoryHostUSBLeaseBroker(transferTimeout: .milliseconds(50))
+    let lease = try broker.acquire(
+      machineID: "machine-f", identityToken: token, family: .developerHardware,
+      admission: .init(userSelected: true), capability: capability
+    )
+    let transfer = try DoryPCUSBTransfer(
+      type: .bulk, direction: .in, endpoint: 1, maximumResponseBytes: 8
+    )
+    let finished = DispatchSemaphore(value: 0)
+    let result = LockedTransferResult()
+    DispatchQueue.global().async {
+      result.value = lease.perform(transfer)
+      finished.signal()
+    }
+    #expect(capability.entered.wait(timeout: .now() + 1) == .success)
+    lease.release()
+    #expect(!lease.isActive)
+    #expect(!lease.isRetired)
+    #expect(!lease.waitForRetirement(timeout: 0))
+    #expect(capability.closeCount == 0)
+    #expect(broker.activeLeaseOwner(for: token) == "machine-f")
+    #expect(throws: DoryHostUSBLeaseError.deviceBusy(ownerMachineID: "machine-f")) {
+      try broker.acquire(
+        machineID: "machine-g", identityToken: token, family: .developerHardware,
+        admission: .init(userSelected: true), capability: capability
+      )
+    }
+    capability.release.signal()
+    #expect(finished.wait(timeout: .now() + 1) == .success)
+    #expect(result.value?.status == .disconnected)
+    #expect(capability.closeCount == 1)
+    #expect(lease.waitForRetirement(timeout: 0))
+    #expect(broker.activeLeaseOwner(for: token) == nil)
+  }
+
+  @Test func revocationWaitsForInFlightPlatformResetBeforeClosing() throws {
+    let token = identityToken("b")
+    let capability = BlockingCapability(identityToken: token, blockReset: true)
+    let broker = DoryHostUSBLeaseBroker()
+    let lease = try broker.acquire(
+      machineID: "machine-g", identityToken: token, family: .serialAdapter,
+      admission: .init(userSelected: true), capability: capability
+    )
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      lease.reset()
+      finished.signal()
+    }
+    #expect(capability.resetEntered.wait(timeout: .now() + 1) == .success)
+    lease.release()
+    #expect(!lease.isRetired)
+    #expect(capability.closeCount == 0)
+    #expect(broker.activeLeaseOwner(for: token) == "machine-g")
+    capability.releaseReset.signal()
+    #expect(finished.wait(timeout: .now() + 1) == .success)
+    #expect(capability.closeCount == 1)
+    #expect(lease.isRetired)
+    #expect(broker.activeLeaseOwner(for: token) == nil)
+  }
+}
+
+private final class LockedTransferResult: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage: DoryPCUSBTransferResult?
+  var value: DoryPCUSBTransferResult? {
+    get { lock.withLock { storage } }
+    set { lock.withLock { storage = newValue } }
+  }
+}
+
+private final class BlockingCapability: DoryHostUSBTransferCapability, @unchecked Sendable {
+  let identityToken: DoryUSBPhysicalIdentityToken
+  let speed: DoryPCXHCIPortSpeed = .high
+  let entered = DispatchSemaphore(value: 0)
+  let release = DispatchSemaphore(value: 0)
+  let resetEntered = DispatchSemaphore(value: 0)
+  let releaseReset = DispatchSemaphore(value: 0)
+  private let blockReset: Bool
+  private let lock = NSLock()
+  private var closes = 0
+
+  init(identityToken: DoryUSBPhysicalIdentityToken, blockReset: Bool = false) {
+    self.identityToken = identityToken
+    self.blockReset = blockReset
+  }
+  var closeCount: Int { lock.withLock { closes } }
+
+  func perform(
+    _ transfer: DoryPCUSBTransfer, deadline: ContinuousClock.Instant
+  ) -> DoryPCUSBTransferResult {
+    entered.signal()
+    _ = release.wait(timeout: .now() + 2)
+    return try! .init(status: .success)
+  }
+  func reset(deadline: ContinuousClock.Instant) -> Bool {
+    if blockReset {
+      resetEntered.signal()
+      _ = releaseReset.wait(timeout: .now() + 2)
+    }
+    return true
+  }
+  func cancelAll() {}
+  func close() { lock.withLock { closes += 1 } }
 }
 
 private final class LockedCounter: @unchecked Sendable {

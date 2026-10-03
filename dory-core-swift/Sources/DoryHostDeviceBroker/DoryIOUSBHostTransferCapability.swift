@@ -63,11 +63,14 @@ public final class DoryIOUSBHostTransferCapability: DoryHostUSBTransferCapabilit
   public let speed: DoryPCXHCIPortSpeed
 
   private let stateLock = NSLock()
-  private let operationLock = NSLock()
+  private let operationGate = DispatchSemaphore(value: 1)
+  private let revocationQueue = DispatchQueue(label: "com.dory.host-usb.revocation")
   private let reopener: Reopener?
   private var backend: (any DoryIOUSBHostOperating)?
   private var backendGeneration = UUID()
   private var resetting = false
+  private var closed = false
+  private var revoked = false
   private var revocationHandler: (@Sendable () -> Void)?
 
   init(
@@ -84,25 +87,31 @@ public final class DoryIOUSBHostTransferCapability: DoryHostUSBTransferCapabilit
   }
 
   public func setRevocationHandler(_ handler: (@Sendable () -> Void)?) {
-    stateLock.withLock { revocationHandler = handler }
+    let notify = stateLock.withLock { () -> Bool in
+      revocationHandler = closed || revoked ? nil : handler
+      return (closed || revoked) && handler != nil
+    }
+    if notify, let handler { deliverRevocation(handler) }
   }
 
   public func perform(
     _ transfer: DoryPCUSBTransfer,
     deadline: ContinuousClock.Instant
   ) -> DoryPCUSBTransferResult {
-    operationLock.lock()
-    defer { operationLock.unlock() }
-    guard ContinuousClock.now < deadline, let backend = currentBackend(), backend.connected else {
-      return result(
-        backend == nil || !(backend?.connected ?? false) ? .disconnected : .transactionError)
+    guard acquireOperation(before: deadline) else {
+      return result(currentBackend() == nil ? .disconnected : .transactionError)
     }
+    defer { operationGate.signal() }
+    guard let backend = currentBackend(), backend.connected else { return result(.disconnected) }
 
     do {
       let completion: DoryIOUSBHostCompletion
       if transfer.type == .control {
         guard let setup = transfer.setup else { return result(.transactionError) }
         if try performStandardControlSideEffect(setup, backend: backend, deadline: deadline) {
+          guard completionIsCurrent(backend, deadline: deadline) else {
+            return result(currentBackend() == nil || !backend.connected ? .disconnected : .transactionError)
+          }
           return result(.success)
         }
         completion = try backend.sendControl(
@@ -138,22 +147,30 @@ public final class DoryIOUSBHostTransferCapability: DoryHostUSBTransferCapabilit
           transfer.direction == .in ? transfer.maximumResponseBytes : transfer.payload.count
       }
       let payload = transfer.direction == .in ? completion.payload : []
+      guard completionIsCurrent(backend, deadline: deadline) else {
+        return result(currentBackend() == nil || !backend.connected ? .disconnected : .transactionError)
+      }
       return result(
         completion.bytesTransferred < expected ? .shortPacket : .success,
         payload: payload
       )
     } catch let error as DoryIOUSBHostOperationError {
-      return result(Self.status(for: error))
+      return result(currentBackend() == nil || !backend.connected ? .disconnected : Self.status(for: error))
     } catch {
-      return result(.transactionError)
+      return result(currentBackend() == nil || !backend.connected ? .disconnected : .transactionError)
     }
   }
 
   public func reset(deadline: ContinuousClock.Instant) -> Bool {
-    operationLock.lock()
-    defer { operationLock.unlock() }
-    guard ContinuousClock.now < deadline, let oldBackend = currentBackend() else { return false }
-    stateLock.withLock { resetting = true }
+    guard acquireOperation(before: deadline) else { return false }
+    defer { operationGate.signal() }
+    guard let oldBackend = currentBackend() else { return false }
+    let admitted = stateLock.withLock { () -> Bool in
+      guard !closed, !revoked, backend === oldBackend else { return false }
+      resetting = true
+      return true
+    }
+    guard admitted else { return false }
     defer { stateLock.withLock { resetting = false } }
     do {
       try oldBackend.reset(deadline: deadline)
@@ -161,28 +178,50 @@ public final class DoryIOUSBHostTransferCapability: DoryHostUSBTransferCapabilit
       revokeBackend(oldBackend)
       return false
     }
+    guard ContinuousClock.now < deadline,
+      stateLock.withLock({ !closed && !revoked && backend === oldBackend }) else { return false }
     guard let reopener else { return oldBackend.connected }
+    // Transfer the old handle to this reset before closing it. A concurrent terminal close
+    // revokes admission immediately but must not close the same platform handle a second time.
+    let ownsOldBackend = stateLock.withLock { () -> Bool in
+      guard !closed, !revoked, backend === oldBackend else { return false }
+      backend = nil
+      backendGeneration = UUID()
+      return true
+    }
+    guard ownsOldBackend else { return false }
     oldBackend.setDisconnectHandler(nil)
     oldBackend.close()
     guard ContinuousClock.now < deadline, let replacement = reopener(deadline) else {
-      stateLock.withLock { backend = nil }
       return false
     }
     let generation = UUID()
-    stateLock.withLock {
+    let installed = stateLock.withLock { () -> Bool in
+      guard !closed, !revoked, ContinuousClock.now < deadline else { return false }
       backend = replacement
       backendGeneration = generation
+      resetting = false
+      return true
+    }
+    guard installed else {
+      replacement.setDisconnectHandler(nil)
+      replacement.abortAll()
+      replacement.close()
+      return false
     }
     installDisconnectHandler(on: replacement, generation: generation)
-    return replacement.connected
+    return completionIsCurrent(replacement, deadline: deadline)
   }
 
   public func cancelAll() {
-    currentBackend()?.abortAll()
+    // Revocation removes admission, not ownership of an outstanding platform call. Keep
+    // cancellation available until close takes that retained handle for final retirement.
+    stateLock.withLock { backend }?.abortAll()
   }
 
   public func close() {
     let old = stateLock.withLock { () -> (any DoryIOUSBHostOperating)? in
+      closed = true
       let value = backend
       backend = nil
       revocationHandler = nil
@@ -190,7 +229,9 @@ public final class DoryIOUSBHostTransferCapability: DoryHostUSBTransferCapabilit
     }
     old?.setDisconnectHandler(nil)
     old?.abortAll()
-    operationLock.withLock { old?.close() }
+    operationGate.wait()
+    old?.close()
+    operationGate.signal()
   }
 
   private func performStandardControlSideEffect(
@@ -222,7 +263,35 @@ public final class DoryIOUSBHostTransferCapability: DoryHostUSBTransferCapabilit
   }
 
   private func currentBackend() -> (any DoryIOUSBHostOperating)? {
-    stateLock.withLock { backend }
+    stateLock.withLock { !closed && !revoked ? backend : nil }
+  }
+
+  /// Waiting behind another platform call must consume this request's original deadline,
+  /// rather than extending it by an unbounded lock acquisition. Terminal close still joins
+  /// without a deadline so an unresponsive handle remains quarantined from another VM.
+  private func acquireOperation(before deadline: ContinuousClock.Instant) -> Bool {
+    while ContinuousClock.now < deadline {
+      let remaining = ContinuousClock.now.duration(to: deadline)
+      let slice = min(remaining, .milliseconds(50))
+      let parts = slice.components
+      let nanoseconds = max(0, Int(parts.seconds * 1_000_000_000 + parts.attoseconds / 1_000_000_000))
+      if operationGate.wait(timeout: .now() + .nanoseconds(nanoseconds)) == .success {
+        guard ContinuousClock.now < deadline else {
+          operationGate.signal()
+          return false
+        }
+        return true
+      }
+    }
+    return false
+  }
+
+  private func completionIsCurrent(
+    _ candidate: any DoryIOUSBHostOperating,
+    deadline: ContinuousClock.Instant
+  ) -> Bool {
+    ContinuousClock.now < deadline && candidate.connected
+      && stateLock.withLock { !closed && !revoked && backend === candidate }
   }
 
   private func installDisconnectHandler(
@@ -235,19 +304,38 @@ public final class DoryIOUSBHostTransferCapability: DoryHostUSBTransferCapabilit
 
   private func backendDisconnected(generation: UUID) {
     let handler = stateLock.withLock { () -> (@Sendable () -> Void)? in
-      guard backendGeneration == generation, !resetting, backend != nil else { return nil }
-      return revocationHandler
+      guard backendGeneration == generation, !resetting, backend != nil,
+        !closed, !revoked else { return nil }
+      revoked = true
+      let handler = revocationHandler
+      revocationHandler = nil
+      return handler
     }
-    handler?()
+    if let handler { deliverRevocation(handler) }
+  }
+
+  private func deliverRevocation(_ handler: @escaping @Sendable () -> Void) {
+    // A platform transport may report disconnect synchronously inside sendData. Its callback
+    // must be able to close this capability without recursively waiting on its own operation.
+    if operationGate.wait(timeout: .now()) == .success {
+      operationGate.signal()
+      handler()
+    } else {
+      revocationQueue.async(execute: handler)
+    }
   }
 
   private func revokeBackend(_ candidate: any DoryIOUSBHostOperating) {
+    let ownsBackend = stateLock.withLock { () -> Bool in
+      guard backend === candidate else { return false }
+      backend = nil
+      backendGeneration = UUID()
+      return true
+    }
+    guard ownsBackend else { return }
     candidate.setDisconnectHandler(nil)
     candidate.abortAll()
     candidate.close()
-    stateLock.withLock {
-      if backend === candidate { backend = nil }
-    }
   }
 
   private static func status(for error: DoryIOUSBHostOperationError) -> DoryPCUSBTransferStatus {

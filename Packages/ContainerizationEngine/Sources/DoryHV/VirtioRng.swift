@@ -91,8 +91,8 @@ public final class VirtioRng: VirtioDeviceBackend, @unchecked Sendable {
     private let monotonicNanoseconds: @Sendable () -> UInt64
     private let workerStateLock = NSLock()
     // Reset and QueueReady callbacks hold the transport lock before entering this fence. A worker
-    // never takes the transport lock while holding it. Thus an in-flight entropy fill and its one
-    // lease-held guest write finish before lifecycle revocation, without a lock-order cycle.
+    // never takes the transport lock while holding it. An in-flight entropy fill therefore joins
+    // reset, but its host-owned snapshot is copied only after a fresh locked publication admission.
     private let lifecycleFence = NSLock()
     private var workerState = WorkerState()
     private let completedRequests = Atomic<UInt64>(0)
@@ -137,30 +137,33 @@ public final class VirtioRng: VirtioDeviceBackend, @unchecked Sendable {
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
         guard queue == 0, transport.queues.indices.contains(queue) else { return }
-        let generation = workerStateLock.withLock { () -> UInt64? in
-            if let reference = workerState.transport {
-                if let existing = reference.value {
-                    guard existing === transport else {
-                        queueFaults.wrappingAdd(1, ordering: .relaxed)
-                        return nil
+        let generation = transport.withQueueLock { () -> UInt64? in
+            guard transport.acceptsQueueWork else { return nil }
+            return workerStateLock.withLock { () -> UInt64? in
+                if let reference = workerState.transport {
+                    if let existing = reference.value {
+                        guard existing === transport else {
+                            queueFaults.wrappingAdd(1, ordering: .relaxed)
+                            return nil
+                        }
+                    } else {
+                        // Rebinding a synthetic backend after its transport died must first make every
+                        // closure queued for that transport stale.
+                        advanceWorkerGenerationLocked()
+                        workerState.transport = WeakTransportReference(transport)
                     }
                 } else {
-                    // Rebinding a synthetic backend after its transport died must first make every
-                    // closure queued for that transport stale.
-                    advanceWorkerGenerationLocked()
                     workerState.transport = WeakTransportReference(transport)
                 }
-            } else {
-                workerState.transport = WeakTransportReference(transport)
-            }
 
-            if workerState.scheduled {
-                workerState.kickPending = true
-                coalescedWorkerRequests.wrappingAdd(1, ordering: .relaxed)
-                return nil
+                if workerState.scheduled {
+                    workerState.kickPending = true
+                    coalescedWorkerRequests.wrappingAdd(1, ordering: .relaxed)
+                    return nil
+                }
+                workerState.scheduled = true
+                return workerState.generation
             }
-            workerState.scheduled = true
-            return workerState.generation
         }
         guard let generation else { return }
         submitWorkerTurn(generation: generation, transport: transport)
@@ -255,7 +258,8 @@ public final class VirtioRng: VirtioDeviceBackend, @unchecked Sendable {
         transport: VirtioMMIOTransport
     ) -> PreparedWork {
         transport.withQueueLock {
-            guard isCurrentWorker(generation: generation, transport: transport) else {
+            guard transport.acceptsQueueWork,
+                  isCurrentWorker(generation: generation, transport: transport) else {
                 return .stale
             }
             let virtqueue = transport.queues[0]
@@ -304,14 +308,23 @@ public final class VirtioRng: VirtioDeviceBackend, @unchecked Sendable {
         // a host-owned snapshot until the fill reports success, so a failed CSPRNG call cannot
         // expose partially initialized bytes to the guest.
         var entropy = [UInt8](repeating: 0, count: requestedBytes)
-        lifecycleFence.lock()
-        guard isCurrentWorker(generation: generation, transport: transport) else {
-            lifecycleFence.unlock()
-            return .stale
+        let admitted = transport.withQueueLock {
+            guard transport.acceptsQueueWork,
+                  isCurrentWorker(generation: generation, transport: transport) else { return false }
+            // Same transport -> fence order as reset. Never hold this fence while reacquiring
+            // the transport: reset may already own the transport and be joining this fill.
+            lifecycleFence.lock()
+            // Direct lifecycle callbacks can revoke while this admission waits for the fence;
+            // their public contract must remain as strong as a transport-serialized reset.
+            guard isCurrentWorker(generation: generation, transport: transport) else {
+                lifecycleFence.unlock()
+                return false
+            }
+            return true
         }
+        guard admitted else { return .stale }
         let startedAt = monotonicNanoseconds()
         let didFill = entropy.withUnsafeMutableBytes(fillEntropy)
-        let written = didFill ? (chain.withLeaseHeld { $0.writeBytes(entropy) } ?? 0) : 0
         let elapsed = monotonicNanoseconds() &- startedAt
         lifecycleFence.unlock()
 
@@ -320,18 +333,19 @@ public final class VirtioRng: VirtioDeviceBackend, @unchecked Sendable {
             maximum = max(maximum, elapsed)
         }
 
-        if didFill {
-            guard written == requestedBytes else {
-                queueFaults.wrappingAdd(1, ordering: .relaxed)
-                return .fault
-            }
-        } else {
+        if !didFill {
             entropyFailures.wrappingAdd(1, ordering: .relaxed)
         }
 
         return transport.withQueueLock {
-            guard isCurrentWorker(generation: generation, transport: transport) else {
+            guard transport.acceptsQueueWork,
+                  isCurrentWorker(generation: generation, transport: transport) else {
                 return .stale
+            }
+            let written = didFill ? (chain.withLeaseHeld { $0.writeBytes(entropy) } ?? 0) : 0
+            if didFill, written != requestedBytes {
+                queueFaults.wrappingAdd(1, ordering: .relaxed)
+                return .fault
             }
             do {
                 switch try transport.queues[0].pushOutcome(chain, written: written) {
@@ -353,7 +367,8 @@ public final class VirtioRng: VirtioDeviceBackend, @unchecked Sendable {
 
     private func pendingWork(generation: UInt64, transport: VirtioMMIOTransport) -> Bool {
         transport.withQueueLock {
-            guard isCurrentWorker(generation: generation, transport: transport) else {
+            guard transport.acceptsQueueWork,
+                  isCurrentWorker(generation: generation, transport: transport) else {
                 return false
             }
             do {
@@ -373,22 +388,25 @@ public final class VirtioRng: VirtioDeviceBackend, @unchecked Sendable {
     ) {
         if wantsInterrupt {
             transport.withQueueLock {
-                if isCurrentWorker(generation: generation, transport: transport) {
+                if transport.acceptsQueueWork,
+                   isCurrentWorker(generation: generation, transport: transport) {
                     transport.notifyUsed()
                 }
             }
         }
 
-        let shouldContinue = workerStateLock.withLock { () -> Bool in
-            guard isCurrentWorkerLocked(generation: generation, transport: transport) else {
-                return false
+        let shouldContinue = transport.withQueueLock {
+            workerStateLock.withLock { () -> Bool in
+                guard isCurrentWorkerLocked(generation: generation, transport: transport) else {
+                    return false
+                }
+                let pending = transport.acceptsQueueWork && (knownPendingWork || workerState.kickPending)
+                workerState.kickPending = false
+                if !pending {
+                    workerState.scheduled = false
+                }
+                return pending
             }
-            let pending = knownPendingWork || workerState.kickPending
-            workerState.kickPending = false
-            if !pending {
-                workerState.scheduled = false
-            }
-            return pending
         }
         if shouldContinue {
             workerYields.wrappingAdd(1, ordering: .relaxed)

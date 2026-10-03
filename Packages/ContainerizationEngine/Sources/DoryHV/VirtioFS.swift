@@ -511,7 +511,8 @@ public final class VirtioFS: VirtioDeviceBackend {
         var gateSubmissionBound = false
         transport.withQueueLock {
             notificationLock.lock()
-            guard notificationTransport === transport,
+            guard transport.acceptsQueueWork,
+                  notificationTransport === transport,
                   notificationNegotiated,
                   notificationQueueReady,
                   transport.negotiatedFeatures & Self.notificationFeature != 0,
@@ -844,9 +845,14 @@ public final class VirtioFS: VirtioDeviceBackend {
         // again and verifies the queue lifecycle epoch before touching the ring.
         let route = transport.withQueueLock {
             (
+                operational: transport.acceptsQueueWork,
                 notificationsEnabled: transport.negotiatedFeatures & Self.notificationFeature != 0,
                 ready: transport.queues[queue].ready
             )
+        }
+        guard route.operational else {
+            releaseDeferredQueueAdmission(queue: queue)
+            return
         }
         guard route.ready else { return }
         let notificationsEnabled = route.notificationsEnabled
@@ -995,7 +1001,8 @@ public final class VirtioFS: VirtioDeviceBackend {
         transport: VirtioMMIOTransport
     ) -> ChainPopResult {
         transport.withQueueLock {
-            guard drainLock.withLock({ queueLifecycleEpochs[queue] == lifecycleEpoch }),
+            guard transport.acceptsQueueWork,
+                  drainLock.withLock({ queueLifecycleEpochs[queue] == lifecycleEpoch }),
                   virtqueue.ready else { return .empty }
             do {
                 guard let chain = try virtqueue.pop() else { return .empty }
@@ -1226,6 +1233,10 @@ public final class VirtioFS: VirtioDeviceBackend {
         var interruptWanted = false
         var failureReason: String?
         let pushed = transport.withQueueLock {
+            guard transport.acceptsQueueWork else {
+                failureReason = "transport no longer operational"
+                return false
+            }
             guard drainLock.withLock({ queueLifecycleEpochs[queue] == lifecycleEpoch }) else {
                 failureReason = "lifecycle epoch changed"
                 return false
@@ -1316,7 +1327,8 @@ private extension VirtioFS {
         var effects = NotificationEffects()
         transport.withQueueLock {
             notificationLock.lock()
-            guard notificationTransport === transport,
+            guard transport.acceptsQueueWork,
+                  notificationTransport === transport,
                   notificationNegotiated,
                   notificationQueueReady,
                   transport.negotiatedFeatures & Self.notificationFeature != 0 else {
@@ -1547,9 +1559,12 @@ private extension VirtioFS {
         // requestGateLock. Queue access always precedes gate state elsewhere too, avoiding a
         // transport -> gate lock inversion. Rejected guest requests need no workspace lease.
         var queueFault: (any Error)?
+        var transportOperational = false
         let preview: (opcode: FuseOpcode?, shape: DoryFSWorkerAdmissionShape?) =
             transport.withQueueLock {
-            guard drainLock.withLock({ queueLifecycleEpochs[queue] == lifecycleEpoch }),
+            transportOperational = transport.acceptsQueueWork
+            guard transportOperational,
+                  drainLock.withLock({ queueLifecycleEpochs[queue] == lifecycleEpoch }),
                   virtqueue.ready else { return (nil, nil) }
             let chain: VirtqueueChain
             do {
@@ -1579,6 +1594,10 @@ private extension VirtioFS {
                     responseBytes: responseBytes
                 )
             )
+        }
+        guard transportOperational else {
+            releaseDeferredQueueAdmission(queue: queue)
+            return .deferred
         }
         if let queueFault {
             recordTerminalQueueFault(queueFault, queue: queue)
@@ -1677,13 +1696,16 @@ private extension VirtioFS {
         queue: Int,
         transport: VirtioMMIOTransport
     ) {
-        let shouldSchedule = requestGateLock.withLock {
-            deferredAdmissionQueues.remove(queue)
-            guard !connectionResetPending,
-                  !requestGateFailureLatched,
-                  grantedAdmissions[queue] == nil else { return false }
-            grantedAdmissions[queue] = lease
-            return true
+        let shouldSchedule = transport.withQueueLock {
+            requestGateLock.withLock {
+                deferredAdmissionQueues.remove(queue)
+                guard transport.acceptsQueueWork,
+                      !connectionResetPending,
+                      !requestGateFailureLatched,
+                      grantedAdmissions[queue] == nil else { return false }
+                grantedAdmissions[queue] = lease
+                return true
+            }
         }
         guard shouldSchedule else {
             lease.release()
@@ -1932,6 +1954,17 @@ private extension VirtioFS {
         deferredAdmissionQueues.removeAll(keepingCapacity: false)
         grantedAdmissions.removeAll(keepingCapacity: false)
         return FrontendAdmissionCleanup(waiters: waiters, leases: leases)
+    }
+
+    /// Terminal transport status can overtake an unlocked drainer or a scheduled capacity grant.
+    /// Give back that queue's reserved debt without calling the broker under the transport lock.
+    func releaseDeferredQueueAdmission(queue: Int) {
+        let lease = requestGateLock.withLock {
+            deferredAdmissionQueues.remove(queue)
+            return grantedAdmissions.removeValue(forKey: queue)
+        }
+        broker.cancelFrontendAdmission(waiterID: admissionWaiterIDs[queue])
+        lease?.release()
     }
 
     func releaseFrontendAdmissions(_ cleanup: FrontendAdmissionCleanup) {

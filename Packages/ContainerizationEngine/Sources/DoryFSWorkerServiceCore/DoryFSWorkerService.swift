@@ -62,10 +62,12 @@ public final class DoryFSWorkerService: @unchecked Sendable {
         let shareLimits: DoryFSShareResourceLimits
         let hostFS: HostFS
         let server: FuseServer
+        private let beforeInterruptWakeTestHook: (@Sendable () -> Void)?
 
         private let lock = NSLock()
         private var state: State = .active
         private var activeByRequestID = [UInt64: Reservation]()
+        private var interruptedRequestIDs = Set<UInt64>()
         private var requestIDByCorrelationID = [UInt64: UInt64]()
         private var pendingByRequestID = [UInt64: PendingPublication]()
         private var aggregateRequestBytes = 0
@@ -78,7 +80,8 @@ public final class DoryFSWorkerService: @unchecked Sendable {
             generation: DoryFSWorkerGeneration,
             workerLimits: DoryFSWorkerLimits,
             hostFS: HostFS,
-            server: FuseServer
+            server: FuseServer,
+            beforeInterruptWakeTestHook: (@Sendable () -> Void)?
         ) {
             capabilityID = authority.capabilityID
             self.generation = generation
@@ -86,6 +89,7 @@ public final class DoryFSWorkerService: @unchecked Sendable {
             shareLimits = authority.resourceLimits
             self.hostFS = hostFS
             self.server = server
+            self.beforeInterruptWakeTestHook = beforeInterruptWakeTestHook
         }
 
         func execute(_ request: DoryFSWorkerRequest) -> DoryFSWorkerServiceFrame {
@@ -101,7 +105,9 @@ public final class DoryFSWorkerService: @unchecked Sendable {
                 return reply(to: request, outcome: .rejected(rejection))
             }
 
-            let response = server.handle(request: requestBytes)
+            let response = server.handle(request: requestBytes) { [self] in
+                hasHostOperationAuthority(for: request)
+            }
 
             let completion = finishExecution(
                 request: request,
@@ -122,11 +128,20 @@ public final class DoryFSWorkerService: @unchecked Sendable {
                       interrupt.generation == generation,
                       interrupt.shareCapabilityID == capabilityID,
                       let requestID = requestIDByCorrelationID[interrupt.targetCorrelationID],
-                      requestID == interrupt.targetRequestID else { return false }
+                      requestID == interrupt.targetRequestID,
+                      activeByRequestID[requestID] != nil else { return false }
+                interruptedRequestIDs.insert(requestID)
                 return true
             }
             if admitted {
-                server.interrupt(requestUnique: interrupt.targetCorrelationID)
+                beforeInterruptWakeTestHook?()
+                // The marker above belongs to the exact reservation and each blocking-lock
+                // attempt consults its immutable authorization. Do not forward a bare unique ID
+                // after unlocking: the original can finish/commit and a successor reuse that ID
+                // before delivery. Waking only carries no cancellation state across lifetimes.
+                // Never hold Share.lock while waking: lock attempts acquire it while holding the
+                // server's advisory-lock condition, so the inverse order would deadlock.
+                server.wakeForAuthorizationChange()
             }
         }
 
@@ -186,8 +201,14 @@ public final class DoryFSWorkerService: @unchecked Sendable {
         func invalidate(_ invalidation: DoryFSWorkerInvalidation) {
             guard invalidation.generation == generation,
                   invalidation.shareCapabilityID == capabilityID else { return }
+            invalidate()
+        }
+
+        /// Retire authority first, then cancel pollable work. Already-started host calls keep their
+        /// reservation/descriptors; reset cannot close them until all admitted execution unwinds.
+        func invalidate() {
             let pending: [PendingPublication] = lock.withLock {
-                guard state != .invalidated else { return [] }
+                guard state != .invalidated || !pendingByRequestID.isEmpty else { return [] }
                 state = .invalidated
                 let values = Array(pendingByRequestID.values)
                 pendingByRequestID.removeAll(keepingCapacity: false)
@@ -208,6 +229,17 @@ public final class DoryFSWorkerService: @unchecked Sendable {
         private enum Completion {
             case accepted([UInt8])
             case rejected(DoryFSWorkerRejectionCode)
+        }
+
+        private func hasHostOperationAuthority(for request: DoryFSWorkerRequest) -> Bool {
+            lock.withLock {
+                guard state == .active || state == .draining,
+                      activeByRequestID[request.requestID]?.request == request,
+                      !interruptedRequestIDs.contains(request.requestID),
+                      DispatchTime.now().uptimeNanoseconds
+                        < request.deadlineUptimeNanoseconds else { return false }
+                return true
+            }
         }
 
         private func admit(
@@ -299,17 +331,21 @@ public final class DoryFSWorkerService: @unchecked Sendable {
             response: [UInt8]
         ) -> Completion {
             var shouldReset = false
+            var shouldInvalidate = false
             let result: Completion = lock.withLock {
                 guard let reservation = activeByRequestID.removeValue(
                     forKey: request.requestID
                 ) else {
                     return .rejected(.shuttingDown)
                 }
+                interruptedRequestIDs.remove(request.requestID)
                 guard state == .active || state == .draining,
                       DispatchTime.now().uptimeNanoseconds
                         < request.deadlineUptimeNanoseconds else {
                     releaseReservationLocked(reservation)
-                    shouldReset = state == .invalidated && activeByRequestID.isEmpty
+                    shouldReset = completeDestroyIfQuiescentLocked()
+                        || (state == .invalidated
+                            && activeByRequestID.isEmpty && pendingByRequestID.isEmpty)
                     return .rejected(
                         state == .invalidated ? .shuttingDown : .deadlineExpired
                     )
@@ -318,7 +354,7 @@ public final class DoryFSWorkerService: @unchecked Sendable {
                       response.count <= workerLimits.maximumResponseBytes else {
                     state = .invalidated
                     releaseReservationLocked(reservation)
-                    shouldReset = activeByRequestID.isEmpty
+                    shouldInvalidate = true
                     return .rejected(.internalFailure)
                 }
                 pendingByRequestID[request.requestID] = PendingPublication(
@@ -331,6 +367,7 @@ public final class DoryFSWorkerService: @unchecked Sendable {
             if case .rejected = result, let opcode {
                 server.rollbackUnpublishedResponse(opcode: opcode, response: response)
             }
+            if shouldInvalidate { invalidate() }
             if shouldReset { resetIfNeeded() }
             return result
         }
@@ -389,6 +426,8 @@ public final class DoryFSWorkerService: @unchecked Sendable {
     private let rootAuthority: DoryFSWorkerRootAuthority
     private let coherenceExchange: CoherenceExchange?
     private let coherenceFailureHandler: CoherenceFailureHandler
+    private let configureServer: (@Sendable (FuseServer) -> Void)?
+    private let beforeInterruptWakeTestHook: (@Sendable () -> Void)?
     private let lifecycleLock = NSLock()
     private var lifecycle: Lifecycle = .awaitingBootstrap
 
@@ -396,6 +435,8 @@ public final class DoryFSWorkerService: @unchecked Sendable {
         rootAuthority = DoryFSWorkerRootAuthority()
         coherenceExchange = nil
         coherenceFailureHandler = { _ in }
+        configureServer = nil
+        beforeInterruptWakeTestHook = nil
     }
 
     /// Production XPC adapter initializer. Host-change observation is deliberately opt-in at this
@@ -408,12 +449,20 @@ public final class DoryFSWorkerService: @unchecked Sendable {
         rootAuthority = DoryFSWorkerRootAuthority()
         self.coherenceExchange = coherenceExchange
         coherenceFailureHandler = onCoherenceFailure
+        configureServer = nil
+        beforeInterruptWakeTestHook = nil
     }
 
-    init(rootAuthority: DoryFSWorkerRootAuthority) {
+    init(
+        rootAuthority: DoryFSWorkerRootAuthority,
+        configureServer: (@Sendable (FuseServer) -> Void)? = nil,
+        beforeInterruptWakeTestHook: (@Sendable () -> Void)? = nil
+    ) {
         self.rootAuthority = rootAuthority
         coherenceExchange = nil
         coherenceFailureHandler = { _ in }
+        self.configureServer = configureServer
+        self.beforeInterruptWakeTestHook = beforeInterruptWakeTestHook
     }
 
     public func bootstrap(
@@ -459,14 +508,17 @@ public final class DoryFSWorkerService: @unchecked Sendable {
                         rootHiddenNames: Set(authority.rootHiddenComponents),
                         resourceLimits: FuseResourceLimits(authority.resourceLimits)
                     )
-                    return (hostFS, FuseServer(hostFS: hostFS))
+                    let server = FuseServer(hostFS: hostFS)
+                    configureServer?(server)
+                    return (hostFS, server)
                 }
                 shares[authority.capabilityID] = Share(
                     authority: authority,
                     generation: bootstrap.generation,
                     workerLimits: bootstrap.workerLimits,
                     hostFS: pair.0,
-                    server: pair.1
+                    server: pair.1,
+                    beforeInterruptWakeTestHook: beforeInterruptWakeTestHook
                 )
             }
             let coherenceShares: [(
@@ -485,8 +537,9 @@ public final class DoryFSWorkerService: @unchecked Sendable {
                     generation: bootstrap.generation,
                     shares: coherenceShares,
                     exchange: exchange,
-                    onFailure: { [weak self] error in
+                    onFailure: { [weak self, shares] error in
                         self?.lifecycleLock.withLock { self?.lifecycle = .failed }
+                        for share in shares.values { share.invalidate() }
                         self?.coherenceFailureHandler(error)
                     }
                 )

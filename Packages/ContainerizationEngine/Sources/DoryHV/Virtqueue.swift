@@ -79,6 +79,11 @@ public struct VirtqueueSegment {
 /// deliberately not `Sendable`, as its storage is guest-owned mutable memory.
 struct VirtqueueLeaseAccess {
     fileprivate let resolvedSegments: [VirtqueueSegment]
+    fileprivate let memoryLease: GuestMemoryRangeLease
+
+    func releaseReportedRange(in memory: GuestMemory, address: UInt64, length: UInt64) -> GuestMemoryReleaseResult {
+        memory.releaseRange(guestAddress: address, length: length, excluding: memoryLease)
+    }
 
     /// Module-internal raw view for zero-copy device backends. Its validity is bounded by the
     /// surrounding `withLeaseHeld` callback.
@@ -204,6 +209,7 @@ public struct VirtqueueChain: @unchecked Sendable {
     public let containsZeroLengthDescriptor: Bool
     private let resolvedSegments: [VirtqueueSegment]
     private let leaseAuthority: VirtqueueLeaseAuthority
+    private let memoryLease: GuestMemoryRangeLease
     fileprivate let claimID: UUID?
 
     fileprivate init(
@@ -212,6 +218,7 @@ public struct VirtqueueChain: @unchecked Sendable {
         containsZeroLengthDescriptor: Bool,
         lease: VirtqueueLease,
         leaseAuthority: VirtqueueLeaseAuthority,
+        memoryLease: GuestMemoryRangeLease,
         claimID: UUID?
     ) {
         self.head = head
@@ -219,10 +226,11 @@ public struct VirtqueueChain: @unchecked Sendable {
         self.containsZeroLengthDescriptor = containsZeroLengthDescriptor
         self.lease = lease
         self.leaseAuthority = leaseAuthority
+        self.memoryLease = memoryLease
         self.claimID = claimID
     }
 
-    public var isLeaseValid: Bool { leaseAuthority.validates(lease) }
+    public var isLeaseValid: Bool { leaseAuthority.validates(lease) && memoryLease.isActive }
 
     public var hasWritableSegments: Bool {
         withLeaseHeld(\.hasWritableSegments) ?? false
@@ -251,9 +259,11 @@ public struct VirtqueueChain: @unchecked Sendable {
     func withLeaseHeld<Result>(
         _ body: (VirtqueueLeaseAccess) throws -> Result
     ) rethrows -> Result? {
-        try leaseAuthority.withValidLease(lease) {
-            try body(VirtqueueLeaseAccess(resolvedSegments: resolvedSegments))
+        let result: Result?? = try leaseAuthority.withValidLease(lease) {
+            guard memoryLease.isActive else { return nil }
+            return try body(VirtqueueLeaseAccess(resolvedSegments: resolvedSegments, memoryLease: memoryLease))
         }
+        return result ?? nil
     }
 
     public func readBytes(maximum: Int = Int.max) -> [UInt8] {
@@ -318,6 +328,12 @@ public struct VirtqueueLimits: Equatable, Sendable {
 /// at the used-index publish below.
 public final class Virtqueue {
     public static let maximumSize: UInt64 = 256
+    static let maximumLivePreviewLeases = 256
+
+    private final class WeakPreviewMemoryLease {
+        weak var value: GuestMemoryRangeLease?
+        init(_ value: GuestMemoryRangeLease) { self.value = value }
+    }
 
     public private(set) var size: UInt16 = 0
     public private(set) var ready = false
@@ -328,9 +344,18 @@ public final class Virtqueue {
     private var lastAvailIndex: UInt16 = 0
     private var usedIndex: UInt16 = 0
     private var outstandingClaims: [UInt16: UUID] = [:]
+    private var outstandingMemoryLeases: [UInt16: GuestMemoryRangeLease] = [:]
+    private var previewMemoryLeases: [WeakPreviewMemoryLease] = []
+    private var queueMemoryLease: GuestMemoryRangeLease?
     private let memory: GuestMemory
     private let limits: VirtqueueLimits
     private let leaseAuthority = VirtqueueLeaseAuthority()
+
+    deinit {
+        leaseAuthority.invalidate()
+        retireOutstandingClaims()
+        queueMemoryLease?.close()
+    }
 
     /// Test-only interlock for the EVENT_IDX idle rearm window. Production leaves this nil.
     /// It runs after avail_event is published and ordered, immediately before avail.idx is reread.
@@ -389,7 +414,7 @@ public final class Virtqueue {
     }
 
     public func isLeaseValid(_ chain: VirtqueueChain) -> Bool {
-        isLeaseValid(chain.lease)
+        isLeaseValid(chain.lease) && chain.isLeaseValid
     }
 
     /// Applies the transport-negotiated ring features and revokes chains parsed under an older
@@ -397,8 +422,9 @@ public final class Virtqueue {
     public func setNegotiatedFeatures(_ features: UInt64) {
         guard negotiatedFeatures != features else { return }
         leaseAuthority.invalidate()
-        outstandingClaims = [:]
+        retireOutstandingClaims()
         negotiatedFeatures = features
+        if !refreshQueueMemoryLease() { invalidateConfiguration() }
     }
 
     /// Applies one complete split-ring layout. Invalid guest layouts leave the queue disabled.
@@ -410,7 +436,7 @@ public final class Virtqueue {
         usedRing: UInt64
     ) -> Bool {
         leaseAuthority.invalidate()
-        outstandingClaims = [:]
+        retireOutstandingClaims()
         guard let size = UInt16(exactly: requestedSize),
               Self.isValidSize(requestedSize),
               descriptorTable % 16 == 0,
@@ -431,6 +457,10 @@ public final class Virtqueue {
         self.descriptorTable = descriptorTable
         self.availRing = availRing
         self.usedRing = usedRing
+        guard refreshQueueMemoryLease() else {
+            invalidateConfiguration()
+            return false
+        }
         return true
     }
 
@@ -454,7 +484,7 @@ public final class Virtqueue {
     @discardableResult
     public func setReady(_ isReady: Bool) -> Bool {
         leaseAuthority.invalidate()
-        outstandingClaims = [:]
+        retireOutstandingClaims()
         guard !isReady || Self.isValidSize(UInt64(size)) else {
             ready = false
             return false
@@ -464,12 +494,16 @@ public final class Virtqueue {
             lastAvailIndex = 0
             usedIndex = 0
         }
+        guard refreshQueueMemoryLease() else {
+            ready = false
+            return false
+        }
         return true
     }
 
     public func reset() {
         leaseAuthority.invalidate()
-        outstandingClaims = [:]
+        retireOutstandingClaims()
         negotiatedFeatures = 0
         invalidateConfiguration()
     }
@@ -482,7 +516,46 @@ public final class Virtqueue {
         usedRing = 0
         lastAvailIndex = 0
         usedIndex = 0
-        outstandingClaims = [:]
+        retireOutstandingClaims()
+        queueMemoryLease?.close()
+        queueMemoryLease = nil
+    }
+
+    private func retireOutstandingClaims() {
+        for lease in outstandingMemoryLeases.values { lease.close() }
+        outstandingMemoryLeases.removeAll()
+        outstandingClaims.removeAll()
+        retirePreviewMemoryLeases()
+    }
+
+    /// Call only after lifecycle invalidation has joined active access, or while holding the
+    /// lifecycle authority. Weak tracking never prolongs a caller's otherwise-dead preview.
+    private func retirePreviewMemoryLeases() {
+        for preview in previewMemoryLeases { preview.value?.close() }
+        previewMemoryLeases.removeAll()
+    }
+
+    private func refreshQueueMemoryLease() -> Bool {
+        guard ready, size > 0 else {
+            queueMemoryLease?.close()
+            queueMemoryLease = nil
+            return true
+        }
+        let tail: UInt64 = eventIndexNegotiated ? 2 : 0
+        do {
+            let replacement = try memory.pinRanges([
+                (descriptorTable, UInt64(size) * 16),
+                (availRing, 4 + UInt64(size) * 2 + tail),
+                (usedRing, 4 + UInt64(size) * 8 + tail),
+            ])
+            queueMemoryLease?.close()
+            queueMemoryLease = replacement
+            return true
+        } catch {
+            queueMemoryLease?.close()
+            queueMemoryLease = nil
+            return false
+        }
     }
 
     public var hasPending: Bool {
@@ -518,6 +591,19 @@ public final class Virtqueue {
     private func nextChain(consume: Bool) throws -> VirtqueueChain? {
         guard ready, size > 0 else { return nil }
         let lease = currentLease
+        if consume {
+            // A peek is admission-only, not a popped claim. Join its exact active buffer access
+            // before retiring it; old preview copies cannot touch guest RAM after this boundary.
+            _ = leaseAuthority.withValidLease(lease) { retirePreviewMemoryLeases() }
+        } else {
+            previewMemoryLeases.removeAll { preview in
+                guard let value = preview.value else { return true }
+                return !value.isActive
+            }
+            guard previewMemoryLeases.count < Self.maximumLivePreviewLeases else {
+                throw VMError.unexpectedExit("virtqueue retained preview limit exceeded")
+            }
+        }
         let availIndexAddress = try checkedAdd(availRing, 2, "available-index address")
         var availIndex = try memory.read(UInt16.self, at: availIndexAddress)
         if eventIndexNegotiated, availIndex == lastAvailIndex {
@@ -560,6 +646,12 @@ public final class Virtqueue {
         guard isLeaseValid(lease) else {
             throw VMError.unexpectedExit("virtqueue changed while resolving descriptor chain")
         }
+        let hostBase = UInt64(UInt(bitPattern: memory.hostBase))
+        let memoryLease = try memory.pinRanges(segments.isEmpty
+            ? [(descriptorTable, UInt64(16))]
+            : segments.map { segment in
+                (memory.guestBase + (UInt64(UInt(bitPattern: segment.pointer)) - hostBase), UInt64(segment.length))
+            })
         let claimID: UUID?
         if consume {
             let newClaimID = UUID()
@@ -575,8 +667,10 @@ public final class Virtqueue {
                 lastAvailIndex = nextAvailIndex
             }
             outstandingClaims[head] = newClaimID
+            outstandingMemoryLeases[head] = memoryLease
             claimID = newClaimID
         } else {
+            previewMemoryLeases.append(WeakPreviewMemoryLease(memoryLease))
             claimID = nil
         }
         return VirtqueueChain(
@@ -585,6 +679,7 @@ public final class Virtqueue {
             containsZeroLengthDescriptor: traversal.containsZeroLengthDescriptor,
             lease: lease,
             leaseAuthority: leaseAuthority,
+            memoryLease: memoryLease,
             claimID: claimID
         )
     }
@@ -616,6 +711,10 @@ public final class Virtqueue {
     private func needsEvent(event: UInt16, new: UInt16, old: UInt16) -> Bool {
         (new &- event &- 1) < (new &- old)
     }
+
+    /// Runs with the exact indirect-table metadata range pinned, before its first dereference.
+    /// Production leaves this nil; tests use it to attempt concurrent balloon reclaim.
+    var beforeIndirectTableTraversalTestHook: (@Sendable () throws -> Void)?
 
     private func walkChain(
         startingAt first: UInt16,
@@ -674,6 +773,12 @@ public final class Virtqueue {
                 guard entryCount <= limits.maximumDescriptorCount else {
                     throw VMError.unexpectedExit("virtqueue indirect table exceeds descriptor limit")
                 }
+                // Ring metadata is pinned for the configured queue, but an indirect table may
+                // reside on an unrelated guest page. Retain its exact range across every
+                // recursive descriptor read so balloon reporting cannot unmap it mid-traversal.
+                let tableLease = try memory.pinRange(at: address, count: UInt64(length))
+                defer { tableLease.close() }
+                try beforeIndirectTableTraversalTestHook?()
                 _ = try memory.hostPointer(at: address, count: UInt64(length))
                 try walkChain(
                     startingAt: 0,
@@ -759,6 +864,7 @@ public final class Virtqueue {
             try memory.write(newUsedIndex, at: checkedAdd(usedRing, 2, "used-index address"))
             usedIndex = newUsedIndex
             outstandingClaims.removeValue(forKey: chain.head)
+            outstandingMemoryLeases.removeValue(forKey: chain.head)?.close()
             if let eventIndexWantsInterrupt {
                 return eventIndexWantsInterrupt
             }

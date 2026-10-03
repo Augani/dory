@@ -386,6 +386,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
     private let limits: VirtioVsockLimits
     private let serviceAdmissionAuthority: VirtioVsockServiceAdmissionAuthority
     private let lifecycleResetLock = NSLock()
+    private let listenerDeliveryLock = NSRecursiveLock()
     private let stateLock = NSLock()
     private var listeners: [UInt32: Listener] = [:]
     private var connections: [ConnectionKey: InProcessConnection] = [:]
@@ -407,6 +408,26 @@ public final class VirtioVsock: VirtioDeviceBackend {
     private var shutdownReaper: DispatchSourceTimer?
     private weak var lastTransport: VirtioMMIOTransport?
     private var transportNeutralReceiveReadySink: (@Sendable () -> Void)?
+    private var guestPacketProcessingTestHook: (@Sendable () -> Void)?
+    private var listenerDeliveryTestHook: (@Sendable () -> Void)?
+    private var inboundReleaseTestHook: (@Sendable () -> Void)?
+
+    /// Admission-to-mutation seam, invoked without device locks after capturing the packet's
+    /// original lifecycle authority and before looking up its connection tuple.
+    var beforeGuestPacketProcessingTestHook: (@Sendable () -> Void)? {
+        get { withLock { guestPacketProcessingTestHook } }
+        set { withLock { guestPacketProcessingTestHook = newValue } }
+    }
+
+    var beforeListenerDeliveryTestHook: (@Sendable () -> Void)? {
+        get { withLock { listenerDeliveryTestHook } }
+        set { withLock { listenerDeliveryTestHook = newValue } }
+    }
+
+    var beforeInboundReleaseTestHook: (@Sendable () -> Void)? {
+        get { withLock { inboundReleaseTestHook } }
+        set { withLock { inboundReleaseTestHook = newValue } }
+    }
 
     private struct ConnectionKey: Hashable, Sendable {
         var guestPort: UInt32
@@ -583,6 +604,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
     /// Processes one already-bounded, device-readable TX packet from a transport-neutral queue.
     /// Required control-response capacity is reserved before mutating connection state.
     public func consumeTransportNeutralGuestPacket(_ packet: [UInt8]) throws {
+        let packetEpoch = currentLifecycleEpoch
         guard packet.count >= VirtioVsockHeader.byteCount else {
             throw VirtioVsockTransportNeutralError.malformedTransmitPacket
         }
@@ -600,7 +622,8 @@ public final class VirtioVsock: VirtioDeviceBackend {
         do {
             result = try processGuestPacket(
                 packet,
-                transactionEpoch: reservation?.epoch
+                transactionEpoch: reservation?.epoch,
+                expectedLifecycleEpoch: packetEpoch
             )
         } catch {
             if let reservation { releaseControlResponse(reservation) }
@@ -724,6 +747,10 @@ public final class VirtioVsock: VirtioDeviceBackend {
             guard listeners[port]?.registrationID == registrationID else { return }
             listeners.removeValue(forKey: port)
         }
+        // Revoke first, then join without the state lock. The recursive boundary lets a handler
+        // unregister itself without waiting for its own invocation to finish.
+        listenerDeliveryLock.lock()
+        listenerDeliveryLock.unlock()
     }
 
     /// Reserves a connection slot, collision-free tuple, and REQUEST queue space atomically.
@@ -809,6 +836,13 @@ public final class VirtioVsock: VirtioDeviceBackend {
     }
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
+        transport.withQueueLock {
+            guard transport.acceptsQueueWork else { return }
+            handleLockedKick(queue: queue, transport: transport)
+        }
+    }
+
+    private func handleLockedKick(queue: Int, transport: VirtioMMIOTransport) {
         guard transport.queues.indices.contains(queue) else { return }
         let isAdmissible = withLock { () -> Bool in
             lastTransport = transport
@@ -834,9 +868,11 @@ public final class VirtioVsock: VirtioDeviceBackend {
     }
 
     private func drainGuestTX(transport: VirtioMMIOTransport) {
+        guard transport.acceptsQueueWork else { return }
+        let packetEpoch = currentLifecycleEpoch
         let virtqueue = transport.queues[1]
         var interrupt = false
-        defer { if interrupt { transport.notifyUsed() } }
+        defer { if interrupt && transport.acceptsQueueWork { transport.notifyUsed() } }
 
         let pending: UInt16
         do {
@@ -850,7 +886,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
 
         var handled = 0
         var copiedBytes = 0
-        while handled < chainBudget {
+        while handled < chainBudget, transport.acceptsQueueWork {
             let preview: VirtqueueChain
             do {
                 guard let next = try virtqueue.peek() else { break }
@@ -915,7 +951,8 @@ public final class VirtioVsock: VirtioDeviceBackend {
             do {
                 result = try processGuestPacket(
                     packet,
-                    transactionEpoch: reservation?.epoch ?? currentLifecycleEpoch
+                    transactionEpoch: reservation?.epoch ?? packetEpoch,
+                    expectedLifecycleEpoch: packetEpoch
                 )
             } catch {
                 if let reservation { releaseControlResponse(reservation) }
@@ -950,6 +987,9 @@ public final class VirtioVsock: VirtioDeviceBackend {
                 recordQueueFault(queue: 1)
             }
             if responseCommitted { result.invokeListener?() }
+            // A reentrant listener can set FAILED/NEEDS_RESET without resetting queue leases.
+            // Stop before publishing this completion or touching another descriptor.
+            guard transport.acceptsQueueWork else { return }
             guard publish(
                 chain,
                 written: 0,
@@ -977,7 +1017,17 @@ public final class VirtioVsock: VirtioDeviceBackend {
     /// Clears all transport-owned state. Host listener registrations are configuration authority,
     /// so they survive reset as required for listeners by VirtIO 1.3 section 5.10.6.7.
     public func deviceReset(transport: VirtioMMIOTransport) {
-        resetTransportState(preserveListeners: true, remainQuiesced: false)
+        resetTransportState(
+            preserveListeners: true, remainQuiesced: false, retirementTransport: transport)
+    }
+
+    public func prepareDeviceReset(transport: VirtioMMIOTransport) -> (() -> Void)? {
+        let reset = prepareTransportReset(preserveListeners: true, remainQuiesced: false)
+        return { [self] in
+            completeTransportReset(
+                epoch: reset.epoch, terminallyQuiesced: reset.terminallyQuiesced,
+                stopActions: reset.stopActions)
+        }
     }
 
     /// Permanently stops admission and releases connections, queues, bytes, and listener tokens.
@@ -1100,9 +1150,10 @@ public final class VirtioVsock: VirtioDeviceBackend {
     }
 
     private func validateEventQueue(transport: VirtioMMIOTransport) {
+        guard transport.acceptsQueueWork else { return }
         let queue = transport.queues[2]
         var interrupt = false
-        defer { if interrupt { transport.notifyUsed() } }
+        defer { if interrupt && transport.acceptsQueueWork { transport.notifyUsed() } }
 
         let pending: UInt16
         do {
@@ -1115,6 +1166,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
         if Int(pending) > budget { recordBoundedDrainStop() }
 
         for _ in 0..<budget {
+            guard transport.acceptsQueueWork else { return }
             let preview: VirtqueueChain
             do {
                 guard let chain = try queue.peek() else { return }
@@ -1179,12 +1231,14 @@ public final class VirtioVsock: VirtioDeviceBackend {
     }
 
     private func flushPendingGuestPackets(transport: VirtioMMIOTransport) {
+        // All callers hold the exact transport queue lock, including direct host callbacks.
+        guard transport.acceptsQueueWork else { return }
         guard withLock({ !terminalQueues.contains(0) }) else { return }
         guard withLock({ pendingGuestPacketCountLocked > 0 }) else { return }
 
         let queue = transport.queues[0]
         var interrupt = false
-        defer { if interrupt { transport.notifyUsed() } }
+        defer { if interrupt && transport.acceptsQueueWork { transport.notifyUsed() } }
 
         let pending: UInt16
         do {
@@ -1198,7 +1252,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
 
         var handled = 0
         var publishedBytes = 0
-        while handled < chainBudget,
+        while handled < chainBudget, transport.acceptsQueueWork,
               withLock({ pendingGuestPacketCountLocked > 0 }) {
             let remainingByteBudget = limits.maximumBytesPerKick - publishedBytes
             let minimumDeliveryBytes = withLock { minimumPendingDeliveryBytesLocked() }
@@ -1382,11 +1436,17 @@ public final class VirtioVsock: VirtioDeviceBackend {
 
     private func processGuestPacket(
         _ packet: [UInt8],
-        transactionEpoch: UInt64?
+        transactionEpoch: UInt64?,
+        expectedLifecycleEpoch: UInt64? = nil
     ) throws -> GuestPacketResult {
+        let packetEpoch = expectedLifecycleEpoch ?? transactionEpoch ?? currentLifecycleEpoch
         let header = try VirtioVsockHeader(
             decoding: packet.prefix(VirtioVsockHeader.byteCount)
         )
+        withLock { guestPacketProcessingTestHook }?()
+        guard withLock({ !isQuiesced && !isResetting && lifecycleEpoch == packetEpoch }) else {
+            return GuestPacketResult()
+        }
         let key = ConnectionKey(
             guestPort: header.sourcePort,
             hostPort: header.destinationPort
@@ -1405,7 +1465,8 @@ public final class VirtioVsock: VirtioDeviceBackend {
                 return terminalResetResult(
                     to: header,
                     key: key,
-                    transactionEpoch: transactionEpoch
+                    transactionEpoch: transactionEpoch,
+                    expectedLifecycleEpoch: packetEpoch
                 )
             }
             return GuestPacketResult(responses: [makeReply(to: header, operation: .reset)])
@@ -1418,7 +1479,8 @@ public final class VirtioVsock: VirtioDeviceBackend {
                 return terminalResetResult(
                     to: header,
                     key: key,
-                    transactionEpoch: transactionEpoch
+                    transactionEpoch: transactionEpoch,
+                    expectedLifecycleEpoch: packetEpoch
                 )
             }
             return GuestPacketResult(responses: [makeReply(to: header, operation: .reset)])
@@ -1437,7 +1499,8 @@ public final class VirtioVsock: VirtioDeviceBackend {
             return terminalResetResult(
                 to: header,
                 key: key,
-                transactionEpoch: transactionEpoch
+                transactionEpoch: transactionEpoch,
+                expectedLifecycleEpoch: packetEpoch
             )
         }
 
@@ -1455,26 +1518,31 @@ public final class VirtioVsock: VirtioDeviceBackend {
             return admitGuestRequest(
                 header: header,
                 key: key,
-                transactionEpoch: transactionEpoch
+                transactionEpoch: transactionEpoch,
+                expectedLifecycleEpoch: packetEpoch
             )
         }
         if header.operation == .reset {
-            abortConnection(key: key)
+            abortConnection(key: key, expectedLifecycleEpoch: packetEpoch)
             return GuestPacketResult()
         }
 
-        guard let connection = withLock({ connections[key] }) else {
+        guard let connection = withLock({
+            lifecycleEpoch == packetEpoch && !isQuiesced && !isResetting ? connections[key] : nil
+        }) else {
             return terminalResetResult(
                 to: header,
                 key: key,
-                transactionEpoch: transactionEpoch
+                transactionEpoch: transactionEpoch,
+                expectedLifecycleEpoch: packetEpoch
             )
         }
         if header.operation != .response, !connection.isEstablished {
             return terminalResetResult(
                 to: header,
                 key: key,
-                transactionEpoch: transactionEpoch
+                transactionEpoch: transactionEpoch,
+                expectedLifecycleEpoch: packetEpoch
             )
         }
 
@@ -1487,7 +1555,8 @@ public final class VirtioVsock: VirtioDeviceBackend {
                 return terminalResetResult(
                     to: header,
                     key: key,
-                    transactionEpoch: transactionEpoch
+                    transactionEpoch: transactionEpoch,
+                    expectedLifecycleEpoch: packetEpoch
                 )
             }
             return GuestPacketResult()
@@ -1510,7 +1579,8 @@ public final class VirtioVsock: VirtioDeviceBackend {
                 return terminalResetResult(
                     to: header,
                     key: key,
-                    transactionEpoch: transactionEpoch
+                    transactionEpoch: transactionEpoch,
+                    expectedLifecycleEpoch: packetEpoch
                 )
             }
         case .shutdown:
@@ -1522,7 +1592,8 @@ public final class VirtioVsock: VirtioDeviceBackend {
                 return terminalResetResult(
                     to: header,
                     key: key,
-                    transactionEpoch: transactionEpoch
+                    transactionEpoch: transactionEpoch,
+                    expectedLifecycleEpoch: packetEpoch
                 )
             }
             return GuestPacketResult(responses: [
@@ -1555,7 +1626,8 @@ public final class VirtioVsock: VirtioDeviceBackend {
             return terminalResetResult(
                 to: header,
                 key: key,
-                transactionEpoch: transactionEpoch
+                transactionEpoch: transactionEpoch,
+                expectedLifecycleEpoch: packetEpoch
             )
         }
     }
@@ -1578,12 +1650,13 @@ public final class VirtioVsock: VirtioDeviceBackend {
     private func admitGuestRequest(
         header: VirtioVsockHeader,
         key: ConnectionKey,
-        transactionEpoch: UInt64?
+        transactionEpoch: UInt64?,
+        expectedLifecycleEpoch: UInt64
     ) -> GuestPacketResult {
         var rejected: InProcessConnection?
         var terminalResetKey: ConnectionKey?
         let admission = withLock { () -> (Listener, InProcessConnection)? in
-            guard transactionEpoch == nil || transactionEpoch == lifecycleEpoch else {
+            guard expectedLifecycleEpoch == lifecycleEpoch else {
                 return nil
             }
             if connections[key] != nil {
@@ -1624,19 +1697,45 @@ public final class VirtioVsock: VirtioDeviceBackend {
         )
         return GuestPacketResult(
             responses: [makeReply(to: header, operation: .response)],
-            invokeListener: { listener.handler(connection) }
+            invokeListener: { [weak self] in
+                self?.deliverGuestConnection(
+                    connection, listener: listener, epoch: expectedLifecycleEpoch)
+            }
         )
+    }
+
+    private func deliverGuestConnection(
+        _ connection: InProcessConnection,
+        listener: Listener,
+        epoch: UInt64
+    ) {
+        withLock { listenerDeliveryTestHook }?()
+        listenerDeliveryLock.lock()
+        defer { listenerDeliveryLock.unlock() }
+        let isCurrent = withLock {
+            !isQuiesced && !isResetting && lifecycleEpoch == epoch
+                && listeners[connection.key.hostPort]?.registrationID == listener.registrationID
+                && connections[connection.key]?.id == connection.id
+        }
+        guard isCurrent else {
+            connection.close()
+            return
+        }
+        // User work must never hold the device state or reset lock. Reset/unregister may join an
+        // invocation from another thread, while this invocation can reset/unregister reentrantly.
+        listener.handler(connection)
     }
 
     private func terminalResetResult(
         to header: VirtioVsockHeader,
         key: ConnectionKey,
-        transactionEpoch: UInt64?
+        transactionEpoch: UInt64?,
+        expectedLifecycleEpoch: UInt64
     ) -> GuestPacketResult {
         var removed: InProcessConnection?
         var terminalResetKey: ConnectionKey?
         withLock {
-            guard transactionEpoch == nil || transactionEpoch == lifecycleEpoch else { return }
+            guard expectedLifecycleEpoch == lifecycleEpoch, !isQuiesced, !isResetting else { return }
             removed = prepareTerminalResetLocked(
                 key: key,
                 transactionEpoch: transactionEpoch
@@ -1733,7 +1832,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
                 ) ?? .connectionClosed
             },
             releaseInbound: { [weak self] count in
-                self?.releaseInboundBytes(count)
+                self?.releaseInboundBytes(count, epoch: epoch)
             },
             onLocalClose: { [weak self] in
                 self?.markConnectionClosing(id: id, key: key, epoch: epoch)
@@ -1760,8 +1859,12 @@ public final class VirtioVsock: VirtioDeviceBackend {
         }
     }
 
-    private func releaseInboundBytes(_ count: Int) {
+    private func releaseInboundBytes(_ count: Int, epoch: UInt64) {
+        withLock { inboundReleaseTestHook }?()
         withLock {
+            // A read/close releases outside the connection lock. Reset may have already zeroed
+            // that generation's budget and admitted replacement bytes before this callback runs.
+            guard lifecycleEpoch == epoch else { return }
             inboundBufferedBytes = max(0, inboundBufferedBytes - count)
         }
     }
@@ -1946,8 +2049,11 @@ public final class VirtioVsock: VirtioDeviceBackend {
         throw VirtioVsockConnectionAdmissionError.hostPortRangeExhausted
     }
 
-    private func abortConnection(key: ConnectionKey) {
+    private func abortConnection(key: ConnectionKey, expectedLifecycleEpoch: UInt64) {
         let connection = withLock { () -> InProcessConnection? in
+            guard lifecycleEpoch == expectedLifecycleEpoch, !isQuiesced, !isResetting else {
+                return nil
+            }
             let removed = connections.removeValue(forKey: key)
             removePendingGuestPacketsLocked(for: key)
             uncommittedTerminalResetKeys.remove(key)
@@ -2073,25 +2179,41 @@ public final class VirtioVsock: VirtioDeviceBackend {
 
     private func resetTransportState(
         preserveListeners: Bool,
-        remainQuiesced: Bool
+        remainQuiesced: Bool,
+        retirementTransport: VirtioMMIOTransport? = nil
     ) {
+        let reset = prepareTransportReset(
+            preserveListeners: preserveListeners, remainQuiesced: remainQuiesced)
+        if let transport = retirementTransport ?? reset.transport {
+            transport.retireAfterQueueUnlock { [self] in
+                completeTransportReset(
+                    epoch: reset.epoch, terminallyQuiesced: reset.terminallyQuiesced,
+                    stopActions: reset.stopActions)
+            }
+        } else {
+            completeTransportReset(
+                epoch: reset.epoch, terminallyQuiesced: reset.terminallyQuiesced,
+                stopActions: reset.stopActions)
+        }
+    }
+
+    private func prepareTransportReset(
+        preserveListeners: Bool,
+        remainQuiesced: Bool
+    ) -> (epoch: UInt64, terminallyQuiesced: Bool, stopActions: [@Sendable () -> Void],
+          transport: VirtioMMIOTransport?) {
         lifecycleResetLock.lock()
-        defer { lifecycleResetLock.unlock() }
-        let terminallyQuiesced = withLock { () -> Bool in
+        let reset = withLock { () -> (terminal: Bool, epoch: UInt64,
+                                      transport: VirtioMMIOTransport?) in
             let terminal = remainQuiesced || isQuiesced
             isResetting = true
             lifecycleEpoch &+= 1
-            return terminal
+            if terminal { isQuiesced = true }
+            return (terminal, lifecycleEpoch, lastTransport)
         }
+        let terminallyQuiesced = reset.terminal
 
-        // Revoke service work before aborting the transport objects it may be using. Stop callbacks
-        // run outside both authority and device locks; their close paths see isResetting and cannot
-        // publish a new shutdown tombstone into the replacement generation.
-        if terminallyQuiesced {
-            serviceAdmissionAuthority.quiesce()
-        } else {
-            serviceAdmissionAuthority.beginReset()
-        }
+        let stopActions = serviceAdmissionAuthority.prepareRevocation(terminal: terminallyQuiesced)
 
         let staleConnections = withLock { () -> [InProcessConnection] in
             let stale = Array(connections.values)
@@ -2117,12 +2239,38 @@ public final class VirtioVsock: VirtioDeviceBackend {
         for connection in staleConnections { connection.abort() }
         withLock {
             inboundBufferedBytes = 0
+        }
+        lifecycleResetLock.unlock()
+
+        return (reset.epoch, terminallyQuiesced, stopActions, reset.transport)
+    }
+
+    private func completeTransportReset(
+        epoch: UInt64,
+        terminallyQuiesced: Bool,
+        stopActions: [@Sendable () -> Void]
+    ) {
+        // Revocation and abort already woke every old connection. Stop callbacks may join writers
+        // that captured the old MMIO transport, so this phase must run without its register lock or
+        // the device lifecycle lock. Each callback owns only its captured old-generation session.
+        for requestStop in stopActions { requestStop() }
+
+        // Connections are already revoked and their blocked writers/readers woken. Join listener
+        // work without either leaf lock, so a handler can itself unregister or reset the device.
+        listenerDeliveryLock.lock()
+        listenerDeliveryLock.unlock()
+
+        lifecycleResetLock.lock()
+        defer { lifecycleResetLock.unlock() }
+        let shouldFinish = withLock { () -> Bool in
+            guard lifecycleEpoch == epoch else { return false }
             // Quiesce is a terminal host lifecycle decision. A late guest MMIO reset must not
             // resurrect admission after teardown has begun.
             isQuiesced = terminallyQuiesced
             isResetting = false
+            return !terminallyQuiesced
         }
-        if !terminallyQuiesced {
+        if shouldFinish {
             serviceAdmissionAuthority.finishReset()
         }
     }

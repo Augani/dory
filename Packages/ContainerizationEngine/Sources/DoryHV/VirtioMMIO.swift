@@ -52,6 +52,10 @@ public protocol VirtioDeviceBackend: AnyObject {
     /// Driver reset the device. Called while transport access is serialized and before queues are
     /// cleared, so backends can release retained guest buffers and fail outstanding operations.
     func deviceReset(transport: VirtioMMIOTransport)
+    /// Revokes backend work while transport access is serialized. A backend that must join host
+    /// callbacks may return its retirement step; the transport runs it after clearing the queues
+    /// and releasing its register lock. Other backends keep the existing synchronous reset contract.
+    func prepareDeviceReset(transport: VirtioMMIOTransport) -> (() -> Void)?
     /// Called after a status-0 reset has cleared every transport queue, interrupt, and negotiated
     /// feature. Generation-bound helper replacement must wait for this boundary so the transport
     /// cannot subsequently discard the replacement's queue generation.
@@ -67,6 +71,10 @@ extension VirtioDeviceBackend {
     public var kickSynchronization: VirtioKickSynchronization { .transportLocked }
     public func deviceReady(transport: VirtioMMIOTransport) {}
     public func deviceReset(transport: VirtioMMIOTransport) {}
+    public func prepareDeviceReset(transport: VirtioMMIOTransport) -> (() -> Void)? {
+        deviceReset(transport: transport)
+        return nil
+    }
     public func deviceResetCompleted(transport: VirtioMMIOTransport) {}
     public func queueStateChanged(queue: Int, ready: Bool, transport: VirtioMMIOTransport) {}
     public func writeConfig(offset: UInt64, value: UInt64, width: Int) {}
@@ -108,6 +116,8 @@ public final class VirtioMMIOTransport: MMIODevice {
     private var configGeneration: UInt32 = 0
     private let interruptLock = NSLock()  // device backends may complete buffers off the vCPU thread
     private let registerLock = NSRecursiveLock()  // SMP: register access and kicks arrive from any vCPU thread
+    private var registerLockDepth = 0
+    private var pendingResetRetirements = [() -> Void]()
     private var pendingQueueLayout: [(descriptor: UInt64, avail: UInt64, used: UInt64, count: UInt64)]
     private let queueNotificationCount = Atomic<UInt64>(0)
     private let queueStateChangeCount = Atomic<UInt64>(0)
@@ -120,12 +130,27 @@ public final class VirtioMMIOTransport: MMIODevice {
     private static let vendor: UInt64 = 0x792D_726F_64  // "dor-y"
 
     private enum DeviceStatus {
+        static let acknowledge: UInt32 = 1 << 0
+        static let driver: UInt32 = 1 << 1
         static let driverOK: UInt32 = 1 << 2
         static let featuresOK: UInt32 = 1 << 3
         /// Virtio 1.2 DEVICE_NEEDS_RESET. Unlike FAILED, this bit belongs to the device and is
         /// preserved across guest status writes until the driver acknowledges it with status 0.
         static let deviceNeedsReset: UInt32 = 1 << 6
+        static let failed: UInt32 = 1 << 7
+        static let driverWritable = acknowledge | driver | driverOK | featuresOK | failed
     }
+
+    /// QueueReady describes a configured ring, not permission to execute guest requests. Match
+    /// the PCI transport's lifecycle boundary before handing a doorbell to a real backend.
+    private var isOperational: Bool {
+        status & DeviceStatus.driverOK != 0
+            && status & (DeviceStatus.deviceNeedsReset | DeviceStatus.failed) == 0
+    }
+
+    /// Backend-managed work must recheck this inside its existing withQueueLock boundary before
+    /// reading or publishing a ring. The doorbell's unlocked dispatch is not a DMA admission lease.
+    var acceptsQueueWork: Bool { isOperational }
 
     private var offeredFeatures: UInt64 {
         backend.deviceFeatures
@@ -168,10 +193,10 @@ public final class VirtioMMIOTransport: MMIODevice {
     /// coherent snapshot when the host changes multiple fields during one resize.
     public func notifyConfigChange() {
         configurationInterruptCount.wrappingAdd(1, ordering: .relaxed)
-        registerLock.lock()
+        lockRegisters()
         configGeneration &+= 1
         let shouldEmit = markInterruptPending(2)
-        registerLock.unlock()
+        unlockRegisters()
         if shouldEmit { emitInterruptSignal() }
     }
 
@@ -180,17 +205,21 @@ public final class VirtioMMIOTransport: MMIODevice {
     /// queues and write status 0. This is used for isolated helper failure: disks, networking, and
     /// guest execution stay live while only the affected device is reset.
     public func requestDeviceReset() {
-        registerLock.lock()
+        lockRegisters()
         let newlyRequested = status & DeviceStatus.deviceNeedsReset == 0
         status |= DeviceStatus.deviceNeedsReset
         if newlyRequested { configGeneration &+= 1 }
         let shouldEmit = newlyRequested && markInterruptPending(2)
-        registerLock.unlock()
+        unlockRegisters()
         if shouldEmit { emitInterruptSignal() }
     }
 
     public func hostPointer(at guestAddress: UInt64, count: UInt64) throws -> UnsafeMutableRawPointer {
         try memory.hostPointer(at: guestAddress, count: count)
+    }
+
+    func pinGuestMemory(at guestAddress: UInt64, count: UInt64) throws -> GuestMemoryRangeLease {
+        try memory.pinRange(at: guestAddress, count: count)
     }
 
     /// Returns an independently owned, path-free descriptor slice over guest RAM for an isolated
@@ -218,14 +247,22 @@ public final class VirtioMMIOTransport: MMIODevice {
     /// thread (virtio-net RX) is serialized against guest MMIO that reconfigures or resets the same
     /// queue. Recursive: safe to call from inside handleKick, which already holds the lock.
     public func withQueueLock<T>(_ body: () -> T) -> T {
-        registerLock.lock()
-        defer { registerLock.unlock() }
+        lockRegisters()
+        defer { unlockRegisters() }
         return body()
     }
 
+    /// Direct backend reset/quiesce can be re-entered from a transport-locked listener. Transfer
+    /// its retirement to the same outermost-unlock boundary used by a status-zero write.
+    func retireAfterQueueUnlock(_ retirement: @escaping () -> Void) {
+        lockRegisters()
+        pendingResetRetirements.append(retirement)
+        unlockRegisters()
+    }
+
     public func read(offset: UInt64, width: Int) -> UInt64 {
-        registerLock.lock()
-        defer { registerLock.unlock() }
+        lockRegisters()
+        defer { unlockRegisters() }
         switch offset {
         case 0x000: return Self.magic
         case 0x004: return 2
@@ -265,10 +302,10 @@ public final class VirtioMMIOTransport: MMIODevice {
         // explicitly opted-in backend without pinning unrelated MMIO/reset traffic behind an entire
         // filesystem request. Every other backend retains the historical lock boundary below.
         if offset == 0x050, backend.kickSynchronization == .backendManaged {
-            registerLock.lock()
+            lockRegisters()
             let queue = Int(exactly: value)
-            let shouldKick = queue.map(queues.indices.contains) ?? false
-            registerLock.unlock()
+            let shouldKick = isOperational && (queue.map(queues.indices.contains) ?? false)
+            unlockRegisters()
             if shouldKick, let queue {
                 queueNotificationCount.wrappingAdd(1, ordering: .relaxed)
                 backend.handleKick(queue: queue, transport: self)
@@ -276,11 +313,14 @@ public final class VirtioMMIOTransport: MMIODevice {
             return
         }
 
-        registerLock.lock()
-        defer { registerLock.unlock() }
+        lockRegisters()
+        defer { unlockRegisters() }
         switch offset {
         case 0x014: deviceFeatureSelect = UInt32(truncatingIfNeeded: value)
         case 0x020:
+            // The accepted feature set controls descriptor walking and EVENT_IDX tails. A
+            // driver may not change those interpretations for live queues without status 0.
+            guard status & DeviceStatus.featuresOK == 0 else { break }
             switch driverFeatureSelect {
             case 0:
                 driverFeatures = (driverFeatures & ~0xFFFF_FFFF) | (value & 0xFFFF_FFFF)
@@ -320,7 +360,7 @@ public final class VirtioMMIOTransport: MMIODevice {
                 backend.queueStateChanged(queue: index, ready: ready, transport: self)
             }
         case 0x050:
-            if let queue = Int(exactly: value), queues.indices.contains(queue) {
+            if isOperational, let queue = Int(exactly: value), queues.indices.contains(queue) {
                 queueNotificationCount.wrappingAdd(1, ordering: .relaxed)
                 backend.handleKick(queue: queue, transport: self)
             }
@@ -333,15 +373,19 @@ public final class VirtioMMIOTransport: MMIODevice {
             let requestedStatus = UInt32(truncatingIfNeeded: value)
             if requestedStatus == 0 {
                 status = 0
-                resetDevice()
+                if let retirement = resetDevice() { pendingResetRetirements.append(retirement) }
                 break
             }
-            // DEVICE_NEEDS_RESET is device-owned. A driver cannot accidentally clear the
-            // quarantine by rewriting its ordinary ACKNOWLEDGE/DRIVER/FEATURES_OK/DRIVER_OK bits.
-            status = requestedStatus | (previousStatus & DeviceStatus.deviceNeedsReset)
+            // Virtio status is cumulative; only status 0 clears it. Filter device-owned and
+            // reserved bits while retaining DEVICE_NEEDS_RESET across ordinary driver writes.
+            status = previousStatus | (requestedStatus & DeviceStatus.driverWritable)
+            if status & DeviceStatus.driver != 0, status & DeviceStatus.acknowledge == 0 {
+                status &= ~(DeviceStatus.driver | DeviceStatus.featuresOK | DeviceStatus.driverOK)
+            }
 
-            if status & DeviceStatus.featuresOK != 0 {
-                if driverFeaturesAreValid {
+            if requestedStatus & DeviceStatus.featuresOK != 0 {
+                let prerequisites = DeviceStatus.acknowledge | DeviceStatus.driver
+                if status & prerequisites == prerequisites, driverFeaturesAreValid {
                     negotiatedFeatures = driverFeatures
                     for queue in queues {
                         queue.setNegotiatedFeatures(negotiatedFeatures)
@@ -361,7 +405,7 @@ public final class VirtioMMIOTransport: MMIODevice {
                status & DeviceStatus.featuresOK == 0 {
                 status &= ~DeviceStatus.driverOK
             }
-            if status & DeviceStatus.driverOK != 0,
+            if isOperational,
                previousStatus & DeviceStatus.driverOK == 0 {
                 backend.deviceReady(transport: self)
             }
@@ -379,9 +423,9 @@ public final class VirtioMMIOTransport: MMIODevice {
         }
     }
 
-    private func resetDevice() {
+    private func resetDevice() -> (() -> Void)? {
         deviceResetCount.wrappingAdd(1, ordering: .relaxed)
-        backend.deviceReset(transport: self)
+        let retirement = backend.prepareDeviceReset(transport: self)
         for queue in queues { queue.reset() }
         pendingQueueLayout = Array(repeating: (0, 0, 0, 0), count: queues.count)
         interruptLock.lock()
@@ -390,6 +434,28 @@ public final class VirtioMMIOTransport: MMIODevice {
         negotiatedFeatures = 0
         driverFeatures = 0
         backend.deviceResetCompleted(transport: self)
+        return retirement
+    }
+
+    private func lockRegisters() {
+        registerLock.lock()
+        registerLockDepth += 1
+    }
+
+    private func unlockRegisters() {
+        precondition(registerLockDepth > 0)
+        registerLockDepth -= 1
+        let retirements: [() -> Void]
+        if registerLockDepth == 0 {
+            retirements = pendingResetRetirements
+            pendingResetRetirements.removeAll(keepingCapacity: true)
+        } else {
+            retirements = []
+        }
+        registerLock.unlock()
+        // A listener or backend can reset through a recursive register entry. Joining after only
+        // that inner unlock would still pin a host writer behind the outer queue callback.
+        for retirement in retirements { retirement() }
     }
 
     public var statistics: VirtioMMIOTransportStatistics {

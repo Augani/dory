@@ -3,6 +3,125 @@ import Testing
 @testable import DoryHV
 
 @Suite struct VirtioVsockHardeningTests {
+    @Test(arguments: [false, true])
+    func directTXAndEventKicksRejectTerminalStatusUntilReset(needsReset: Bool) throws {
+        let device = VirtioVsock(guestCID: 3)
+        let accepted = LockedValue(0)
+        let listener = try device.registerListener(port: 1024) { _ in
+            accepted.withValue { $0 += 1 }
+        }
+        defer { listener.close() }
+        let harness = try QueueHarness(device: device)
+        try harness.publish(queue: 1, bytes: packet(.request, guestPort: 40_000),
+            deviceWritable: false)
+        // A readable EVENT descriptor would ordinarily be consumed as malformed.
+        try harness.publish(queue: 2, bytes: [1, 2, 3, 4], deviceWritable: false)
+        failTransport(harness.transport, needsReset: needsReset)
+        device.handleKick(queue: 1, transport: harness.transport)
+        device.handleKick(queue: 2, transport: harness.transport)
+        #expect(accepted.value == 0)
+        #expect(try harness.usedLengths(queue: 1).isEmpty)
+        #expect(try harness.usedLengths(queue: 2).isEmpty)
+        #expect(try harness.transport.queues[1].pendingCount() == 1)
+        #expect(try harness.transport.queues[2].pendingCount() == 1)
+        #expect(device.statistics.receivedGuestPackets == 0)
+        #expect(device.statistics.invalidEventChains == 0)
+        harness.transport.write(offset: 0x070, value: 0x0F, width: 4)
+        device.handleKick(queue: 1, transport: harness.transport)
+        #expect(accepted.value == 0)
+        harness.transport.write(offset: 0x070, value: 0, width: 4)
+        try harness.publish(queue: 1, bytes: packet(.request, guestPort: 40_001),
+            deviceWritable: false)
+        device.handleKick(queue: 1, transport: harness.transport)
+        #expect(accepted.value == 1)
+        #expect(try harness.usedLengths(queue: 1) == [0])
+    }
+
+    @Test(arguments: [false, true])
+    func hostReceiveFlushCannotDMAThroughTerminalStatus(needsReset: Bool) throws {
+        let device = VirtioVsock(guestCID: 3)
+        let accepted = LockedValue<VsockConnection?>(nil)
+        let listener = try device.registerListener(port: 1024) { connection in
+            accepted.withValue { $0 = connection }
+        }
+        defer { listener.close() }
+        let harness = try QueueHarness(device: device)
+        // Attach this exact transport without consuming any RX buffer.
+        device.handleKick(queue: 0, transport: harness.transport)
+        _ = try device.receive(packet: packet(.request, guestPort: 40_000))
+        let oldConnection = try #require(accepted.value)
+        try harness.publish(queue: 0, bytes: [UInt8](repeating: 0xA5, count: 128),
+            deviceWritable: true)
+        failTransport(harness.transport, needsReset: needsReset)
+        try oldConnection.write([7, 8, 9]) // Synchronously attempts an attached host RX flush.
+        device.handleKick(queue: 0, transport: harness.transport)
+        #expect(try harness.usedLengths(queue: 0).isEmpty)
+        #expect(try harness.transport.queues[0].pendingCount() == 1)
+        #expect(try harness.data(queue: 0, count: 128) == [UInt8](repeating: 0xA5, count: 128))
+        #expect(device.resourceSnapshot.pendingGuestPackets == 1)
+        #expect(device.statistics.publishedGuestPackets == 0)
+        harness.transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(oldConnection.isPeerClosed)
+        #expect(device.resourceSnapshot.pendingGuestPackets == 0)
+        try harness.publish(queue: 0, bytes: [UInt8](repeating: 0, count: 128),
+            deviceWritable: true)
+        _ = try device.receive(packet: packet(.request, guestPort: 40_001))
+        let successor = try #require(accepted.value)
+        try successor.write([0x21])
+        #expect(try harness.usedLengths(queue: 0) == [UInt32(VirtioVsockHeader.byteCount + 1)])
+        let header = try VirtioVsockHeader(decoding: harness.data(queue: 0,
+            count: VirtioVsockHeader.byteCount))
+        #expect(header.destinationPort == 40_001)
+        #expect(try harness.data(queue: 0, count: VirtioVsockHeader.byteCount + 1).last == 0x21)
+    }
+
+    @Test(arguments: [false, true])
+    func reentrantListenerTerminalStatusStopsCompletionAndNextDescriptor(needsReset: Bool) throws {
+        let device = VirtioVsock(guestCID: 3)
+        let transport = LockedValue<VirtioMMIOTransport?>(nil)
+        let rejectOnAccept = LockedValue(true)
+        let accepted = LockedValue(0)
+        let listener = try device.registerListener(port: 1024) { _ in
+            accepted.withValue { $0 += 1 }
+            if rejectOnAccept.value, let transport = transport.value {
+                if needsReset { transport.requestDeviceReset() }
+                else { transport.write(offset: 0x070, value: 0x80, width: 4) }
+            }
+        }
+        defer { listener.close() }
+        let harness = try QueueHarness(device: device)
+        transport.withValue { $0 = harness.transport }
+        try harness.publish(queue: 1, chains: [
+            [QueueSegmentInput(bytes: packet(.request, guestPort: 40_000), deviceWritable: false)],
+            [QueueSegmentInput(bytes: packet(.request, guestPort: 40_001), deviceWritable: false)],
+        ])
+        device.handleKick(queue: 1, transport: harness.transport)
+        #expect(accepted.value == 1)
+        #expect(device.statistics.receivedGuestPackets == 1)
+        #expect(try harness.usedLengths(queue: 1).isEmpty)
+        #expect(try harness.transport.queues[1].pendingCount() == 1)
+        harness.transport.write(offset: 0x070, value: 0x0F, width: 4)
+        device.handleKick(queue: 1, transport: harness.transport)
+        #expect(accepted.value == 1)
+        #expect(try harness.usedLengths(queue: 1).isEmpty)
+        harness.transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(device.resourceSnapshot.connections == 0)
+        #expect(device.resourceSnapshot.pendingGuestPackets == 0)
+        rejectOnAccept.withValue { $0 = false }
+        try harness.publish(queue: 1, bytes: packet(.request, guestPort: 40_002),
+            deviceWritable: false)
+        device.handleKick(queue: 1, transport: harness.transport)
+        #expect(accepted.value == 2)
+        #expect(try harness.usedLengths(queue: 1) == [0])
+    }
+
+    private func failTransport(_ transport: VirtioMMIOTransport, needsReset: Bool) {
+        if needsReset { transport.requestDeviceReset() }
+        else { transport.write(offset: 0x070, value: 0x80, width: 4) }
+        let accepts = transport.withQueueLock { transport.acceptsQueueWork }
+        #expect(!accepts)
+    }
+
     @Test func descriptorLengthBoundsPayloadAndIgnoresTrailingBytes() throws {
         let device = VirtioVsock(guestCID: 3)
         let accepted = LockedValue<VsockConnection?>(nil)
@@ -749,6 +868,248 @@ import Testing
         #expect(device.resourceSnapshot.pendingGuestBytes == 0)
     }
 
+    @Test(arguments: ["neutral-reset", "direct-reset", "neutral-data", "neutral-credit"])
+    func oldPacketCannotMutateReusedTupleAfterDeviceReset(path: String) throws {
+        let device = try VirtioVsock(
+            guestCID: 3, limits: limits(hostPortRange: 500...500))
+        defer { device.quiesce() }
+        let original = try device.connectIfCapacity(port: 1024)
+        let originalRequest = try VirtioVsockHeader(decoding: #require(
+            device.drainPendingGuestPackets().first))
+        #expect(originalRequest.sourcePort == 500)
+
+        let operation: VirtioVsockHeader.Operation
+        switch path {
+        case "neutral-data": operation = .readWrite
+        case "neutral-credit": operation = .creditUpdate
+        default: operation = .reset
+        }
+        let stale = packet(
+            operation, guestPort: 1024, hostPort: 500,
+            length: operation == .readWrite ? 1 : 0,
+            forwardCount: operation == .creditUpdate ? 1 : 0,
+            payload: operation == .readWrite ? [0xEE] : [])
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        let failure = LockedValue<String?>(nil)
+        device.beforeGuestPacketProcessingTestHook = {
+            entered.signal()
+            if release.wait(timeout: .now() + 2) != .success {
+                failure.withValue { $0 = "fixture admission gate timed out" }
+            }
+        }
+        defer { release.signal() }
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            do {
+                if path == "direct-reset" {
+                    _ = try device.receive(packet: stale)
+                } else {
+                    try device.consumeTransportNeutralGuestPacket(stale)
+                }
+            } catch {
+                failure.withValue { $0 = String(describing: error) }
+            }
+        }
+        #expect(entered.wait(timeout: .now() + 2) == .success)
+        device.beforeGuestPacketProcessingTestHook = nil
+        device.resetTransportNeutralDevice()
+        #expect(original.isPeerClosed)
+
+        let replacement = try device.connectIfCapacity(port: 1024)
+        let replacementRequest = try VirtioVsockHeader(decoding: #require(
+            device.drainPendingGuestPackets().first))
+        #expect(replacementRequest.sourcePort == originalRequest.sourcePort)
+        try device.consumeTransportNeutralGuestPacket(packet(
+            .response, guestPort: 1024, hostPort: replacementRequest.sourcePort))
+
+        release.signal()
+        #expect(finished.wait(timeout: .now() + 2) == .success)
+        #expect(failure.value == nil)
+        #expect(!replacement.isPeerClosed)
+        #expect(device.resourceSnapshot.connections == 1)
+        #expect(device.resourceSnapshot.inboundBufferedBytes == 0)
+        var received = [UInt8](repeating: 0, count: 1)
+        #expect(try received.withUnsafeMutableBytes { try replacement.read(into: $0) } == 0)
+        try replacement.write([0xA5], timeoutNanoseconds: 0)
+        let outgoing = try #require(device.drainPendingGuestPackets().first)
+        #expect(try VirtioVsockHeader(decoding: outgoing).operation == .readWrite)
+        #expect(outgoing.last == 0xA5)
+    }
+
+    @Test(arguments: ["reset", "unregister"])
+    func oldListenerDeliveryCannotReachReplacementRegistration(revocation: String) throws {
+        let device = try VirtioVsock(guestCID: 3, limits: limits())
+        defer { device.quiesce() }
+        let oldCalls = LockedValue(0)
+        let newCalls = LockedValue(0)
+        let accepted = LockedValue<VsockConnection?>(nil)
+        let oldRegistration = try device.registerListener(port: 1024) { _ in
+            oldCalls.withValue { $0 += 1 }
+        }
+        defer { oldRegistration.close() }
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        let failure = LockedValue<String?>(nil)
+        device.beforeListenerDeliveryTestHook = {
+            entered.signal()
+            if release.wait(timeout: .now() + 2) != .success {
+                failure.withValue { $0 = "fixture listener gate timed out" }
+            }
+        }
+        defer { release.signal() }
+        let oldRequest = packet(.request, guestPort: 40_000)
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            do { try device.consumeTransportNeutralGuestPacket(oldRequest) }
+            catch { failure.withValue { $0 = String(describing: error) } }
+        }
+        #expect(entered.wait(timeout: .now() + 2) == .success)
+        device.beforeListenerDeliveryTestHook = nil
+        if revocation == "reset" { device.resetTransportNeutralDevice() }
+        oldRegistration.close()
+        let replacementRegistration = try device.registerListener(port: 1024) { connection in
+            newCalls.withValue { $0 += 1 }
+            accepted.withValue { $0 = connection }
+        }
+        defer { replacementRegistration.close() }
+        try device.consumeTransportNeutralGuestPacket(packet(.request, guestPort: 40_001))
+        release.signal()
+        #expect(finished.wait(timeout: .now() + 2) == .success)
+        #expect(failure.value == nil)
+        #expect(oldCalls.value == 0)
+        #expect(newCalls.value == 1)
+        #expect(device.resourceSnapshot.listeners == 1)
+        let replacement = try #require(accepted.value)
+        #expect(!replacement.isPeerClosed)
+        try replacement.write([0xA5], timeoutNanoseconds: 0)
+    }
+
+    @Test(arguments: ["quiesce", "unregister"])
+    func listenerRevocationJoinsAnAlreadyRunningHandler(revocation: String) throws {
+        let device = try VirtioVsock(guestCID: 3, limits: limits())
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let packetFinished = DispatchSemaphore(value: 0)
+        let revocationFinished = DispatchSemaphore(value: 0)
+        let failure = LockedValue<String?>(nil)
+        let registration = try device.registerListener(port: 1024) { _ in
+            entered.signal()
+            if release.wait(timeout: .now() + 2) != .success {
+                failure.withValue { $0 = "fixture running handler timed out" }
+            }
+        }
+        defer { release.signal() }
+        let request = packet(.request, guestPort: 40_000)
+        DispatchQueue.global().async {
+            defer { packetFinished.signal() }
+            do { try device.consumeTransportNeutralGuestPacket(request) }
+            catch { failure.withValue { $0 = String(describing: error) } }
+        }
+        #expect(entered.wait(timeout: .now() + 2) == .success)
+        DispatchQueue.global().async {
+            if revocation == "quiesce" { device.quiesce() }
+            else { registration.close() }
+            revocationFinished.signal()
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            let snapshot = device.resourceSnapshot
+            if revocation == "quiesce" ? snapshot.isQuiesced : snapshot.listeners == 0 { break }
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        #expect(device.resourceSnapshot.listeners == 0)
+        #expect(revocationFinished.wait(timeout: .now() + 0.02) == .timedOut)
+        release.signal()
+        #expect(packetFinished.wait(timeout: .now() + 2) == .success)
+        let joined = revocationFinished.wait(timeout: .now() + 2) == .success
+        #expect(joined)
+        #expect(failure.value == nil)
+        if joined { device.quiesce() }
+    }
+
+    @Test func listenerHandlerCanUnregisterAndResetReentrantly() throws {
+        let device = try VirtioVsock(guestCID: 3, limits: limits())
+        let registration = LockedValue<VirtioVsockListenerRegistration?>(nil)
+        let calls = LockedValue(0)
+        let finished = DispatchSemaphore(value: 0)
+        let failure = LockedValue<String?>(nil)
+        let token = try device.registerListener(port: 1024) { _ in
+            registration.value?.close()
+            device.resetTransportNeutralDevice()
+            calls.withValue { $0 += 1 }
+        }
+        registration.withValue { $0 = token }
+        let request = packet(.request, guestPort: 40_000)
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            do { try device.consumeTransportNeutralGuestPacket(request) }
+            catch { failure.withValue { $0 = String(describing: error) } }
+        }
+        let joined = finished.wait(timeout: .now() + 2) == .success
+        #expect(joined)
+        #expect(calls.value == 1)
+        #expect(failure.value == nil)
+        #expect(device.resourceSnapshot.connections == 0)
+        #expect(device.resourceSnapshot.listeners == 0)
+        #expect(!device.serviceAdmissionSnapshot.isResetting)
+        if joined { device.quiesce() }
+    }
+
+    @Test func delayedOldReadReleaseCannotSubtractReplacementInboundQuota() throws {
+        let device = try VirtioVsock(guestCID: 3, limits: limits())
+        defer { device.quiesce() }
+        let accepted = LockedValue<VsockConnection?>(nil)
+        let registration = try device.registerListener(port: 1024) { connection in
+            accepted.withValue { $0 = connection }
+        }
+        defer { registration.close() }
+        _ = try device.receive(packet: packet(.request, guestPort: 40_000))
+        let original = try #require(accepted.value)
+        _ = try device.receive(packet: packet(
+            .readWrite, guestPort: 40_000, length: 2, payload: [1, 2]))
+        #expect(device.resourceSnapshot.inboundBufferedBytes == 2)
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        let failure = LockedValue<String?>(nil)
+        device.beforeInboundReleaseTestHook = {
+            entered.signal()
+            if release.wait(timeout: .now() + 2) != .success {
+                failure.withValue { $0 = "fixture quota release gate timed out" }
+            }
+        }
+        defer { release.signal() }
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            do {
+                var received = [UInt8](repeating: 0, count: 2)
+                let count = try received.withUnsafeMutableBytes { try original.read(into: $0) }
+                if count != 2 || received != [1, 2] {
+                    failure.withValue { $0 = "old read did not consume its own two bytes" }
+                }
+            } catch { failure.withValue { $0 = String(describing: error) } }
+        }
+        #expect(entered.wait(timeout: .now() + 2) == .success)
+        device.beforeInboundReleaseTestHook = nil
+        device.resetTransportNeutralDevice()
+        _ = try device.receive(packet: packet(.request, guestPort: 40_000))
+        let replacement = try #require(accepted.value)
+        _ = try device.receive(packet: packet(
+            .readWrite, guestPort: 40_000, length: 1, payload: [0xA5]))
+        #expect(device.resourceSnapshot.inboundBufferedBytes == 1)
+        release.signal()
+        #expect(finished.wait(timeout: .now() + 2) == .success)
+        #expect(failure.value == nil)
+        #expect(device.resourceSnapshot.inboundBufferedBytes == 1)
+        var received = [UInt8](repeating: 0, count: 1)
+        #expect(try received.withUnsafeMutableBytes { try replacement.read(into: $0) } == 1)
+        #expect(received == [0xA5])
+        #expect(device.resourceSnapshot.inboundBufferedBytes == 0)
+    }
+
     @Test func pendingTakeAndConcurrentAbortCannotDeleteTheNextFlowPacket() throws {
         for iteration in 0..<32 {
             let device = try VirtioVsock(
@@ -1002,6 +1363,7 @@ private final class QueueHarness: @unchecked Sendable {
             backend: device,
             memory: memory
         ) {}
+        negotiateQueueWork()
     }
 
     func publish(queue: Int, bytes: [UInt8], deviceWritable: Bool) throws {
@@ -1015,6 +1377,7 @@ private final class QueueHarness: @unchecked Sendable {
         precondition(!chains.isEmpty && chains.count <= 8)
         precondition(chains.allSatisfy { !$0.isEmpty })
         precondition(chains.flatMap { $0 }.count <= 8)
+        if !transport.withQueueLock({ transport.acceptsQueueWork }) { negotiateQueueWork() }
         let layout = layout(queue: queue)
         transport.queues[queue].configure(
             size: 8,
@@ -1049,6 +1412,15 @@ private final class QueueHarness: @unchecked Sendable {
 
     func usedLength(queue: Int) throws -> UInt32 {
         try memory.read(UInt32.self, at: layout(queue: queue).used + 8)
+    }
+
+    private func negotiateQueueWork() {
+        transport.write(offset: 0x070, value: 1, width: 4)
+        transport.write(offset: 0x070, value: 3, width: 4)
+        transport.write(offset: 0x024, value: 1, width: 4)
+        transport.write(offset: 0x020, value: 1, width: 4) // VERSION_1
+        transport.write(offset: 0x070, value: 0x0B, width: 4)
+        transport.write(offset: 0x070, value: 0x0F, width: 4)
     }
 
     func usedLengths(queue: Int) throws -> [UInt32] {

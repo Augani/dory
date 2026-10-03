@@ -1,6 +1,8 @@
 import Foundation
 
 extension DoryVirtioFeatures {
+  public static let blockSizeMax = Self(rawValue: 1 << 1)
+  public static let blockSegmentMax = Self(rawValue: 1 << 2)
   public static let blockReadOnly = Self(rawValue: 1 << 5)
   public static let blockSize = Self(rawValue: 1 << 6)
   public static let blockFlush = Self(rawValue: 1 << 9)
@@ -21,6 +23,7 @@ public protocol DoryVirtioBlockStorage: AnyObject, Sendable {
 
 public enum DoryVirtioBlockError: Error, Sendable, Equatable {
   case invalidCapacity(UInt64)
+  case invalidByteCount(Int)
   case malformedRequest
   case invalidDescriptorDirection
   case requestOutOfBounds(offset: UInt64, byteCount: UInt64)
@@ -66,6 +69,11 @@ public struct DoryVirtioBlockDiagnostics: Sendable, Hashable {
 /// Transport-neutral VirtIO block request engine with bounded scatter/gather and range commands.
 public final class DoryVirtioBlockDevice: @unchecked Sendable {
   public static let sectorSize: UInt64 = 512
+  public static let maximumSegmentByteCount: UInt32 = 1 << 20
+  public static let maximumPayloadSegments = 126
+  public static let maximumPayloadByteCount =
+    UInt64(maximumSegmentByteCount) * UInt64(maximumPayloadSegments)
+  public static let maximumRangeSectors: UInt32 = 2048
   public static let successStatus: UInt8 = 0
   public static let ioErrorStatus: UInt8 = 1
   public static let unsupportedStatus: UInt8 = 2
@@ -96,17 +104,21 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
     identifier: String,
     maximumRangeSegments: Int = 32
   ) throws {
-    guard storage.capacityBytes % Self.sectorSize == 0,
+    guard storage.capacityBytes > 0,
+      storage.capacityBytes % Self.sectorSize == 0,
       storage.logicalBlockSize >= 512,
-      storage.logicalBlockSize.nonzeroBitCount == 1
+      storage.logicalBlockSize.nonzeroBitCount == 1,
+      storage.capacityBytes % UInt64(storage.logicalBlockSize) == 0
     else { throw DoryVirtioBlockError.invalidCapacity(storage.capacityBytes) }
     self.storage = storage
     self.identifier = Array(identifier.utf8.prefix(20))
-    self.maximumRangeSegments = min(Int(UInt32.max), max(1, maximumRangeSegments))
+    self.maximumRangeSegments = min(Self.maximumPayloadSegments, max(1, maximumRangeSegments))
   }
 
   public var offeredFeatures: DoryVirtioFeatures {
-    var features: DoryVirtioFeatures = [.blockSize, .blockFlush, .blockDiscard, .blockWriteZeroes]
+    var features: DoryVirtioFeatures = [
+      .blockSizeMax, .blockSegmentMax, .blockSize, .blockFlush, .blockDiscard, .blockWriteZeroes,
+    ]
     if storage.readOnly { features.insert(.blockReadOnly) }
     return features
   }
@@ -114,13 +126,13 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
   public var configuration: [UInt8] {
     var bytes = [UInt8](repeating: 0, count: 60)
     put(storage.capacityBytes / Self.sectorSize, at: 0, in: &bytes)
-    put(UInt32(1 << 20), at: 8, in: &bytes)
-    put(UInt32(126), at: 12, in: &bytes)
+    put(Self.maximumSegmentByteCount, at: 8, in: &bytes)
+    put(UInt32(Self.maximumPayloadSegments), at: 12, in: &bytes)
     put(storage.logicalBlockSize, at: 20, in: &bytes)
-    put(UInt32.max, at: 36, in: &bytes)
+    put(Self.maximumRangeSectors, at: 36, in: &bytes)
     put(UInt32(maximumRangeSegments), at: 40, in: &bytes)
     put(UInt32(1), at: 44, in: &bytes)
-    put(UInt32.max, at: 48, in: &bytes)
+    put(Self.maximumRangeSectors, at: 48, in: &bytes)
     put(UInt32(maximumRangeSegments), at: 52, in: &bytes)
     bytes[56] = 1
     return bytes
@@ -152,12 +164,14 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
     memory: any DoryVirtioGuestMemory
   ) throws -> DoryVirtioBlockResult {
     guard chain.descriptors.count >= 2,
+      chain.descriptors.count <= Self.maximumPayloadSegments + 2,
       let headerDescriptor = chain.descriptors.first,
       let statusDescriptor = chain.descriptors.last,
       headerDescriptor.length == 16,
       !headerDescriptor.deviceWillWrite,
       statusDescriptor.deviceWillWrite,
-      statusDescriptor.length >= 1
+      statusDescriptor.length >= 1,
+      statusDescriptor.length <= Self.maximumSegmentByteCount
     else { throw DoryVirtioBlockError.malformedRequest }
 
     let header = try exactRead(memory, descriptor: headerDescriptor)
@@ -168,6 +182,7 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
     recordRequest()
     let result: DoryVirtioBlockResult
     do {
+      _ = try totalLength(payload)
       result = try execute(type: requestType, sector: sector, payload: payload, memory: memory)
     } catch DoryVirtioBlockError.invalidDescriptorDirection {
       result = .init(bytesWritten: 1, status: Self.ioErrorStatus)
@@ -188,12 +203,12 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
     switch type {
     case 0:
       try requireDirection(payload, deviceWillWrite: true)
-      try validateWritableTargets(payload, memory: memory)
       let byteCount = try totalLength(payload)
       guard byteCount > 0, byteCount % Self.sectorSize == 0 else {
         throw DoryVirtioBlockError.malformedRequest
       }
       let offset = try checkedOffset(sector: sector, byteCount: byteCount)
+      try validateWritableTargets(payload, memory: memory)
       let bytes = try storage.read(offset: offset, byteCount: Int(byteCount))
       guard bytes.count == Int(byteCount) else {
         throw DoryVirtioBlockError.invalidStorageResponse(
@@ -207,11 +222,12 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
         return .init(bytesWritten: 1, status: Self.ioErrorStatus)
       }
       try requireDirection(payload, deviceWillWrite: false)
-      let bytes = try gather(payload, memory: memory)
-      guard !bytes.isEmpty, bytes.count % Int(Self.sectorSize) == 0 else {
+      let byteCount = try totalLength(payload)
+      guard byteCount > 0, byteCount % Self.sectorSize == 0 else {
         throw DoryVirtioBlockError.malformedRequest
       }
-      let offset = try checkedOffset(sector: sector, byteCount: UInt64(bytes.count))
+      let offset = try checkedOffset(sector: sector, byteCount: byteCount)
+      let bytes = try gather(payload, memory: memory)
       try storage.write(offset: offset, bytes: bytes)
       recordWrite(byteCount: UInt64(bytes.count))
       return .init(bytesWritten: 1, status: Self.successStatus)
@@ -222,8 +238,8 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
       return .init(bytesWritten: 1, status: Self.successStatus)
     case 8:
       try requireDirection(payload, deviceWillWrite: true)
-      try validateWritableTargets(payload, memory: memory)
       let writable = try totalLength(payload)
+      try validateWritableTargets(payload, memory: memory)
       var id = [UInt8](repeating: 0, count: min(20, Int(writable)))
       id.replaceSubrange(0..<min(id.count, identifier.count), with: identifier.prefix(id.count))
       try scatter(id, into: payload, memory: memory)
@@ -233,6 +249,7 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
         return .init(bytesWritten: 1, status: Self.ioErrorStatus)
       }
       try requireDirection(payload, deviceWillWrite: false)
+      try validateRangePayload(payload)
       try executeRanges(try gather(payload, memory: memory), zeroes: false)
       return .init(bytesWritten: 1, status: Self.successStatus)
     case 13:
@@ -240,6 +257,7 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
         return .init(bytesWritten: 1, status: Self.ioErrorStatus)
       }
       try requireDirection(payload, deviceWillWrite: false)
+      try validateRangePayload(payload)
       try executeRanges(try gather(payload, memory: memory), zeroes: true)
       return .init(bytesWritten: 1, status: Self.successStatus)
     default:
@@ -279,7 +297,9 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
       let sector = uint64(bytes, at: base)
       let sectors = uint32(bytes, at: base + 8)
       let flags = uint32(bytes, at: base + 12)
-      guard sectors > 0, zeroes ? flags & ~1 == 0 : flags == 0 else {
+      guard sectors > 0, sectors <= Self.maximumRangeSectors,
+        zeroes ? flags & ~1 == 0 : flags == 0
+      else {
         throw DoryVirtioBlockError.malformedRequest
       }
       let byteCount = UInt64(sectors) * Self.sectorSize
@@ -320,12 +340,27 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
   }
 
   private func totalLength(_ descriptors: [DoryVirtioDescriptor]) throws -> UInt64 {
-    try descriptors.reduce(0) { total, descriptor in
+    guard descriptors.count <= Self.maximumPayloadSegments else {
+      throw DoryVirtioBlockError.malformedRequest
+    }
+    return try descriptors.reduce(0) { total, descriptor in
       let (updated, overflow) = total.addingReportingOverflow(UInt64(descriptor.length))
-      guard !overflow, updated <= UInt64(UInt32.max - 1) else {
+      guard descriptor.length <= Self.maximumSegmentByteCount,
+        !overflow, updated <= Self.maximumPayloadByteCount
+      else {
         throw DoryVirtioBlockError.malformedRequest
       }
       return updated
+    }
+  }
+
+  private func validateRangePayload(_ descriptors: [DoryVirtioDescriptor]) throws {
+    let byteCount = try totalLength(descriptors)
+    guard byteCount > 0, byteCount % 16 == 0 else {
+      throw DoryVirtioBlockError.malformedRequest
+    }
+    guard byteCount / 16 <= UInt64(maximumRangeSegments) else {
+      throw DoryVirtioBlockError.tooManyRangeSegments(Int(byteCount / 16))
     }
   }
 
@@ -443,7 +478,8 @@ public final class DoryVirtioInMemoryBlockStorage: DoryVirtioBlockStorage, @unch
   public var flushCount: Int { lock.withLock { flushes } }
 
   public func read(offset: UInt64, byteCount: Int) throws -> [UInt8] {
-    try lock.withLock { Array(bytes[try range(offset: offset, byteCount: UInt64(byteCount))]) }
+    guard byteCount >= 0 else { throw DoryVirtioBlockError.invalidByteCount(byteCount) }
+    return try lock.withLock { Array(bytes[try range(offset: offset, byteCount: UInt64(byteCount))]) }
   }
 
   public func write(offset: UInt64, bytes: [UInt8]) throws {

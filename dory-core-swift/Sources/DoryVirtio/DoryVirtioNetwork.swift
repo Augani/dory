@@ -9,6 +9,12 @@ extension DoryVirtioFeatures {
 public protocol DoryVirtioNetworkBackend: AnyObject, Sendable {
   func transmit(frame: [UInt8]) throws
   func connectReceiveSink(_ sink: @escaping @Sendable ([UInt8]) -> Void)
+  /// Permanent backend retirement must revoke the device before its guest memory can be freed.
+  func connectStopSink(_ sink: @escaping @Sendable () -> Void)
+}
+
+public extension DoryVirtioNetworkBackend {
+  func connectStopSink(_ sink: @escaping @Sendable () -> Void) {}
 }
 
 public enum DoryVirtioNetworkError: Error, Sendable, Equatable {
@@ -19,6 +25,8 @@ public enum DoryVirtioNetworkError: Error, Sendable, Equatable {
   case invalidFrameLength(Int)
   case receiveBufferTooSmall(required: UInt64, available: UInt64)
   case noReceivedFrame
+  case deviceStopped
+  case linkDown
 }
 
 /// Modern two-queue VirtIO network device with bounded host ingress and no implicit offloads.
@@ -37,10 +45,15 @@ public final class DoryVirtioNetworkDevice: @unchecked Sendable {
   public let maximumPendingReceiveFrames: Int
 
   private let lock = NSLock()
+  private let publicationLock = NSLock()
+  private let notificationLock = NSRecursiveLock()
   private var pendingReceiveFrames: [[UInt8]] = []
   private var receiveReadySink: (@Sendable () -> Void)?
+  private var retirementSink: (@Sendable () -> Void)?
   private var linkUp = true
   private var droppedReceiveFrames = 0
+  private var receiveEpoch = UUID()
+  private var stopped = false
 
   public init(
     backend: any DoryVirtioNetworkBackend,
@@ -61,6 +74,7 @@ public final class DoryVirtioNetworkDevice: @unchecked Sendable {
     self.mtu = mtu
     self.maximumPendingReceiveFrames = maximumPendingReceiveFrames
     backend.connectReceiveSink { [weak self] frame in self?.receive(frame: frame) }
+    backend.connectStopSink { [weak self] in self?.stop() }
   }
 
   public var offeredFeatures: DoryVirtioFeatures {
@@ -72,31 +86,75 @@ public final class DoryVirtioNetworkDevice: @unchecked Sendable {
     return macAddress + littleEndian(status) + [0, 0] + littleEndian(mtu)
   }
 
-  public var canReceive: Bool { lock.withLock { !pendingReceiveFrames.isEmpty } }
+  public var canReceive: Bool { lock.withLock { !stopped && linkUp && !pendingReceiveFrames.isEmpty } }
+  public var isStopped: Bool { lock.withLock { stopped } }
   public var pendingReceiveCount: Int { lock.withLock { pendingReceiveFrames.count } }
   public var droppedReceiveCount: Int { lock.withLock { droppedReceiveFrames } }
 
   public func connectReceiveReadySink(_ sink: @escaping @Sendable () -> Void) {
-    let ready = lock.withLock {
-      receiveReadySink = sink
-      return !pendingReceiveFrames.isEmpty
+    notificationLock.withLock {
+      let epoch = lock.withLock {
+        guard !stopped else { return Optional<UUID>.none }
+        receiveReadySink = sink
+        return pendingReceiveFrames.isEmpty ? nil : receiveEpoch
+      }
+      if let epoch { notifyReceiveReady(sink, epoch: epoch) }
     }
-    if ready { sink() }
+  }
+
+  /// A transport uses this to revoke its lifecycle lease and join used-ring completion, which
+  /// occurs after semantic payload processing returns. The callback runs outside device locks.
+  public func connectRetirementSink(_ sink: @escaping @Sendable () -> Void) {
+    let alreadyStopped = lock.withLock {
+      retirementSink = sink
+      return stopped
+    }
+    if alreadyStopped { sink() }
   }
 
   public func setLinkUp(_ isUp: Bool) -> Bool {
-    lock.withLock {
-      guard linkUp != isUp else { return false }
+    let changed = lock.withLock {
+      guard !stopped, linkUp != isUp else { return false }
       linkUp = isUp
+      if !isUp {
+        receiveEpoch = UUID()
+        pendingReceiveFrames.removeAll(keepingCapacity: true)
+      }
       return true
     }
+    if changed, !isUp {
+      notificationLock.withLock {}
+      publicationLock.withLock {}
+    }
+    return changed
   }
 
   /// Drops queued host ingress so a pre-reset frame cannot be delivered after the receive queue
   /// has been reset and renegotiated. Link state, immutable configuration, the backend
   /// connection, and diagnostic counters are preserved.
   public func reset() {
-    lock.withLock { pendingReceiveFrames.removeAll(keepingCapacity: true) }
+    lock.withLock {
+      receiveEpoch = UUID()
+      pendingReceiveFrames.removeAll(keepingCapacity: true)
+    }
+    // An already-selected packet may finish, but reset cannot return before its DMA is joined.
+    notificationLock.withLock {}
+    publicationLock.withLock {}
+  }
+
+  public func stop() {
+    let retiringTransport = lock.withLock {
+      stopped = true
+      linkUp = false
+      receiveEpoch = UUID()
+      pendingReceiveFrames.removeAll(keepingCapacity: true)
+      receiveReadySink = nil
+      return retirementSink
+    }
+    // Every caller joins, including callers racing the first stop owner.
+    notificationLock.withLock {}
+    publicationLock.withLock {}
+    retiringTransport?()
   }
 
   @discardableResult
@@ -105,22 +163,32 @@ public final class DoryVirtioNetworkDevice: @unchecked Sendable {
       lock.withLock { droppedReceiveFrames += 1 }
       return false
     }
-    let delivery: (Bool, (@Sendable () -> Void)?) = lock.withLock {
-      guard linkUp, pendingReceiveFrames.count < maximumPendingReceiveFrames else {
+    let delivery: (Bool, UUID, (@Sendable () -> Void)?) = lock.withLock {
+      guard !stopped, linkUp, pendingReceiveFrames.count < maximumPendingReceiveFrames else {
         droppedReceiveFrames += 1
-        return (false, nil)
+        return (false, receiveEpoch, nil)
       }
       pendingReceiveFrames.append(frame)
-      return (true, receiveReadySink)
+      return (true, receiveEpoch, receiveReadySink)
     }
-    delivery.1?()
+    if let sink = delivery.2 { notifyReceiveReady(sink, epoch: delivery.1) }
     return delivery.0
+  }
+
+  private func notifyReceiveReady(_ sink: @Sendable () -> Void, epoch: UUID) {
+    notificationLock.withLock {
+      guard lock.withLock({ !stopped && linkUp && receiveEpoch == epoch }) else { return }
+      sink()
+    }
   }
 
   public func processTransmit(
     _ chain: DoryVirtioDescriptorChain,
     memory: any DoryVirtioGuestMemory
   ) throws -> UInt32 {
+    publicationLock.lock()
+    defer { publicationLock.unlock() }
+    try requireLiveLink()
     guard !chain.descriptors.isEmpty,
       chain.writableByteCount == 0,
       chain.descriptors.allSatisfy({ !$0.deviceWillWrite })
@@ -141,13 +209,17 @@ public final class DoryVirtioNetworkDevice: @unchecked Sendable {
     _ chain: DoryVirtioDescriptorChain,
     memory: any DoryVirtioGuestMemory
   ) throws -> UInt32 {
+    publicationLock.lock()
+    defer { publicationLock.unlock() }
+    try requireLiveLink()
     guard !chain.descriptors.isEmpty,
       chain.readableByteCount == 0,
       chain.descriptors.allSatisfy(\.deviceWillWrite)
     else { throw DoryVirtioNetworkError.invalidDescriptorDirection }
-    guard let frame = lock.withLock({ pendingReceiveFrames.first }) else {
+    guard let selection = lock.withLock({ pendingReceiveFrames.first.map { (receiveEpoch, $0) } }) else {
       throw DoryVirtioNetworkError.noReceivedFrame
     }
+    let frame = selection.1
     let required = UInt64(Self.headerSize + frame.count)
     guard chain.writableByteCount >= required else {
       throw DoryVirtioNetworkError.receiveBufferTooSmall(
@@ -168,7 +240,9 @@ public final class DoryVirtioNetworkDevice: @unchecked Sendable {
     header[10] = 1
     try scatter(header + frame, into: chain.descriptors, memory: memory)
     lock.withLock {
-      if pendingReceiveFrames.first == frame { pendingReceiveFrames.removeFirst() }
+      if receiveEpoch == selection.0, pendingReceiveFrames.first == frame {
+        pendingReceiveFrames.removeFirst()
+      }
     }
     return UInt32(required)
   }
@@ -177,12 +251,27 @@ public final class DoryVirtioNetworkDevice: @unchecked Sendable {
     (14...Int(mtu) + 18).contains(count)
   }
 
+  private func requireLiveLink() throws {
+    try lock.withLock {
+      guard !stopped else { throw DoryVirtioNetworkError.deviceStopped }
+      guard linkUp else { throw DoryVirtioNetworkError.linkDown }
+    }
+  }
+
   private func gather(
     _ descriptors: [DoryVirtioDescriptor],
     memory: any DoryVirtioGuestMemory
   ) throws -> [UInt8] {
     var result: [UInt8] = []
-    result.reserveCapacity(descriptors.reduce(0) { $0 + Int($1.length) })
+    let maximumBytes = Self.headerSize + Int(mtu) + 18
+    var totalBytes = 0
+    for descriptor in descriptors {
+      guard UInt64(descriptor.length) <= UInt64(maximumBytes - totalBytes) else {
+        throw DoryVirtioNetworkError.invalidFrameLength(Int(clamping: UInt64(totalBytes) + UInt64(descriptor.length)))
+      }
+      totalBytes += Int(descriptor.length)
+    }
+    result.reserveCapacity(totalBytes)
     for descriptor in descriptors {
       let bytes = try memory.read(at: descriptor.address, byteCount: Int(descriptor.length))
       guard bytes.count == Int(descriptor.length) else {

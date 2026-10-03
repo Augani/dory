@@ -1,5 +1,6 @@
 import Darwin
 import DoryGuestMemoryShim
+import DoryOperations
 import Foundation
 import Hypervisor
 import Synchronization
@@ -80,6 +81,23 @@ struct GuestMemorySharedRegion: @unchecked Sendable {
     let offset: UInt64
     let length: UInt64
     let declaredFileSize: UInt64
+    let memoryLease: GuestMemoryRangeLease
+}
+
+/// An opaque pin over exact host granules. Copies share one close authority, and retaining the
+/// pin also retains the RAM mapping. Only GuestMemory can create a pin or exempt it from reclaim.
+final class GuestMemoryRangeLease: @unchecked Sendable {
+    fileprivate let memory: GuestMemory
+    fileprivate let identity: UUID
+
+    fileprivate init(memory: GuestMemory, identity: UUID) {
+        self.memory = memory
+        self.identity = identity
+    }
+
+    var isActive: Bool { memory.rangeLeaseIsActive(identity) }
+    func close() { memory.releaseRangeLease(identity) }
+    deinit { close() }
 }
 
 /// The VM's RAM: one unlinked shared mapping in OUR address space, mapped into the guest at a fixed
@@ -89,6 +107,7 @@ public final class GuestMemory: @unchecked Sendable {
     private enum PageMappingState: Equatable {
         case mapped
         case released(reclaimed: Bool, requiresMarkInUse: Bool)
+        case qualificationProtected(UUID)
     }
 
     public let guestBase: UInt64
@@ -108,7 +127,11 @@ public final class GuestMemory: @unchecked Sendable {
 
     static let pageSize: UInt64 = HostPage.size
     private let pageStates: Mutex<[PageMappingState]>
+    // Accessed only inside pageStates.withLock, together with stage-2/reclaim mutation.
+    private var pagePinCounts: [UInt32]
+    private var rangeLeases: [UUID: [Range<Int>]] = [:]
     private let reclaimOperations: GuestMemoryReclaimOperations
+    private let qualificationProtection: @Sendable (UInt64, Int, Bool) -> Bool
 
     public convenience init(guestBase: UInt64, size: UInt64) throws {
         try self.init(
@@ -121,10 +144,16 @@ public final class GuestMemory: @unchecked Sendable {
     init(
         guestBase: UInt64,
         size: UInt64,
-        reclaimOperations: GuestMemoryReclaimOperations
+        reclaimOperations: GuestMemoryReclaimOperations,
+        qualificationProtection: @escaping @Sendable (UInt64, Int, Bool) -> Bool = { address, count, enabled in
+            hv_vm_protect(address, count, enabled ? hv_memory_flags_t(0)
+                : hv_memory_flags_t(HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC)) == HV_SUCCESS
+        }
     ) throws {
-        guard size > 0, size % Self.pageSize == 0 else {
-            throw VMError.invalidConfiguration("RAM size must be a positive multiple of the host page size")
+        let (_, extentOverflow) = guestBase.addingReportingOverflow(size)
+        guard size > 0, size <= UInt64(Int.max), !extentOverflow,
+              guestBase % Self.pageSize == 0, size % Self.pageSize == 0 else {
+            throw VMError.invalidConfiguration("RAM base and positive size must be host-page aligned without overflow")
         }
         guard DoryGuestMemoryBackingDataOffset() == Self.pageSize else {
             throw VMError.invalidConfiguration("guest RAM authority page size does not match the host")
@@ -171,7 +200,9 @@ public final class GuestMemory: @unchecked Sendable {
         self.pageStates = Mutex(
             [PageMappingState](repeating: .mapped, count: Int(size / Self.pageSize))
         )
+        self.pagePinCounts = [UInt32](repeating: 0, count: Int(size / Self.pageSize))
         self.reclaimOperations = reclaimOperations
+        self.qualificationProtection = qualificationProtection
         descriptorIsOwned = false
     }
 
@@ -192,8 +223,19 @@ public final class GuestMemory: @unchecked Sendable {
     /// process footprint immediately. The guest gets the range back lazily via handleRAMFault.
     @discardableResult
     public func releaseRange(guestAddress: UInt64, length: UInt64) -> GuestMemoryReleaseResult {
+        releaseRange(guestAddress: guestAddress, length: length, excluding: nil)
+    }
+
+    /// Free-page reporting may exempt its own writable payload claim, never queue metadata,
+    /// another device's overlapping claim, or a renderer's retained backing authority.
+    func releaseRange(
+        guestAddress: UInt64,
+        length: UInt64,
+        excluding lease: GuestMemoryRangeLease?
+    ) -> GuestMemoryReleaseResult {
         guard contains(guestAddress, count: length), length > 0,
-              guestAddress % Self.pageSize == 0, length % Self.pageSize == 0 else { return .rejected }
+              guestAddress % Self.pageSize == 0, length % Self.pageSize == 0,
+              (guestAddress - guestBase) % Self.pageSize == 0 else { return .rejected }
         let first = Int((guestAddress - guestBase) / Self.pageSize)
         let count = Int(length / Self.pageSize)
         let host = hostBase.advanced(by: Int(guestAddress - guestBase))
@@ -204,6 +246,23 @@ public final class GuestMemory: @unchecked Sendable {
             let end = min(first + count, states.count)
             guard first < end,
                   states[first..<end].allSatisfy({ $0 == .mapped }) else { return .rejected }
+            let exemptRanges: [Range<Int>]
+            if let lease {
+                guard lease.memory === self, let ranges = rangeLeases[lease.identity] else {
+                    return .rejected
+                }
+                exemptRanges = ranges
+            } else {
+                exemptRanges = []
+            }
+            var rangeIndex = 0
+            for page in first..<end {
+                while rangeIndex < exemptRanges.count, exemptRanges[rangeIndex].upperBound <= page {
+                    rangeIndex += 1
+                }
+                let ownPin: UInt32 = rangeIndex < exemptRanges.count && exemptRanges[rangeIndex].contains(page) ? 1 : 0
+                guard pagePinCounts[page] == ownPin else { return .rejected }
+            }
             guard reclaimOperations.unmap(guestAddress, Int(length)) else {
                 reclaimUnmapFailures.add(1)
                 return .unmapFailed
@@ -248,8 +307,9 @@ public final class GuestMemory: @unchecked Sendable {
     }
 
     /// Remaps a single host RAM page the guest faulted on. A stage-2 fault inside the RAM window
-    /// can only mean this page was unmapped by free page reporting (nothing else touches stage-2
-    /// RAM mappings), so restoring a tracked page resolves the fault. A successfully reclaimed
+    /// normally means this page was unmapped by free page reporting. Explicit signed-campaign
+    /// scratch-page protection stays tracked as already mapped so it exercises the real bounded
+    /// permission-fault path instead of being silently repaired here. A successfully reclaimed
     /// page must first leave MADV_FREE_REUSABLE state; an advice or map failure remains tracked and
     /// returns `.restoreFailed` for the run loop to surface rather than mapping memory macOS may
     /// still reuse.
@@ -290,6 +350,91 @@ public final class GuestMemory: @unchecked Sendable {
         return offset <= size && count <= size - offset
     }
 
+    func pinRanges(_ ranges: [(address: UInt64, length: UInt64)]) throws -> GuestMemoryRangeLease {
+        guard !ranges.isEmpty, ranges.count <= 4_096 else {
+            throw VMError.invalidConfiguration("invalid guest-memory pin range count")
+        }
+        var pages = try ranges.map { range -> Range<Int> in
+            guard range.length > 0, contains(range.address, count: range.length) else {
+                throw VMError.guestMemoryFault(address: range.address, count: range.length)
+            }
+            let offset = range.address - guestBase
+            return Int(offset / Self.pageSize)..<Int((offset + range.length - 1) / Self.pageSize + 1)
+        }.sorted { $0.lowerBound < $1.lowerBound }
+        var merged: [Range<Int>] = []
+        for range in pages {
+            if let previous = merged.last, range.lowerBound <= previous.upperBound {
+                merged[merged.count - 1] = previous.lowerBound..<max(previous.upperBound, range.upperBound)
+            } else {
+                merged.append(range)
+            }
+        }
+        pages = merged
+        return try pageStates.withLock { states in
+            for range in pages {
+                guard states[range].allSatisfy({ $0 == .mapped }),
+                      pagePinCounts[range].allSatisfy({ $0 < UInt32.max }) else {
+                    throw VMError.invalidConfiguration("guest-memory range is unavailable for device ownership")
+                }
+            }
+            let identity = UUID()
+            for range in pages { for page in range { pagePinCounts[page] += 1 } }
+            rangeLeases[identity] = pages
+            return GuestMemoryRangeLease(memory: self, identity: identity)
+        }
+    }
+
+    func pinRange(at address: UInt64, count: UInt64) throws -> GuestMemoryRangeLease {
+        try pinRanges([(address, count)])
+    }
+
+    fileprivate func rangeLeaseIsActive(_ identity: UUID) -> Bool {
+        pageStates.withLock { _ in rangeLeases[identity] != nil }
+    }
+
+    fileprivate func releaseRangeLease(_ identity: UUID) {
+        pageStates.withLock { _ in
+            guard let ranges = rangeLeases.removeValue(forKey: identity) else { return }
+            for range in ranges { for page in range { pagePinCounts[page] -= 1 } }
+        }
+    }
+
+    /// Internal-only seam: the opaque signed controller is the public authorization boundary.
+    /// Page-state and permission mutation share a mutex with balloon reclaim and RAM restore.
+    func protectQualificationPage(address: UInt64, challenge: UUID) throws {
+        guard Self.pageSize == UInt64(DoryMappedPageQualificationChallenge.pageBytes),
+              guestBase.isMultiple(of: Self.pageSize),
+              address.isMultiple(of: Self.pageSize), contains(address, count: Self.pageSize) else {
+            throw DoryRuntimeQualificationFaultError.invalidIdentity
+        }
+        let index = Int((address - guestBase) / Self.pageSize)
+        let expected = DoryMappedPageQualificationChallenge.expectedPage(challenge: challenge)
+        let host = hostBase.advanced(by: Int(address - guestBase))
+        try pageStates.withLock { states in
+            guard states[index] == .mapped,
+                  expected.withUnsafeBytes({ memcmp(host, $0.baseAddress!, $0.count) == 0 }) else {
+                throw DoryRuntimeQualificationFaultError.unauthorized
+            }
+            guard qualificationProtection(address, Int(Self.pageSize), true) else {
+                throw DoryRuntimeQualificationFaultError.unauthorized
+            }
+            states[index] = .qualificationProtected(challenge)
+        }
+    }
+
+    @discardableResult
+    func restoreQualificationPage(address: UInt64, challenge: UUID) -> Bool {
+        guard guestBase.isMultiple(of: Self.pageSize), address.isMultiple(of: Self.pageSize),
+              contains(address, count: Self.pageSize) else { return false }
+        let index = Int((address - guestBase) / Self.pageSize)
+        return pageStates.withLock { states in
+            guard states[index] == .qualificationProtected(challenge) else { return false }
+            guard qualificationProtection(address, Int(Self.pageSize), false) else { return false }
+            states[index] = .mapped
+            return true
+        }
+    }
+
     public func hostPointer(at guestAddress: UInt64, count: UInt64) throws -> UnsafeMutableRawPointer {
         guard contains(guestAddress, count: count) else {
             throw VMError.guestMemoryFault(address: guestAddress, count: count)
@@ -305,12 +450,14 @@ public final class GuestMemory: @unchecked Sendable {
         count: UInt64
     ) throws -> GuestMemorySharedRegion {
         let bounds = try sharedRegionBounds(at: guestAddress, count: count)
+        let lease = try pinRange(at: guestAddress, count: count)
         let descriptor = try duplicateSharedBackingDescriptor()
         return GuestMemorySharedRegion(
             descriptor: descriptor,
             offset: bounds.offset,
             length: bounds.length,
-            declaredFileSize: bounds.declaredFileSize
+            declaredFileSize: bounds.declaredFileSize,
+            memoryLease: lease
         )
     }
 

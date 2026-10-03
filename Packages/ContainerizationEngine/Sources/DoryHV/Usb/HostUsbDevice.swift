@@ -254,14 +254,23 @@ public enum HostUsbDiscovery: Sendable {
             let service = IOIteratorNext(iterator)
             guard service != 0 else { break }
             defer { IOObjectRelease(service) }
-            var props: Unmanaged<CFMutableDictionary>?
-            guard IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-                  let dictionary = props?.takeRetainedValue() as? [String: Any] else { continue }
-            if let candidate = candidate(from: dictionary, service: service) {
+            if let candidate = candidate(ioService: service) {
                 result.append(candidate)
             }
         }
         return result.sorted { $0.descriptor.busID < $1.descriptor.busID }
+    }
+
+    /// Re-reads the actual service about to be captured or reopened. The identity token alone
+    /// does not pin interface classes: firmware can re-enumerate with the same serial and IDs.
+    public static func candidate(ioService: io_service_t) -> HostUsbDeviceCandidate? {
+        guard ioService != 0 else { return nil }
+        var props: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(
+            ioService, &props, kCFAllocatorDefault, 0
+        ) == KERN_SUCCESS,
+              let dictionary = props?.takeRetainedValue() as? [String: Any] else { return nil }
+        return candidate(from: dictionary, service: ioService)
     }
 
     public static func candidate(from properties: [String: Any], service: io_registry_entry_t = 0) -> HostUsbDeviceCandidate? {
@@ -296,9 +305,9 @@ public enum HostUsbDiscovery: Sendable {
             deviceProtocol: uint8(properties, keys: ["bDeviceProtocol", "USB Device Protocol"]) ?? 0,
             configurationValue: uint8(properties, keys: ["bConfigurationValue", "CurrentConfiguration", "USB Current Configuration"]) ?? 1,
             configurationCount: uint8(properties, keys: ["bNumConfigurations", "USB Configurations"]) ?? 1,
-            interfaceCount: interfaces.isEmpty
-                ? declaredInterfaceCount
-                : UInt8(clamping: interfaces.count)
+            // Preserve a larger device-declared count so admission can reject a partial
+            // registry enumeration instead of treating the visible subset as complete.
+            interfaceCount: max(declaredInterfaceCount, UInt8(clamping: interfaces.count))
         )
         let serialNumber = string(
             properties,

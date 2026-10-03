@@ -5,6 +5,179 @@ import Testing
 @testable import DoryFSWorkerServiceCore
 
 struct FuseServerTests {
+    @Test(arguments: [false, true])
+    func releaseRequiresTheRetainedFileNodeAndPreservesReadOnlyHandles(readOnly: Bool) throws {
+        let root = try TestFuseServerRoot()
+        try root.write("original", to: "file.txt")
+        try root.write("unrelated", to: "other.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path, readOnly: readOnly))
+        func lookup(_ name: String, unique: UInt64) throws -> UInt64 {
+            let response = server.handle(request: request(
+                unique: unique, opcode: .lookup, nodeID: HostFS.rootNodeID,
+                payload: Array("\(name)\0".utf8)))
+            try #require(try FuseProtocol.decodeOutHeader(response).error == 0)
+            return payload(from: response).leUInt64(at: 0)
+        }
+        let nodeID = try lookup("file.txt", unique: 900)
+        let otherNodeID = try lookup("other.txt", unique: 901)
+        let opened = server.handle(request: request(
+            unique: 902, opcode: .open, nodeID: nodeID,
+            payload: bytes(UInt32(0)) + bytes(UInt32(0))))
+        try #require(try FuseProtocol.decodeOutHeader(opened).error == 0)
+        let handle = payload(from: opened).leUInt64(at: 0)
+
+        let mismatched = server.handle(request: request(
+            unique: 903, opcode: .release, nodeID: otherNodeID,
+            payload: releasePayload(handle: handle, owner: 0)))
+        #expect(try FuseProtocol.decodeOutHeader(mismatched).error == -EBADF)
+        #expect(server.resourceSnapshot.fileHandles == 1)
+        let readIn = bytes(handle) + bytes(UInt64(0)) + bytes(UInt32(8)) + bytes(UInt32(0))
+            + bytes(UInt64(0)) + bytes(UInt32(0)) + bytes(UInt32(0))
+        let read = server.handle(request: request(
+            unique: 904, opcode: .read, nodeID: nodeID, payload: readIn))
+        #expect(try FuseProtocol.decodeOutHeader(read).error == 0)
+        #expect(String(decoding: payload(from: read), as: UTF8.self) == "original")
+
+        for unique in UInt64(905)...906 {
+            let released = server.handle(request: request(
+                unique: unique, opcode: .release, nodeID: nodeID,
+                payload: releasePayload(handle: handle, owner: 0)))
+            #expect(try FuseProtocol.decodeOutHeader(released).error == 0)
+        }
+        #expect(server.resourceSnapshot.fileHandles == 0)
+        let staleRead = server.handle(request: request(
+            unique: 907, opcode: .read, nodeID: nodeID, payload: readIn))
+        #expect(try FuseProtocol.decodeOutHeader(staleRead).error == -EBADF)
+        #expect(try Data(contentsOf: root.url.appendingPathComponent("file.txt")) == Data("original".utf8))
+    }
+
+    @Test func releaseDirectoryRequiresTheRetainedNodeAndHandleNamespace() throws {
+        let root = try TestFuseServerRoot()
+        for name in ["first", "second"] {
+            try FileManager.default.createDirectory(
+                at: root.url.appendingPathComponent(name), withIntermediateDirectories: false)
+        }
+        try root.write("child", to: "first/child.txt")
+        try root.write("file", to: "file.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        func lookup(_ name: String, unique: UInt64) throws -> UInt64 {
+            let response = server.handle(request: request(
+                unique: unique, opcode: .lookup, nodeID: HostFS.rootNodeID,
+                payload: Array("\(name)\0".utf8)))
+            try #require(try FuseProtocol.decodeOutHeader(response).error == 0)
+            return payload(from: response).leUInt64(at: 0)
+        }
+        let directoryNodeID = try lookup("first", unique: 910)
+        let otherDirectoryNodeID = try lookup("second", unique: 911)
+        let fileNodeID = try lookup("file.txt", unique: 912)
+        let openedDirectory = server.handle(request: request(
+            unique: 913, opcode: .opendir, nodeID: directoryNodeID))
+        let openedFile = server.handle(request: request(
+            unique: 914, opcode: .open, nodeID: fileNodeID,
+            payload: bytes(UInt32(0)) + bytes(UInt32(0))))
+        try #require(try FuseProtocol.decodeOutHeader(openedDirectory).error == 0)
+        try #require(try FuseProtocol.decodeOutHeader(openedFile).error == 0)
+        let directoryHandle = payload(from: openedDirectory).leUInt64(at: 0)
+        let fileHandle = payload(from: openedFile).leUInt64(at: 0)
+        let invalidRequests: [(FuseOpcode, UInt64, UInt64)] = [
+            (.releasedir, otherDirectoryNodeID, directoryHandle),
+            (.release, directoryNodeID, directoryHandle),
+            (.releasedir, fileNodeID, fileHandle),
+        ]
+        for (index, invalid) in invalidRequests.enumerated() {
+            let response = server.handle(request: request(
+                unique: 915 + UInt64(index), opcode: invalid.0, nodeID: invalid.1,
+                payload: releasePayload(handle: invalid.2, owner: 0)))
+            #expect(try FuseProtocol.decodeOutHeader(response).error == -EBADF)
+            #expect(server.resourceSnapshot.directoryHandles == 1)
+            #expect(server.resourceSnapshot.fileHandles == 1)
+        }
+        let listing = server.handle(request: request(
+            unique: 918, opcode: .readdirplus, nodeID: directoryNodeID,
+            payload: bytes(directoryHandle) + bytes(UInt64(0)) + bytes(UInt32(4096)) + bytes(UInt32(0))
+                + bytes(UInt64(0)) + bytes(UInt32(0)) + bytes(UInt32(0))))
+        try #require(try FuseProtocol.decodeOutHeader(listing).error == 0)
+        #expect(parseDirentPlusRecords(payload(from: listing)).map(\.name) == ["child.txt"])
+        let read = server.handle(request: request(
+            unique: 919, opcode: .read, nodeID: fileNodeID,
+            payload: bytes(fileHandle) + bytes(UInt64(0)) + bytes(UInt32(4)) + bytes(UInt32(0))
+                + bytes(UInt64(0)) + bytes(UInt32(0)) + bytes(UInt32(0))))
+        #expect(try FuseProtocol.decodeOutHeader(read).error == 0)
+        #expect(String(decoding: payload(from: read), as: UTF8.self) == "file")
+        for unique in UInt64(920)...921 {
+            let released = server.handle(request: request(
+                unique: unique, opcode: .releasedir, nodeID: directoryNodeID,
+                payload: releasePayload(handle: directoryHandle, owner: 0)))
+            #expect(try FuseProtocol.decodeOutHeader(released).error == 0)
+        }
+        #expect(server.resourceSnapshot.directoryHandles == 0)
+        #expect(server.resourceSnapshot.fileHandles == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func invalidOrRepeatedReleaseCannotUnlockAnotherLiveOwner(flock: Bool) throws {
+        let root = try TestFuseServerRoot()
+        try root.write("first", to: "first.txt")
+        try root.write("locked", to: "locked.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        func lookup(_ name: String, unique: UInt64) throws -> UInt64 {
+            let response = server.handle(request: request(
+                unique: unique, opcode: .lookup, nodeID: HostFS.rootNodeID,
+                payload: Array("\(name)\0".utf8)))
+            try #require(try FuseProtocol.decodeOutHeader(response).error == 0)
+            return payload(from: response).leUInt64(at: 0)
+        }
+        func open(_ nodeID: UInt64, unique: UInt64) throws -> UInt64 {
+            let response = server.handle(request: request(
+                unique: unique, opcode: .open, nodeID: nodeID,
+                payload: bytes(UInt32(2)) + bytes(UInt32(0))))
+            try #require(try FuseProtocol.decodeOutHeader(response).error == 0)
+            return payload(from: response).leUInt64(at: 0)
+        }
+        let firstNodeID = try lookup("first.txt", unique: 930)
+        let lockedNodeID = try lookup("locked.txt", unique: 931)
+        let firstHandle = try open(firstNodeID, unique: 932)
+        let lockedHandle = try open(lockedNodeID, unique: 933)
+        let competingHandle = try open(lockedNodeID, unique: 934)
+        func setLock(_ handle: UInt64, owner: UInt64, unique: UInt64) throws -> Int32 {
+            let response = server.handle(request: request(
+                unique: unique, opcode: .setlk, nodeID: lockedNodeID,
+                payload: lockPayload(handle: handle, owner: owner, type: 1, flags: flock ? 1 : 0)))
+            return try FuseProtocol.decodeOutHeader(response).error
+        }
+        #expect(try setLock(lockedHandle, owner: 77, unique: 935) == 0)
+        #expect(server.resourceSnapshot.advisoryLockOwners == 1)
+        let wrongNodeRelease = server.handle(request: request(
+            unique: 936, opcode: .release, nodeID: lockedNodeID,
+            payload: releasePayload(handle: firstHandle, owner: 77)))
+        #expect(try FuseProtocol.decodeOutHeader(wrongNodeRelease).error == -EBADF)
+        #expect(server.resourceSnapshot.fileHandles == 3)
+        #expect(server.resourceSnapshot.advisoryLockOwners == 1)
+        #expect(try setLock(competingHandle, owner: 88, unique: 937) == -FuseProtocol.linuxErrno(EAGAIN))
+
+        let releasedFirst = server.handle(request: request(
+            unique: 938, opcode: .release, nodeID: firstNodeID,
+            payload: releasePayload(handle: firstHandle, owner: 0)))
+        #expect(try FuseProtocol.decodeOutHeader(releasedFirst).error == 0)
+        // Already-retired and never-issued handles remain idempotently acknowledged. Neither is
+        // authority to use a caller-selected node/owner to unlock a different live file.
+        for (index, handle) in [firstHandle, UInt64.max >> 1].enumerated() {
+            let unknownRelease = server.handle(request: request(
+                unique: 939 + UInt64(index), opcode: .release, nodeID: lockedNodeID,
+                payload: releasePayload(handle: handle, owner: 77)))
+            #expect(try FuseProtocol.decodeOutHeader(unknownRelease).error == 0)
+            #expect(server.resourceSnapshot.advisoryLockOwners == 1)
+            #expect(try setLock(competingHandle, owner: 88, unique: 941 + UInt64(index))
+                == -FuseProtocol.linuxErrno(EAGAIN))
+        }
+        let releasedOwner = server.handle(request: request(
+            unique: 943, opcode: .release, nodeID: lockedNodeID,
+            payload: releasePayload(handle: lockedHandle, owner: 77)))
+        #expect(try FuseProtocol.decodeOutHeader(releasedOwner).error == 0)
+        #expect(server.resourceSnapshot.advisoryLockOwners == 0)
+        #expect(try setLock(competingHandle, owner: 88, unique: 944) == 0)
+    }
+
     @Test func syncfsFallsBackWithoutFailingConnectionAndDestroyAcknowledgesTeardown() throws {
         let root = try TestFuseServerRoot()
         let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))

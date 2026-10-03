@@ -687,6 +687,7 @@ import Testing
             backend: backend,
             memory: memory
         ) {}
+        finishMMIOTestDriverNegotiation(transport)
 
         transport.write(offset: 0x030, value: 0, width: 4)
         transport.write(offset: 0x044, value: 1, width: 4)
@@ -849,6 +850,7 @@ import Testing
             backend: DefaultKickBackend(probe: probe),
             memory: memory
         ) {}
+        finishMMIOTestDriverNegotiation(transport)
         let group = DispatchGroup()
         let secondStarted = DispatchSemaphore(value: 0)
 
@@ -883,6 +885,7 @@ import Testing
             backend: ManagedKickBackend(probe: probe),
             memory: memory
         ) {}
+        finishMMIOTestDriverNegotiation(transport)
         let group = DispatchGroup()
 
         for queue in 0..<2 {
@@ -909,6 +912,7 @@ import Testing
             backend: backend,
             memory: memory
         ) {}
+        finishMMIOTestDriverNegotiation(transport)
 
         for queue in 0..<2 {
             transport.write(offset: 0x030, value: UInt64(queue), width: 4)
@@ -953,6 +957,76 @@ import Testing
     private let usedRing: UInt64 = 0x8000_3000
     private let requestBuffer: UInt64 = 0x8000_4000
     private let responseBuffer: UInt64 = 0x8000_5000
+
+    @Test(arguments: [false, true], [false, true])
+    func terminalGPUStatusRejectsDirectKicksAndLateFenceDMA(failed: Bool, heldFence: Bool) throws {
+        try exerciseTerminalGPUStatus(failed: failed, heldFence: heldFence, reentrant: false)
+    }
+
+    @Test(arguments: [false, true])
+    func reentrantTerminalFenceCannotClaimTheNextGPUHead(failed: Bool) throws {
+        try exerciseTerminalGPUStatus(failed: failed, heldFence: true, reentrant: true)
+    }
+
+    private func exerciseTerminalGPUStatus(failed: Bool, heldFence: Bool, reentrant: Bool) throws {
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, scanoutCount: 1,
+            renderer: renderer)
+        let transport = makeNegotiatedMMIOTestTransport(baseAddress: GuestLayout.virtioBase,
+            backend: gpu, memory: memory) {}
+        #expect(transport.queues[0].configure(size: 8, descriptorTable: descTable,
+            availRing: availRing, usedRing: usedRing))
+        #expect(transport.queues[0].setReady(true))
+        var request = gpuRequest(type: heldFence ? 0x0207 : 0x0100,
+            fenceID: heldFence ? 7 : 0, contextID: 0, ringIndex: 0)
+        if heldFence {
+            request.replaceSubrange(4..<8, with: [1, 0, 0, 0])
+            request.appendLE(UInt32(0))
+            request.appendLE(UInt32(0))
+        }
+        try writeDescriptor(memory, index: 0, addr: requestBuffer,
+            len: UInt32(request.count), flags: 1, next: 1)
+        try writeDescriptor(memory, index: 1, addr: responseBuffer, len: 512, flags: 2, next: 0)
+        try memory.write(request, at: requestBuffer)
+        let sentinel = [UInt8](repeating: 0xA5, count: 512)
+        try memory.write(sentinel, at: responseBuffer)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+        if reentrant {
+            try writeDescriptor(memory, index: 2, addr: requestBuffer,
+                len: UInt32(request.count), flags: 1, next: 3)
+            try writeDescriptor(memory, index: 3, addr: responseBuffer + 512,
+                len: 512, flags: 2, next: 0)
+            try memory.write(sentinel, at: responseBuffer + 512)
+            try memory.write(UInt16(2), at: availRing + 6)
+            try memory.write(UInt16(2), at: availRing + 2)
+            renderer.onFenceCreated = {
+                if failed { transport.write(offset: 0x070, value: 0x80, width: 4) }
+                else { transport.requestDeviceReset() }
+            }
+        }
+        if heldFence {
+            gpu.handleKick(queue: 0, transport: transport)
+            #expect(renderer.createdFences.count == 1)
+        }
+        if failed { transport.write(offset: 0x070, value: 0x80, width: 4) }
+        else { transport.requestDeviceReset() }
+        transport.write(offset: 0x070, value: 0x0F, width: 4)
+        if heldFence { renderer.signalFence() }
+        gpu.handleKick(queue: 0, transport: transport)
+        transport.write(offset: 0x050, value: 0, width: 4)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        #expect(try memory.readBytes(at: responseBuffer, count: 512) == sentinel)
+        if reentrant {
+            #expect(try transport.queues[0].pendingCount() == 1)
+            #expect(try memory.readBytes(at: responseBuffer + 512, count: 512) == sentinel)
+        }
+        #expect(transport.statistics.usedInterrupts == 0)
+        transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(transport.read(offset: 0x070, width: 4) == 0)
+        #expect(!transport.queues[0].ready)
+    }
 
     @Test func singleCapsetBecomesImplicitRendererDefault() {
         let venus = VirtioGPUCapset(id: 4, maxVersion: 0, data: [1])
@@ -1535,6 +1609,137 @@ import Testing
         }
     }
 
+    @Test func hostVisibleLegacyMapRejectsOverflowWithoutRetiringAnExistingLease() throws {
+        let arena = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(HostPage.size * 2), alignment: Int(HostPage.size)
+        )
+        defer { arena.deallocate() }
+        let guestBase: UInt64 = 0x24_0000_0000
+        let mapped = DeviceLogicLockedBox([UInt64]())
+        let unmapped = DeviceLogicLockedBox([UInt64]())
+        let memory = try VirtioGPUHostVisibleMemory(
+            guestBase: guestBase, length: HostPage.size * 2,
+            arenaMapOperation: { _, guest, _ in mapped.withLock { $0.append(guest) } },
+            arenaUnmapOperation: { guest, _ in unmapped.withLock { $0.append(guest) } }
+        )
+
+        try memory.map(resourceID: 1, hostPointer: arena, offset: 0, size: 4_096)
+        #expect(throws: (any Error).self) {
+            try memory.map(
+                resourceID: 1, hostPointer: arena,
+                offset: HostPage.size, size: 4_096
+            )
+        }
+        #expect(throws: (any Error).self) {
+            try memory.map(resourceID: 2, hostPointer: arena, offset: 0, size: 4_096)
+        }
+        #expect(throws: (any Error).self) {
+            try memory.map(resourceID: 2, hostPointer: arena, offset: 0, size: .max)
+        }
+        #expect(throws: (any Error).self) {
+            try memory.map(
+                resourceID: 2, hostPointer: arena,
+                offset: UInt64.max, size: 4_096
+            )
+        }
+        #expect(throws: (any Error).self) {
+            try memory.map(
+                resourceID: 2, hostPointer: arena.advanced(by: 1),
+                offset: HostPage.size, size: 4_096
+            )
+        }
+        #expect(mapped.value == [guestBase])
+        #expect(unmapped.value.isEmpty)
+        memory.unmap(resourceID: 1)
+        #expect(unmapped.value == [guestBase])
+        try memory.map(
+            resourceID: 2, hostPointer: arena,
+            offset: HostPage.size, size: 4_096
+        )
+        #expect(mapped.value == [guestBase, guestBase + HostPage.size])
+    }
+
+    @Test func hostVisibleArenaRejectsOverlappingBlobsButSharesAdjacentGranules() throws {
+        let arena = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(HostPage.size * 2), alignment: Int(HostPage.size)
+        )
+        defer { arena.deallocate() }
+        let guestBase: UInt64 = 0x25_0000_0000
+        let mapped = DeviceLogicLockedBox([UInt64]())
+        let memory = try VirtioGPUHostVisibleMemory(
+            guestBase: guestBase, length: HostPage.size * 2,
+            arenaMapOperation: { _, guest, _ in mapped.withLock { $0.append(guest) } },
+            arenaUnmapOperation: { _, _ in }
+        )
+
+        try memory.mapArena(resourceID: 1, arenaBase: arena, offset: 4_096, size: 4_096)
+        try memory.mapArena(resourceID: 2, arenaBase: arena, offset: 8_192, size: 4_096)
+        #expect(mapped.value == [guestBase])
+        #expect(throws: (any Error).self) {
+            try memory.mapArena(resourceID: 3, arenaBase: arena, offset: 4_096, size: 8_192)
+        }
+        #expect(throws: (any Error).self) {
+            try memory.map(resourceID: 3, hostPointer: arena, offset: 0, size: 4_096)
+        }
+        #expect(mapped.value == [guestBase])
+
+        memory.unmap(resourceID: 1)
+        memory.unmap(resourceID: 2)
+        try memory.map(resourceID: 3, hostPointer: arena, offset: 0, size: 4_096)
+        #expect(throws: (any Error).self) {
+            try memory.mapArena(resourceID: 4, arenaBase: arena, offset: 4_096, size: 4_096)
+        }
+        try memory.mapArena(
+            resourceID: 4, arenaBase: arena,
+            offset: HostPage.size + 4_096, size: 4_096
+        )
+        #expect(mapped.value == [guestBase, guestBase, guestBase + HostPage.size])
+    }
+
+    @Test func hostVisibleArenaRejectsMixedBackingUntilGenerationReset() throws {
+        let firstArena = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(HostPage.size * 2), alignment: Int(HostPage.size)
+        )
+        let secondArena = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(HostPage.size * 2), alignment: Int(HostPage.size)
+        )
+        defer {
+            firstArena.deallocate()
+            secondArena.deallocate()
+        }
+        let guestBase: UInt64 = 0x26_0000_0000
+        let mapped = DeviceLogicLockedBox([UInt64]())
+        let unmapped = DeviceLogicLockedBox([UInt64]())
+        let memory = try VirtioGPUHostVisibleMemory(
+            guestBase: guestBase, length: HostPage.size * 2,
+            arenaMapOperation: { _, guest, _ in mapped.withLock { $0.append(guest) } },
+            arenaUnmapOperation: { guest, _ in unmapped.withLock { $0.append(guest) } }
+        )
+
+        try memory.mapArena(
+            resourceID: 1, arenaBase: firstArena, offset: 4_096, size: 4_096
+        )
+        #expect(throws: (any Error).self) {
+            try memory.mapArena(
+                resourceID: 2, arenaBase: secondArena, offset: 8_192, size: 4_096
+            )
+        }
+        #expect(mapped.value == [guestBase])
+        memory.unmap(resourceID: 1)
+        #expect(unmapped.value == [guestBase])
+        #expect(throws: (any Error).self) {
+            try memory.mapArena(
+                resourceID: 2, arenaBase: secondArena,
+                offset: HostPage.size, size: 4_096
+            )
+        }
+        memory.reset()
+        try memory.mapArena(
+            resourceID: 2, arenaBase: secondArena, offset: 8_192, size: 4_096
+        )
+        #expect(mapped.value == [guestBase, guestBase])
+    }
+
     @Test func assignsStableUUIDToRendererResource() throws {
         let renderer = FakeVirtioGPURenderer(capsets: [
             VirtioGPUCapset(id: 4, maxVersion: 2, data: [0x56, 0x45, 0x4e, 0x55, 0x53])
@@ -1582,7 +1787,7 @@ import Testing
             scanoutWidth: 2_560,
             scanoutHeight: 1_600
         )
-        let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
+        let transport = makeNegotiatedMMIOTestTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
         transport.queues[0].configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
         transport.queues[0].setReady(true)
 
@@ -1644,7 +1849,7 @@ import Testing
 
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
         var interruptCount = 0
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -1685,7 +1890,7 @@ import Testing
             ]
         )
         var interruptCount = 0
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -1745,7 +1950,7 @@ import Testing
             }
         )
         var interruptCount = 0
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -1760,6 +1965,16 @@ import Testing
         ))
         #expect(leUInt32(display, at: 40) == 1)
         #expect(leUInt32(display, at: 64) == 0)
+        #expect(gpu.updateScanoutTopology([
+            VirtioGPUScanoutSize(width: 1_920, height: 1_080),
+        ], transport: transport))
+        #expect(interruptCount == 0)
+        #expect(!gpu.updateScanoutSize(
+            scanoutID: 1,
+            width: 1_280,
+            height: 800,
+            transport: transport
+        ))
 
         #expect(gpu.updateScanoutTopology([
             VirtioGPUScanoutSize(width: 1_920, height: 1_080),
@@ -1820,13 +2035,18 @@ import Testing
             scanoutHeight: 1_600
         )
         var interruptCount = 0
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
         ) { interruptCount += 1 }
 
-        gpu.updateScanoutSize(width: 3_024, height: 1_964, transport: transport)
+        #expect(gpu.updateScanoutSize(
+            scanoutID: 0,
+            width: 3_024,
+            height: 1_964,
+            transport: transport
+        ))
 
         #expect(interruptCount == 1)
         #expect(transport.read(offset: 0x060, width: 4) == 2)
@@ -1846,7 +2066,18 @@ import Testing
         #expect(leUInt32(gpu.configSpace, at: 0) == 0)
 
         // Re-publishing the same size must not create an interrupt storm.
-        gpu.updateScanoutSize(width: 3_024, height: 1_964, transport: transport)
+        #expect(gpu.updateScanoutSize(
+            scanoutID: 0,
+            width: 3_024,
+            height: 1_964,
+            transport: transport
+        ))
+        #expect(!gpu.updateScanoutSize(
+            scanoutID: 1,
+            width: 3_024,
+            height: 1_964,
+            transport: transport
+        ))
         #expect(interruptCount == 1)
     }
 
@@ -1862,7 +2093,7 @@ import Testing
             renderer: renderer,
             onCursorUpdate: { cursorBox.store($0) }
         )
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -2102,7 +2333,7 @@ import Testing
             },
             onScanoutResourceReleased: { releasedResources.store($0) }
         )
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -2202,8 +2433,18 @@ import Testing
 
         let publishedFrameCount = frameCount.value
         frameAdmission.withLock { $0 = false }
+        let copiedBeforeDeferredFlush = gpu.statistics.softwareScanoutCopiedBytes
         #expect(leUInt32(try submit(flush), at: 0) == 0x1100)
         #expect(frameCount.value == publishedFrameCount)
+        #expect(gpu.statistics.softwareScanoutCopiedBytes == copiedBeforeDeferredFlush)
+        let latestPixels = [UInt8](repeating: 0x33, count: 16)
+        try memory.write(latestPixels, at: pixelBuffer)
+        #expect(leUInt32(try submit(flush), at: 0) == 0x1100)
+        #expect(gpu.statistics.softwareScanoutCopiedBytes == copiedBeforeDeferredFlush)
+        frameAdmission.withLock { $0 = true }
+        #expect(try gpu.publishLatestSoftwareScanoutFrame(scanoutID: 0))
+        #expect(frameCount.value == publishedFrameCount + 1)
+        #expect(Array(try #require(frameBox.value).bytes) == latestPixels)
 
         var detach = gpuRequest(type: 0x0107, fenceID: 0, contextID: 0, ringIndex: 0)
         detach.appendLE(UInt32(7))
@@ -2218,6 +2459,7 @@ import Testing
         let release = try #require(releasedResources.value)
         #expect(release.resourceID == 7)
         #expect(release.resourceGeneration == boundFrame.resourceGeneration)
+        #expect(!(try gpu.publishLatestSoftwareScanoutFrame(scanoutID: 0)))
         #expect(renderer.unreferencedResourceIDs.isEmpty)
         // Guest-visible unref is immediate, but the renderer name stays reserved until the display
         // acknowledges detach. Reuse during that interval must fail rather than alias the old GL
@@ -2246,7 +2488,7 @@ import Testing
             renderer: renderer,
             onScanoutTexture: { textureBox.store($0) }
         )
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -2416,7 +2658,7 @@ import Testing
             quiescenceTimeout: 1
         )
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -2694,7 +2936,7 @@ import Testing
                 mailboxes[Int(frame.scanoutID)].submit(frame)
             }
         )
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -2804,7 +3046,7 @@ import Testing
             renderer: renderer,
             onScanoutTexture: { textureBox.store($0) }
         )
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -2916,7 +3158,7 @@ import Testing
             renderer: renderer,
             onScanoutFrame: { frameBox.store($0) }
         )
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -3024,7 +3266,7 @@ import Testing
             renderer: renderer,
             onScanoutFrame: { frameBox.store($0) }
         )
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -3134,7 +3376,7 @@ import Testing
     @Test func controlQueueRejectsTooSmallResponseBeforeMutatingResourceState() throws {
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
         let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -3189,7 +3431,7 @@ import Testing
     @Test func controlQueueRejectsReadableDataAfterWritableSuffix() throws {
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
         let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -3254,7 +3496,7 @@ import Testing
             maximumControlRequestBytes: 96
         )
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -3305,7 +3547,7 @@ import Testing
             scanoutCount: 1
         )
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -3347,7 +3589,7 @@ import Testing
     @Test func malformedHeadStopsBoundedDrainAndNextKickMakesProgress() throws {
         let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, scanoutCount: 1)
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -3401,7 +3643,7 @@ import Testing
             maximumPendingFences: 1
         )
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -3487,7 +3729,7 @@ import Testing
             quiescenceTimeout: 1
         )
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -3562,6 +3804,7 @@ import Testing
         transport.write(offset: 0x070, value: 0, width: 4)
         #expect(renderer.resetCount == 1)
         try configureQueue()
+        finishMMIOTestDriverNegotiation(transport)
         try submit(43)
         #expect(renderer.submittedCommands.count == 2)
         #expect(renderer.createdFences.count == 1)
@@ -3579,7 +3822,7 @@ import Testing
             fenceTimeoutNanoseconds: 0
         )
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
+        let transport = makeNegotiatedMMIOTestTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
         transport.queues[0].configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
         transport.queues[0].setReady(true)
 
@@ -3631,7 +3874,7 @@ import Testing
         let renderer = FakeVirtioGPURenderer(capsets: [VirtioGPUCapset(id: 4, maxVersion: 0, data: [1])])
         let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
+        let transport = makeNegotiatedMMIOTestTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
         transport.queues[0].configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
         transport.queues[0].setReady(true)
 
@@ -3673,7 +3916,7 @@ import Testing
         renderer.failSubmitOutcomeUnknown = true
         let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: gpu,
             memory: memory
@@ -3738,7 +3981,7 @@ import Testing
         renderer.failFenceCreation = true
         let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
+        let transport = makeNegotiatedMMIOTestTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
         transport.queues[0].configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
         transport.queues[0].setReady(true)
 
@@ -3831,7 +4074,7 @@ import Testing
 
     private func gpuResponse(gpu: VirtioGPU, request: [UInt8]) throws -> [UInt8] {
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
+        let transport = makeNegotiatedMMIOTestTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
         transport.queues[0].configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
         transport.queues[0].setReady(true)
         try writeDescriptor(memory, index: 0, addr: requestBuffer, len: UInt32(request.count), flags: 0x1, next: 1)
@@ -4192,6 +4435,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer, @unchecked Sendabl
     /// completion, or set `autoSignalFences` for the old eager behavior.
     private(set) var createdFences: [(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64, contextFence: Bool)] = []
     var autoSignalFences = false
+    var onFenceCreated: (() -> Void)?
     var failFenceCreation = false
     var signalFenceThenFail = false
 
@@ -4208,6 +4452,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer, @unchecked Sendabl
             throw VMError.invalidConfiguration("fence creation disabled")
         }
         createdFences.append((contextID, ringIndex, fenceID, contextFence))
+        onFenceCreated?()
         if autoSignalFences {
             signalFence(contextID: contextFence ? contextID : 0, ringIndex: contextFence ? ringIndex : 0, fenceID: fenceID)
         }
@@ -4341,7 +4586,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer, @unchecked Sendabl
         #expect(status(sound, lifecycle(0x0104, streamID: 0)) == 0x8000)
 
         let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: sound,
             memory: memory
@@ -4409,7 +4654,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer, @unchecked Sendabl
         #expect(status(sound, lifecycle(0x0102, streamID: 1)) == 0x8000)
 
         let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: sound,
             memory: memory
@@ -4760,7 +5005,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer, @unchecked Sendabl
     @Test func waitsForEnoughGuestBuffersBeforePublishingWholeInputFrame() throws {
         let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
         let input = VirtioInput()
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: input,
             memory: memory
@@ -4805,7 +5050,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer, @unchecked Sendabl
     @Test func absolutePointerClickPublishesPositionAndButtonInOneAtomicFrame() throws {
         let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
         let input = VirtioInput(profile: .absolutePointer)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: input,
             memory: memory
@@ -4853,7 +5098,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer, @unchecked Sendabl
     @Test func relativePointerMotionAndButtonPublishInOneAtomicFrame() throws {
         let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
         let input = VirtioInput(profile: .relativePointer)
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: input,
             memory: memory
@@ -4900,7 +5145,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer, @unchecked Sendabl
     @Test func pointerMotionDoesNotBlockAButtonFrameBehindStalePositions() throws {
         let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
         let input = VirtioInput()
-        let transport = VirtioMMIOTransport(
+        let transport = makeNegotiatedMMIOTestTransport(
             baseAddress: GuestLayout.virtioBase,
             backend: input,
             memory: memory

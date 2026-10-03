@@ -1324,9 +1324,31 @@ final class HostFS: @unchecked Sendable {
         accessMode: HostFSAccessMode,
         append: Bool
     ) throws -> Int32 {
+        let identityPath = "/dev/fd/\(identityFD)"
+        var status = stat()
+        guard fstat(identityFD, &status) == 0 else {
+            throw HostFSError.systemCall("fstat pinned open identity", errno)
+        }
+        let readable = status.st_mode & mode_t(S_IRUSR | S_IRGRP | S_IROTH) != 0
+        let writable = status.st_mode & mode_t(S_IWUSR | S_IWGRP | S_IWOTH) != 0
+        if (accessMode != .writeOnly && !readable)
+            || (accessMode != .readOnly && !writable) {
+            throw HostFSError.systemCall("reopen pinned identity", EACCES)
+        }
+        let requiredAccess: Int32
+        switch accessMode {
+        case .readOnly: requiredAccess = R_OK
+        case .writeOnly: requiredAccess = W_OK
+        case .readWrite: requiredAccess = R_OK | W_OK
+        }
+        // Opening /dev/fd can reuse the pin's existing host capability on some macOS versions.
+        // Check the current inode mode and effective-id access before deriving a new guest handle.
+        guard faccessat(AT_FDCWD, identityPath, requiredAccess, AT_EACCESS) == 0 else {
+            throw HostFSError.systemCall("reopen pinned identity", errno)
+        }
         let appendFlag = append && accessMode.permitsWrite ? O_APPEND : 0
         let fd = Darwin.open(
-            "/dev/fd/\(identityFD)",
+            identityPath,
             accessMode.darwinFlag | appendFlag | O_CLOEXEC
         )
         guard fd >= 0 else {

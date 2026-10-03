@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Testing
 @testable import DoryHV
+@testable import DoryOperations
 
 @Suite(.serialized)
 struct VirtioBlkSafetyTests {
@@ -634,6 +635,31 @@ struct VirtioBlkSafetyTests {
         }
     }
 
+    @Test(arguments: [false, true])
+    func descriptorAdmissionRejectsAppendModeWithoutChangingCallerOrDisk(readOnly: Bool) throws {
+        let path = try makeDisk(byteCount: 4096, fill: 0xA5)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let descriptor = open(
+            path, (readOnly ? O_RDONLY : O_RDWR) | O_APPEND | O_CLOEXEC | O_NOFOLLOW)
+        try #require(descriptor >= 0)
+        defer { close(descriptor) }
+        let flagsBefore = fcntl(descriptor, F_GETFL)
+        try #require(flagsBefore >= 0 && flagsBefore & O_APPEND != 0)
+
+        #expect(throws: VMError.self) {
+            _ = try VirtioBlk(
+                fileDescriptor: descriptor, identity: "append-admission",
+                readOnly: readOnly, asyncIO: false, discard: false)
+        }
+
+        #expect(fcntl(descriptor, F_GETFL) == flagsBefore)
+        #expect(try fileSize(path) == 4096)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == Data(repeating: 0xA5, count: 4096))
+        var firstByte: UInt8 = 0
+        #expect(pread(descriptor, &firstByte, 1, 0) == 1)
+        #expect(firstByte == 0xA5)
+    }
+
     @Test
     func getIDUsesStrictWritableLayoutAndPublishesExactlyTwentyPaddedBytes() throws {
         let harness = try makeQueueHarness(identity: "dory-id")
@@ -847,6 +873,145 @@ struct VirtioBlkSafetyTests {
         #expect(statistics.discardIgnoredRanges == 0)
         #expect(statistics.rangeSegments == 2)
         #expect(statistics.requestCompletions == 2)
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func terminalStatusRejectsDirectAndMMIOClaimsUntilRealReset(
+        failed: Bool, directKick: Bool
+    ) throws {
+        let probe = TerminalReadProbe(holdFirst: false)
+        let harness = try makeQueueHarness(ioOperations: probe.operations)
+        defer { try? FileManager.default.removeItem(atPath: harness.diskPath) }
+        let old = try installTerminalRead(head: 0, relativeOffset: 0, harness: harness)
+        try publish([0], startingAt: 0, harness: harness)
+        makeTerminal(harness.transport, failed: failed)
+        // Neither rewriting DRIVER_OK nor bypassing the MMIO doorbell can reopen admission.
+        harness.transport.write(offset: 0x070, value: 0x0F, width: 4)
+        if directKick {
+            harness.block.handleKick(queue: 0, transport: harness.transport)
+        } else {
+            harness.transport.write(offset: 0x050, value: 0, width: 4)
+        }
+        #expect(probe.calls == 0)
+        #expect(harness.block.statistics.queueWorkTurns == 0)
+        #expect(try usedIndex(harness) == 0)
+        #expect(try harness.memory.readBytes(at: old.data, count: 512) ==
+            [UInt8](repeating: 0xA5, count: 512))
+        #expect(try harness.memory.read(UInt8.self, at: old.status) == 0xFF)
+        #expect(harness.transport.statistics.usedInterrupts == 0)
+
+        try resetTerminalHarness(harness)
+        let successor = try installTerminalRead(head: 3, relativeOffset: 0x1_000, harness: harness)
+        try publish([3], startingAt: 0, harness: harness)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+        #expect(probe.calls == 1)
+        #expect(try usedIndex(harness) == 1)
+        #expect(try harness.memory.readBytes(at: successor.data, count: 512) ==
+            [UInt8](repeating: 0x3C, count: 512))
+        #expect(try harness.memory.read(UInt8.self, at: successor.status) ==
+            VirtioBlk.RequestStatus.ok.rawValue)
+        #expect(try harness.memory.readBytes(at: old.data, count: 512) ==
+            [UInt8](repeating: 0xA5, count: 512))
+        #expect(try harness.memory.read(UInt8.self, at: old.status) == 0xFF)
+    }
+
+    @Test(arguments: [false, true])
+    func terminalStatusSuppressesHeldCompletionAndUnclaimedQueuedDMA(failed: Bool) throws {
+        let probe = TerminalReadProbe(holdFirst: true)
+        let harness = try makeQueueHarness(asyncIO: true, ioOperations: probe.operations)
+        defer {
+            probe.release.signal()
+            try? FileManager.default.removeItem(atPath: harness.diskPath)
+        }
+        _ = try installTerminalRead(head: 0, relativeOffset: 0, harness: harness)
+        let queued = try installTerminalRead(head: 3, relativeOffset: 0x1_000, harness: harness)
+        try publish([0, 3], startingAt: 0, harness: harness)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+        try #require(probe.entered.wait(timeout: .now() + 2) == .success)
+        makeTerminal(harness.transport, failed: failed)
+        // A late direct kick also cannot turn the existing worker's pending bit into new DMA.
+        harness.block.handleKick(queue: 0, transport: harness.transport)
+        probe.release.signal()
+        try #require(waitUntil {
+            let statistics = harness.block.statistics
+            return statistics.revokedRequests == 1 && statistics.queueDepth == 0
+        })
+        #expect(probe.calls == 1)
+        #expect(try usedIndex(harness) == 0)
+        #expect(harness.block.statistics.requestCompletions == 0)
+        #expect(harness.transport.statistics.usedInterrupts == 0)
+        #expect(try harness.memory.readBytes(at: queued.data, count: 512) ==
+            [UInt8](repeating: 0xA5, count: 512))
+        #expect(try harness.memory.read(UInt8.self, at: queued.status) == 0xFF)
+
+        // Reset revokes the old claim and genuinely negotiates/configures its successor.
+        try resetTerminalHarness(harness)
+        let successor = try installTerminalRead(head: 0, relativeOffset: 0x2_000, harness: harness)
+        try publish([0], startingAt: 0, harness: harness)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+        try #require(waitUntil { harness.block.statistics.requestCompletions == 1 })
+        #expect(probe.calls == 2)
+        #expect(try usedIndex(harness) == 1)
+        #expect(try harness.memory.readBytes(at: successor.data, count: 512) ==
+            [UInt8](repeating: 0x3C, count: 512))
+        #expect(try harness.memory.read(UInt8.self, at: successor.status) ==
+            VirtioBlk.RequestStatus.ok.rawValue)
+        #expect(try harness.memory.readBytes(at: queued.data, count: 512) ==
+            [UInt8](repeating: 0xA5, count: 512))
+        #expect(try harness.memory.read(UInt8.self, at: queued.status) == 0xFF)
+    }
+
+    @Test(arguments: [false, true])
+    func terminalBetweenPopAndExecutionAdmissionCannotStartHostIO(failed: Bool) throws {
+        final class ExecutionGate: @unchecked Sendable {
+            let lock = NSLock()
+            var calls = 0
+            let entered = DispatchSemaphore(value: 0)
+            let release = DispatchSemaphore(value: 0)
+            func pauseFirst() {
+                let first = lock.withLock { calls += 1; return calls == 1 }
+                guard first else { return }
+                entered.signal()
+                _ = release.wait(timeout: .now() + 2)
+            }
+        }
+        let gate = ExecutionGate()
+        let probe = TerminalReadProbe(holdFirst: false)
+        let harness = try makeQueueHarness(asyncIO: true, ioOperations: probe.operations)
+        harness.block.beforeQueueExecutionTestHook = { gate.pauseFirst() }
+        defer {
+            gate.release.signal()
+            try? FileManager.default.removeItem(atPath: harness.diskPath)
+        }
+        let old = try installTerminalRead(head: 0, relativeOffset: 0, harness: harness)
+        try publish([0], startingAt: 0, harness: harness)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+        try #require(gate.entered.wait(timeout: .now() + 2) == .success)
+        makeTerminal(harness.transport, failed: failed)
+        gate.release.signal()
+        try #require(waitUntil {
+            let statistics = harness.block.statistics
+            return statistics.revokedRequests == 1 && statistics.queueDepth == 0
+        })
+        #expect(probe.calls == 0)
+        #expect(try usedIndex(harness) == 0)
+        #expect(harness.transport.statistics.usedInterrupts == 0)
+        #expect(try harness.memory.readBytes(at: old.data, count: 512) ==
+            [UInt8](repeating: 0xA5, count: 512))
+        #expect(try harness.memory.read(UInt8.self, at: old.status) == 0xFF)
+
+        try resetTerminalHarness(harness)
+        let successor = try installTerminalRead(head: 0, relativeOffset: 0x1_000, harness: harness)
+        try publish([0], startingAt: 0, harness: harness)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+        try #require(waitUntil { harness.block.statistics.requestCompletions == 1 })
+        #expect(probe.calls == 1)
+        #expect(try usedIndex(harness) == 1)
+        #expect(try harness.memory.readBytes(at: successor.data, count: 512) ==
+            [UInt8](repeating: 0x3C, count: 512))
+        #expect(try harness.memory.readBytes(at: old.data, count: 512) ==
+            [UInt8](repeating: 0xA5, count: 512))
+        #expect(try harness.memory.read(UInt8.self, at: old.status) == 0xFF)
     }
 
     @Test
@@ -1187,6 +1352,82 @@ struct VirtioBlkSafetyTests {
         #expect(harness.block.statistics.flushes == 2)
     }
 
+    private func makeQualificationFaults() throws -> (RuntimeQualificationFaultController, UUID) {
+        let operationID = UUID()
+        return (try RuntimeQualificationFaultController(authority: DoryRuntimeQualificationFaultAuthority(
+            machineID: "campaign-arm-1", operationID: operationID,
+            resolvedPlanSHA256: String(repeating: "b", count: 64),
+            campaignManifestSHA256: String(repeating: "c", count: 64), expiresAt: Date().addingTimeInterval(60),
+            policy: DoryCandidateCampaignFaultPolicy(permittedFaults: [.blockFullFlushNoSpace])
+        )), operationID)
+    }
+
+    @Test func campaignFullFlushFailurePublishesIOErrorThenNormalFlushRecovers() throws {
+        final class Calls: @unchecked Sendable {
+            let lock = NSLock()
+            var count = 0
+        }
+        let calls = Calls()
+        let (faults, operationID) = try makeQualificationFaults()
+        let harness = try makeQueueHarness(
+            identity: "dory-rootfs",
+            flushTelemetry: VirtioBlkFlushTelemetryConfiguration(
+                slowThresholdNanoseconds: 250_000_000,
+                synchronize: { _ in calls.lock.withLock { calls.count += 1 }; return 0 },
+                monotonicNanoseconds: { DispatchTime.now().uptimeNanoseconds }
+            ),
+            qualificationFaults: faults
+        )
+        defer { try? FileManager.default.removeItem(atPath: harness.diskPath) }
+        let header = harness.guestBase + 0x40_000
+        let status = harness.guestBase + 0x41_000
+        try writeRequestHeader(type: 4, sector: 0, at: header, harness: harness)
+        try installDescriptor(index: 0, address: header, length: 16, flags: 1, next: 1, harness: harness)
+        try installDescriptor(index: 1, address: status, length: 1, flags: 2, next: 0, harness: harness)
+        let challenge = UUID()
+        try faults.arm(.blockFullFlushNoSpace, challenge: challenge, operationID: operationID)
+        try publish([0], startingAt: 0, harness: harness)
+        harness.block.handleKick(queue: 0, transport: harness.transport)
+        #expect(try usedIndex(harness) == 1)
+        #expect(try harness.memory.read(UInt8.self, at: status) == VirtioBlk.RequestStatus.ioError.rawValue)
+        #expect(calls.lock.withLock { calls.count } == 0)
+        let injected = try #require(faults.snapshot().first)
+        #expect(injected.challenge == challenge)
+        #expect(injected.state == .guestCompleted)
+        #expect(injected.injectedErrno == ENOSPC)
+        #expect(injected.guestStatus == VirtioBlk.RequestStatus.ioError.rawValue)
+        #expect(injected.queueIndex == 0)
+        #expect(injected.queueGeneration != nil)
+        try publish([0], startingAt: 1, harness: harness)
+        harness.block.handleKick(queue: 0, transport: harness.transport)
+        #expect(try usedIndex(harness) == 2)
+        #expect(try harness.memory.read(UInt8.self, at: status) == VirtioBlk.RequestStatus.ok.rawValue)
+        #expect(calls.lock.withLock { calls.count } == 1)
+        #expect(harness.block.statistics.flushes == 2)
+    }
+
+    @Test func resetDisarmsFaultBeforeAReplacementQueueCanUseIt() throws {
+        let (faults, operationID) = try makeQualificationFaults()
+        let harness = try makeQueueHarness(identity: "dory-rootfs", qualificationFaults: faults)
+        defer { try? FileManager.default.removeItem(atPath: harness.diskPath) }
+        try faults.arm(.blockFullFlushNoSpace, challenge: UUID(), operationID: operationID)
+        harness.block.deviceReset(transport: harness.transport)
+        #expect(faults.snapshot().first?.state == .cancelled)
+        #expect(faults.consumeFullFlush(queueIndex: 0, queueGeneration: 999) == nil)
+    }
+
+    @Test func aReadonlyOrNonSystemDiskCannotAcceptQualificationFaults() throws {
+        let (faults, _) = try makeQualificationFaults()
+        let path = try makeDisk(byteCount: 4096)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        #expect(throws: VMError.self) {
+            try VirtioBlk(path: path, identity: "installer-iso", qualificationFaults: faults)
+        }
+        #expect(throws: VMError.self) {
+            try VirtioBlk(path: path, identity: "dory-rootfs", readOnly: true, qualificationFaults: faults)
+        }
+    }
+
     private struct QueueHarness {
         let diskPath: String
         let guestBase: UInt64
@@ -1198,6 +1439,69 @@ struct VirtioBlkSafetyTests {
         let transport: VirtioMMIOTransport
     }
 
+    private final class TerminalReadProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        private let holdFirst: Bool
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+
+        init(holdFirst: Bool) { self.holdFirst = holdFirst }
+        var calls: Int { lock.withLock { count } }
+        var operations: VirtioBlkIOOperations {
+            .init(read: { [self] _, vectors, vectorCount, _ in
+                let call = lock.withLock { count += 1; return count }
+                if holdFirst && call == 1 {
+                    entered.signal()
+                    guard release.wait(timeout: .now() + 2) == .success else {
+                        return .init(count: -1, code: ETIMEDOUT)
+                    }
+                }
+                var bytes = 0
+                for index in 0..<Int(vectorCount) {
+                    vectors[index].iov_base!.initializeMemory(
+                        as: UInt8.self, repeating: 0x3C, count: vectors[index].iov_len)
+                    bytes += vectors[index].iov_len
+                }
+                return .init(count: bytes, code: 0)
+            }, write: { _, _, _, _ in .init(count: -1, code: EIO) },
+            monotonicNanoseconds: { DispatchTime.now().uptimeNanoseconds })
+        }
+    }
+
+    private func makeTerminal(_ transport: VirtioMMIOTransport, failed: Bool) {
+        if failed { transport.write(offset: 0x070, value: 0x80, width: 4) }
+        else { transport.requestDeviceReset() }
+    }
+
+    private func installTerminalRead(
+        head: UInt16, relativeOffset: UInt64, harness: QueueHarness
+    ) throws -> (data: UInt64, status: UInt64) {
+        let header = harness.guestBase + 0x20_000 + relativeOffset
+        let data = header + 0x100
+        let status = header + 0x400
+        try writeRequestHeader(type: 0, sector: 0, at: header, harness: harness)
+        try harness.memory.write([UInt8](repeating: 0xA5, count: 512), at: data)
+        try harness.memory.write(UInt8(0xFF), at: status)
+        try installDescriptor(index: head, address: header, length: 16,
+                              flags: 1, next: head + 1, harness: harness)
+        try installDescriptor(index: head + 1, address: data, length: 512,
+                              flags: 3, next: head + 2, harness: harness)
+        try installDescriptor(index: head + 2, address: status, length: 1,
+                              flags: 2, next: 0, harness: harness)
+        return (data, status)
+    }
+
+    private func resetTerminalHarness(_ harness: QueueHarness) throws {
+        harness.transport.write(offset: 0x070, value: 0, width: 4)
+        finishMMIOTestDriverNegotiation(harness.transport)
+        try configureQueue(harness.transport, descriptorTable: harness.descriptorTable,
+                           availableRing: harness.availableRing, usedRing: harness.usedRing)
+        try harness.memory.write(UInt16(0), at: harness.availableRing)
+        try harness.memory.write(UInt16(0), at: harness.availableRing + 2)
+        try harness.memory.write(UInt16(0), at: harness.usedRing + 2)
+    }
+
     private func makeQueueHarness(
         identity: String = "safety",
         asyncIO: Bool = false,
@@ -1205,7 +1509,8 @@ struct VirtioBlkSafetyTests {
         limits: VirtioBlkLimits = .production,
         ioOperations: VirtioBlkIOOperations = .production,
         rangeOperations: VirtioBlkRangeOperations = .production,
-        flushTelemetry: VirtioBlkFlushTelemetryConfiguration = .production
+        flushTelemetry: VirtioBlkFlushTelemetryConfiguration = .production,
+        qualificationFaults: RuntimeQualificationFaultController? = nil
     ) throws -> QueueHarness {
         let diskPath = try makeDisk(byteCount: 1 << 20)
         let guestBase: UInt64 = 0xD400_0000
@@ -1217,6 +1522,7 @@ struct VirtioBlkSafetyTests {
             queueCount: 1,
             discard: discard,
             flushTelemetry: flushTelemetry,
+            qualificationFaults: qualificationFaults,
             limits: limits,
             ioOperations: ioOperations,
             rangeOperations: rangeOperations
@@ -1226,17 +1532,13 @@ struct VirtioBlkSafetyTests {
             backend: block,
             memory: memory
         ) {}
+        // Even direct backend kicks must obey the transport's real driver admission state.
+        finishMMIOTestDriverNegotiation(transport)
         let descriptorTable = guestBase + 0x10_000
         let availableRing = guestBase + 0x12_000
         let usedRing = guestBase + 0x14_000
-        #expect(transport.queues[0].configure(
-            size: 8,
-            descriptorTable: descriptorTable,
-            availRing: availableRing,
-            usedRing: usedRing
-        ))
-        #expect(transport.queues[0].setReady(true))
-        block.deviceReady(transport: transport)
+        try configureQueue(transport, descriptorTable: descriptorTable,
+                           availableRing: availableRing, usedRing: usedRing)
         try memory.write(UInt16(0), at: availableRing)
         try memory.write(UInt16(0), at: availableRing + 2)
         try memory.write(UInt16(0), at: usedRing + 2)
@@ -1250,6 +1552,21 @@ struct VirtioBlkSafetyTests {
             block: block,
             transport: transport
         )
+    }
+
+    private func configureQueue(
+        _ transport: VirtioMMIOTransport, descriptorTable: UInt64,
+        availableRing: UInt64, usedRing: UInt64
+    ) throws {
+        transport.write(offset: 0x030, value: 0, width: 4)
+        transport.write(offset: 0x038, value: 8, width: 4)
+        for (register, address) in [(UInt64(0x080), descriptorTable),
+                                    (0x090, availableRing), (0x0A0, usedRing)] {
+            transport.write(offset: register, value: address & 0xFFFF_FFFF, width: 4)
+            transport.write(offset: register + 4, value: address >> 32, width: 4)
+        }
+        transport.write(offset: 0x044, value: 1, width: 4)
+        try #require(transport.read(offset: 0x044, width: 4) == 1)
     }
 
     private func installDescriptor(

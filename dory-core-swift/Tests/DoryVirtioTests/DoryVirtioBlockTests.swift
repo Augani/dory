@@ -8,8 +8,119 @@ import Testing
     let device = try DoryVirtioBlockDevice(storage: storage, identifier: "dory-disk")
     #expect(device.offeredFeatures.contains(.blockFlush))
     #expect(device.offeredFeatures.contains(.blockDiscard))
+    #expect(device.offeredFeatures.contains(.blockSizeMax))
+    #expect(device.offeredFeatures.contains(.blockSegmentMax))
     #expect(read64(device.configuration, 0) == 8)
+    #expect(read32(device.configuration, 8) == DoryVirtioBlockDevice.maximumSegmentByteCount)
+    #expect(read32(device.configuration, 12) == UInt32(DoryVirtioBlockDevice.maximumPayloadSegments))
     #expect(read32(device.configuration, 20) == 512)
+    #expect(read32(device.configuration, 36) == DoryVirtioBlockDevice.maximumRangeSectors)
+    #expect(read32(device.configuration, 48) == DoryVirtioBlockDevice.maximumRangeSectors)
+  }
+
+  @Test func rejectsNegativeInMemoryReadCountsAndInvalidGeometry() throws {
+    let storage = DoryVirtioInMemoryBlockStorage(byteCount: 4096)
+    for count in [-1, Int.min] {
+      #expect(throws: DoryVirtioBlockError.invalidByteCount(count)) {
+        try storage.read(offset: 0, byteCount: count)
+      }
+    }
+    #expect(try storage.read(offset: 4096, byteCount: 0).isEmpty)
+    #expect(throws: DoryVirtioBlockError.invalidCapacity(0)) {
+      try DoryVirtioBlockDevice(
+        storage: DoryVirtioInMemoryBlockStorage(byteCount: 0), identifier: "empty")
+    }
+    #expect(throws: DoryVirtioBlockError.invalidCapacity(512)) {
+      try DoryVirtioBlockDevice(
+        storage: DoryVirtioInMemoryBlockStorage(byteCount: 512, logicalBlockSize: 4096),
+        identifier: "misaligned")
+    }
+  }
+
+  @Test func oversizedPayloadsFailBeforeReadingOrValidatingGuestPayload() throws {
+    let storage = DoryVirtioInMemoryBlockStorage(byteCount: 4096)
+    let device = try DoryVirtioBlockDevice(storage: storage, identifier: "bounds")
+    for type: UInt32 in [0, 1, 8, 11, 13] {
+      let memory = BlockAdmissionMemory(header: header(type: type, sector: 0))
+      let oversized = chain([
+        descriptor(0x100, 16, false),
+        descriptor(0x200, DoryVirtioBlockDevice.maximumSegmentByteCount + 1, type == 0 || type == 8),
+        descriptor(0x300, 1, true),
+      ])
+      #expect(try device.process(oversized, memory: memory).status == 1)
+      #expect(memory.payloadReadCount == 0)
+      #expect(memory.payloadValidationCount == 0)
+      #expect(memory.status == 1)
+    }
+  }
+
+  @Test func oversizedDescriptorCountFailsBeforeAnyGuestAccess() throws {
+    let storage = DoryVirtioInMemoryBlockStorage(byteCount: 4096)
+    let device = try DoryVirtioBlockDevice(storage: storage, identifier: "bounds")
+    let memory = BlockAdmissionMemory(header: header(type: 1, sector: 0))
+    let descriptors = [descriptor(0x100, 16, false)]
+      + [DoryVirtioDescriptor](
+        repeating: descriptor(0x200, 512, false),
+        count: DoryVirtioBlockDevice.maximumPayloadSegments + 1)
+      + [descriptor(0x300, 1, true)]
+    #expect(throws: DoryVirtioBlockError.malformedRequest) {
+      try device.process(chain(descriptors), memory: memory)
+    }
+    #expect(memory.headerReadCount == 0)
+    #expect(memory.payloadReadCount == 0)
+    #expect(memory.status == nil)
+  }
+
+  @Test func outOfBoundsWriteFailsBeforeGatheringGuestData() throws {
+    let storage = DoryVirtioInMemoryBlockStorage(byteCount: 4096)
+    let device = try DoryVirtioBlockDevice(storage: storage, identifier: "bounds")
+    for sector in [UInt64(8), UInt64.max] {
+      let memory = BlockAdmissionMemory(header: header(type: 1, sector: sector))
+      let request = chain([
+        descriptor(0x100, 16, false), descriptor(0x200, 512, false),
+        descriptor(0x300, 1, true),
+      ])
+      #expect(try device.process(request, memory: memory).status == 1)
+      #expect(memory.payloadReadCount == 0)
+    }
+  }
+
+  @Test func excessiveRangeCountFailsBeforeGatheringGuestData() throws {
+    let storage = DoryVirtioInMemoryBlockStorage(byteCount: 4096)
+    let device = try DoryVirtioBlockDevice(
+      storage: storage, identifier: "bounds", maximumRangeSegments: 1)
+    for type: UInt32 in [11, 13] {
+      let memory = BlockAdmissionMemory(header: header(type: type, sector: 0))
+      let request = chain([
+        descriptor(0x100, 16, false), descriptor(0x200, 32, false),
+        descriptor(0x300, 1, true),
+      ])
+      #expect(try device.process(request, memory: memory).status == 1)
+      #expect(memory.payloadReadCount == 0)
+    }
+    let capped = try DoryVirtioBlockDevice(
+      storage: storage, identifier: "bounds", maximumRangeSegments: Int.max)
+    #expect(capped.maximumRangeSegments == DoryVirtioBlockDevice.maximumPayloadSegments)
+  }
+
+  @Test func oversizedLaterRangeFailsBeforeMutatingAnyRange() throws {
+    let storage = DoryVirtioInMemoryBlockStorage(
+      byteCount: 2 * 1024 * 1024, initialBytes: [0xA5])
+    let device = try DoryVirtioBlockDevice(storage: storage, identifier: "ranges")
+    let memory = BlockGuestMemory(byteCount: 0x1000)
+    for type: UInt32 in [11, 13] {
+      memory.put(header(type: type, sector: 0), at: 0x100)
+      memory.put(
+        range(sector: 0, sectors: 1, flags: 0)
+          + range(sector: 0, sectors: DoryVirtioBlockDevice.maximumRangeSectors + 1, flags: 0),
+        at: 0x200)
+      let request = chain([
+        descriptor(0x100, 16, false), descriptor(0x200, 32, false),
+        descriptor(0x300, 1, true),
+      ])
+      #expect(try device.process(request, memory: memory).status == 1)
+      #expect(try storage.read(offset: 0, byteCount: 1) == [0xA5])
+    }
   }
 
   @Test func executesScatterGatherReadsWritesFlushAndIdentity() throws {
@@ -246,6 +357,55 @@ import Testing
   private func read64(_ bytes: [UInt8], _ offset: Int) -> UInt64 {
     (0..<8).reduce(0) { $0 | UInt64(bytes[offset + $1]) << UInt64($1 * 8) }
   }
+}
+
+/// A payload-access tripwire: invalid requests must stop before touching the payload, rather
+/// than relying on its address being unmapped or allocating its descriptor-declared size.
+private final class BlockAdmissionMemory: DoryVirtioGuestMemory, @unchecked Sendable {
+  private let lock = NSLock()
+  private let header: [UInt8]
+  private var headerReads = 0
+  private var payloadReads = 0
+  private var payloadValidations = 0
+  private var writtenStatus: UInt8?
+
+  init(header: [UInt8]) { self.header = header }
+
+  var headerReadCount: Int { lock.withLock { headerReads } }
+  var payloadReadCount: Int { lock.withLock { payloadReads } }
+  var payloadValidationCount: Int { lock.withLock { payloadValidations } }
+  var status: UInt8? { lock.withLock { writtenStatus } }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    try lock.withLock {
+      guard address == 0x100, byteCount == 16 else {
+        payloadReads += 1
+        throw DoryVirtioBlockError.malformedRequest
+      }
+      headerReads += 1
+      return header
+    }
+  }
+
+  func validate(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
+    try lock.withLock {
+      guard address == 0x300, byteCount == 1, deviceWillWrite else {
+        payloadValidations += 1
+        throw DoryVirtioBlockError.malformedRequest
+      }
+    }
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    try lock.withLock {
+      guard address == 0x300, bytes.count == 1 else {
+        throw DoryVirtioBlockError.malformedRequest
+      }
+      writtenStatus = bytes[0]
+    }
+  }
+
+  func synchronize() {}
 }
 
 private final class BlockGuestMemory: DoryVirtioGuestMemory, @unchecked Sendable {

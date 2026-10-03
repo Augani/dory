@@ -326,7 +326,8 @@ import Testing
         #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
     }
 
-    @Test func inaccessibleEventTailDoesNotConsumeOrClaimTheAvailableHead() throws {
+    @Test(arguments: [false, true])
+    func inaccessibleEventTailDisablesQueueBeforeConsumingTheAvailableHead(renegotiation: Bool) throws {
         let memory = try makeMemory()
         let mandatoryUsedBytes: UInt64 = 4 + 2 * 8
         let usedAtEnd = base + 64 * HostPage.size - mandatoryUsedBytes
@@ -337,8 +338,9 @@ import Testing
             availRing: availRing,
             usedRing: usedAtEnd
         ))
-        #expect(queue.setReady(true))
+        if renegotiation { #expect(queue.setReady(true)) }
         queue.setNegotiatedFeatures(VirtqueueFeature.eventIndex)
+        if !renegotiation { #expect(!queue.setReady(true)) }
         try writeDescriptor(
             memory,
             table: descriptorTable,
@@ -350,12 +352,23 @@ import Testing
         try memory.write(UInt16(0), at: availRing + 4)
         try memory.write(UInt16(1), at: availRing + 2)
 
-        #expect(throws: (any Error).self) { _ = try queue.pop() }
+        // A live EVENT_IDX queue must own both optional metadata tails before any ring access.
+        // Refuse readiness (or revoke an already-ready legacy layout) instead of letting pop
+        // discover an unowned tail after inspecting guest work.
+        #expect(!queue.ready)
+        #expect(try queue.pop() == nil)
         #expect(try memory.read(UInt16.self, at: usedAtEnd + 2) == 0)
 
-        // Feature renegotiation revokes nothing here because the failed arm established no claim;
-        // the same head remains available to the legacy queue.
+        // No head was consumed or claimed. An explicit valid legacy reconfiguration can still
+        // consume that exact available entry, without inheriting the rejected layout's authority.
         queue.setNegotiatedFeatures(0)
+        #expect(queue.configure(
+            size: 2,
+            descriptorTable: descriptorTable,
+            availRing: availRing,
+            usedRing: usedAtEnd
+        ))
+        #expect(queue.setReady(true))
         #expect(try queue.pop()?.head == 0)
     }
 

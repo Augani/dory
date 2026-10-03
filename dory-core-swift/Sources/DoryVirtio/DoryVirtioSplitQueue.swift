@@ -247,6 +247,27 @@ public final class DoryVirtioSplitQueue: @unchecked Sendable {
     memory.synchronize()
   }
 
+  /// A transport can call this before invoking a backend so a rejected used-ring target cannot
+  /// leave the backend's response buffers partially mutated. Completion repeats the checks at
+  /// publication time because a mapping or tracked-page policy can change after preflight.
+  public func validateCompletionWrites(
+    _ chain: DoryVirtioDescriptorChain,
+    memory: any DoryVirtioGuestMemory
+  ) throws {
+    try lock.withLock {
+      let configuration = try activeConfigurationLocked()
+      guard let claimID = chain.claimID,
+        outstandingClaims[chain.headIndex] == claimID
+      else { throw DoryVirtioQueueError.duplicateCompletion(chain.headIndex) }
+      let slot = UInt64(lastUsedIndex % configuration.size)
+      let elementAddress = try checkedAddress(
+        configuration.deviceAddress, adding: 4 + slot * 8)
+      let usedIndexAddress = try checkedAddress(configuration.deviceAddress, adding: 2)
+      try memory.validate(at: elementAddress, byteCount: 8, deviceWillWrite: true)
+      try memory.validate(at: usedIndexAddress, byteCount: 2, deviceWillWrite: true)
+    }
+  }
+
   /// Publishes a used element and returns whether the driver requested an interrupt.
   public func complete(
     _ chain: DoryVirtioDescriptorChain,
@@ -256,7 +277,8 @@ public final class DoryVirtioSplitQueue: @unchecked Sendable {
   ) throws -> Bool {
     try lock.withLock {
       let configuration = try activeConfigurationLocked()
-      guard outstandingClaims[chain.headIndex] == chain.claimID else {
+      guard let claimID = chain.claimID,
+        outstandingClaims[chain.headIndex] == claimID else {
         throw DoryVirtioQueueError.duplicateCompletion(chain.headIndex)
       }
       guard UInt64(bytesWritten) <= chain.writableByteCount else {

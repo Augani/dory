@@ -290,6 +290,93 @@ import Testing
     #expect(device.pendingEventCount == 0)
   }
 
+  @Test func durableReleaseRevokesFullQueueAndBlocksSuccessorUntilSynchronize() throws {
+    let device = try DoryVirtioInputDevice(descriptor: .keyboard(), maximumPendingEvents: 2)
+    let memory = InputGuestMemory(byteCount: 0x1000)
+    #expect(device.enqueueSynchronized([.init(type: 1, code: 30, value: 1)]))
+    _ = try device.processEvent(writableChain(at: 0x100), memory: memory)
+    _ = try device.processEvent(writableChain(at: 0x108), memory: memory)
+    #expect(device.enqueueSynchronized([.init(type: 1, code: 48, value: 1)]))
+    device.releaseAllPressedKeys()
+    device.releaseAllPressedKeys()
+    #expect(device.pendingEventCount == 0)
+    #expect(device.pendingReleaseEventCount == 2)
+    #expect(device.pressedKeyCount == 0)
+    #expect(!device.enqueueSynchronized([.init(type: 1, code: 30, value: 1)]))
+    _ = try device.processEvent(writableChain(at: 0x110), memory: memory)
+    #expect(try memory.read(at: 0x110, byteCount: 8) == event(type: 1, code: 30, value: 0))
+    #expect(!device.enqueue([.init(type: 1, code: 30, value: 1)]))
+    _ = try device.processEvent(writableChain(at: 0x118), memory: memory)
+    #expect(try memory.read(at: 0x118, byteCount: 8) == event(type: 0, code: 0, value: 0))
+    #expect(!device.hasPendingEvent)
+    #expect(device.enqueueSynchronized([.init(type: 1, code: 30, value: 1)]))
+    _ = try device.processEvent(writableChain(at: 0x120), memory: memory)
+    _ = try device.processEvent(writableChain(at: 0x128), memory: memory)
+    #expect(try memory.read(at: 0x120, byteCount: 8) == event(type: 1, code: 30, value: 1))
+    #expect(device.pressedKeyCount == 1)
+    #expect(!device.hasPendingEvent)
+  }
+
+  @Test func durableReleaseWorksWithOneNormalQueueSlotAndPartialSYN() throws {
+    let device = try DoryVirtioInputDevice(descriptor: .keyboard(), maximumPendingEvents: 1)
+    let memory = InputGuestMemory(byteCount: 0x1000)
+    for (index, code) in [UInt16(42), 30, 1].enumerated() {
+      #expect(device.enqueue([.init(type: 1, code: code, value: 1)]))
+      _ = try device.processEvent(writableChain(at: 0x100 + UInt64(index) * 8), memory: memory)
+    }
+    device.releaseAllPressedKeys()
+    #expect(device.pendingEventCount == 0)
+    #expect(device.pendingReleaseEventCount == 4)
+    for (index, code) in [UInt16(1), 30, 42].enumerated() {
+      let address = UInt64(0x200 + index * 8)
+      _ = try device.processEvent(writableChain(at: address), memory: memory)
+      #expect(try memory.read(at: address, byteCount: 8) == event(type: 1, code: code, value: 0))
+    }
+    _ = try device.processEvent(writableChain(at: 0x218), memory: memory)
+    #expect(try memory.read(at: 0x218, byteCount: 8) == event(type: 0, code: 0, value: 0))
+    #expect(!device.hasPendingEvent)
+  }
+
+  @Test func durableReleaseAccountsForAlreadySelectedPressWithoutBlockingHost() throws {
+    let device = try DoryVirtioInputDevice(descriptor: .keyboard(), maximumPendingEvents: 2)
+    let memory = BlockingInputGuestMemory()
+    #expect(device.enqueueSynchronized([.init(type: 1, code: 30, value: 1)]))
+    let finished = DispatchSemaphore(value: 0)
+    let chain = writableChain(at: 0x100)
+    DispatchQueue.global().async {
+      defer { finished.signal() }
+      do { _ = try device.processEvent(chain, memory: memory) }
+      catch { Issue.record("selected input failed: \(error)") }
+    }
+    #expect(memory.entered.wait(timeout: .now() + 1) == .success)
+    device.releaseAllPressedKeys()
+    #expect(device.pendingReleaseEventCount == 2)
+    memory.resume.signal()
+    #expect(finished.wait(timeout: .now() + 1) == .success)
+    _ = try device.processEvent(writableChain(at: 0x108), memory: memory)
+    _ = try device.processEvent(writableChain(at: 0x110), memory: memory)
+    #expect(try memory.read(at: 0x100, byteCount: 8) == event(type: 1, code: 30, value: 1))
+    #expect(try memory.read(at: 0x108, byteCount: 8) == event(type: 1, code: 30, value: 0))
+    #expect(try memory.read(at: 0x110, byteCount: 8) == event(type: 0, code: 0, value: 0))
+    #expect(!device.hasPendingEvent)
+  }
+
+  @Test func resetRetiresDurableReleaseDebt() throws {
+    let device = try DoryVirtioInputDevice(descriptor: .keyboard())
+    let memory = InputGuestMemory(byteCount: 0x1000)
+    #expect(device.enqueue([.init(type: 1, code: 30, value: 1)]))
+    _ = try device.processEvent(writableChain(at: 0x100), memory: memory)
+    device.releaseAllPressedKeys()
+    #expect(device.hasPendingEvent)
+    device.reset()
+    #expect(!device.hasPendingEvent)
+    #expect(device.pendingReleaseEventCount == 0)
+    #expect(device.enqueue([.init(type: 1, code: 30, value: 1)]))
+    _ = try device.processEvent(writableChain(at: 0x108), memory: memory)
+    #expect(try memory.read(at: 0x108, byteCount: 8) == event(type: 1, code: 30, value: 1))
+    #expect(!device.hasPendingEvent)
+  }
+
   private func writableChain(at address: UInt64) -> DoryVirtioDescriptorChain {
     .init(
       headIndex: 0,
@@ -344,6 +431,30 @@ private final class InputGuestMemory: DoryVirtioGuestMemory, @unchecked Sendable
     else { throw DoryVirtioInputError.malformedStatus }
     return Int(address)..<(Int(address) + count)
   }
+}
+
+private final class BlockingInputGuestMemory: DoryVirtioGuestMemory, @unchecked Sendable {
+  private let lock = NSLock()
+  private var blockFirstWrite = true
+  private let storage = InputGuestMemory(byteCount: 0x1000)
+  let entered = DispatchSemaphore(value: 0)
+  let resume = DispatchSemaphore(value: 0)
+  func validate(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
+    try storage.validate(at: address, byteCount: byteCount, deviceWillWrite: deviceWillWrite)
+  }
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    try storage.read(at: address, byteCount: byteCount)
+  }
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    let shouldBlock = lock.withLock {
+      let result = blockFirstWrite
+      blockFirstWrite = false
+      return result
+    }
+    if shouldBlock { entered.signal(); _ = resume.wait(timeout: .now() + 2) }
+    try storage.write(at: address, bytes: bytes)
+  }
+  func synchronize() {}
 }
 
 private func read32(_ bytes: [UInt8], _ offset: Int) -> UInt32 {

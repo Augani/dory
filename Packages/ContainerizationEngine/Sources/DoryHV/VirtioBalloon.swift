@@ -75,6 +75,10 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
         var generation: UInt64 = 1
         var scheduled = false
         var kickPending = false
+        // One actual executor submission per queue, including a revoked closure that has not
+        // run yet. Reset must not free this credit: otherwise a guest can enqueue indefinitely
+        // behind a blocked executor by alternating status zero and a new queue notification.
+        var submissionID: UUID?
     }
 
     private struct WorkerState {
@@ -115,7 +119,7 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
 
     private let memory: GuestMemory
     private let limits: VirtioBalloonLimits
-    private let releaseRange: @Sendable (UInt64, UInt64) -> GuestMemoryReleaseResult
+    private let releaseRange: (@Sendable (UInt64, UInt64) -> GuestMemoryReleaseResult)?
     private let log: @Sendable (String) -> Void
     private let submitWork: (@escaping @Sendable () -> Void) -> Void
     private let workerStateLock = NSLock()
@@ -151,9 +155,7 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
         self.init(
             memory: memory,
             limits: .production,
-            releaseRange: { [memory] address, length in
-                memory.releaseRange(guestAddress: address, length: length)
-            },
+            releaseRange: nil,
             log: log,
             submitWork: { operation in worker.async(execute: operation) }
         )
@@ -162,7 +164,7 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
     init(
         memory: GuestMemory,
         limits: VirtioBalloonLimits,
-        releaseRange: @escaping @Sendable (UInt64, UInt64) -> GuestMemoryReleaseResult,
+        releaseRange: (@Sendable (UInt64, UInt64) -> GuestMemoryReleaseResult)? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in },
         submitWork: @escaping (@escaping @Sendable () -> Void) -> Void = { operation in
             operation()
@@ -182,35 +184,45 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
         guard transport.queues.indices.contains(queue), queue < queueCount else { return }
-        let generation = workerStateLock.withLock { () -> UInt64? in
-            if let reference = workerState.transport {
-                if let existing = reference.value {
-                    guard existing === transport else {
-                        queueFaults.wrappingAdd(1, ordering: .relaxed)
-                        return nil
+        let submission = transport.withQueueLock { () -> (UInt64, UUID)? in
+            guard transport.acceptsQueueWork else { return nil }
+            return workerStateLock.withLock { () -> (UInt64, UUID)? in
+                if let reference = workerState.transport {
+                    if let existing = reference.value {
+                        guard existing === transport else {
+                            queueFaults.wrappingAdd(1, ordering: .relaxed)
+                            return nil
+                        }
+                    } else {
+                        // A backend is normally owned by exactly one transport. Revoke orphaned
+                        // logical work before binding a replacement, but keep each actual executor
+                        // credit until its old closure retires and can schedule the replacement.
+                        for index in workerState.queues.indices {
+                            advanceWorkerGenerationLocked(queue: index)
+                        }
+                        workerState.transport = WeakTransportReference(transport)
                     }
                 } else {
-                    // A backend is normally owned by exactly one transport. If a synthetic caller
-                    // outlives that transport, revoke every orphaned scheduled turn before binding
-                    // a replacement so its kick cannot be coalesced into a dead worker task.
-                    for index in workerState.queues.indices {
-                        advanceWorkerGenerationLocked(queue: index)
-                    }
                     workerState.transport = WeakTransportReference(transport)
                 }
-            } else {
-                workerState.transport = WeakTransportReference(transport)
+                if workerState.queues[queue].submissionID != nil {
+                    workerState.queues[queue].kickPending = true
+                    coalescedWorkerRequests.wrappingAdd(1, ordering: .relaxed)
+                    return nil
+                }
+                let submissionID = UUID()
+                workerState.queues[queue].scheduled = true
+                workerState.queues[queue].submissionID = submissionID
+                return (workerState.queues[queue].generation, submissionID)
             }
-            if workerState.queues[queue].scheduled {
-                workerState.queues[queue].kickPending = true
-                coalescedWorkerRequests.wrappingAdd(1, ordering: .relaxed)
-                return nil
-            }
-            workerState.queues[queue].scheduled = true
-            return workerState.queues[queue].generation
         }
-        guard let generation else { return }
-        submitWorkerTurn(queue: queue, generation: generation, transport: transport)
+        guard let (generation, submissionID) = submission else { return }
+        submitWorkerTurn(
+            queue: queue,
+            generation: generation,
+            submissionID: submissionID,
+            transport: transport
+        )
     }
 
     public func deviceReset(transport: VirtioMMIOTransport) {
@@ -239,16 +251,62 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
     private func submitWorkerTurn(
         queue: Int,
         generation: UInt64,
+        submissionID: UUID,
         transport: VirtioMMIOTransport
     ) {
         submitWork { [weak self, weak transport] in
-            guard let self, let transport else { return }
+            guard let self else { return }
+            defer { self.retireWorkerSubmission(queue: queue, submissionID: submissionID) }
+            guard let transport else { return }
             self.runWorkerTurn(
                 queue: queue,
                 generation: generation,
                 transport: transport
             )
         }
+    }
+
+    private func retireWorkerSubmission(queue: Int, submissionID: UUID) {
+        let transport = workerStateLock.withLock { () -> VirtioMMIOTransport? in
+            guard workerState.queues[queue].submissionID == submissionID else { return nil }
+            return workerState.transport?.value
+        }
+        guard let transport else {
+            workerStateLock.withLock {
+                guard workerState.queues[queue].submissionID == submissionID else { return }
+                workerState.queues[queue].submissionID = nil
+                workerState.queues[queue].scheduled = false
+                workerState.queues[queue].kickPending = false
+            }
+            return
+        }
+        // Never wait for the transport while holding worker state: reset owns it before worker
+        // revocation. Retain only the exact old submission's credit while waiting for admission.
+        let next = transport.withQueueLock {
+            workerStateLock.withLock { () -> (UInt64, UUID, VirtioMMIOTransport)? in
+                guard workerState.queues[queue].submissionID == submissionID else { return nil }
+                workerState.queues[queue].submissionID = nil
+                workerState.queues[queue].scheduled = false
+                guard transport.acceptsQueueWork,
+                      workerState.queues[queue].kickPending,
+                      workerState.transport?.value === transport else {
+                    workerState.queues[queue].kickPending = false
+                    return nil
+                }
+                let nextID = UUID()
+                workerState.queues[queue].kickPending = false
+                workerState.queues[queue].submissionID = nextID
+                workerState.queues[queue].scheduled = true
+                return (workerState.queues[queue].generation, nextID, transport)
+            }
+        }
+        guard let (generation, nextID, transport) = next else { return }
+        submitWorkerTurn(
+            queue: queue,
+            generation: generation,
+            submissionID: nextID,
+            transport: transport
+        )
     }
 
     private func runWorkerTurn(
@@ -329,7 +387,7 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
         transport: VirtioMMIOTransport
     ) -> PreparedWork {
         transport.withQueueLock {
-            guard isCurrentWorker(
+            guard transport.acceptsQueueWork, isCurrentWorker(
                 queue: queue,
                 generation: generation,
                 transport: transport
@@ -380,17 +438,27 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
         transport: VirtioMMIOTransport
     ) -> ReportCompletion {
         let startedAt = Self.monotonicNanoseconds()
-        lifecycleFence.lock()
-        guard isCurrentWorker(
-            queue: queue,
-            generation: generation,
-            transport: transport
-        ) else {
-            lifecycleFence.unlock()
-            return .stale
+        let admitted = transport.withQueueLock {
+            guard transport.acceptsQueueWork, isCurrentWorker(
+                queue: queue, generation: generation, transport: transport
+            ) else { return false }
+            lifecycleFence.lock()
+            guard isCurrentWorker(queue: queue, generation: generation, transport: transport) else {
+                lifecycleFence.unlock()
+                return false
+            }
+            return true
         }
-        processAcceptedReport(ranges: ranges, reportedBytes: reportedBytes)
+        guard admitted else { return .stale }
+        // Feature/layout epochs can revoke a queue independently of this backend's worker
+        // generation. Keep the exact report lease throughout reclaim and exempt only its own
+        // payload pin; another device's payload and this queue's metadata remain protected.
+        let processed = chain.withLeaseHeld { access in
+            processAcceptedReport(ranges: ranges, reportedBytes: reportedBytes, access: access)
+            return true
+        } ?? false
         lifecycleFence.unlock()
+        guard processed else { return .stale }
 
         let elapsed = Self.monotonicNanoseconds() &- startedAt
         reportProcessingNanoseconds.wrappingAdd(elapsed, ordering: .relaxed)
@@ -399,16 +467,18 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
         }
 
         return transport.withQueueLock {
-            guard isCurrentWorker(
+            guard transport.acceptsQueueWork, isCurrentWorker(
                 queue: queue,
                 generation: generation,
                 transport: transport
             ) else { return .stale }
             do {
-                return .published(wantsInterrupt: try transport.queues[queue].push(
-                    chain,
-                    written: 0
-                ))
+                switch try transport.queues[queue].pushOutcome(chain, written: 0) {
+                case let .published(wantsInterrupt):
+                    return .published(wantsInterrupt: wantsInterrupt)
+                case .revoked:
+                    return .stale
+                }
             } catch {
                 queueFaults.wrappingAdd(1, ordering: .relaxed)
                 return .fault
@@ -422,7 +492,7 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
         transport: VirtioMMIOTransport
     ) -> Bool {
         transport.withQueueLock {
-            guard isCurrentWorker(
+            guard transport.acceptsQueueWork, isCurrentWorker(
                 queue: queue,
                 generation: generation,
                 transport: transport
@@ -445,7 +515,7 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
     ) {
         if wantsInterrupt {
             transport.withQueueLock {
-                if isCurrentWorker(
+                if transport.acceptsQueueWork, isCurrentWorker(
                     queue: queue,
                     generation: generation,
                     transport: transport
@@ -455,22 +525,23 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
             }
         }
 
-        let shouldContinue = workerStateLock.withLock { () -> Bool in
-            guard isCurrentWorkerLocked(
-                queue: queue,
-                generation: generation,
-                transport: transport
-            ) else { return false }
-            let pending = knownPendingWork || workerState.queues[queue].kickPending
-            workerState.queues[queue].kickPending = false
-            if !pending {
-                workerState.queues[queue].scheduled = false
+        let shouldContinue = transport.withQueueLock {
+            workerStateLock.withLock { () -> Bool in
+                guard isCurrentWorkerLocked(
+                    queue: queue,
+                    generation: generation,
+                    transport: transport
+                ) else { return false }
+                let pending = transport.acceptsQueueWork
+                    && (knownPendingWork || workerState.queues[queue].kickPending)
+                workerState.queues[queue].kickPending = pending
+                return pending
             }
-            return pending
         }
         if shouldContinue {
             workerYields.wrappingAdd(1, ordering: .relaxed)
-            submitWorkerTurn(queue: queue, generation: generation, transport: transport)
+            // The submitted closure's defer releases its exact credit and then schedules the
+            // latest requested generation. Never enqueue while the old credit is still held.
         }
     }
 
@@ -537,12 +608,17 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
         }
     }
 
-    private func processAcceptedReport(ranges: [GuestRange], reportedBytes: Int) {
+    private func processAcceptedReport(
+        ranges: [GuestRange],
+        reportedBytes: Int,
+        access: VirtqueueLeaseAccess
+    ) {
         let event = reportRequests.wrappingAdd(1, ordering: .relaxed).newValue
         reportBytes.wrappingAdd(UInt64(reportedBytes), ordering: .relaxed)
         var reclaimedThisReport: UInt64 = 0
         for range in ranges {
-            let result = releaseRange(range.address, range.length)
+            let result = releaseRange?(range.address, range.length)
+                ?? access.releaseReportedRange(in: memory, address: range.address, length: range.length)
             if result.hostMemoryWasReclaimed {
                 reclaimedThisReport &+= range.length
             } else {
@@ -588,7 +664,10 @@ public final class VirtioBalloon: VirtioDeviceBackend, @unchecked Sendable {
                 let (end, endOverflow) = start.addingReportingOverflow(UInt64(segment.length))
                 guard !endOverflow, start >= hostBase, end <= hostEnd else { return .invalid }
 
-                let guestStart = memory.guestBase + (start - hostBase)
+                let (guestStart, guestStartOverflow) = memory.guestBase.addingReportingOverflow(
+                    start - hostBase
+                )
+                guard !guestStartOverflow else { return .invalid }
                 let (guestEnd, guestEndOverflow) = guestStart.addingReportingOverflow(
                     UInt64(segment.length)
                 )

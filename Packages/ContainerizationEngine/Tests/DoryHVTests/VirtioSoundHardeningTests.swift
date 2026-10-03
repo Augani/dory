@@ -3,6 +3,82 @@ import Testing
 @testable import DoryHV
 
 @Suite struct VirtioSoundHardeningTests {
+    @Test(arguments: [false, true])
+    func reentrantTerminalHostConfigurationCannotPublishOrClaimAnotherHead(failed: Bool) throws {
+        let host = HardenedSoundHost()
+        let sound = makeSound(host: host, scheduler: ManualSoundScheduler())
+        let ring = try SoundTestRing(sound: sound, queueIndex: 0)
+        host.onConfigure = {
+            if failed { ring.transport.write(offset: 0x070, value: 0x80, width: 4) }
+            else { ring.transport.requestDeviceReset() }
+        }
+        let first = try ring.submit(head: 0, slot: 0,
+            segments: [.readable(setParameters(streamID: 0)), .writable(length: 4)])
+        let second = try ring.submit(head: 2, slot: 1,
+            segments: [.readable(setParameters(streamID: 0)), .writable(length: 4)])
+        for address in [try #require(first.last), try #require(second.last)] {
+            try ring.memory.write([UInt8](repeating: 0xA5, count: 4), at: address)
+        }
+        sound.handleKick(queue: 0, transport: ring.transport)
+        #expect(host.configureCallCount == 1)
+        #expect(try ring.usedIndex() == 0)
+        #expect(try ring.queue.pendingCount() == 1)
+        for address in [try #require(first.last), try #require(second.last)] {
+            #expect(try ring.memory.readBytes(at: address, count: 4) == [0xA5, 0xA5, 0xA5, 0xA5])
+        }
+        #expect(ring.transport.statistics.usedInterrupts == 0)
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func terminalStatusRetiresHostCompletionWithoutPayloadOrUsedDMA(
+        failed: Bool, capture: Bool
+    ) throws {
+        let host = HardenedSoundHost()
+        host.acceptPlayback = true
+        host.acceptCapture = true
+        let scheduler = ManualSoundScheduler()
+        let sound = makeSound(host: host, scheduler: scheduler)
+        let streamID: UInt32 = capture ? 1 : 0
+        #expect(status(sound, setParameters(streamID: streamID)) == 0x8000)
+        #expect(status(sound, lifecycle(0x0102, streamID: streamID)) == 0x8000)
+        let queueIndex = capture ? 3 : 2
+        let ring = try SoundTestRing(sound: sound, queueIndex: queueIndex)
+        var request = [UInt8]()
+        request.appendLE(streamID)
+        if !capture { request.append(contentsOf: repeatElement(0x40, count: 16)) }
+        let addresses = try ring.submit(head: 0, slot: 0,
+            segments: [.readable(request), .writable(length: capture ? 24 : 8)])
+        let output = try #require(addresses.last)
+        let sentinel = [UInt8](repeating: 0xA5, count: capture ? 24 : 8)
+        try ring.memory.write(sentinel, at: output)
+        sound.handleKick(queue: queueIndex, transport: ring.transport)
+        #expect(scheduler.activeCount == 1)
+        if failed { ring.transport.write(offset: 0x070, value: 0x80, width: 4) }
+        else { ring.transport.requestDeviceReset() }
+        if capture { host.finishCapture(at: 0, data: Data(repeating: 0x61, count: 16), latency: 7) }
+        else { host.finishPlayback(at: 0, success: true, latency: 7) }
+        scheduler.fireAll()
+        sound.handleKick(queue: queueIndex, transport: ring.transport)
+        #expect(scheduler.activeCount == 0)
+        #expect(try ring.usedIndex() == 0)
+        #expect(try ring.memory.readBytes(at: output, count: sentinel.count) == sentinel)
+        #expect(sound.statistics.completedPlaybackPeriods == 0)
+        #expect(sound.statistics.completedCapturePeriods == 0)
+        #expect(ring.transport.statistics.usedInterrupts == 0)
+        ring.transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(ring.transport.read(offset: 0x070, width: 4) == 0)
+        #expect(status(sound, setParameters(streamID: streamID)) == 0x8000)
+        #expect(status(sound, lifecycle(0x0102, streamID: streamID)) == 0x8000)
+        let successor = try SoundTestRing(sound: sound, queueIndex: queueIndex)
+        try successor.submit(head: 0, slot: 0,
+            segments: [.readable(request), .writable(length: capture ? 24 : 8)])
+        sound.handleKick(queue: queueIndex, transport: successor.transport)
+        if capture { host.finishCapture(at: 1, data: Data(repeating: 0x62, count: 16), latency: 8) }
+        else { host.finishPlayback(at: 1, success: true, latency: 8) }
+        #expect(try successor.usedIndex() == 1)
+        #expect(scheduler.activeCount == 0)
+    }
+
     @Test func rejectsWrongDirectionOrderAndZeroLengthOnEveryQueue() throws {
         let host = HardenedSoundHost()
         let scheduler = ManualSoundScheduler()
@@ -394,6 +470,7 @@ private final class SoundTestRing {
             backend: sound,
             memory: memory
         ) {}
+        finishMMIOTestDriverNegotiation(transport)
         queue = transport.queues[queueIndex]
         queue.configure(
             size: 8,
@@ -537,6 +614,7 @@ private final class HardenedSoundHost: VirtioSoundHost, @unchecked Sendable {
     var resetCallCount: Int { withLock { resetCalls } }
     var playbackCallCount: Int { withLock { playbackCompletions.count } }
     var captureCallCount: Int { withLock { captureCompletions.count } }
+    var onConfigure: (() -> Void)?
 
     func configure(
         streamID: Int,
@@ -544,6 +622,7 @@ private final class HardenedSoundHost: VirtioSoundHost, @unchecked Sendable {
         parameters: VirtioSoundPCMParameters
     ) -> Bool {
         withLock { configureCalls += 1 }
+        onConfigure?()
         return true
     }
 

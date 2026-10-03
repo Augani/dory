@@ -306,9 +306,9 @@ import Testing
         #expect(resetReturned.wait(timeout: .now() + 1) == .success)
         #expect(workerReturned.wait(timeout: .now() + 1) == .success)
 
-        // The bounded fill finishes before reset returns, but reset advances the generation and
-        // clears the queue before the retained descriptor can be published.
-        #expect(try harness.memory.read(UInt8.self, at: output) == 0x61)
+        // The bounded host fill finishes before reset returns. Reset owns the transport boundary,
+        // so neither its snapshot's payload copy nor its used-ring publication can reach the guest.
+        #expect(try harness.memory.read(UInt8.self, at: output) == 0xa5)
         #expect(try usedIndex(harness) == 0)
         #expect(harness.device.statistics.completedRequests == 0)
         #expect(harness.device.statistics.revokedWorkerTurns == 1)
@@ -376,6 +376,186 @@ import Testing
         #expect(harness.device.statistics.queueFaults == 1)
     }
 
+    @Test(arguments: [false, true])
+    func terminalStatusRejectsQueuedEntropyAndDirectResumeUntilReset(failed: Bool) throws {
+        let counter = FillCounter()
+        let harness = try makeHarness(
+            limits: .init(maximumBytesPerRequest: 64, maximumRequestsPerWorkerTurn: 1),
+            fillEntropy: { buffer in
+                counter.record()
+                buffer.initializeMemory(as: UInt8.self, repeating: 0x71)
+                return true
+            })
+        let output = harness.guestBase + 0x20_000
+        try harness.memory.write([UInt8](repeating: 0xa5, count: 64), at: output)
+        try installDescriptor(index: 0, address: output, length: 64, flags: 2, next: 0, harness: harness)
+        try publish([0], harness: harness)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+        try #require(harness.work.pendingCount == 1)
+        markTerminal(harness, failed: failed)
+        try #require(harness.work.runNext())
+        #expect(counter.calls == 0)
+        #expect(try usedIndex(harness) == 0)
+        #expect(try harness.memory.read(UInt8.self, at: output) == 0xa5)
+        #expect(harness.transport.withQueueLock { try? harness.transport.queues[0].pendingCount() } == 1)
+        harness.device.handleKick(queue: 0, transport: harness.transport)
+        harness.transport.write(offset: 0x070, value: 0x0F, width: 4)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+        #expect(harness.work.pendingCount == 0)
+        #expect(harness.device.statistics.completedRequests == 0)
+        #expect(harness.transport.read(offset: 0x070, width: 4) == (failed ? 0x8F : 0x4F))
+
+        try resetAndConfigureQueue(harness)
+        try publish([0], harness: harness)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+        try #require(harness.work.runNext())
+        #expect(counter.calls == 1)
+        #expect(try usedIndex(harness) == 1)
+        #expect(try harness.memory.read(UInt8.self, at: output) == 0x71)
+        #expect(harness.work.pendingCount == 0)
+    }
+
+    @Test(arguments: [false, true])
+    func terminalStatusDuringHostFillRejectsBothPayloadAndUsedRingDMA(failed: Bool) throws {
+        let counter = FillCounter()
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let harness = try makeHarness(
+            limits: .init(maximumBytesPerRequest: 64, maximumRequestsPerWorkerTurn: 1),
+            fillEntropy: { buffer in
+                counter.record()
+                entered.signal()
+                guard release.wait(timeout: .now() + 5) == .success else { return false }
+                buffer.initializeMemory(as: UInt8.self, repeating: 0x72)
+                return true
+            })
+        defer { release.signal() }
+        let output = harness.guestBase + 0x20_000
+        try harness.memory.write([UInt8](repeating: 0xa5, count: 64), at: output)
+        try installDescriptor(index: 0, address: output, length: 64, flags: 2, next: 0, harness: harness)
+        try publish([0], harness: harness)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+        let returned = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            _ = harness.work.runNext()
+            returned.signal()
+        }
+        try #require(entered.wait(timeout: .now() + 1) == .success)
+        let statusReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            if failed { harness.transport.write(offset: 0x070, value: 0x80, width: 4) }
+            else { harness.transport.requestDeviceReset() }
+            statusReturned.signal()
+        }
+        try #require(statusReturned.wait(timeout: .now() + 1) == .success)
+        release.signal()
+        try #require(returned.wait(timeout: .now() + 1) == .success)
+        #expect(counter.calls == 1)
+        #expect(try harness.memory.readBytes(at: output, count: 64) == [UInt8](repeating: 0xa5, count: 64))
+        #expect(try usedIndex(harness) == 0)
+        #expect(harness.device.statistics.completedRequests == 0)
+        #expect(harness.work.pendingCount == 0)
+        try resetAndConfigureQueue(harness)
+        try publish([0], harness: harness)
+        release.signal()
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+        try #require(harness.work.runNext())
+        #expect(counter.calls == 2)
+        #expect(try usedIndex(harness) == 1)
+        #expect(try harness.memory.read(UInt8.self, at: output) == 0x72)
+    }
+
+    @Test(arguments: [false, true])
+    func terminalResetOldQueuedTurnCannotRetireOrConsumeSuccessorWork(failed: Bool) throws {
+        let counter = FillCounter()
+        let harness = try makeHarness(
+            limits: .init(maximumBytesPerRequest: 64, maximumRequestsPerWorkerTurn: 1),
+            fillEntropy: { buffer in
+                counter.record()
+                buffer.initializeMemory(as: UInt8.self, repeating: 0x73)
+                return true
+            })
+        let oldOutput = harness.guestBase + 0x20_000
+        let newOutput = oldOutput + 0x100
+        try harness.memory.write([UInt8](repeating: 0xa5, count: 64), at: oldOutput)
+        try harness.memory.write([UInt8](repeating: 0xa5, count: 64), at: newOutput)
+        try installDescriptor(index: 0, address: oldOutput, length: 64, flags: 2, next: 0, harness: harness)
+        try publish([0], harness: harness)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+        markTerminal(harness, failed: failed)
+        try resetAndConfigureQueue(harness)
+        try installDescriptor(index: 0, address: newOutput, length: 64, flags: 2, next: 0, harness: harness)
+        try publish([0], harness: harness)
+        harness.transport.write(offset: 0x050, value: 0, width: 4)
+        try #require(harness.work.pendingCount == 2)
+        try #require(harness.work.runNext())
+        #expect(counter.calls == 0)
+        #expect(try usedIndex(harness) == 0)
+        #expect(try harness.memory.read(UInt8.self, at: newOutput) == 0xa5)
+        try #require(harness.work.runNext())
+        #expect(counter.calls == 1)
+        #expect(try usedIndex(harness) == 1)
+        #expect(try harness.memory.read(UInt8.self, at: newOutput) == 0x73)
+        #expect(try harness.memory.read(UInt8.self, at: oldOutput) == 0xa5)
+        #expect(harness.work.pendingCount == 0)
+    }
+
+    @Test(arguments: [false, true])
+    func directLifecycleRevocationCannotReplayQueuedTurnAgainstLiveSuccessor(queueChange: Bool) throws {
+        let counter = FillCounter()
+        let harness = try makeHarness(
+            limits: .init(maximumBytesPerRequest: 64, maximumRequestsPerWorkerTurn: 1),
+            fillEntropy: { buffer in
+                counter.record()
+                buffer.initializeMemory(as: UInt8.self, repeating: 0x74)
+                return true
+            })
+        let output = harness.guestBase + 0x20_000
+        try harness.memory.write([UInt8](repeating: 0xa5, count: 64), at: output)
+        try installDescriptor(index: 0, address: output, length: 64, flags: 2, next: 0, harness: harness)
+        try publish([0], harness: harness)
+        harness.device.handleKick(queue: 0, transport: harness.transport)
+        if queueChange {
+            harness.device.queueStateChanged(queue: 0, ready: true, transport: harness.transport)
+        } else {
+            harness.device.deviceReset(transport: harness.transport)
+        }
+        // Unlike an MMIO status-zero write, direct backend revocation leaves this ready ring live.
+        // The stale closure must not acquire the fresh backend executor's admission or clear it.
+        harness.device.handleKick(queue: 0, transport: harness.transport)
+        try #require(harness.work.pendingCount == 2)
+        try #require(harness.work.runNext())
+        #expect(counter.calls == 0)
+        #expect(try usedIndex(harness) == 0)
+        #expect(try harness.memory.read(UInt8.self, at: output) == 0xa5)
+        try #require(harness.work.runNext())
+        #expect(counter.calls == 1)
+        #expect(try usedIndex(harness) == 1)
+        #expect(try harness.memory.read(UInt8.self, at: output) == 0x74)
+        #expect(harness.work.pendingCount == 0)
+    }
+
+    private func markTerminal(_ harness: Harness, failed: Bool) {
+        if failed { harness.transport.write(offset: 0x070, value: 0x80, width: 4) }
+        else { harness.transport.requestDeviceReset() }
+    }
+
+    private func resetAndConfigureQueue(_ harness: Harness) throws {
+        harness.transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(harness.transport.negotiatedFeatures == 0)
+        #expect(!harness.transport.queues[0].ready)
+        finishMMIOTestDriverNegotiation(harness.transport)
+        harness.transport.write(offset: 0x030, value: 0, width: 4)
+        harness.transport.write(offset: 0x038, value: 8, width: 4)
+        harness.transport.write(offset: 0x080, value: harness.queue.descriptors, width: 4)
+        harness.transport.write(offset: 0x090, value: harness.queue.available, width: 4)
+        harness.transport.write(offset: 0x0A0, value: harness.queue.used, width: 4)
+        harness.transport.write(offset: 0x044, value: 1, width: 4)
+        try #require(harness.transport.queues[0].ready)
+        try harness.memory.write(UInt16(0), at: harness.queue.available + 2)
+        try harness.memory.write(UInt16(0), at: harness.queue.used + 2)
+    }
+
     private struct Harness {
         let guestBase: UInt64
         let memory: GuestMemory
@@ -406,6 +586,7 @@ import Testing
             backend: device,
             memory: memory
         ) {}
+        finishMMIOTestDriverNegotiation(transport)
         let queue = QueueLayout(
             descriptors: guestBase + 0x10_000,
             available: guestBase + 0x12_000,

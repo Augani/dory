@@ -86,7 +86,11 @@ public final class DoryHostUSBLeaseDevice: DoryPCUSBDevice, @unchecked Sendable 
   private let releaseHandler: @Sendable (UUID, DoryUSBPhysicalIdentityToken, String) -> Void
   private var active = true
   private var outstandingTransfers = 0
-  private var released = false
+  /// Includes transfers, resets, and caller-initiated cancellation. The physical capability
+  /// and exclusive broker lease remain owned until the final call returns, even after unplug.
+  private var inFlightOperations = 0
+  private var retirementStarted = false
+  private var retired = false
   private var revocationHandler: (@Sendable () -> Void)?
 
   fileprivate init(
@@ -117,6 +121,18 @@ public final class DoryHostUSBLeaseDevice: DoryPCUSBDevice, @unchecked Sendable 
     condition.withLock { active }
   }
 
+  /// A revoke can make the guest port disappear before a slow platform operation returns.
+  /// This remains false until the host handle has closed and broker ownership is relinquished.
+  public var isRetired: Bool { condition.withLock { retired } }
+
+  public func waitForRetirement(timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(max(0, timeout))
+    condition.lock()
+    defer { condition.unlock() }
+    while !retired, condition.wait(until: deadline) {}
+    return retired
+  }
+
   /// Installs the root-hub notification edge. Installing after a physical removal immediately
   /// reports the already-terminal lease so capture and xHCI attachment cannot lose a disconnect.
   public func setRevocationHandler(_ handler: (@Sendable () -> Void)?) {
@@ -128,9 +144,15 @@ public final class DoryHostUSBLeaseDevice: DoryPCUSBDevice, @unchecked Sendable 
   }
 
   public func perform(_ transfer: DoryPCUSBTransfer) -> DoryPCUSBTransferResult {
+    // Physical isochronous scheduling is not qualified. A guest endpoint context must not
+    // turn an admitted storage/serial lease into ambient isochronous host access.
+    guard transfer.type != .isochronous else {
+      return result(condition.withLock { active } ? .stalled : .disconnected)
+    }
     let admitted = condition.withLock {
       guard active, outstandingTransfers < maximumOutstandingTransfers else { return false }
       outstandingTransfers += 1
+      inFlightOperations += 1
       return true
     }
     guard admitted else {
@@ -140,25 +162,36 @@ public final class DoryHostUSBLeaseDevice: DoryPCUSBDevice, @unchecked Sendable 
       transfer,
       deadline: ContinuousClock.now.advanced(by: transferTimeout)
     )
-    let remainsActive = condition.withLock {
+    condition.withLock {
       outstandingTransfers -= 1
-      condition.broadcast()
-      return active
     }
+    let remainsActive = finishOperation()
     return remainsActive ? response : result(.disconnected)
   }
 
   public func reset() {
-    let admitted = condition.withLock { active }
+    let admitted = condition.withLock { () -> Bool in
+      guard active else { return false }
+      inFlightOperations += 1
+      return true
+    }
     guard admitted else { return }
-    if !capability.reset(deadline: ContinuousClock.now.advanced(by: transferTimeout)) {
+    let succeeded = capability.reset(deadline: ContinuousClock.now.advanced(by: transferTimeout))
+    _ = finishOperation()
+    if !succeeded {
       revoke()
     }
   }
 
   public func cancelAll() {
-    let admitted = condition.withLock { active }
-    if admitted { capability.cancelAll() }
+    let admitted = condition.withLock { () -> Bool in
+      guard active else { return false }
+      inFlightOperations += 1
+      return true
+    }
+    guard admitted else { return }
+    capability.cancelAll()
+    _ = finishOperation()
   }
 
   public func release() {
@@ -173,22 +206,43 @@ public final class DoryHostUSBLeaseDevice: DoryPCUSBDevice, @unchecked Sendable 
     let outcome = condition.withLock { () -> (Bool, (@Sendable () -> Void)?) in
       guard active else { return (false, nil) }
       active = false
+      // Count the revocation's own cancellation, so a finishing transfer cannot close the
+      // platform handle while cancelAll is still executing on this thread.
+      inFlightOperations += 1
       let notification = revocationHandler
       revocationHandler = nil
       return (true, notification)
     }
     guard outcome.0 else { return }
+    outcome.1?()
     capability.cancelAll()
-    let deadline = Date().addingTimeInterval(1)
-    condition.lock()
-    while outstandingTransfers > 0, condition.wait(until: deadline) {}
-    let notify = !released
-    released = true
-    condition.unlock()
+    _ = finishOperation()
+  }
+
+  /// The final in-flight call owns retirement. If a platform transfer ignores cancellation,
+  /// keep the physical device quarantined instead of closing its handle and granting it to a
+  /// second VM while the old call can still touch it.
+  @discardableResult
+  private func finishOperation() -> Bool {
+    let outcome = condition.withLock { () -> (active: Bool, retire: Bool) in
+      precondition(inFlightOperations > 0)
+      inFlightOperations -= 1
+      let retire = !active && inFlightOperations == 0 && !retirementStarted
+      if retire { retirementStarted = true }
+      return (active, retire)
+    }
+    if outcome.retire { finishRetirement() }
+    return outcome.active
+  }
+
+  private func finishRetirement() {
     capability.close()
     (capability as? any DoryHostUSBRevocationNotifying)?.setRevocationHandler(nil)
-    if notify { releaseHandler(leaseID, identityToken, machineID) }
-    outcome.1?()
+    releaseHandler(leaseID, identityToken, machineID)
+    condition.withLock {
+      retired = true
+      condition.broadcast()
+    }
   }
 
   deinit {

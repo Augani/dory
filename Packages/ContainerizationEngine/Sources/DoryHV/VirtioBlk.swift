@@ -327,6 +327,8 @@ public final class VirtioBlk: VirtioDeviceBackend {
     private let discardBlockSize: Int
     private let limits: VirtioBlkLimits
     private let ioOperations: VirtioBlkIOOperations
+    /// Test-only interlock, assigned before starting workers. Production leaves it nil.
+    var beforeQueueExecutionTestHook: (@Sendable () -> Void)?
     private let rangeOperations: VirtioBlkRangeOperations
     private let ioQueues: [DispatchQueue]
     private let ioQueueKey = DispatchSpecificKey<Int>()
@@ -342,6 +344,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
 
     private var activeFlushPermit: FlushPermit?
     private let flushTelemetry: VirtioBlkFlushTelemetryConfiguration
+    private let qualificationFaults: RuntimeQualificationFaultController?
     private let statisticsLock = NSLock()
     private var flushCount: UInt64 = 0
     private var maximumFlushLatencyNanoseconds: UInt64 = 0
@@ -438,11 +441,13 @@ public final class VirtioBlk: VirtioDeviceBackend {
         let written: Int
         let workBytes: Int
         let rangeHostOperations: Int
+        let qualificationChallenge: UUID?
 
-        init(written: Int, workBytes: Int, rangeHostOperations: Int = 0) {
+        init(written: Int, workBytes: Int, rangeHostOperations: Int = 0, qualificationChallenge: UUID? = nil) {
             self.written = written
             self.workBytes = workBytes
             self.rangeHostOperations = rangeHostOperations
+            self.qualificationChallenge = qualificationChallenge
         }
     }
 
@@ -534,7 +539,8 @@ public final class VirtioBlk: VirtioDeviceBackend {
         identity: String,
         readOnly: Bool = false,
         queueCount requestedQueueCount: Int? = nil,
-        discard: Bool? = nil
+        discard: Bool? = nil,
+        qualificationFaults: RuntimeQualificationFaultController? = nil
     ) throws {
         try self.init(
             path: path,
@@ -543,7 +549,8 @@ public final class VirtioBlk: VirtioDeviceBackend {
             asyncIO: true,
             queueCount: requestedQueueCount,
             discard: discard,
-            flushTelemetry: .production
+            flushTelemetry: .production,
+            qualificationFaults: qualificationFaults
         )
     }
 
@@ -576,6 +583,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
         queueCount requestedQueueCount: Int? = nil,
         discard: Bool? = nil,
         flushTelemetry: VirtioBlkFlushTelemetryConfiguration,
+        qualificationFaults: RuntimeQualificationFaultController? = nil,
         limits: VirtioBlkLimits = .production,
         ioOperations: VirtioBlkIOOperations = .production,
         rangeOperations: VirtioBlkRangeOperations = .production
@@ -601,6 +609,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
                 queueCount: requestedQueueCount,
                 discard: discard,
                 flushTelemetry: flushTelemetry,
+                qualificationFaults: qualificationFaults,
                 limits: limits,
                 ioOperations: ioOperations,
                 rangeOperations: rangeOperations
@@ -620,7 +629,8 @@ public final class VirtioBlk: VirtioDeviceBackend {
         identity: String,
         readOnly: Bool = false,
         queueCount requestedQueueCount: Int? = nil,
-        discard: Bool? = nil
+        discard: Bool? = nil,
+        qualificationFaults: RuntimeQualificationFaultController? = nil
     ) throws {
         try self.init(
             fileDescriptor: fileDescriptor,
@@ -629,7 +639,8 @@ public final class VirtioBlk: VirtioDeviceBackend {
             asyncIO: true,
             queueCount: requestedQueueCount,
             discard: discard,
-            flushTelemetry: .production
+            flushTelemetry: .production,
+            qualificationFaults: qualificationFaults
         )
     }
 
@@ -660,6 +671,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
         queueCount requestedQueueCount: Int? = nil,
         discard: Bool? = nil,
         flushTelemetry: VirtioBlkFlushTelemetryConfiguration,
+        qualificationFaults: RuntimeQualificationFaultController? = nil,
         limits: VirtioBlkLimits = .production,
         ioOperations: VirtioBlkIOOperations = .production,
         rangeOperations: VirtioBlkRangeOperations = .production
@@ -682,6 +694,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
                 queueCount: requestedQueueCount,
                 discard: discard,
                 flushTelemetry: flushTelemetry,
+                qualificationFaults: qualificationFaults,
                 limits: limits,
                 ioOperations: ioOperations,
                 rangeOperations: rangeOperations
@@ -700,10 +713,14 @@ public final class VirtioBlk: VirtioDeviceBackend {
         queueCount requestedQueueCount: Int?,
         discard: Bool?,
         flushTelemetry: VirtioBlkFlushTelemetryConfiguration,
+        qualificationFaults: RuntimeQualificationFaultController?,
         limits: VirtioBlkLimits,
         ioOperations: VirtioBlkIOOperations,
         rangeOperations: VirtioBlkRangeOperations
     ) throws {
+        guard qualificationFaults == nil || (!readOnly && identity == "dory-rootfs") else {
+            throw VMError.invalidConfiguration("qualification faults require the writable campaign system disk")
+        }
         let resolvedQueueCount = requestedQueueCount ?? 1
         guard (1...16).contains(resolvedQueueCount) else {
             throw VMError.invalidConfiguration(
@@ -717,6 +734,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
         self.readOnly = readOnly
         self.asyncIO = asyncIO
         self.flushTelemetry = flushTelemetry
+        self.qualificationFaults = qualificationFaults
         // Discard/write-zeroes only make sense on a writable image; keep them off for read-only shares.
         self.discardEnabled = !readOnly && (discard ?? true)
         self.discardBlockSize = backing.discardBlockSize
@@ -760,6 +778,12 @@ public final class VirtioBlk: VirtioDeviceBackend {
         guard accessMode != O_WRONLY, readOnly || accessMode == O_RDWR else {
             throw VMError.invalidConfiguration("\(description) does not have the required access mode")
         }
+        // Every sector write is positional and bounded by the frozen capacity. An inherited
+        // append-mode open-file description can redirect that write to EOF instead; reject it
+        // on our owned duplicate without changing flags shared with the caller's descriptor.
+        guard descriptorFlags & O_APPEND == 0 else {
+            throw VMError.invalidConfiguration("\(description) must not use append mode")
+        }
 
         // Virtio-blk advertises capacity in complete 512-byte sectors. Freeze the addressable byte
         // capacity at construction so later requests cannot grow the image or reach a trailing
@@ -781,6 +805,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
     }
 
     deinit {
+        qualificationFaults?.cancelPending()
         drainLock.withLock {
             drainIsTerminal = true
             deviceIsReady = false
@@ -823,8 +848,12 @@ public final class VirtioBlk: VirtioDeviceBackend {
     }
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
-        guard (0..<queueCount).contains(queue),
-              let epoch = beginDrain(queue: queue, transport: transport) else { return }
+        guard (0..<queueCount).contains(queue) else { return }
+        let admitted = transport.withQueueLock { () -> DrainEpoch? in
+            guard transport.acceptsQueueWork else { return nil }
+            return beginDrain(queue: queue, transport: transport)
+        }
+        guard let epoch = admitted else { return }
         if asyncIO {
             enqueueDrain(epoch, transport: transport)
         } else {
@@ -849,6 +878,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
     public func deviceReset(transport: VirtioMMIOTransport) {
         let identity = ObjectIdentifier(transport)
         drainLock.withLock {
+            qualificationFaults?.cancelPending()
             guard !drainIsTerminal else { return }
             deviceIsReady = false
             for index in queueDrainStates.indices
@@ -943,6 +973,11 @@ public final class VirtioBlk: VirtioDeviceBackend {
                 queueDrainStates[epoch.queue].activeGeneration = nil
                 return false
             case .stale:
+                // Terminal status need not change the queue generation. Release only this exact
+                // drainer's host scheduling/depth debt; a reset/successor already fails the guard.
+                queueDrainStates[epoch.queue].activeGeneration = nil
+                queueDrainStates[epoch.queue].kickPending = false
+                queueDrainStates[epoch.queue].queueDepth = 0
                 return false
             }
         }
@@ -991,8 +1026,9 @@ public final class VirtioBlk: VirtioDeviceBackend {
             }
             handled += 1
 
+            beforeQueueExecutionTestHook?()
             let startedAt = ioOperations.monotonicNanoseconds()
-            guard let execution = process(chain: chain, epoch: epoch) else {
+            guard let execution = process(chain: chain, epoch: epoch, transport: transport) else {
                 recordRevokedRequest()
                 return .stale
             }
@@ -1013,6 +1049,12 @@ public final class VirtioBlk: VirtioDeviceBackend {
                 transport: transport
             ) {
             case let .published(wantsInterrupt):
+                if let challenge = execution.qualificationChallenge {
+                    qualificationFaults?.guestCompleted(
+                        challenge: challenge, status: RequestStatus.ioError.rawValue,
+                        queueIndex: epoch.queue, queueGeneration: epoch.generation
+                    )
+                }
                 interrupt = wantsInterrupt || interrupt
                 recordRequestCompletion(startedAt: startedAt)
             case .stale:
@@ -1054,7 +1096,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
         transport: VirtioMMIOTransport
     ) -> QueuePopOutcome {
         transport.withQueueLock {
-            guard isCurrent(epoch) else { return .stale }
+            guard transport.acceptsQueueWork, isCurrent(epoch) else { return .stale }
             do {
                 return try transport.queues[epoch.queue].pop().map(QueuePopOutcome.chain) ?? .empty
             } catch {
@@ -1068,7 +1110,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
         transport: VirtioMMIOTransport
     ) -> QueueDepthOutcome {
         transport.withQueueLock {
-            guard isCurrent(epoch) else { return .stale }
+            guard transport.acceptsQueueWork, isCurrent(epoch) else { return .stale }
             do {
                 return .depth(Int(try transport.queues[epoch.queue].pendingCount()))
             } catch {
@@ -1084,7 +1126,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
         transport: VirtioMMIOTransport
     ) -> QueuePushOutcome {
         transport.withQueueLock {
-            guard isCurrent(epoch) else { return .stale }
+            guard transport.acceptsQueueWork, isCurrent(epoch) else { return .stale }
             do {
                 switch try transport.queues[epoch.queue].pushOutcome(chain, written: written) {
                 case let .published(wantsInterrupt):
@@ -1100,25 +1142,34 @@ public final class VirtioBlk: VirtioDeviceBackend {
 
     private func process(
         chain: VirtqueueChain,
-        epoch: DrainEpoch
+        epoch: DrainEpoch,
+        transport: VirtioMMIOTransport
     ) -> RequestExecution? {
         // Disk I/O may outlive the queue kick. Hold the chain lease for every direct guest-pointer
         // read/write so reset or QueueReady reconfiguration cannot let the guest repurpose the
         // buffer until the host operation and status byte are complete. Admission orders the
         // lifecycle lock before the lease: a reset either revokes this work first or waits for the
         // one already-admitted bounded request, never allowing post-reset I/O to begin.
-        drainLock.lock()
-        guard isCurrentLocked(epoch) else {
-            drainLock.unlock()
-            return nil
+        let admitted = transport.withQueueLock {
+            drainLock.lock()
+            guard transport.acceptsQueueWork, isCurrentLocked(epoch), chain.isLeaseValid else {
+                drainLock.unlock()
+                return false
+            }
+            // Retain the lifecycle lock across MMIO unlock until withLeaseHeld takes the exact
+            // chain lease. Reset must acquire this same lifecycle lock before invalidating that
+            // lease, so it cannot slip between final execution admission and the lease claim.
+            return true
         }
+        guard admitted else { return nil }
         var enteredLease = false
         let execution = chain.withLeaseHeld { access in
             enteredLease = true
             drainLock.unlock()
             return process(
                 segments: access.segments,
-                containsZeroLengthDescriptor: chain.containsZeroLengthDescriptor
+                containsZeroLengthDescriptor: chain.containsZeroLengthDescriptor,
+                epoch: epoch
             )
         }
         if !enteredLease { drainLock.unlock() }
@@ -1155,12 +1206,17 @@ public final class VirtioBlk: VirtioDeviceBackend {
         epoch: DrainEpoch,
         transport: VirtioMMIOTransport
     ) {
-        if wantsInterrupt, isCurrent(epoch) { transport.notifyUsed() }
+        guard wantsInterrupt else { return }
+        transport.withQueueLock {
+            guard transport.acceptsQueueWork, isCurrent(epoch) else { return }
+            transport.notifyUsed()
+        }
     }
 
     private func process(
         segments: [VirtqueueSegment],
-        containsZeroLengthDescriptor: Bool
+        containsZeroLengthDescriptor: Bool,
+        epoch: DrainEpoch
     ) -> RequestExecution {
         guard segments.count >= 2,
               !segments[0].isDeviceWritable, segments[0].length == 16,
@@ -1186,6 +1242,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
         var rangeHostOperations = 0
 
         var written = 0
+        var qualificationChallenge: UUID?
         let status: RequestStatus
         switch RequestType(rawValue: UInt32(littleEndian: rawType)) {
         case .read:
@@ -1222,7 +1279,9 @@ public final class VirtioBlk: VirtioDeviceBackend {
             // VIRTIO_BLK_T_FLUSH has no data payload. Reject malformed chains instead of silently
             // treating guest-provided buffers as part of a valid durability operation.
             if dataSegments.isEmpty {
-                status = flush()
+                let flushed = performFlush(epoch: epoch)
+                status = flushed.status
+                qualificationChallenge = flushed.challenge
             } else {
                 recordInvalidRequest()
                 status = .ioError
@@ -1243,7 +1302,8 @@ public final class VirtioBlk: VirtioDeviceBackend {
         return RequestExecution(
             written: written + 1,
             workBytes: workBytes,
-            rangeHostOperations: rangeHostOperations
+            rangeHostOperations: rangeHostOperations,
+            qualificationChallenge: qualificationChallenge
         )
     }
 
@@ -1292,6 +1352,10 @@ public final class VirtioBlk: VirtioDeviceBackend {
     }
 
     func flush() -> RequestStatus {
+        performFlush(epoch: nil).status
+    }
+
+    private func performFlush(epoch: DrainEpoch?) -> (status: RequestStatus, challenge: UUID?) {
         requestCondition.lock()
         while activeFlushPermit != nil {
             requestCondition.wait()
@@ -1304,7 +1368,19 @@ public final class VirtioBlk: VirtioDeviceBackend {
         requestCondition.unlock()
 
         let startedAt = flushTelemetry.monotonicNanoseconds()
-        let status: RequestStatus = flushTelemetry.synchronize(fileDescriptor) == 0 ? .ok : .ioError
+        let challenge: UUID?
+        if let epoch {
+            challenge = drainLock.withLock {
+                guard isCurrentLocked(epoch) else { return nil }
+                return qualificationFaults?.consumeFullFlush(queueIndex: epoch.queue, queueGeneration: epoch.generation)
+            }
+        } else {
+            challenge = qualificationFaults?.consumeFullFlush(queueIndex: nil, queueGeneration: nil)
+        }
+        // A qualification failure skips F_FULLFSYNC and returns the same IOERR as an ENOSPC
+        // result at that boundary. It never fills the host volume or weakens a normal flush.
+        let status: RequestStatus = challenge != nil ? .ioError
+            : (flushTelemetry.synchronize(fileDescriptor) == 0 ? .ok : .ioError)
         let finishedAt = flushTelemetry.monotonicNanoseconds()
         let duration = finishedAt >= startedAt ? finishedAt - startedAt : 0
         statisticsLock.withLock {
@@ -1323,7 +1399,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
             requestCondition.broadcast()
         }
         requestCondition.unlock()
-        return status
+        return (status, challenge)
     }
 
     public var statistics: VirtioBlkStatistics {

@@ -13,6 +13,7 @@ public enum DoryIOUSBHostCaptureError: Error, Sendable, Equatable {
   case discoveryFailed(Int32)
   case identityUnavailable
   case identityMismatch
+  case configurationMismatch
   case authorizationFailed(Int32)
   case storageMounted
   case captureFailed(Int32)
@@ -25,7 +26,8 @@ extension DoryIOUSBHostTransferCapability {
     expectedIdentityToken: DoryUSBPhysicalIdentityToken,
     speed: DoryPCXHCIPortSpeed,
     allowUserInteraction: Bool = true,
-    requireUnmountedStorage: Bool = false
+    requireUnmountedStorage: Bool = false,
+    serviceAllowed: @escaping @Sendable (io_service_t) -> Bool = { _ in true }
   ) throws -> DoryIOUSBHostTransferCapability {
     var iterator: io_iterator_t = 0
     let status = IOServiceGetMatchingServices(
@@ -47,7 +49,8 @@ extension DoryIOUSBHostTransferCapability {
         expectedIdentityToken: expectedIdentityToken,
         speed: speed,
         allowUserInteraction: allowUserInteraction,
-        requireUnmountedStorage: requireUnmountedStorage
+        requireUnmountedStorage: requireUnmountedStorage,
+        serviceAllowed: serviceAllowed
       )
     }
     throw DoryIOUSBHostCaptureError.deviceNotFound
@@ -61,13 +64,15 @@ extension DoryIOUSBHostTransferCapability {
     expectedIdentityToken: DoryUSBPhysicalIdentityToken,
     speed: DoryPCXHCIPortSpeed,
     allowUserInteraction: Bool = true,
-    requireUnmountedStorage: Bool = false
+    requireUnmountedStorage: Bool = false,
+    serviceAllowed: @escaping @Sendable (io_service_t) -> Bool = { _ in true }
   ) throws -> DoryIOUSBHostTransferCapability {
     let backend = try DoryMacIOUSBHostBackend.capture(
       ioService: ioService,
       expectedIdentityToken: expectedIdentityToken,
       allowUserInteraction: allowUserInteraction,
-      requireUnmountedStorage: requireUnmountedStorage
+      requireUnmountedStorage: requireUnmountedStorage,
+      serviceAllowed: serviceAllowed
     )
     return DoryIOUSBHostTransferCapability(
       identityToken: expectedIdentityToken,
@@ -78,6 +83,7 @@ extension DoryIOUSBHostTransferCapability {
         expectedIdentityToken: expectedIdentityToken,
         allowUserInteraction: allowUserInteraction,
         requireUnmountedStorage: requireUnmountedStorage,
+        serviceAllowed: serviceAllowed,
         deadline: deadline
       )
     }
@@ -200,7 +206,8 @@ private final class DoryMacIOUSBHostBackend: DoryIOUSBHostOperating, @unchecked 
     ioService: io_service_t,
     expectedIdentityToken: DoryUSBPhysicalIdentityToken,
     allowUserInteraction: Bool,
-    requireUnmountedStorage: Bool
+    requireUnmountedStorage: Bool,
+    serviceAllowed: @Sendable (io_service_t) -> Bool
   ) throws -> DoryMacIOUSBHostBackend {
     guard ioService != 0 else { throw DoryIOUSBHostCaptureError.invalidService }
     guard let token = DoryMacUSBIdentity.token(for: ioService) else {
@@ -208,6 +215,9 @@ private final class DoryMacIOUSBHostBackend: DoryIOUSBHostOperating, @unchecked 
     }
     guard token == expectedIdentityToken else {
       throw DoryIOUSBHostCaptureError.identityMismatch
+    }
+    guard serviceAllowed(ioService) else {
+      throw DoryIOUSBHostCaptureError.configurationMismatch
     }
     let options = allowUserInteraction ? UInt32(kIOServiceInteractionAllowed) : 0
     let authorization = IOServiceAuthorize(ioService, options)
@@ -217,11 +227,16 @@ private final class DoryMacIOUSBHostBackend: DoryIOUSBHostOperating, @unchecked 
     guard DoryMacUSBIdentity.token(for: ioService) == expectedIdentityToken else {
       throw DoryIOUSBHostCaptureError.identityMismatch
     }
+    guard serviceAllowed(ioService) else {
+      throw DoryIOUSBHostCaptureError.configurationMismatch
+    }
     guard !requireUnmountedStorage
       || DoryMacUSBStorageMountAuthority.provesUnmounted(deviceService: ioService)
     else {
       throw DoryIOUSBHostCaptureError.storageMounted
     }
+    // The capture object can replace registry interface services. The last registry-class check
+    // must therefore precede construction; reset/reopen repeats it on the new service.
     return try DoryMacIOUSBHostBackend(ioService: ioService)
   }
 
@@ -229,6 +244,7 @@ private final class DoryMacIOUSBHostBackend: DoryIOUSBHostOperating, @unchecked 
     expectedIdentityToken: DoryUSBPhysicalIdentityToken,
     allowUserInteraction: Bool,
     requireUnmountedStorage: Bool,
+    serviceAllowed: @Sendable (io_service_t) -> Bool,
     deadline: ContinuousClock.Instant
   ) -> DoryMacIOUSBHostBackend? {
     while ContinuousClock.now < deadline {
@@ -248,7 +264,8 @@ private final class DoryMacIOUSBHostBackend: DoryIOUSBHostOperating, @unchecked 
             ioService: service,
             expectedIdentityToken: expectedIdentityToken,
             allowUserInteraction: allowUserInteraction,
-            requireUnmountedStorage: requireUnmountedStorage
+            requireUnmountedStorage: requireUnmountedStorage,
+            serviceAllowed: serviceAllowed
           ) {
             return backend
           }

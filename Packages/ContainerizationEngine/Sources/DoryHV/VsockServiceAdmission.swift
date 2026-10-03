@@ -309,7 +309,7 @@ final class VirtioVsockServiceAdmissionAuthority: @unchecked Sendable {
     }
 
     func beginReset() {
-        revoke(terminal: false)
+        for requestStop in prepareRevocation(terminal: false) { requestStop() }
     }
 
     func finishReset() {
@@ -319,7 +319,7 @@ final class VirtioVsockServiceAdmissionAuthority: @unchecked Sendable {
     }
 
     func quiesce() {
-        revoke(terminal: true)
+        for requestStop in prepareRevocation(terminal: true) { requestStop() }
     }
 
     var snapshot: VirtioVsockServiceAdmissionSnapshot {
@@ -379,12 +379,14 @@ final class VirtioVsockServiceAdmissionAuthority: @unchecked Sendable {
         return true
     }
 
-    private func revoke(terminal: Bool) {
+    /// Closes admission and transfers exact old-generation stop actions to the reset owner. The
+    /// owner must invoke them after releasing all transport and device lifecycle locks.
+    func prepareRevocation(terminal: Bool) -> [@Sendable () -> Void] {
         let stopActions: [@Sendable () -> Void]
         lock.lock()
         if case .quiesced = phase {
             lock.unlock()
-            return
+            return []
         }
         phase = terminal ? .quiesced : .resetting
         generation &+= 1
@@ -400,9 +402,7 @@ final class VirtioVsockServiceAdmissionAuthority: @unchecked Sendable {
         sessions.removeAll(keepingCapacity: true)
         lock.unlock()
 
-        // Never execute a service callback while holding admission state: every callback is allowed
-        // to close a VsockConnection, which re-enters the device's transport lifecycle.
-        for requestStop in stopActions { requestStop() }
+        return stopActions
     }
 
     private func countLocked(service: VirtioVsockService) -> Int {

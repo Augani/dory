@@ -56,9 +56,26 @@ struct KernelImageSafetyTests {
     }
 
     @Test func loadedExtentOverflowThrowsInsteadOfWrappingReservation() throws {
-        let image = try KernelImage(data: arm64Image(textOffset: 0x1F_F000))
-        let memory = try GuestMemory(guestBase: 0xFFFF_FFFF_FFE0_0000, size: 2 << 20)
-        #expect(throws: (any Error).self) { try image.load(into: memory) }
+        let window: UInt64 = 2 << 20
+        let page = GuestMemory.pageSize
+        var bytes = [UInt8](arm64Image(textOffset: window - 2 * page))
+        putLittleEndian(2 * page, into: &bytes, at: 16)
+        let image = try KernelImage(data: Data(bytes))
+        // RAM itself is valid and non-wrapping; only the crafted declared kernel extent wraps.
+        let memory = try GuestMemory(
+            guestBase: 0xFFFF_FFFF_FFE0_0000, size: window - page)
+        let loadAddress = memory.guestBase + image.textOffset
+        #expect(loadAddress.addingReportingOverflow(image.imageSize).overflow)
+        let destination = try memory.hostPointer(at: loadAddress, count: UInt64(bytes.count))
+        destination.initializeMemory(as: UInt8.self, repeating: 0xA5, count: bytes.count)
+        do {
+            _ = try image.load(into: memory)
+            Issue.record("overflowing kernel extent unexpectedly produced a reservation")
+        } catch {
+            // Valid RAM bounds reject the wrapping extent before constructing its loaded range.
+            #expect(String(describing: error) == "boot failure: kernel does not fit in guest RAM")
+        }
+        #expect(UnsafeRawBufferPointer(start: destination, count: bytes.count).allSatisfy { $0 == 0xA5 })
     }
 
     private func arm64Image(textOffset: UInt64) -> Data {

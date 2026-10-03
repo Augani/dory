@@ -8,35 +8,41 @@
 struct MappedPageFaultRetryBudget: Sendable {
     static let maximumRetries = 16
 
-    private struct Key: Hashable, Sendable {
-        let vcpuIndex: Int
+    private struct Episode: Sendable {
         let pageAddress: UInt64
+        let instructionAddress: UInt64?
+        let count: Int
     }
 
-    private var counts = [Key: Int]()
+    // One currently retried instruction per vCPU, not one historical counter per RAM page.
+    // The latter grows with guest RAM and incorrectly combines independent instructions.
+    private var episodes = [Int: Episode]()
+    var trackedEpisodeCount: Int { episodes.count }
 
     /// Records an already-mapped fault. Returns `true` while a retry remains; the next repeated
     /// fault returns `false` and clears its accounting entry for a future independent fault.
-    mutating func retryAlreadyMapped(vcpuIndex: Int, physicalAddress: UInt64) -> Bool {
-        let key = Key(
-            vcpuIndex: vcpuIndex,
-            pageAddress: physicalAddress & ~(HostPage.size - 1)
-        )
-        let retryCount = (counts[key] ?? 0) + 1
+    mutating func retryAlreadyMapped(
+        vcpuIndex: Int, physicalAddress: UInt64, instructionAddress: UInt64? = nil
+    ) -> Bool {
+        guard vcpuIndex >= 0 else { return false }
+        let pageAddress = physicalAddress & ~(HostPage.size - 1)
+        let previous = episodes[vcpuIndex]
+        let sameInstruction = previous?.pageAddress == pageAddress
+            && previous?.instructionAddress == instructionAddress
+        let retryCount = (sameInstruction ? previous?.count ?? 0 : 0) + 1
         guard retryCount <= Self.maximumRetries else {
-            counts.removeValue(forKey: key)
+            episodes.removeValue(forKey: vcpuIndex)
             return false
         }
-        counts[key] = retryCount
+        episodes[vcpuIndex] = Episode(pageAddress: pageAddress, instructionAddress: instructionAddress, count: retryCount)
         return true
     }
 
     /// A restored page, a real MMIO fault, or a terminal guest fault establishes a new fault
     /// episode and must not inherit stale retry accounting.
     mutating func resolve(vcpuIndex: Int, physicalAddress: UInt64) {
-        counts.removeValue(forKey: Key(
-            vcpuIndex: vcpuIndex,
-            pageAddress: physicalAddress & ~(HostPage.size - 1)
-        ))
+        // Any resolved RAM/MMIO/guest-fault exit on this CPU ends its previous instruction's
+        // episode. Other vCPUs keep their own accounting, regardless of the page resolved here.
+        episodes.removeValue(forKey: vcpuIndex)
     }
 }

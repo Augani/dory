@@ -339,12 +339,15 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
         guard (0..<queueCount).contains(queue), !isTerminal(queue) else { return }
-        switch queue {
-        case 0: drainControlQueue(transport)
-        case 1: drainEventQueue(transport)
-        case 2: drainPlaybackQueue(transport)
-        case 3: drainCaptureQueue(transport)
-        default: break
+        transport.withQueueLock {
+            guard transport.acceptsQueueWork else { return }
+            switch queue {
+            case 0: drainControlQueue(transport)
+            case 1: drainEventQueue(transport)
+            case 2: drainPlaybackQueue(transport)
+            case 3: drainCaptureQueue(transport)
+            default: break
+            }
         }
     }
 
@@ -407,6 +410,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         var interrupt = false
         var handled = 0
         while handled < limits.maximumChainsPerKick {
+            guard transport.acceptsQueueWork else { break }
             guard let chain = pop(queue, queueIndex: 0) else { break }
             handled += 1
             let admission = chain.withLeaseHeld { access -> ([UInt8], Int)? in
@@ -432,6 +436,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
                 responseCapacity: capacity,
                 transport: transport
             )
+            guard transport.acceptsQueueWork else { break }
             let written = chain.withLeaseHeld { $0.writeBytes(response) } ?? 0
             guard written == response.count else {
                 recordPublicationFault(queue: 0, reason: "short control response write")
@@ -441,8 +446,8 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
                 break
             }
         }
-        recordBoundedStopIfNeeded(handled: handled, queue: queue)
-        if interrupt { transport.notifyUsed() }
+        if transport.acceptsQueueWork { recordBoundedStopIfNeeded(handled: handled, queue: queue) }
+        if interrupt { notifyUsedIfOperational(transport) }
     }
 
     /// Linux pre-populates eventq with exact writable 8-byte entries. No event-producing feature
@@ -453,6 +458,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         var interrupt = false
         var handled = 0
         while handled < limits.maximumChainsPerKick {
+            guard transport.acceptsQueueWork else { break }
             guard lock.withLock({ retainedEventBuffers.count < limits.maximumRetainedEventBuffers }) else {
                 lock.withLock { statisticsState.backpressuredPeriods &+= 1 }
                 break
@@ -474,8 +480,8 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
                 }
             }
         }
-        recordBoundedStopIfNeeded(handled: handled, queue: queue)
-        if interrupt { transport.notifyUsed() }
+        if transport.acceptsQueueWork { recordBoundedStopIfNeeded(handled: handled, queue: queue) }
+        if interrupt { notifyUsedIfOperational(transport) }
     }
 
     private func drainPlaybackQueue(_ transport: VirtioMMIOTransport) {
@@ -484,6 +490,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         var handled = 0
         var copiedBytes = 0
         drain: while handled < limits.maximumChainsPerKick {
+            guard transport.acceptsQueueWork else { break }
             switch preflightPlayback(queue) {
             case .proceed:
                 break
@@ -579,8 +586,8 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
                 )
             }
         }
-        recordBoundedStopIfNeeded(handled: handled, queue: queue)
-        if interrupt { transport.notifyUsed() }
+        if transport.acceptsQueueWork { recordBoundedStopIfNeeded(handled: handled, queue: queue) }
+        if interrupt { notifyUsedIfOperational(transport) }
     }
 
     private func drainCaptureQueue(_ transport: VirtioMMIOTransport) {
@@ -589,6 +596,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         var handled = 0
         var requestedBytes = 0
         drain: while handled < limits.maximumChainsPerKick {
+            guard transport.acceptsQueueWork else { break }
             switch preflightCapture(queue) {
             case .proceed:
                 break
@@ -692,8 +700,8 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
                 )
             }
         }
-        recordBoundedStopIfNeeded(handled: handled, queue: queue)
-        if interrupt { transport.notifyUsed() }
+        if transport.acceptsQueueWork { recordBoundedStopIfNeeded(handled: handled, queue: queue) }
+        if interrupt { notifyUsedIfOperational(transport) }
     }
 
     private func installWatchdog(
@@ -761,6 +769,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
                 return value
             }
             guard let pending,
+                  transport.acceptsQueueWork,
                   !isTerminal(2),
                   transport.queues[2].ready,
                   transport.queues[2].isLeaseValid(pending.chain) else { return }
@@ -780,7 +789,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         }
         watchdog?.cancel()
         if published { lock.withLock { statisticsState.completedPlaybackPeriods &+= 1 } }
-        if interrupt { transport.notifyUsed() }
+        if interrupt { notifyUsedIfOperational(transport) }
         if published {
             transport.withQueueLock { handleKick(queue: 2, transport: transport) }
         }
@@ -808,6 +817,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
                 return value
             }
             guard let pending,
+                  transport.acceptsQueueWork,
                   !isTerminal(3),
                   transport.queues[3].ready,
                   transport.queues[3].isLeaseValid(pending.chain) else { return }
@@ -840,7 +850,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         }
         watchdog?.cancel()
         if published { lock.withLock { statisticsState.completedCapturePeriods &+= 1 } }
-        if interrupt { transport.notifyUsed() }
+        if interrupt { notifyUsedIfOperational(transport) }
         if published {
             transport.withQueueLock { handleKick(queue: 3, transport: transport) }
         }
@@ -1066,7 +1076,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         var interrupt = false
         var succeeded = true
         for pending in playback {
-            guard transport.queues[2].ready,
+            guard transport.acceptsQueueWork, transport.queues[2].ready,
                   transport.queues[2].isLeaseValid(pending.chain) else {
                 succeeded = false
                 continue
@@ -1087,7 +1097,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
             }
         }
         for pending in capture {
-            guard transport.queues[3].ready,
+            guard transport.acceptsQueueWork, transport.queues[3].ready,
                   transport.queues[3].isLeaseValid(pending.chain) else {
                 succeeded = false
                 continue
@@ -1110,7 +1120,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
                 continue
             }
         }
-        if interrupt { transport.notifyUsed() }
+        if interrupt { notifyUsedIfOperational(transport) }
         return succeeded
     }
 
@@ -1265,6 +1275,13 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
 
     private func isTerminal(_ queue: Int) -> Bool {
         lock.withLock { terminalQueues.contains(queue) }
+    }
+
+    private func notifyUsedIfOperational(_ transport: VirtioMMIOTransport) {
+        transport.withQueueLock {
+            guard transport.acceptsQueueWork else { return }
+            transport.notifyUsed()
+        }
     }
 
     private func allocateRequestID() -> UInt64 {

@@ -99,13 +99,42 @@ struct DoryFSWorkerRootAuthorityTests {
             )
             Issue.record("closed descriptor unexpectedly accepted")
         } catch let error as DoryFSWorkerRootAuthorityError {
-            guard case .rootDescriptorUnavailable(let capability, let observedErrno) = error else {
+            switch error {
+            case .rootDescriptorUnavailable(let capability, let observedErrno):
+                #expect(capability == authorityShare.capabilityID)
+                #expect(observedErrno == EBADF)
+            case .rootIdentityMismatch(let capability), .rootIsNotDirectory(let capability):
+                // Other test suites can open a descriptor between close() and bootstrap(),
+                // reusing this numeric slot. Rejecting that unrelated object is equally required;
+                // EBADF alone is not a stable assertion in a concurrent process.
+                #expect(capability == authorityShare.capabilityID)
+            default:
                 Issue.record("unexpected error: \(error)")
-                return
             }
-            #expect(capability == authorityShare.capabilityID)
-            #expect(observedErrno == EBADF)
         }
+    }
+
+    @Test func recycledDescriptorSlotCannotReplaceThePinnedRootCapability() throws {
+        let tree = try TemporaryDirectoryTree()
+        let expectedRoot = try tree.makeDirectory("expected")
+        let unrelatedRoot = try tree.makeDirectory("unrelated")
+        let transferred = try openHandle(expectedRoot, directoryOnly: true)
+        let replacement = try openHandle(unrelatedRoot, directoryOnly: true)
+        let expectedIdentity = try pinnedIdentity(of: transferred)
+        let authorityShare = try share(index: 17, descriptorIndex: 0, identity: expectedIdentity)
+        // Replace an owned slot atomically, rather than racing another fixture for a closed slot.
+        // Both FileHandles keep owning their exact descriptors; no foreign descriptor is closed.
+        try #require(dup2(replacement.fileDescriptor, transferred.fileDescriptor) == transferred.fileDescriptor)
+        #expect(!descriptorNames(transferred.fileDescriptor, identity: expectedIdentity))
+        let authority = makeAuthority()
+
+        #expect(throws: DoryFSWorkerRootAuthorityError.rootIdentityMismatch(authorityShare.capabilityID)) {
+            _ = try authority.bootstrap(
+                exactBytes: encodedBootstrap([authorityShare]), rootDescriptors: [transferred]
+            )
+        }
+        // The original path still exists but must never be reopened as a fallback authority.
+        #expect(FileManager.default.fileExists(atPath: expectedRoot.path))
     }
 
     @Test func nonDirectoryDescriptorIsRejected() throws {

@@ -4,6 +4,57 @@ import Foundation
 import Testing
 
 @Suite struct DoryVirtioFileBlockStorageTests {
+  @Test func rejectsNegativeAndOversizedDirectReadsWithoutAllocating() throws {
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: "dory-file-block-counts-\(UUID().uuidString)", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let capacity = DoryVirtioBlockDevice.maximumPayloadByteCount + 512
+    let storage = try DoryVirtioFileBlockStorage.create(
+      at: directory.appending(path: "disk.raw"), capacityBytes: capacity)
+    for count in [-1, Int.min] {
+      #expect(throws: DoryVirtioBlockError.invalidByteCount(count)) {
+        try storage.read(offset: 0, byteCount: count)
+      }
+    }
+    #expect(throws: DoryVirtioBlockError.requestOutOfBounds(offset: 0, byteCount: capacity)) {
+      try storage.read(offset: 0, byteCount: Int(capacity))
+    }
+    #expect(throws: DoryVirtioBlockError.requestOutOfBounds(offset: 0, byteCount: capacity)) {
+      try storage.writeZeroes(offset: 0, byteCount: capacity, mayUnmap: false)
+    }
+    #expect(try storage.read(offset: capacity, byteCount: 0).isEmpty)
+    #expect(throws: DoryVirtioBlockError.requestOutOfBounds(offset: capacity, byteCount: 1)) {
+      try storage.read(offset: capacity, byteCount: 1)
+    }
+    #expect(throws: DoryVirtioBlockError.requestOutOfBounds(offset: UInt64.max, byteCount: 1)) {
+      try storage.writeZeroes(offset: UInt64.max, byteCount: 1, mayUnmap: false)
+    }
+    try storage.write(offset: capacity - 1, bytes: [0xA5])
+    #expect(try storage.read(offset: capacity - 1, byteCount: 1) == [0xA5])
+  }
+
+  @Test func rejectsAppendDescriptorsWithoutChangingTheirFile() throws {
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: "dory-file-block-append-\(UUID().uuidString)", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appending(path: "disk.raw")
+    let storage = try DoryVirtioFileBlockStorage.create(at: url, capacityBytes: 4096)
+    try storage.write(offset: 0, bytes: [0xA5])
+    let descriptor = Darwin.open(url.path, O_RDWR | O_APPEND | O_CLOEXEC | O_NOFOLLOW)
+    #expect(descriptor >= 3)
+    defer { Darwin.close(descriptor) }
+    #expect(throws: DoryVirtioFileBlockStorageError.notRegularFile) {
+      try DoryVirtioFileBlockStorage(
+        duplicatingFileDescriptor: descriptor, expectedCapacityBytes: 4096, readOnly: false)
+    }
+    #expect(try storage.read(offset: 0, byteCount: 1) == [0xA5])
+    var status = stat()
+    #expect(fstat(descriptor, &status) == 0)
+    #expect(status.st_size == 4096)
+  }
+
   @Test func persistsWritesFlushesZeroesAndReadOnlyReopens() throws {
     let directory = FileManager.default.temporaryDirectory.appending(
       path: "dory-file-block-\(UUID().uuidString)",

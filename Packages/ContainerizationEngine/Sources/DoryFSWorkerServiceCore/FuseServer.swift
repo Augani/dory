@@ -73,6 +73,8 @@ private final class FuseCachePolicy: @unchecked Sendable {
 }
 
 final class FuseServer: @unchecked Sendable {
+    typealias HostOperationAuthorization = @Sendable () -> Bool
+
     static let maximumCoherentCacheValiditySeconds = FuseCachePolicy.maximumValiditySeconds
     static let negativeCoherentCacheValiditySeconds = FuseCachePolicy.negativeValiditySeconds
 
@@ -96,6 +98,7 @@ final class FuseServer: @unchecked Sendable {
     private var cancelledBlockingLocks: Set<UInt64> = []
     var fileOperationLoadedTestHook: (() -> Void)?
     var directoryOperationLoadedTestHook: (() -> Void)?
+    var beforeHostOperationTestHook: (() -> Void)?
 
     /// Reference ownership is the fd lifetime fence. Request queues may process WRITE/READ and
     /// RELEASE concurrently: removing the handle from `fileHandles` prevents new acquisitions,
@@ -238,6 +241,7 @@ final class FuseServer: @unchecked Sendable {
 
     private enum RequestError: Error {
         case badFileDescriptor
+        case interrupted
     }
 
     /// FUSE file handles are opaque 64-bit values. Keep directory handles in a tagged high-bit
@@ -298,7 +302,10 @@ final class FuseServer: @unchecked Sendable {
         resetConnection()
     }
 
-    public func handle(request: [UInt8]) -> [UInt8] {
+    public func handle(
+        request: [UInt8],
+        authorization: HostOperationAuthorization = { true }
+    ) -> [UInt8] {
         guard let header = try? FuseProtocol.decodeInHeader(request),
               Int(header.length) <= request.count,
               header.length >= UInt32(FuseInHeader.byteCount) else {
@@ -308,7 +315,7 @@ final class FuseServer: @unchecked Sendable {
         guard let opcode = FuseOpcode(rawValue: header.opcode) else {
             return errorResponse(unique: header.unique, errno: ENOSYS)
         }
-        return handle(header: header, opcode: opcode, request: request)
+        return handle(header: header, opcode: opcode, request: request, authorization: authorization)
     }
 
     var fuseInitCompleted: Bool { cachePolicy.isFuseInitCompleted }
@@ -329,7 +336,12 @@ final class FuseServer: @unchecked Sendable {
         cachePolicy.deactivate(resetFuseInit: resetFuseInit)
     }
 
-    func handle(header: FuseInHeader, opcode: FuseOpcode, request: [UInt8]) -> [UInt8] {
+    func handle(
+        header: FuseInHeader,
+        opcode: FuseOpcode,
+        request: [UInt8],
+        authorization: HostOperationAuthorization = { true }
+    ) -> [UInt8] {
         guard Int(header.length) <= request.count,
               header.length >= UInt32(FuseInHeader.byteCount) else {
             return errorResponse(unique: header.unique, errno: EINVAL)
@@ -337,6 +349,7 @@ final class FuseServer: @unchecked Sendable {
 
         let payload = request[Int(FuseInHeader.byteCount)..<Int(header.length)]
         do {
+            try checkAuthorization(authorization)
             switch opcode {
             case .initOp:
                 let initIn = try FuseProtocol.decodeInitIn(Array(payload))
@@ -349,7 +362,7 @@ final class FuseServer: @unchecked Sendable {
                 )
                 return response
             case .lookup:
-                return try handleLookup(header: header, payload: payload)
+                return try handleLookup(header: header, payload: payload, authorization: authorization)
             case .forget:
                 handleForget(header: header, payload: payload)
                 return []
@@ -357,29 +370,29 @@ final class FuseServer: @unchecked Sendable {
                 handleBatchForget(payload: payload)
                 return []
             case .readlink:
-                return try handleReadlink(header: header)
+                return try handleReadlink(header: header, authorization: authorization)
             case .symlink:
-                return try handleSymlink(header: header, payload: payload)
+                return try handleSymlink(header: header, payload: payload, authorization: authorization)
             case .link:
-                return try handleLink(header: header, payload: payload)
+                return try handleLink(header: header, payload: payload, authorization: authorization)
             case .getattr:
-                return try handleGetattr(header: header, payload: payload)
+                return try handleGetattr(header: header, payload: payload, authorization: authorization)
             case .setattr:
-                return try handleSetattr(header: header, payload: payload)
+                return try handleSetattr(header: header, payload: payload, authorization: authorization)
             case .open:
-                return try handleOpen(header: header, payload: payload)
+                return try handleOpen(header: header, payload: payload, authorization: authorization)
             case .opendir:
-                return try handleOpenDir(header: header)
+                return try handleOpenDir(header: header, authorization: authorization)
             case .read:
-                return try handleRead(header: header, payload: payload)
+                return try handleRead(header: header, payload: payload, authorization: authorization)
             case .write:
-                return try handleWrite(header: header, payload: payload)
+                return try handleWrite(header: header, payload: payload, authorization: authorization)
             case .readdirplus:
-                return try handleReadDirPlus(header: header, payload: payload)
+                return try handleReadDirPlus(header: header, payload: payload, authorization: authorization)
             case .statfs:
-                return try handleStatFS(header: header)
+                return try handleStatFS(header: header, authorization: authorization)
             case .fsync:
-                return try handleFsync(header: header, payload: payload)
+                return try handleFsync(header: header, payload: payload, authorization: authorization)
             case .syncfs:
                 // Linux treats ENOSYS as successful capability fallback and disables subsequent
                 // SYNCFS requests for this connection. Do not claim filesystem-wide durability:
@@ -389,11 +402,11 @@ final class FuseServer: @unchecked Sendable {
             case .flush:
                 return handleFlush(header: header, payload: payload)
             case .getlk:
-                return try handleGetLock(header: header, payload: payload)
+                return try handleGetLock(header: header, payload: payload, authorization: authorization)
             case .setlk:
-                return try handleSetLock(header: header, payload: payload, blocking: false)
+                return try handleSetLock(header: header, payload: payload, blocking: false, authorization: authorization)
             case .setlkw:
-                return try handleSetLock(header: header, payload: payload, blocking: true)
+                return try handleSetLock(header: header, payload: payload, blocking: true, authorization: authorization)
             case .interrupt:
                 handleInterrupt(payload: payload)
                 return []
@@ -407,15 +420,15 @@ final class FuseServer: @unchecked Sendable {
             case .listxattr:
                 return try handleListXattr(header: header, payload: payload)
             case .create:
-                return try handleCreate(header: header, payload: payload)
+                return try handleCreate(header: header, payload: payload, authorization: authorization)
             case .mkdir:
-                return try handleMkdir(header: header, payload: payload)
+                return try handleMkdir(header: header, payload: payload, authorization: authorization)
             case .unlink:
-                return try handleUnlink(header: header, payload: payload)
+                return try handleUnlink(header: header, payload: payload, authorization: authorization)
             case .rmdir:
-                return try handleRmdir(header: header, payload: payload)
+                return try handleRmdir(header: header, payload: payload, authorization: authorization)
             case .rename:
-                return try handleRename(header: header, payload: payload)
+                return try handleRename(header: header, payload: payload, authorization: authorization)
             case .release:
                 return handleReleaseFile(header: header, payload: payload)
             case .releasedir:
@@ -432,12 +445,32 @@ final class FuseServer: @unchecked Sendable {
                 return errorResponse(unique: header.unique, errno: ENOSYS)
             }
         } catch {
+            // These opcodes never carry a FUSE response, including when their authority expires.
+            if opcode == .forget || opcode == .batchForget || opcode == .interrupt { return [] }
             return errorResponse(unique: header.unique, errno: mapError(error))
         }
     }
 
-    private func handleLookup(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    /// Authorization is immutable and request-local: another request or successor generation can
+    /// never replace it. Check after parsing/handle acquisition, not just at worker admission.
+    /// Crossing this boundary admits one host operation; a POSIX call already started cannot be
+    /// recalled. Its existing reservation/strong handle retains all descriptors until it unwinds.
+    private func authorizeHostOperation(_ authorization: HostOperationAuthorization) throws {
+        beforeHostOperationTestHook?()
+        try checkAuthorization(authorization)
+    }
+
+    private func checkAuthorization(_ authorization: HostOperationAuthorization) throws {
+        guard authorization() else { throw RequestError.interrupted }
+    }
+
+    private func handleLookup(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         let name = try readCString(payload)
+        try authorizeHostOperation(authorization)
         guard let entry = try hostFS.lookupIfExists(parent: header.nodeID, name: name) else {
             let validity = cachePolicy.negativeEntryValiditySeconds
             guard validity > 0 else {
@@ -473,12 +506,18 @@ final class FuseServer: @unchecked Sendable {
         }
     }
 
-    private func handleReadlink(header: FuseInHeader) throws -> [UInt8] {
+    private func handleReadlink(header: FuseInHeader, authorization: HostOperationAuthorization) throws -> [UInt8] {
+        try authorizeHostOperation(authorization)
         return try successResponse(unique: header.unique, payload: Array(hostFS.readlink(nodeID: header.nodeID).utf8))
     }
 
-    private func handleSymlink(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    private func handleSymlink(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         let values = try readCStrings(payload, count: 2)
+        try authorizeHostOperation(authorization)
         let entry = try hostFS.symlink(
             parent: header.nodeID,
             name: values[0],
@@ -490,39 +529,55 @@ final class FuseServer: @unchecked Sendable {
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
     }
 
-    private func handleLink(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    private func handleLink(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let oldNodeID = payload.leUInt64(at: 0)
         let name = try readCString(payload.dropFirst(8))
+        try authorizeHostOperation(authorization)
         let entry = try hostFS.link(nodeID: oldNodeID, newParent: header.nodeID, name: name)
         hostFS.retainLookup(nodeID: entry.nodeID)
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
     }
 
-    private func handleGetattr(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
-        let attrs = try getattrAttributes(header: header, payload: payload)
+    private func handleGetattr(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
+        let attrs = try getattrAttributes(header: header, payload: payload, authorization: authorization)
         return successResponse(unique: header.unique, payload: encodeAttrOut(attrs))
     }
 
     private func getattrAttributes(
         header: FuseInHeader,
-        payload: ArraySlice<UInt8>
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
     ) throws -> HostFSAttributes {
         let request = try FuseProtocol.decodeGetattrIn(payload)
         guard request.flags.rawValue & ~FuseGetattrFlag.allKnown.rawValue == 0 else {
             throw HostFSError.invalidName("getattr flags")
         }
         guard request.flags.contains(.fileHandle) else {
+            try authorizeHostOperation(authorization)
             return try hostFS.getattr(nodeID: header.nodeID)
         }
         guard let openHandle = loadFile(handle: request.fileHandle),
               openHandle.nodeID == header.nodeID else {
             throw RequestError.badFileDescriptor
         }
+        try authorizeHostOperation(authorization)
         return try hostFS.getattr(nodeID: header.nodeID, handle: openHandle.fd)
     }
 
-    private func handleSetattr(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    private func handleSetattr(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         let wire = try FuseProtocol.decodeSetattrIn(Array(payload))
         let valid = wire.valid
         guard valid.rawValue & ~FuseSetattrValid.allKnown.rawValue == 0 else {
@@ -577,6 +632,7 @@ final class FuseServer: @unchecked Sendable {
             ctimeRequested: valid.contains(.ctime),
             killSuidGid: valid.contains(.killSuidGid)
         )
+        try authorizeHostOperation(authorization)
         let attributes = try hostFS.applySetattr(
             nodeID: header.nodeID,
             handle: openHandle?.fd,
@@ -585,7 +641,11 @@ final class FuseServer: @unchecked Sendable {
         return successResponse(unique: header.unique, payload: encodeAttrOut(attributes))
     }
 
-    private func handleOpen(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    private func handleOpen(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         guard let intent = FileOpenIntent(wireFlags: payload.leUInt32(at: 0)) else {
             return errorResponse(unique: header.unique, errno: EINVAL)
@@ -595,6 +655,7 @@ final class FuseServer: @unchecked Sendable {
         // while retaining the guest's logical WRONLY authorization below.
         let hostAccess = hostAccessMode(for: intent)
         let handleToken = try resourceQuota.acquire(.fileHandles)
+        try authorizeHostOperation(authorization)
         let fd = try hostFS.openFileForFuseHandle(
             nodeID: header.nodeID,
             accessMode: hostAccess,
@@ -610,14 +671,19 @@ final class FuseServer: @unchecked Sendable {
         return successResponse(unique: header.unique, payload: encodeOpenOut(handle: handle, openFlags: fileOpenFlags))
     }
 
-    private func handleOpenDir(header: FuseInHeader) throws -> [UInt8] {
+    private func handleOpenDir(header: FuseInHeader, authorization: HostOperationAuthorization) throws -> [UInt8] {
+        try authorizeHostOperation(authorization)
         let attributes = try hostFS.getattr(nodeID: header.nodeID)
         guard attributes.isDirectory else { throw HostFSError.notDirectory(header.nodeID) }
-        let handle = try storeDirectory(nodeID: header.nodeID)
+        let handle = try storeDirectory(nodeID: header.nodeID, authorization: authorization)
         return successResponse(unique: header.unique, payload: encodeOpenOut(handle: handle, openFlags: directoryOpenFlags))
     }
 
-    private func handleRead(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    private func handleRead(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         guard payload.count >= 40 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let handle = payload.leUInt64(at: 0)
         let offset = payload.leUInt64(at: 8)
@@ -628,6 +694,7 @@ final class FuseServer: @unchecked Sendable {
             anomalyLog.log(describeStaleHandle(handle, nodeID: header.nodeID, op: "READ"))
             return errorResponse(unique: header.unique, errno: EBADF)
         }
+        try authorizeHostOperation(authorization)
         return try successResponse(unique: header.unique, payload: hostFS.read(handle: openHandle.fd, offset: offset, count: size))
     }
 
@@ -704,7 +771,11 @@ final class FuseServer: @unchecked Sendable {
         wakeAdvisoryLockWaiters()
     }
 
-    private func handleWrite(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    private func handleWrite(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         guard payload.count >= 40 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let handle = payload.leUInt64(at: 0)
         let offset = payload.leUInt64(at: 8)
@@ -717,6 +788,7 @@ final class FuseServer: @unchecked Sendable {
             return errorResponse(unique: header.unique, errno: EBADF)
         }
         fileOperationLoadedTestHook?()
+        try authorizeHostOperation(authorization)
         let written = try payload.withUnsafeBytes { raw -> Int in
             let base = raw.baseAddress?.advanced(by: 40)
             return try hostFS.write(
@@ -731,6 +803,8 @@ final class FuseServer: @unchecked Sendable {
         } else {
             hostFS.recordWrite(nodeID: header.nodeID, offset: offset, count: written)
         }
+        // Privilege-bit clearing belongs to this admitted write, not a new guest operation. Keep
+        // it paired with a write that already crossed the authority boundary, even after revoke.
         killPrivilegeBitsIfRequested(writeFlags: payload.leUInt32(at: 20), fd: openHandle.fd)
         return successResponse(unique: header.unique, payloadByteCount: 8) { response in
             response.appendLE(UInt32(written))
@@ -738,7 +812,11 @@ final class FuseServer: @unchecked Sendable {
         }
     }
 
-    private func handleReadDirPlus(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    private func handleReadDirPlus(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         guard payload.count >= 40 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let handle = payload.leUInt64(at: 0)
         guard let offset = Int(exactly: payload.leUInt64(at: 8)) else {
@@ -752,6 +830,9 @@ final class FuseServer: @unchecked Sendable {
         directoryOperationLoadedTestHook?()
 
         return try directory.operationLock.withLock {
+            // A same-directory request may have waited behind another enumeration after its
+            // worker admission. Revocation/deadline must be checked after that wait as well.
+            try authorizeHostOperation(authorization)
             if let terminalError = directory.terminalCursorQuotaError {
                 throw terminalError
             }
@@ -759,6 +840,7 @@ final class FuseServer: @unchecked Sendable {
                 return errorResponse(unique: header.unique, errno: EINVAL)
             }
             if offset == 0 {
+                try checkAuthorization(authorization)
                 try hostFS.rewindDirectoryCursor(directory.cursor)
                 directory.enumerationExhausted = false
             }
@@ -766,12 +848,23 @@ final class FuseServer: @unchecked Sendable {
             var data = [UInt8]()
             data.reserveCapacity(min(maxSize, 64 * 1_024))
             var retainedNodeIDs: [UInt64] = []
+            var grantsRetainedForResponse = false
+            defer {
+                if !grantsRetainedForResponse {
+                    // An interrupted partial enumeration never grants the guest these lookups.
+                    // Balance only this request's references, preserving concurrent owners.
+                    hostFS.retainLookups(nodeIDs: retainedNodeIDs)
+                    for nodeID in retainedNodeIDs { hostFS.forgetLookup(nodeID: nodeID, count: 1) }
+                }
+            }
             var slot = offset
 
             while data.count < maxSize {
+                try checkAuthorization(authorization)
                 if slot == directory.cookieNames.count {
                     guard !directory.enumerationExhausted else { break }
                     let nextName: String?
+                    try checkAuthorization(authorization)
                     do {
                         nextName = try hostFS.nextDirectoryName(from: directory.cursor)
                     } catch {
@@ -800,6 +893,7 @@ final class FuseServer: @unchecked Sendable {
                 guard encodedLength <= maxSize - data.count else { break }
 
                 let entry: HostFSEntry?
+                try checkAuthorization(authorization)
                 do {
                     entry = try hostFS.lookupIfExists(parent: header.nodeID, name: name)
                 } catch HostFSError.operationNotSupported {
@@ -822,11 +916,13 @@ final class FuseServer: @unchecked Sendable {
             }
 
             hostFS.retainLookups(nodeIDs: retainedNodeIDs)
+            grantsRetainedForResponse = true
             return successResponse(unique: header.unique, payload: data)
         }
     }
 
-    private func handleStatFS(header: FuseInHeader) throws -> [UInt8] {
+    private func handleStatFS(header: FuseInHeader, authorization: HostOperationAuthorization) throws -> [UInt8] {
+        try authorizeHostOperation(authorization)
         let stat = try hostFS.statfs()
         var data = [UInt8]()
         data.appendLE(stat.blocks)
@@ -853,13 +949,18 @@ final class FuseServer: @unchecked Sendable {
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func handleFsync(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    private func handleFsync(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         guard payload.count >= 16 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let handle = payload.leUInt64(at: 0)
         guard let openHandle = loadFile(handle: handle), openHandle.nodeID == header.nodeID else {
             anomalyLog.log(describeStaleHandle(handle, nodeID: header.nodeID, op: "FSYNC"))
             return errorResponse(unique: header.unique, errno: EBADF)
         }
+        try authorizeHostOperation(authorization)
         try hostFS.fsync(handle: openHandle.fd)
         return successResponse(unique: header.unique, payload: [])
     }
@@ -875,7 +976,11 @@ final class FuseServer: @unchecked Sendable {
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func handleCreate(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    private func handleCreate(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         guard payload.count >= 16 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         guard let intent = FileOpenIntent(wireFlags: payload.leUInt32(at: 0)) else {
             return errorResponse(unique: header.unique, errno: EINVAL)
@@ -883,6 +988,7 @@ final class FuseServer: @unchecked Sendable {
         let mode = UInt16(truncatingIfNeeded: payload.leUInt32(at: 4))
         let name = try readCString(payload.dropFirst(16))
         let handleToken = try resourceQuota.acquire(.fileHandles)
+        try authorizeHostOperation(authorization)
         let created = try hostFS.createFileAndOpen(
             parent: header.nodeID,
             name: name,
@@ -912,10 +1018,15 @@ final class FuseServer: @unchecked Sendable {
         }
     }
 
-    private func handleMkdir(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    private func handleMkdir(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let mode = UInt16(truncatingIfNeeded: payload.leUInt32(at: 0))
         let name = try readCString(payload.dropFirst(8))
+        try authorizeHostOperation(authorization)
         let entry = try hostFS.mkdir(
             parent: header.nodeID,
             name: name,
@@ -928,20 +1039,37 @@ final class FuseServer: @unchecked Sendable {
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
     }
 
-    private func handleUnlink(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
-        try hostFS.unlink(parent: header.nodeID, name: readCString(payload))
+    private func handleUnlink(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
+        let name = try readCString(payload)
+        try authorizeHostOperation(authorization)
+        try hostFS.unlink(parent: header.nodeID, name: name)
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func handleRmdir(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
-        try hostFS.rmdir(parent: header.nodeID, name: readCString(payload))
+    private func handleRmdir(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
+        let name = try readCString(payload)
+        try authorizeHostOperation(authorization)
+        try hostFS.rmdir(parent: header.nodeID, name: name)
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func handleRename(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    private func handleRename(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let newParent = payload.leUInt64(at: 0)
         let names = try readCStrings(payload.dropFirst(8), count: 2)
+        try authorizeHostOperation(authorization)
         _ = try hostFS.rename(parent: header.nodeID, name: names[0], newParent: newParent, newName: names[1])
         return successResponse(unique: header.unique, payload: [])
     }
@@ -949,10 +1077,25 @@ final class FuseServer: @unchecked Sendable {
     private func handleReleaseFile(header: FuseInHeader, payload: ArraySlice<UInt8>) -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let handle = payload.leUInt64(at: 0)
-        if payload.count >= 24 {
-            releaseAdvisoryLocks(nodeID: header.nodeID, owner: payload.leUInt64(at: 16))
+        // Validate and retire under one table lock. A mismatched node (or directory handle) must
+        // not close another guest open description or confer authority over the header's locks.
+        let retirement: (valid: Bool, file: OpenFileHandle?) = lock.withLock {
+            guard handle & Self.directoryHandleTag == 0 else { return (false, nil) }
+            guard let file = fileHandles[handle] else { return (true, nil) }
+            guard file.nodeID == header.nodeID else { return (false, nil) }
+            return (true, fileHandles.removeValue(forKey: handle))
         }
-        releaseFile(handle: handle)
+        guard retirement.valid else {
+            anomalyLog.log(describeStaleHandle(handle, nodeID: header.nodeID, op: "RELEASE"))
+            return errorResponse(unique: header.unique, errno: EBADF)
+        }
+        // Preserve the existing idempotent acknowledgement for unknown/already released handles,
+        // but only an actually retired matching handle may release advisory-lock ownership.
+        withExtendedLifetime(retirement.file) {
+            if let file = retirement.file, payload.count >= 24 {
+                releaseAdvisoryLocks(nodeID: file.nodeID, owner: payload.leUInt64(at: 16))
+            }
+        }
         return successResponse(unique: header.unique, payload: [])
     }
 
@@ -979,7 +1122,11 @@ final class FuseServer: @unchecked Sendable {
         var isFlock: Bool { flags & 1 != 0 }
     }
 
-    private func handleGetLock(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+    private func handleGetLock(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        authorization: HostOperationAuthorization
+    ) throws -> [UInt8] {
         let request = try FuseLockRequest(payload)
         guard request.flags & ~UInt32(1) == 0,
               request.type == 0 || request.type == 1 else {
@@ -993,19 +1140,22 @@ final class FuseServer: @unchecked Sendable {
         guard !request.isFlock else {
             return errorResponse(unique: header.unique, errno: EOPNOTSUPP)
         }
+        try authorizeHostOperation(authorization)
         let admission = try advisoryLockDescriptor(
             nodeID: header.nodeID,
             owner: request.owner,
             flock: false,
-            openHandle: openHandle
+            openHandle: openHandle,
+            authorization: authorization
         )
         defer {
             finishAdvisoryLockDescriptor(admission, retainOwner: false)
         }
         let descriptor = admission.descriptor
         var record = try darwinLockRecord(request)
-        let rc = descriptor.operationLock.withLock {
-            fcntl(descriptor.fd, F_OFD_GETLK, &record)
+        let rc = try descriptor.operationLock.withLock {
+            try checkAuthorization(authorization)
+            return fcntl(descriptor.fd, F_OFD_GETLK, &record)
         }
         guard rc == 0 else { throw HostFSError.systemCall("F_OFD_GETLK", errno) }
         var response = [UInt8]()
@@ -1030,7 +1180,8 @@ final class FuseServer: @unchecked Sendable {
     private func handleSetLock(
         header: FuseInHeader,
         payload: ArraySlice<UInt8>,
-        blocking: Bool
+        blocking: Bool,
+        authorization: HostOperationAuthorization
     ) throws -> [UInt8] {
         let request = try FuseLockRequest(payload)
         guard request.flags & ~UInt32(1) == 0,
@@ -1044,11 +1195,13 @@ final class FuseServer: @unchecked Sendable {
         if !request.isFlock, request.type == 1, !openHandle.permitsWrite {
             return errorResponse(unique: header.unique, errno: EBADF)
         }
+        try authorizeHostOperation(authorization)
         let admission = try advisoryLockDescriptor(
             nodeID: header.nodeID,
             owner: request.owner,
             flock: request.isFlock,
-            openHandle: openHandle
+            openHandle: openHandle,
+            authorization: authorization
         )
         var retainOwner = false
         defer {
@@ -1074,7 +1227,10 @@ final class FuseServer: @unchecked Sendable {
                 blocking: blocking && request.type != 2,
                 operation: request.isFlock ? "flock" : "F_OFD_SETLK"
             ) {
-                descriptor.operationLock.withLock { flock(descriptor.fd, operation) }
+                try descriptor.operationLock.withLock {
+                    try checkAuthorization(authorization)
+                    return flock(descriptor.fd, operation)
+                }
             }
         } else {
             rc = try performAdvisoryLock(
@@ -1088,8 +1244,9 @@ final class FuseServer: @unchecked Sendable {
                 operation: "F_OFD_SETLK"
             ) {
                 var record = try darwinLockRecord(request)
-                return descriptor.operationLock.withLock {
-                    fcntl(descriptor.fd, F_OFD_SETLK, &record)
+                return try descriptor.operationLock.withLock {
+                    try checkAuthorization(authorization)
+                    return fcntl(descriptor.fd, F_OFD_SETLK, &record)
                 }
             }
         }
@@ -1182,6 +1339,12 @@ final class FuseServer: @unchecked Sendable {
         handleInterrupt(payload: payload[...])
     }
 
+    /// The service cancels its exact reservation before calling this. A delayed wake carries no
+    /// unique-ID cancellation state, so it cannot poison a successor reusing the original IDs.
+    func wakeForAuthorizationChange() {
+        wakeAdvisoryLockWaiters()
+    }
+
     func cancelAllRequests() {
         cancelAllBlockingLocks()
     }
@@ -1220,7 +1383,8 @@ final class FuseServer: @unchecked Sendable {
         nodeID: UInt64,
         owner: UInt64,
         flock: Bool,
-        openHandle: OpenFileHandle
+        openHandle: OpenFileHandle,
+        authorization: HostOperationAuthorization
     ) throws -> AdvisoryLockDescriptorAdmission {
         let key = AdvisoryLockOwnerKey(nodeID: nodeID, owner: owner, flock: flock)
         if let existing = lock.withLock({ () -> AdvisoryLockDescriptorAdmission? in
@@ -1234,6 +1398,7 @@ final class FuseServer: @unchecked Sendable {
         // HostFS performs a contained openat() and verifies the inode identity, producing a new
         // open description for each guest lock owner. This is essential on Darwin because simply
         // opening /dev/fd aliases the source description and collapses different guest owners.
+        try checkAuthorization(authorization)
         let fd = try hostFS.openFile(
             nodeID: nodeID,
             accessMode: openHandle.accessMode,
@@ -1308,7 +1473,20 @@ final class FuseServer: @unchecked Sendable {
 
     private func handleReleaseDirectory(header: FuseInHeader, payload: ArraySlice<UInt8>) -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
-        releaseDirectory(handle: payload.leUInt64(at: 0))
+        let handle = payload.leUInt64(at: 0)
+        let retirement: (valid: Bool, directory: OpenDirectoryHandle?) = lock.withLock {
+            guard handle & Self.directoryHandleTag != 0 else { return (false, nil) }
+            guard let directory = directoryHandles[handle] else { return (true, nil) }
+            guard directory.nodeID == header.nodeID else { return (false, nil) }
+            return (true, directoryHandles.removeValue(forKey: handle))
+        }
+        guard retirement.valid else {
+            anomalyLog.log(describeStaleHandle(handle, nodeID: header.nodeID, op: "RELEASEDIR"))
+            return errorResponse(unique: header.unique, errno: EBADF)
+        }
+        // Retain the removed cursor until the table lock has been released, including its host
+        // descriptor and open-node reference. In-flight enumeration owns its own strong reference.
+        withExtendedLifetime(retirement.directory) {}
         return successResponse(unique: header.unique, payload: [])
     }
 
@@ -1352,11 +1530,15 @@ final class FuseServer: @unchecked Sendable {
         return handle
     }
 
-    private func storeDirectory(nodeID: UInt64) throws -> UInt64 {
+    private func storeDirectory(
+        nodeID: UInt64,
+        authorization: HostOperationAuthorization
+    ) throws -> UInt64 {
         let resourceToken = try resourceQuota.acquire(.directoryHandles)
         try hostFS.retainOpenHandle(nodeID: nodeID)
         let cursor: HostFSDirectoryCursor
         do {
+            try authorizeHostOperation(authorization)
             cursor = try hostFS.openDirectoryCursor(nodeID: nodeID)
         } catch {
             hostFS.releaseOpenHandle(nodeID: nodeID)
@@ -1615,6 +1797,8 @@ final class FuseServer: @unchecked Sendable {
             return EPROTO
         case RequestError.badFileDescriptor:
             return EBADF
+        case RequestError.interrupted:
+            return EINTR
         case let quota as FuseResourceQuotaError:
             // Node identities and every handle/lock-owner table entry retain a descriptor or a
             // descriptor-backed identity, so EMFILE accurately reports per-share FD exhaustion.

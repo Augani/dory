@@ -289,6 +289,8 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
     private var desiredPressedCodes = Set<UInt16>()
     private var publishedPressedCodes = Set<UInt16>()
     private var needsStateReconciliation = false
+    private var focusCleanupPending = false
+    private var publicationInFlight = false
     private var statisticsState = VirtioInputStatistics(
         submittedFrames: 0,
         publishedFrames: 0,
@@ -434,7 +436,8 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         queueIsReady = transport.queues.map(\.ready)
         requestedQueueMask = 0
         workerScheduled = false
-        request = pendingFrames.isEmpty ? nil : requestWorkerLocked(queueMask: 1)
+        request = pendingFrames.isEmpty && !needsStateReconciliation
+            ? nil : requestWorkerLocked(queueMask: 1)
         lock.unlock()
         enqueueWorker(request)
     }
@@ -452,6 +455,8 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         desiredPressedCodes.removeAll()
         publishedPressedCodes.removeAll()
         needsStateReconciliation = false
+        focusCleanupPending = false
+        publicationInFlight = false
         updateDepthGaugesLocked()
         statisticsState.eventQueueDepth = 0
         statisticsState.statusQueueDepth = 0
@@ -477,6 +482,8 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
                 desiredPressedCodes.removeAll()
                 publishedPressedCodes.removeAll()
                 needsStateReconciliation = false
+                focusCleanupPending = false
+                publicationInFlight = false
             }
         }
         updateDepthGaugesLocked()
@@ -489,7 +496,10 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
         guard (0..<queueCount).contains(queue) else { return }
-        scheduleWorker(queueMask: UInt8(1 << queue), transport: transport)
+        transport.withQueueLock {
+            guard transport.acceptsQueueWork else { return }
+            scheduleWorker(queueMask: UInt8(1 << queue), transport: transport)
+        }
     }
 
     /// Queues one atomic evdev update. `SYN_REPORT` is appended when the caller omitted it.
@@ -511,7 +521,7 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         let request: WorkerRequest?
         let admitted: Bool
         lock.lock()
-        guard !terminal,
+        guard !terminal, !focusCleanupPending,
               complete.count <= limits.maximumEventsPerFrame,
               Self.isValidFrame(complete, profile: profile) else {
             statisticsState.rejectedFrames &+= 1
@@ -555,6 +565,23 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         lock.unlock()
         enqueueWorker(request)
         return admitted
+    }
+
+    /// Revokes this host input source without needing a free normal-frame slot. Already selected
+    /// publication may finish, so retain reconciliation debt even when no key is published yet.
+    /// The worker releases every possibly published key as guest buffers return, in bounded
+    /// SYN_REPORT frames. No guest-memory access or transport lock is needed on this caller.
+    public func releaseAllPressedKeys() {
+        lock.lock()
+        statisticsState.droppedFrames &+= UInt64(pendingFrames.count)
+        pendingFrames.removeAll(keepingCapacity: true)
+        desiredPressedCodes.removeAll(keepingCapacity: true)
+        needsStateReconciliation = true
+        focusCleanupPending = true
+        updateDepthGaugesLocked()
+        let request = requestWorkerLocked(queueMask: 1)
+        lock.unlock()
+        enqueueWorker(request)
     }
 
     private static func isAbsolutePointerPositionFrame(_ events: [VirtioInputEvent]) -> Bool {
@@ -743,6 +770,7 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         transport: VirtioMMIOTransport
     ) -> WorkerDrainOutcome {
         transport.withQueueLock {
+            guard transport.acceptsQueueWork else { return .stale }
             lock.lock()
             let current = isCurrentWorkerLocked(generation: generation, transport: transport)
                 && queueIsReady[0]
@@ -893,6 +921,7 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
             let chains = Array(availableEventBuffers.prefix(frame.events.count))
             availableEventBuffers.removeFirst(frame.events.count)
             updateDepthGaugesLocked()
+            publicationInFlight = true
             return PublicationFrame(
                 chains: chains,
                 events: frame.events,
@@ -900,17 +929,21 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
                 isReconciliation: false
             )
         }
-        guard needsStateReconciliation,
-              let frame = Self.reconciliationFrames(
+        guard needsStateReconciliation else { return nil }
+        let reconciliation = Self.reconciliationFrames(
                 from: publishedPressedCodes,
                 to: desiredPressedCodes,
                 maximumEventsPerFrame: limits.maximumEventsPerFrame
-              ).first,
+              ).first
+        guard let frame = reconciliation ?? (
+                focusCleanupPending && !publicationInFlight ? [.synchronize] : nil
+              ),
               frame.count <= eventBudget,
               availableEventBuffers.count >= frame.count else { return nil }
         let chains = Array(availableEventBuffers.prefix(frame.count))
         availableEventBuffers.removeFirst(frame.count)
         updateDepthGaugesLocked()
+        publicationInFlight = true
         return PublicationFrame(
             chains: chains,
             events: frame,
@@ -923,18 +956,22 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         if let frame = pendingFrames.first {
             return availableEventBuffers.count >= frame.events.count
         }
-        guard needsStateReconciliation,
-              let frame = Self.reconciliationFrames(
+        guard needsStateReconciliation else { return false }
+        let reconciliation = Self.reconciliationFrames(
                 from: publishedPressedCodes,
                 to: desiredPressedCodes,
                 maximumEventsPerFrame: limits.maximumEventsPerFrame
-              ).first else { return false }
+              ).first
+        guard let frame = reconciliation ?? (
+            focusCleanupPending && !publicationInFlight ? [.synchronize] : nil
+        ) else { return false }
         return availableEventBuffers.count >= frame.count
     }
 
     private func recordPublishedFrame(_ publication: PublicationFrame) {
         let finishedAt = monotonicNanoseconds()
         lock.lock()
+        publicationInFlight = false
         statisticsState.publishedFrames &+= 1
         if let startedAt = publication.submittedAtNanoseconds {
             let latency = finishedAt >= startedAt ? finishedAt - startedAt : 0
@@ -944,7 +981,10 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
                 latency
             )
         }
-        if pendingFrames.isEmpty, publishedPressedCodes == desiredPressedCodes {
+        if focusCleanupPending, publication.isReconciliation, publishedPressedCodes.isEmpty {
+            focusCleanupPending = false
+        }
+        if !focusCleanupPending, pendingFrames.isEmpty, publishedPressedCodes == desiredPressedCodes {
             needsStateReconciliation = false
         }
         lock.unlock()
@@ -956,6 +996,7 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
     ) -> WorkerDrainOutcome {
         let result: (outcome: WorkerDrainOutcome, events: [VirtioInputEvent]) =
             transport.withQueueLock {
+                guard transport.acceptsQueueWork else { return (.stale, []) }
                 lock.lock()
                 let current = isCurrentWorkerLocked(
                     generation: generation,

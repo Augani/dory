@@ -456,13 +456,17 @@ enum VirtioMMIODeviceTree {
       firstInterrupt: GuestLayout.virtioFirstIRQ
     )
 
-    public init(configuration: MachineConfiguration) throws {
+    public init(
+      configuration: MachineConfiguration,
+      qualificationFaults: RuntimeQualificationFaultController? = nil
+    ) throws {
       try configuration.validateDoryARMVirtV1()
       self.vmOwnership = try MachineVMOwnership(
         createVM: hvCreateVM,
         destroyVM: { _ = hv_vm_destroy() }
       )
       self.configuration = configuration
+      self.qualificationFaults = qualificationFaults
       switch configuration.boot {
       case .directLinux:
         self.firmwareCode = nil
@@ -500,6 +504,7 @@ enum VirtioMMIODeviceTree {
     }
 
     deinit {
+      qualificationFaults?.cancelPending()
       try? firmwareCode?.unmapFromGuest()
       vmOwnership.destroy()
     }
@@ -744,6 +749,7 @@ enum VirtioMMIODeviceTree {
     /// Access is serialized by `teamCondition`. See `MappedPageFaultRetryBudget` for why an
     /// already-mapped stage-2 fault cannot be retried indefinitely.
     private var mappedPageFaultRetryBudget = MappedPageFaultRetryBudget()
+    private let qualificationFaults: RuntimeQualificationFaultController?
 
     /// Clock semantics (P2-02 item 7):
     ///
@@ -935,6 +941,7 @@ enum VirtioMMIODeviceTree {
     }
 
     private func stopAll(_ reason: GuestStopReason) {
+      qualificationFaults?.cancelPending()
       executionPause.stop()
       teamCondition.lock()
       let publishesReason = stopReason == nil
@@ -999,6 +1006,7 @@ enum VirtioMMIODeviceTree {
         if stopSignal.isRequested { return false }
 
         do {
+          try qualificationFaults?.checkProtectionRestoration()
           guard try executionPause.enter(participant: index) else { return false }
           defer { executionPause.leave(participant: index) }
           if stopSignal.isRequested { return false }
@@ -1081,10 +1089,13 @@ enum VirtioMMIODeviceTree {
           resolveMappedPageFault(vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
           return nil
         case .alreadyMapped:
-          guard retryMappedPageFault(vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
-          else {
+          let retry = try retryMappedPageFault(vcpu: vcpu, vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
+          if !retry.allowed {
             Self.log("instruction abort kept faulting on mapped RAM at pa 0x\(String(physicalAddress, radix: 16)) — injecting SError")
             try vcpu.injectSError()
+            if let challenge = retry.qualificationChallenge {
+              try qualificationFaults?.mappedPageGuestExceptionInjected(challenge: challenge, exception: "serror")
+            }
             return nil
           }
           return nil
@@ -1144,10 +1155,15 @@ enum VirtioMMIODeviceTree {
         resolveMappedPageFault(vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
         return
       case .alreadyMapped:
-        guard retryMappedPageFault(vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
-        else {
+        let retry = try retryMappedPageFault(vcpu: vcpu, vcpuIndex: vcpuIndex, physicalAddress: physicalAddress)
+        if !retry.allowed {
           Self.log("data abort kept faulting on mapped RAM at pa 0x\(String(physicalAddress, radix: 16)) — injecting synchronous external data abort")
           try injectSynchronousExternalDataAbort(vcpu: vcpu, virtualAddress: virtualAddress)
+          if let challenge = retry.qualificationChallenge {
+            try qualificationFaults?.mappedPageGuestExceptionInjected(
+              challenge: challenge, exception: "synchronous-external-data-abort"
+            )
+          }
           return
         }
         return
@@ -1342,13 +1358,24 @@ enum VirtioMMIODeviceTree {
       memory.restorePage(guestAddress: physicalAddress)
     }
 
-    private func retryMappedPageFault(vcpuIndex: Int, physicalAddress: UInt64) -> Bool {
-      teamCondition.withLock {
+    private func retryMappedPageFault(
+      vcpu: VCPU, vcpuIndex: Int, physicalAddress: UInt64
+    ) throws -> (allowed: Bool, qualificationChallenge: UUID?) {
+      let instructionAddress = try vcpu.read(HV_REG_PC)
+      let allowed = teamCondition.withLock {
         mappedPageFaultRetryBudget.retryAlreadyMapped(
           vcpuIndex: vcpuIndex,
-          physicalAddress: physicalAddress
+          physicalAddress: physicalAddress,
+          instructionAddress: instructionAddress
         )
       }
+      // Register reads remain on the owner thread; no controller/memory lock nests inside the
+      // team lock. This records a real exception, never an artificial loop over the budget.
+      let challenge = qualificationFaults?.mappedPageExit(
+        address: physicalAddress, vcpuIndex: vcpuIndex,
+        instructionAddress: instructionAddress, retryAllowed: allowed
+      )
+      return (allowed, challenge)
     }
 
     private func resolveMappedPageFault(vcpuIndex: Int, physicalAddress: UInt64) {
