@@ -147,6 +147,8 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
 
   public let ram: any DoryX86PhysicalRAM
   private let rangeCoordinatedRAM: any DoryX86RangeCoordinatedMemory
+  // Cache conformance, never a page-tracking or device-routing decision.
+  private let pageTableWriteTrackingRAM: (any DoryX86PageTableWriteTrackingMemory)?
   public let memoryAccessCoordinator: DoryX86MemoryAccessCoordinator
   let deviceAccessCoordinator: DoryPCDeviceAccessCoordinator
 
@@ -218,6 +220,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     }
     self.ram = ram
     rangeCoordinatedRAM = ram
+    pageTableWriteTrackingRAM = ram as? any DoryX86PageTableWriteTrackingMemory
     memoryAccessCoordinator = ram.memoryAccessCoordinator
     self.mmioHoleStart = mmioHoleStart
     self.above4GRAMStart = above4GRAMStart
@@ -496,7 +499,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     allowTrackedWrite: Bool
   ) throws -> Bool {
     guard !bytes.isEmpty else { return false }
-    guard let tracker = ram as? any DoryX86PageTableWriteTrackingMemory else {
+    guard let tracker = pageTableWriteTrackingRAM else {
       throw DoryPCPhysicalMemoryError.unsupportedAccess(
         offset: address, byteCount: bytes.count, write: true)
     }
@@ -746,21 +749,21 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   public func trackPageTablePage(containing address: UInt64) {
-    guard let tracker = ram as? any DoryX86PageTableWriteTrackingMemory,
+    guard let tracker = pageTableWriteTrackingRAM,
       let resolved = try? resolveRAM(address: address, byteCount: 1, access: .read)
     else { return }
     tracker.trackPageTablePage(containing: resolved.backingAddress)
   }
 
   public func isTrackedPageTablePage(containing address: UInt64) -> Bool {
-    guard let tracker = ram as? any DoryX86PageTableWriteTrackingMemory,
+    guard let tracker = pageTableWriteTrackingRAM,
       let resolved = try? resolveRAM(address: address, byteCount: 1, access: .read)
     else { return false }
     return tracker.isTrackedPageTablePage(containing: resolved.backingAddress)
   }
 
   public func intersectsTrackedPageTablePage(at address: UInt64, byteCount: Int) -> Bool {
-    guard let tracker = ram as? any DoryX86PageTableWriteTrackingMemory,
+    guard let tracker = pageTableWriteTrackingRAM,
       let resolved = try? resolveRAM(address: address, byteCount: byteCount, access: .write)
     else { return false }
     return tracker.intersectsTrackedPageTablePage(
@@ -768,19 +771,19 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   public func beginPageTableWalkerWrite() {
-    (ram as? any DoryX86PageTableWriteTrackingMemory)?.beginPageTableWalkerWrite()
+    pageTableWriteTrackingRAM?.beginPageTableWalkerWrite()
   }
 
   public func endPageTableWalkerWrite() {
-    (ram as? any DoryX86PageTableWriteTrackingMemory)?.endPageTableWalkerWrite()
+    pageTableWriteTrackingRAM?.endPageTableWalkerWrite()
   }
 
   public var hasPendingPageTableWrite: Bool {
-    (ram as? any DoryX86PageTableWriteTrackingMemory)?.hasPendingPageTableWrite ?? false
+    pageTableWriteTrackingRAM?.hasPendingPageTableWrite ?? false
   }
 
   public func consumePendingPageTableWrite() -> Bool {
-    (ram as? any DoryX86PageTableWriteTrackingMemory)?.consumePendingPageTableWrite() ?? false
+    pageTableWriteTrackingRAM?.consumePendingPageTableWrite() ?? false
   }
 
   public func protectTranslatedCode(at address: UInt64, byteCount: Int) throws -> Bool {

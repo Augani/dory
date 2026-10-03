@@ -802,6 +802,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   private let bulkPhysicalMemory: (any DoryX86BulkMemory)?
   private let codeGenerationPhysicalMemory: (any DoryX86CodeGenerationMemory)?
   private let rangeCoordinatedPhysicalMemory: (any DoryX86RangeCoordinatedMemory)?
+  // Backing identity is immutable; tracking state still comes from the live memory owner.
+  private let pageTableWriteTrackingPhysicalMemory: (any DoryX86PageTableWriteTrackingMemory)?
   public let memoryAccessCoordinator: DoryX86MemoryAccessCoordinator
   private let pagingUnit: DoryX86PagingUnit
   public let jitWriteCoherencePolicy: DoryX86JITWriteCoherencePolicy
@@ -836,6 +838,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
     bulkPhysicalMemory = physicalMemory as? any DoryX86BulkMemory
     codeGenerationPhysicalMemory = physicalMemory as? any DoryX86CodeGenerationMemory
     rangeCoordinatedPhysicalMemory = physicalMemory as? any DoryX86RangeCoordinatedMemory
+    pageTableWriteTrackingPhysicalMemory =
+      physicalMemory as? any DoryX86PageTableWriteTrackingMemory
     memoryAccessCoordinator =
       (physicalMemory as? any DoryX86RangeCoordinatedMemory)?.memoryAccessCoordinator ?? .init()
     self.pagingUnit = pagingUnit
@@ -858,12 +862,12 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   var hasPendingPageTableWrite: Bool {
-    (physicalMemory as? any DoryX86PageTableWriteTrackingMemory)?
+    pageTableWriteTrackingPhysicalMemory?
       .hasPendingPageTableWrite ?? false
   }
 
   public func consumePendingPageTableWrite() -> Bool {
-    (physicalMemory as? any DoryX86PageTableWriteTrackingMemory)?
+    pageTableWriteTrackingPhysicalMemory?
       .consumePendingPageTableWrite() ?? false
   }
 
@@ -925,7 +929,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
       physicalMemory: physicalMemory
     )
     if access == .write {
-      if (physicalMemory as? any DoryX86PageTableWriteTrackingMemory)?
+      if pageTableWriteTrackingPhysicalMemory?
         .isTrackedPageTablePage(containing: translation.physicalAddress) == true
       {
         return nil
@@ -1144,7 +1148,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   func writeScalarFromMachineJIT(at address: UInt64, value: UInt64, byteCount: Int) throws {
     guard [1, 2, 4, 8].contains(byteCount),
       Int(4_096 - (address & 0xfff)) >= byteCount,
-      let tracker = physicalMemory as? any DoryX86PageTableWriteTrackingMemory
+      let tracker = pageTableWriteTrackingPhysicalMemory
     else { throw DoryX86PageTableWritePolicyError.trackedWriteRejected }
     let translation = try pagingUnit.translate(
       linearAddress: address,
