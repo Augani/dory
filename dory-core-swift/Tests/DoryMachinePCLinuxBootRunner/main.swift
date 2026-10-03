@@ -194,7 +194,17 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
         session.finish(.wallBudget)
       }
       // Deliver queued Ethernet replies outside transport/device execution locks.
-      try stressNetwork?.pump()
+      let echoed = try stressNetwork?.pump() ?? 0
+      if echoed > 0, record.stressNetworkFirstReply == nil, let device = stressNetworkDevice {
+        record.stressNetworkFirstReply = .init(
+          retiredInstructions: record.retiredInstructions, device: device,
+          readMemory: { try machine.physicalMemory.read(at: $0, byteCount: $1) })
+        if let sample = record.stressNetworkFirstReply,
+          let data = try? JSONEncoder().encode(sample), let json = String(data: data, encoding: .utf8) {
+          print("DORY_PVH_NETWORK_FIRST_REPLY " + json)
+          fflush(stdout)
+        }
+      }
       let quantum = min(1000, configuration.maximumInstructions - record.retiredInstructions)
       let stop = try machine.run(maximumInstructions: quantum, exceptionPolicy: .deliver)
       let retired = PVHStopSnapshot.instructionCount(stop)

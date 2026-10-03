@@ -1,4 +1,7 @@
 import Darwin
+import DoryDBTX86
+import DoryMachinePC
+import DoryVirtio
 import Foundation
 import Testing
 @testable import dory_pc_linux_boot_runner
@@ -269,6 +272,58 @@ struct PVHStressIOTests {
     #expect(throws: PVHStressIOError.self) { try recursive.pump() }
     #expect(receiver.count == 1 && recursive.snapshot.deliveredReplies == 1)
     #expect(recursive.snapshot.failure != nil && !recursive.snapshot.verified)
+  }
+
+  @Test("first reply diagnostics retain bounded used-ring evidence without mutating the device")
+  func firstReplyDiagnostics() throws {
+    let memory = try DiagnosticMemory()
+    let device = try DoryPCVirtioNetworkPCIDevice(
+      address: .init(bus: 0, device: 4, function: 0), initialBARAddress: 0xD000_2000,
+      backend: DoryVirtioInMemoryNetworkBackend(), macAddress: [2, 0xD0, 0x52, 0, 0, 1])
+    let queue = try device.transport.queue(at: 0)
+    try queue.configure(size: 8, descriptorAddress: 0x1000, driverAddress: 0x2000,
+      deviceAddress: 0x3000, enabled: true)
+    // One writable 2048-byte descriptor, whose 1036-byte completion is an RX packet.
+    try memory.write(at: 0x1000,
+      bytes: [0, 0x40, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 2, 0, 0, 0])
+    try memory.write(at: 0x2000, bytes: [0, 0, 1, 0, 0, 0])
+    let prefix = [UInt8](repeating: 0, count: 10) + [1, 0] + Array(0..<20).map(UInt8.init)
+    try memory.write(at: 0x4000, bytes: prefix)
+    let chain = try #require(try queue.popAvailable(memory: memory, allowIndirectDescriptors: false))
+    _ = try queue.complete(chain, bytesWritten: 1036, memory: memory, eventIndexNegotiated: false)
+    let stateBefore = device.transport.deviceState.snapshot()
+    var readSizes: [Int] = []
+    let sample = PVHStressNetworkFirstReply(retiredInstructions: 1234, device: device) {
+      readSizes.append($1)
+      return try memory.read(at: $0, byteCount: $1)
+    }
+    let decoded = try JSONDecoder().decode(PVHStressNetworkFirstReply.self,
+      from: JSONEncoder().encode(sample))
+    #expect(decoded.retiredInstructions == 1234 && decoded.receiveQueueEnabled == true)
+    #expect(decoded.receiveLastAvailableIndex == 1 && decoded.receiveLastUsedIndex == 1)
+    #expect(decoded.receiveUsedHead == 0 && decoded.receiveUsedLength == 1036)
+    #expect(decoded.receiveDescriptorLength == 2048 && decoded.receiveDescriptorFlags == 2)
+    #expect(decoded.receiveDescriptorPrefix == prefix)
+    #expect(readSizes.allSatisfy { $0 <= 32 } && readSizes.reduce(0, +) <= 56)
+    #expect(device.transport.deviceState.snapshot() == stateBefore)
+    #expect(queue.snapshot().lastUsedIndex == 1)
+    let unavailable = PVHStressNetworkFirstReply(retiredInstructions: 1234, device: device) { _, _ in [0] }
+    #expect(unavailable.receiveUsedHead == nil && unavailable.receiveDescriptorPrefix == nil)
+    #expect(queue.snapshot().lastUsedIndex == 1)
+  }
+
+  private final class DiagnosticMemory: DoryVirtioGuestMemory, @unchecked Sendable {
+    let ram: DoryX86ByteArrayMemory
+    init() throws { ram = try .init(bytes: [UInt8](repeating: 0, count: 64 << 10)) }
+    func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+      try ram.read(at: address, byteCount: byteCount)
+    }
+    func validate(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
+      if deviceWillWrite { try ram.validateWrite(at: address, byteCount: byteCount) }
+      else { try ram.validateRead(at: address, byteCount: byteCount) }
+    }
+    func write(at address: UInt64, bytes: [UInt8]) throws { try ram.write(at: address, bytes: bytes) }
+    func synchronize() {}
   }
 
   private func directory() throws -> URL {

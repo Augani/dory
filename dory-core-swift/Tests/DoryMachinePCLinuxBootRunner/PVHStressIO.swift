@@ -1,5 +1,6 @@
 import CryptoKit
 import Darwin
+import DoryMachinePC
 import DoryVirtio
 import Foundation
 
@@ -267,6 +268,70 @@ struct PVHStressNetworkSnapshot: Codable, Sendable {
   let guestReportedElapsedNanoseconds: UInt64?
   let verified: Bool
   let timingScope: String
+}
+
+/// Captured once, between machine quanta, after the first echoed frame reaches the transport.
+/// The watchdog only publishes this cached value. Reads are bounded and diagnostic failures
+/// leave optional fields absent rather than changing the guest's outcome.
+struct PVHStressNetworkFirstReply: Codable, Sendable {
+  let retiredInstructions: UInt64
+  let deviceStatus: UInt8
+  let negotiatedFeatures: UInt64
+  let pendingReceiveFrames: Int
+  let droppedReceiveFrames: Int
+  let receiveQueueEnabled: Bool?
+  let receiveQueueSize: UInt16?
+  let receiveLastAvailableIndex: UInt16?
+  let receiveLastUsedIndex: UInt16?
+  let receiveUsedHead: UInt32?
+  let receiveUsedLength: UInt32?
+  let receiveDescriptorLength: UInt32?
+  let receiveDescriptorFlags: UInt16?
+  let receiveDescriptorPrefix: [UInt8]?
+
+  init(
+    retiredInstructions: UInt64,
+    device: DoryPCVirtioNetworkPCIDevice,
+    readMemory: (UInt64, Int) throws -> [UInt8]
+  ) {
+    self.retiredInstructions = retiredInstructions
+    let state = device.transport.deviceState.snapshot()
+    deviceStatus = state.status.rawValue
+    negotiatedFeatures = state.negotiatedFeatures.rawValue
+    pendingReceiveFrames = device.networkDevice.pendingReceiveCount
+    droppedReceiveFrames = device.networkDevice.droppedReceiveCount
+    let queue = try? device.transport.queue(at: DoryVirtioNetworkDevice.receiveQueue).snapshot()
+    receiveQueueEnabled = queue?.enabled
+    receiveQueueSize = queue?.size
+    receiveLastAvailableIndex = queue?.lastAvailableIndex
+    receiveLastUsedIndex = queue?.lastUsedIndex
+    func bytes(_ base: UInt64, offset: UInt64, count: Int) -> [UInt8]? {
+      let address = base.addingReportingOverflow(offset)
+      guard !address.overflow, let result = try? readMemory(address.partialValue, count),
+        result.count == count else { return nil }
+      return result
+    }
+    func integer(_ bytes: ArraySlice<UInt8>) -> UInt64 {
+      bytes.enumerated().reduce(0) { $0 | UInt64($1.element) << ($1.offset * 8) }
+    }
+    let used: [UInt8]?
+    if let queue, queue.enabled, queue.size > 0, queue.lastUsedIndex > 0 {
+      used = bytes(queue.deviceAddress,
+        offset: 4 + UInt64((queue.lastUsedIndex &- 1) % queue.size) * 8, count: 8)
+    } else { used = nil }
+    receiveUsedHead = used.map { UInt32(truncatingIfNeeded: integer($0[0..<4])) }
+    receiveUsedLength = used.map { UInt32(truncatingIfNeeded: integer($0[4..<8])) }
+    let descriptor: [UInt8]?
+    if let queue, let head = receiveUsedHead, head < UInt32(queue.size) {
+      descriptor = bytes(queue.descriptorAddress, offset: UInt64(head) * 16, count: 16)
+    } else { descriptor = nil }
+    receiveDescriptorLength = descriptor.map { UInt32(truncatingIfNeeded: integer($0[8..<12])) }
+    receiveDescriptorFlags = descriptor.map { UInt16(truncatingIfNeeded: integer($0[12..<14])) }
+    if let descriptor, let length = receiveDescriptorLength {
+      receiveDescriptorPrefix = bytes(integer(descriptor[0..<8]), offset: 0,
+        count: min(Int(length), 32))
+    } else { receiveDescriptorPrefix = nil }
+  }
 }
 
 /// An isolated Ethernet echo peer. It never opens host network sockets, and transmit

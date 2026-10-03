@@ -977,6 +977,7 @@ struct PVHDiagnosticRecord: Codable, Sendable {
   var hostExecutionDiagnostics: DoryPCHostExecutionDiagnostics?
   var jitDiagnostics: PVHJITDiagnosticSample?
   var stressIO: PVHStressIOSnapshot?
+  var stressNetworkFirstReply: PVHStressNetworkFirstReply?
   var timerInterruptState: PVHTimerInterruptSnapshot?
   var consoleTail = ""
   var consoleBytes: UInt64 = 0
