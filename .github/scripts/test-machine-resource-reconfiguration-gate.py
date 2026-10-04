@@ -8,31 +8,10 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "machine-resource-reconfiguration-gate.sh"
 
-
 class MachineResourceReconfigurationGateTests(unittest.TestCase):
-    def test_current_machine_contract_is_complete(self) -> None:
-        subprocess.run(["bash", "-n", str(GATE)], check=True)
-        text = GATE.read_text(encoding="utf-8")
-        for proof in (
-            'machine create "$MACHINE" --kernel "$KERNEL" --rootfs "$ROOTFS"',
-            'machine update "$MACHINE" --cpus 8 --memory-mb 16384',
-            'machine update "$MACHINE" --cpus 2 --memory-mb 4096',
-            'machine exec "$MACHINE" --json -- sh -ec',
-            'machine provision "$MACHINE" --recipe k8s-lab',
-            'machine stats "$MACHINE"',
-            'machine delete "$MACHINE"',
-            'out-of-contract $invalid update unexpectedly succeeded',
-            'test -f /root/dory-resource-marker',
-            '[ ! -L "$KERNEL" ]',
-            '[ ! -L "$ROOTFS" ]',
-        ):
-            self.assertIn(proof, text, proof)
-        for stale in ("--env", "assert ", "rm -rf"):
-            self.assertNotIn(stale, text, stale)
 
     def test_symlinked_candidate_input_fails_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -72,7 +51,6 @@ class MachineResourceReconfigurationGateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("kernel is not an exact regular file", result.stderr)
             self.assertFalse(work.exists())
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -468,6 +468,45 @@ class GuestMetalProbeVerifierTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout.strip(), expected)
 
+    @unittest.skipUnless(sys.platform == "darwin", "guest transport requires the macOS SDK")
+    def test_guest_transport_accepts_issued_fractional_timestamp(self) -> None:
+        self.issue_challenge()
+        issued_at = json.loads(self.challenge.read_text())["issuedAt"]
+        fixture = self.root / "TimestampCheck.swift"
+        fixture.write_text(textwrap.dedent('''
+            import Foundation
+            enum DoryGuestMetalProbe {
+                static func run(nonce: String, candidateID: String, machineID: String,
+                                operationID: String) throws -> String {
+                    fatalError("timestamp test must not execute a GPU probe")
+                }
+            }
+            @main struct TimestampCheck {
+                static func main() {
+                    for timestamp in [ISSUED_AT, "2026-10-04T12:00:00Z"] {
+                        guard DoryGuestMetalProbeTransport.isISO8601Timestamp(timestamp) else {
+                            exit(1)
+                        }
+                    }
+                    for timestamp in ["invalid", "", "2026-10-04T12:00:00"] {
+                        guard !DoryGuestMetalProbeTransport.isISO8601Timestamp(timestamp) else {
+                            exit(2)
+                        }
+                    }
+                }
+            }
+        ''').replace("ISSUED_AT", json.dumps(issued_at)))
+        executable = self.root / "timestamp-check"
+        compiled = subprocess.run(
+            ["xcrun", "swiftc", "-parse-as-library",
+             str(ROOT / "GuestTools/DoryGuestTools/DoryGuestMetalProbeTransport.swift"),
+             str(fixture), "-o", str(executable)],
+            capture_output=True, text=True, check=False, timeout=60,
+        )
+        self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        checked = subprocess.run([str(executable)], capture_output=True, check=False, timeout=10)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
     def test_self_consistent_blank_product_window_is_rejected(self) -> None:
         self.issue_challenge()
         self.write_window_capture(blank=True)

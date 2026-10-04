@@ -35,7 +35,8 @@ You can also open `Dory.xcodeproj` in Xcode.
 - Validate inputs and fail safely around user data, networking, and virtualization.
 - Prefer concrete types and enums over loosely typed dictionaries.
 - Avoid adding dependencies without a clear product benefit.
-- Add or update tests when behavior changes.
+- Keep [PLAN.md](PLAN.md) as the only development plan; update its relevant status and evidence when work lands.
+- Add or update meaningful behavioral coverage for changed failure boundaries. Reuse existing suites and parameterize repeated cases; avoid source-text, label and default-only tests.
 - Use concise commit messages such as `fix: preserve volume data during migration`.
 
 Before opening a pull request, run:

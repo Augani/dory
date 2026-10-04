@@ -11,12 +11,10 @@ import sys
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "interrupted-upgrade-rollback-gate.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 PUBLIC_KEY = "AFetajNbqZty68rRY7OMWYNt6suUsrokQmYMhDJtnP4="
-
 
 class InterruptedUpgradeRollbackGateTests(unittest.TestCase):
     @staticmethod
@@ -66,32 +64,6 @@ class InterruptedUpgradeRollbackGateTests(unittest.TestCase):
             check=False,
         )
 
-    def test_source_is_shell_valid_optimizer_safe_and_exactly_bound(self) -> None:
-        subprocess.run(["bash", "-n", str(GATE)], cwd=ROOT, check=True)
-        source = GATE.read_text(encoding="utf-8")
-        self.assertNotIn("assert ", source)
-        for contract in (
-            "candidate app must be a direct Dory.app",
-            "sign_update must be a direct executable",
-            "nested virtualization is not release-qualifying",
-            "source=Notarized Developer ID",
-            "candidate is not signed by Dory team 864H636QW4",
-            "workroot must be inside runner temporary storage",
-            "run authority already exists",
-            '"schemaVersion": 2',
-            '"role": "qualification-evidence"',
-            '"virtualMachineQualification": {',
-            "<dory:componentCatalogSchema>2</dory:componentCatalogSchema>",
-            ".github/scripts/verify-ed25519-signature.swift",
-            "automaticRollback",
-            "component_catalog_signatures_verified=PASS",
-            "component_qualification_authority=PASS",
-            "durable_volume_sentinel_preserved=PASS",
-            "initial_clean_user_state_restored=PASS",
-        ):
-            self.assertIn(contract, source)
-        self.assertNotIn("codesign --force --deep --sign", source)
-
     def test_schema_two_catalog_fixture_has_complete_qualification_authority(self) -> None:
         source = GATE.read_text(encoding="utf-8")
         start = source.index("import base64, hashlib, json, pathlib, sys")
@@ -133,20 +105,6 @@ class InterruptedUpgradeRollbackGateTests(unittest.TestCase):
         )
         self.assertEqual(manifest["records"][0]["hostHardwareModelIdentifier"], "Mac16,1")
 
-    def test_release_evidence_binding_is_optimizer_safe(self) -> None:
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        block = workflow.split(
-            "      - name: Verify interrupted transactional-upgrade evidence binding", 1
-        )[1].split("\n      - name:", 1)[0]
-        self.assertNotIn("assert ", block)
-        for contract in (
-            '"component_catalog_schema": "2"',
-            '"component_catalog_signatures_verified"',
-            '"component_qualification_authority"',
-            "invalid or duplicate evidence row",
-        ):
-            self.assertIn(contract, block)
-
     def test_confirmation_indirect_candidate_and_workroot_fail_before_physical_probe(self) -> None:
         with tempfile.TemporaryDirectory(prefix="dory-upgrade-gate-test.") as raw:
             temporary = pathlib.Path(raw).resolve()
@@ -159,7 +117,6 @@ class InterruptedUpgradeRollbackGateTests(unittest.TestCase):
         self.assertIn("requires --confirm", confirmation.stdout)
         self.assertIn("candidate app must be a direct Dory.app", indirect.stdout)
         self.assertIn("dedicated interrupted-upgrade name", workroot.stdout)
-
 
 if __name__ == "__main__":
     unittest.main()

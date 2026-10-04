@@ -9,10 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / ".github/scripts/verify-no-qemu-production.py"
-
 
 def load_auditor():
     specification = importlib.util.spec_from_file_location("no_qemu_auditor", SCRIPT)
@@ -22,9 +20,7 @@ def load_auditor():
     specification.loader.exec_module(module)
     return module
 
-
 AUDITOR = load_auditor()
-
 
 class NoQEMUProductionTests(unittest.TestCase):
     def write_manifest(self, root: Path, entries: list[dict[str, object]]) -> Path:
@@ -38,13 +34,6 @@ class NoQEMUProductionTests(unittest.TestCase):
         AUDITOR.audit_source(
             ROOT, ROOT / "docs/virtualization/no-qemu-source-debt.json"
         )
-
-    def test_pull_request_and_release_workflows_enforce_the_gate(self) -> None:
-        tests = (ROOT / ".github/workflows/tests.yml").read_text(encoding="utf-8")
-        release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        self.assertIn("python3 .github/scripts/test-no-qemu-production.py", tests)
-        self.assertIn("python3 .github/scripts/verify-no-qemu-production.py", release)
-        self.assertIn('--artifact-root "${{ steps.sparkle_candidate.outputs.app }}"', release)
 
     def test_new_source_surface_and_debt_growth_fail(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -87,7 +76,6 @@ class NoQEMUProductionTests(unittest.TestCase):
             forbidden_name.write_bytes(b"tool")
             with self.assertRaisesRegex(AUDITOR.AuditFailure, "artifact path"):
                 AUDITOR.audit_artifact(root)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,11 +9,9 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "homebrew-install-gate.sh"
 SOURCE_COMMIT = "a" * 40
-
 
 class HomebrewInstallGateTests(unittest.TestCase):
     def invoke(
@@ -55,21 +53,6 @@ class HomebrewInstallGateTests(unittest.TestCase):
             stderr=subprocess.STDOUT,
             check=False,
         )
-
-    def test_source_is_shell_valid_and_has_no_optimizer_bypass(self) -> None:
-        subprocess.run(["bash", "-n", str(GATE)], cwd=ROOT, check=True)
-        source = GATE.read_text(encoding="utf-8")
-        self.assertNotIn("assert ", source)
-        for contract in (
-            "scripts/validate-release-metadata.py",
-            "scripts/verify-release-sbom.py",
-            "com.apple.quarantine",
-            "source=Notarized Developer ID",
-            "data_drive_preserved=PASS",
-            "zap_preserved_data=PASS",
-            "profile_restoration=PASS",
-        ):
-            self.assertIn(contract, source)
 
     def test_confirmation_and_clean_user_guards_precede_mutation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="dory-homebrew-gate-test.") as raw:
@@ -140,7 +123,6 @@ class HomebrewInstallGateTests(unittest.TestCase):
         self.assertIn("inside the runner temporary directory", outside.stdout)
         self.assertIn("must not be a symlink", symlink.stdout)
         self.assertIn("cannot contain the candidate", overlap.stdout)
-
 
 if __name__ == "__main__":
     unittest.main()

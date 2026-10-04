@@ -46,7 +46,7 @@ enum DoryGuestMetalProbeTransport {
   private static func validate(_ challenge: Challenge) throws {
     let bundle = Bundle.main
     guard challenge.schema == challengeSchema,
-      ISO8601DateFormatter().date(from: challenge.issuedAt) != nil,
+      isISO8601Timestamp(challenge.issuedAt),
       challenge.guestToolsBundleIdentifier == bundle.bundleIdentifier,
       challenge.guestToolsVersion
         == (bundle.object(
@@ -61,6 +61,13 @@ enum DoryGuestMetalProbeTransport {
     else {
       throw TransportError.invalidChallenge
     }
+  }
+
+  static func isISO8601Timestamp(_ value: String) -> Bool {
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return fractional.date(from: value) != nil
+      || ISO8601DateFormatter().date(from: value) != nil
   }
 
   private static func connectToHost() throws -> Int32 {

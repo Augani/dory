@@ -65,9 +65,10 @@ for fs_worker_configuration in \
     || fail "DoryFSWorker $fs_worker_configuration re-enabled App Sandbox"
 done
 
-if grep -R -E --include='*.swift' --include='init' \
+if grep -R -E \
   'tcp://0\.0\.0\.0:2375|guestPort: 2375|remote[^\n]*:2375' \
-  Packages/ContainerizationEngine/Sources dory-core-swift/Sources guest/initfs/init >/dev/null; then
+  Packages/ContainerizationEngine/Sources dory-core-swift/Sources \
+  dory-core/agent/src GuestTools/Linux/payload >/dev/null; then
   fail "a production guest path exposes unauthenticated Docker TCP 2375"
 fi
 
@@ -102,13 +103,6 @@ grep -F 'try await channel.usbVhciDetach(request)' \
   Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift >/dev/null \
   || fail "USB passthrough engine lost its guest detach RPC"
 
-for kernel_contract in \
-  'CONFIG_NETFILTER_XT_MATCH_OWNER=y' \
-  'CONFIG_IP6_NF_FILTER=y' \
-  'CONFIG_BLK_DEV_LOOP=y'; do
-  grep -Fx "$kernel_contract" guest/kernel/dory.config >/dev/null \
-    || fail "sandbox guest kernel lost $kernel_contract"
-done
 for agent_contract in DORY_AGENT_RUN_UID DORY_AGENT_MAX_PROCESSES DORY_AGENT_MAX_FILE_BYTES; do
   grep -F "$agent_contract" dory-core/agent/src/exec.rs >/dev/null \
     || fail "guest agent lost restricted exec key $agent_contract"

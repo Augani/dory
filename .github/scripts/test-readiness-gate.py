@@ -10,36 +10,11 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "readiness.sh"
 DIGEST_IMAGE = "example.invalid/fixture@sha256:" + "a" * 64
 
-
 class ReadinessGateTests(unittest.TestCase):
-    def test_release_contract_is_fail_closed_and_reproducible(self) -> None:
-        subprocess.run(["bash", "-n", str(GATE)], check=True)
-        text = GATE.read_text(encoding="utf-8")
-        for proof in (
-            "strict readiness requires READINESS_DOCKER_BIN for the exact candidate CLI",
-            "strict readiness Docker CLI is unavailable or indirect",
-            "readiness fixture images must be exact digest references",
-            "READINESS_NONNATIVE_BUILD_IMAGE must be an exact digest reference",
-            "READINESS_WORKDIR must not be a symlink",
-            "READINESS_STOP_ORBSTACK_CONFIRMED=STOP-ORBSTACK-FOR-READINESS",
-            'stat -f %u "$ENGINE_SOCK"',
-            'docker_e image inspect "$ALPINE_IMAGE"',
-            "Content-Length: 14",
-        ):
-            self.assertIn(proof, text, proof)
-        for stale in (
-            "alpine:latest",
-            "nginx:alpine",
-            "node:20-alpine",
-            "FROM ubuntu:24.04",
-            "docker_e pull",
-        ):
-            self.assertNotIn(stale, text, stale)
 
     def test_source_mode_defines_helpers_without_creating_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -107,7 +82,6 @@ write_summary
             )
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("strict readiness requires READINESS_DOCKER_BIN", result.stderr)
-
 
 if __name__ == "__main__":
     unittest.main()

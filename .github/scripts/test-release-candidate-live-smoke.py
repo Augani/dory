@@ -11,69 +11,11 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "release-candidate-live-smoke.sh"
 FEX_KIND_GATE = ROOT / "scripts" / "fex-kind-live-gate.sh"
 
-
 class ReleaseCandidateLiveSmokeTests(unittest.TestCase):
-    def test_live_contract_binds_candidate_and_all_physical_gates(self) -> None:
-        subprocess.run(["bash", "-n", str(GATE)], check=True)
-        text = GATE.read_text(encoding="utf-8")
-        for proof in (
-            "DORY_RELEASE_LIVE_CONFIRMED=ISOLATED-DORY-RELEASE-USER",
-            "live qualification requires an exact source commit",
-            "candidate app is unavailable or indirect",
-            "candidate executable is unavailable or indirect",
-            "candidate Docker socket is not owned by the release user",
-            "candidate app has no valid notarization ticket",
-            "candidate is not accepted as Notarized Developer ID",
-            "required offline release fixture is missing",
-            "ISOLATED-DORY-MACHINE-RESOURCES",
-            "EXACT-CANDIDATE-DESKTOPS",
-            '--component-dir "$DESKTOP_COMPONENT_DIR"',
-            "ISOLATED-EXTERNAL-APFS-BIND",
-            "ISOLATED-DORY-BIND-LOCKS",
-            "SLEEP-AND-WAKE-THIS-MAC",
-            'DORY_APP="$APP"',
-            'READINESS_DOCKER_BIN="$DOCKER_CLI"',
-            'READINESS_ALPINE_IMAGE="$FIXTURE_IMAGE"',
-            'READINESS_NONNATIVE_BUILD_IMAGE="$NONNATIVE_BUILD_IMAGE"',
-            "live-manifest.txt",
-            "live_candidate=PASS",
-            "zed-linux-aarch64.tar.gz",
-            'ZED_VERSION="1.16.1"',
-            "releases/download/v$ZED_VERSION/zed-linux-aarch64.tar.gz",
-            "384499c75d75c6aab53110dbc1d8856f6f774baaa32dc57b9963f9e29f8d007b",
-            'managed_desktop_baseline=$MANAGED_DESKTOP_BASELINE_RESULT',
-            'mesa_virgl_desktop=$MESA_VIRGL_DESKTOP_RESULT',
-            'renderer_release_signature=$RENDERER_RELEASE_SIGNATURE_RESULT',
-            'zed_native_venus=$ZED_NATIVE_VENUS_RESULT',
-            "--require-acceleration",
-            "--require-release-signature",
-            "native Ubuntu Venus/Zed application evidence did not pass",
-            "Mesa VirGL desktop application evidence did not pass",
-            "renderer release qualification signature was not authenticated",
-            "signed desktop component candidate is unavailable or indirect",
-            "signed Kubernetes component is unavailable or indirect",
-            "release-build/component-candidate/arm64/component-candidate-inventory.json",
-            "Kubernetes component TeamIdentifier does not match the candidate app",
-            "Kubernetes component bytes differ from the immutable candidate inventory",
-            'candidate_team_identifier=$APP_TEAM_IDENTIFIER',
-            'kubectl_team_identifier=$KUBECTL_TEAM_IDENTIFIER',
-            'kubectl_component_sha256=$KUBECTL_COMPONENT_SHA256',
-            'component_inventory_sha256=$COMPONENT_INVENTORY_SHA256',
-            "scripts/fex-kind-live-gate.sh",
-            "EXACT-DORY-FEX-KIND",
-            'fex_kind_issue_78=$FEX_KIND_GATE_RESULT',
-            'KIND_VERSION="0.29.0"',
-            "314d8f1428842fd1ba2110fd0052a0f0b3ab5773ab1bdcdad1ff036e913310c9",
-            "DORY_RELEASE_LIVE_LOG_ROOT",
-        ):
-            self.assertIn(proof, text, proof)
-        for stale in ("alpine:latest", "nginx:alpine", "node:20-alpine", "assert "):
-            self.assertNotIn(stale, text, stale)
 
     def test_every_invoked_script_is_tracked(self) -> None:
         text = GATE.read_text(encoding="utf-8")
@@ -89,43 +31,6 @@ class ReleaseCandidateLiveSmokeTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 0, f"untracked live dependency: {dependency}")
-
-    def test_fex_kind_gate_is_the_exact_issue_78_reproduction(self) -> None:
-        subprocess.run(["bash", "-n", str(FEX_KIND_GATE)], check=True)
-        text = FEX_KIND_GATE.read_text(encoding="utf-8")
-        for proof in (
-            "EXACT-DORY-FEX-KIND",
-            "kindest/node:v1.33.0@sha256:02f73d6ae3f11ad5d543f16736a2cb2a63a300ad60e81dac22099b0b04784a4e",
-            "polinux/stress:1.0.4@sha256:b6144f84f9c15dac80deb48d3a646b55c7043ab1d83ea0a697c09097aaad21aa",
-            'EXPECTED_NODE_RUNC_VERSION="1.2.3"',
-            "guest/kernel/verify-build.sh arm64",
-            "guest/initfs/verify-build.sh arm64",
-            "running Dory VM kernel differs from the same-commit Venus release artifact",
-            "running Dory VM initfs differs from the same-commit release artifact",
-            'node_runtime="$(docker_e inspect',
-            "/usr/local/bin/runc.real",
-            "/usr/local/bin/dory-runc",
-            "runc.real is not the preserved kind node runtime file mount",
-            "flags: POCF",
-            'kubectl_e exec "$EXEC_POD" -- uname -m',
-            "issue #78 one-shot result is not x86_64",
-            "nested runc exec result is not x86_64",
-            "FEXServerClient",
-            "Failure to setup client",
-            "runc_wrapper_sha256=",
-            "fex_sha256=",
-            "fex_server_sha256=",
-            "fex_errors=absent",
-            "kind cluster cleanup failed",
-            "kind node container remains after cleanup",
-            "kind node image remains after cleanup",
-            "isolated_cleanup=PASS",
-            "docker_after=PASS",
-            "issue_78=PASS",
-            "status=PASS",
-        ):
-            self.assertIn(proof, text, proof)
-        self.assertNotIn("kindest/node:v1.33 --", text)
 
     def test_fex_kind_confirmation_fails_before_host_or_workroot_access(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -230,7 +135,6 @@ class ReleaseCandidateLiveSmokeTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn("DORY_RELEASE_LIVE_CONFIRMED", result.stderr)
-
 
 if __name__ == "__main__":
     unittest.main()

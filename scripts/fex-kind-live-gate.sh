@@ -68,13 +68,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ "$CONFIRM" = EXACT-DORY-FEX-KIND ] || die 'requires --confirm EXACT-DORY-FEX-KIND'
-for command in awk grep id ln mkdir seq shasum sleep stat tr; do
+for command in awk grep id ln mkdir python3 seq shasum sleep stat tr; do
   command -v "$command" >/dev/null || die "required host command is missing: $command"
 done
-kernel_version="$(awk -F= '$1 == "KERNEL_VERSION" { print $2; exit }' guest/kernel/PINS)"
-printf '%s\n' "$kernel_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
-  || die 'guest/kernel/PINS has no exact KERNEL_VERSION'
-EXPECTED_KERNEL_RELEASE="$kernel_version-dory"
 case "$SOCKET" in /*) ;; *) die 'Dory socket must be an absolute path' ;; esac
 [ -S "$SOCKET" ] && [ ! -L "$SOCKET" ] || die "Dory socket is unavailable or indirect: $SOCKET"
 [ "$(stat -f %u "$SOCKET")" = "$(id -u)" ] || die 'Dory socket is not owned by the release user'
@@ -111,6 +107,24 @@ running_initfs_sha256="$(shasum -a 256 "$INITFS" | awk '{print $1}')"
 expected_initfs_sha256="$(shasum -a 256 "$EXPECTED_INITFS" | awk '{print $1}')"
 [ "$running_initfs_sha256" = "$expected_initfs_sha256" ] \
   || die 'running Dory VM initfs differs from the same-commit release artifact'
+
+# The old guest workspace was retired. Read the retained renderer tuple rather
+# than its deleted PINS file, and refuse missing provenance producers before
+# creating evidence or contacting the engine. Do not bypass artifact verification.
+kernel_version="$(python3 - <<'PY'
+import json
+from pathlib import Path
+
+print(json.loads(Path('Config/DoryRendererProductionTuple.json').read_text())['producerFence']['kernelVersion'])
+PY
+)" || die 'cannot read the pinned renderer kernel version'
+printf '%s\n' "$kernel_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+  || die 'renderer tuple has no exact kernel version'
+EXPECTED_KERNEL_RELEASE="$kernel_version-dory"
+for verifier in guest/kernel/verify-build.sh guest/initfs/verify-build.sh; do
+  [ -f "$verifier" ] && [ ! -L "$verifier" ] && [ -x "$verifier" ] \
+    || die "artifact provenance verifier is unavailable: $verifier; migrate the retired guest producers before live qualification"
+done
 
 mkdir "$WORKROOT"
 WORKROOT="$(cd "$WORKROOT" && pwd -P)"

@@ -9,10 +9,8 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "source-preserving-lan-gate.sh"
-
 
 class SourcePreservingLANGateTests(unittest.TestCase):
     def invoke(
@@ -69,22 +67,6 @@ class SourcePreservingLANGateTests(unittest.TestCase):
         launcher.chmod(0o755)
         return app, runtime, docker
 
-    def test_source_is_shell_valid_and_closes_privileged_helper_ownership(self) -> None:
-        subprocess.run(["bash", "-n", str(GATE)], cwd=ROOT, check=True)
-        source = GATE.read_text(encoding="utf-8")
-        self.assertNotIn("assert ", source)
-        for contract in (
-            "StrictHostKeyChecking=yes",
-            '"$DOCKER" = "$APP/Contents/Helpers/docker"',
-            "source=Notarized Developer ID",
-            "a pre-existing Dory network helper would be replaced",
-            "--unregister-network-helper",
-            "Dory network helper survived final cleanup",
-            "network_helper_unregistered=PASS",
-            "host_boot_session_unchanged=PASS",
-        ):
-            self.assertIn(contract, source)
-
     def test_confirmation_host_and_ssh_authorities_fail_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="dory-source-lan-test.") as raw:
             temporary = pathlib.Path(raw).resolve()
@@ -137,7 +119,6 @@ class SourcePreservingLANGateTests(unittest.TestCase):
             )
         self.assertIn("candidate app must be a direct Dory.app directory", indirect.stdout)
         self.assertIn("Docker CLI is not the exact candidate helper", wrong_docker.stdout)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -389,7 +389,21 @@ struct DoryVZMacMetalProbeSession: Sendable {
     }
   }
 
-  private static func configureTimeouts(_ descriptor: Int32) throws {
+  static func configureTimeouts(_ descriptor: Int32) throws {
+    // A guest may disconnect before accepting the challenge. Surface EPIPE to the
+    // collector instead of terminating the VM helper with SIGPIPE.
+    var noSignal: Int32 = 1
+    guard
+      setsockopt(
+        descriptor,
+        SOL_SOCKET,
+        SO_NOSIGPIPE,
+        &noSignal,
+        socklen_t(MemoryLayout<Int32>.size)
+      ) == 0
+    else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
     var timeout = timeval(tv_sec: 120, tv_usec: 0)
     for option in [SO_RCVTIMEO, SO_SNDTIMEO] {
       guard

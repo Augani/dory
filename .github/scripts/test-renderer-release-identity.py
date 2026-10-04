@@ -14,13 +14,11 @@ import sys
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 HELPER = ROOT / "scripts" / "renderer-release-identity.py"
 BUNDLE_ENGINE = ROOT / "scripts" / "bundle-engine.sh"
 RELEASE = ROOT / "scripts" / "release.sh"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
-
 
 def load_helper():
     spec = importlib.util.spec_from_file_location("renderer_release_identity", HELPER)
@@ -31,9 +29,7 @@ def load_helper():
     spec.loader.exec_module(module)
     return module
 
-
 identity = load_helper()
-
 
 def production_details(
     *,
@@ -56,7 +52,6 @@ def production_details(
         f"CDHash={cdhash}",
         "",
     ))
-
 
 class RendererReleaseIdentityTests(unittest.TestCase):
     def test_canonical_signed_payload_has_exact_shape_and_types(self) -> None:
@@ -183,53 +178,6 @@ class RendererReleaseIdentityTests(unittest.TestCase):
             identity.parse_tuple_definition_digest(expected),
         )
 
-    def test_bundle_and_release_order_are_fail_closed(self) -> None:
-        subprocess.run(["bash", "-n", str(BUNDLE_ENGINE)], check=True)
-        subprocess.run(["bash", "-n", str(RELEASE)], check=True)
-        bundle = BUNDLE_ENGINE.read_text(encoding="utf-8")
-        release = RELEASE.read_text(encoding="utf-8")
-        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-        execution = bundle.split("\nbundle_doryd_helpers\n", 1)[1]
-        self.assertLess(
-            execution.index("bundle_venus_renderer"),
-            execution.index("finalize_doryd_signature"),
-        )
-        self.assertLess(
-            execution.index("finalize_doryd_signature"),
-            execution.index("PAYLOAD_DIGESTS="),
-        )
-        doryd_build = bundle.split("bundle_doryd_helpers() {", 1)[1].split(
-            "\ninject_debug_toolbox_into_initfs()", 1
-        )[0]
-        self.assertIn("assemble_doryd_for_release_identity", doryd_build)
-        self.assertNotIn(
-            'bundle_swiftpm_executable "dory-core-swift" "$configuration" "doryd"',
-            doryd_build,
-        )
-        self.assertIn("verify-absent", bundle)
-        self.assertIn("RawHV hardware 3D fails closed", bundle)
-        production_signer = bundle.split(
-            "codesign_production_release_identity() {", 1
-        )[1].split("\nfinalize_doryd_signature()", 1)[0]
-        self.assertIn("/usr/bin/codesign", production_signer)
-        self.assertIn("--identifier doryd", production_signer)
-        self.assertNotIn("DORY_ALLOW_ADHOC_SIGN", production_signer)
-        self.assertNotIn("--sign -", production_signer)
-        self.assertIn("renderer-release-identity.py\" verify", release)
-        self.assertIn(
-            "public releases require the production doryd renderer release identity",
-            release,
-        )
-        self.assertIn("scripts/renderer-release-identity.py verify", workflow)
-        self.assertIn(
-            '--doryd "$extracted/Dory.app/Contents/Helpers/doryd"', workflow
-        )
-        self.assertIn("dual VirGL2 + Venus renderer", bundle)
-        self.assertIn("dual VirGL2 + Venus renderer", release)
-        for stale in ("libvirglrenderer.dylib", "libMoltenVK.dylib"):
-            self.assertNotIn(stale, bundle)
-            self.assertNotIn(stale, release)
-
     def test_cli_rejects_nonproduction_team_before_reading_artifacts(self) -> None:
         result = subprocess.run(
             [
@@ -305,7 +253,6 @@ class RendererReleaseIdentityTests(unittest.TestCase):
             )
             with self.assertRaises(identity.ReleaseIdentityError):
                 identity.verify_absent(argparse.Namespace(doryd=doryd))
-
 
 if __name__ == "__main__":
     unittest.main()

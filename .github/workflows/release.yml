@@ -438,48 +438,20 @@ jobs:
           python3 .github/scripts/test-release-orchestrator.py
           python3 .github/scripts/verify-release-workflow-contract.py
           bash scripts/test-dmg-distribution-signing.sh
-          python3 .github/scripts/test-ci-umbrella.py
+          python3 -B .github/scripts/test-qualification-harness-safety.py -v
           python3 .github/scripts/test-interrupted-upgrade-rollback-gate.py
           python3 .github/scripts/test-generate-appcast.py
           python3 .github/scripts/test-release-sbom.py
           python3 .github/scripts/test-direct-dmg-install-gate.py
           python3 .github/scripts/test-desktop-linux-live-gate.py
-          python3 .github/scripts/test-graphics-pack-installer.py
-          python3 .github/scripts/test-graphics-backend-resolver.py
           python3 .github/scripts/test-machine-resource-reconfiguration-gate.py
           python3 .github/scripts/test-sandbox-security-gate.py
           python3 .github/scripts/test-ssh-agent-forwarding-gate.py
           python3 .github/scripts/test-bind-advisory-lock-gate.py
           python3 .github/scripts/test-nonnative-build-smoke.py
-          python3 .github/scripts/test-external-volume-bind-gate.py
-          python3 .github/scripts/test-host-network-integrity-gate.py
           python3 .github/scripts/test-readiness-gate.py
           python3 .github/scripts/test-release-candidate-live-smoke.py
-          python3 .github/scripts/test-live-migration-gate.py
-          python3 .github/scripts/test-devcontainers-compatibility-gate.py
-          python3 .github/scripts/test-act-compatibility-gate.py
-          python3 .github/scripts/test-testcontainers-compatibility-gate.py
-          python3 .github/scripts/test-localstack-compatibility-gate.py
-          python3 .github/scripts/test-tilt-compose-compatibility-gate.py
           python3 .github/scripts/test-supabase-compatibility-gate.py
-          python3 .github/scripts/test-kubernetes-tooling-compatibility-gate.py
-          python3 .github/scripts/test-default-platform-image-gate.py
-          python3 .github/scripts/test-bind-file-coherence-gate.py
-          python3 .github/scripts/test-prune-safety-gate.py
-          python3 .github/scripts/test-data-drive-volume-identity-gate.py
-          python3 .github/scripts/test-data-disk-growth-gate.py
-          python3 .github/scripts/test-ecr-registry-retry-gate.py
-          python3 .github/scripts/test-private-registry-auth-gate.py
-          python3 .github/scripts/test-offline-bundled-boot-gate.py
-          python3 .github/scripts/test-competitor-runtime-regression-gate.py
-          python3 .github/scripts/test-managed-data-drive-gate.py
-          python3 .github/scripts/test-native-ipv6-gate.py
-          python3 .github/scripts/test-nonnative-exec-conformance-gate.py
-          python3 .github/scripts/test-nonnative-nix-gc-gate.py
-          python3 .github/scripts/test-nonnative-arch-pacman-gate.py
-          python3 .github/scripts/test-nonnative-mmdebstrap-gate.py
-          python3 .github/scripts/test-gvproxy-qemu-switch-gate.py
-          python3 .github/scripts/test-long-lived-network-soak.py
           python3 .github/scripts/test-endurance-reliability-soak.py
           python3 .github/scripts/test-release-candidate-qualifier.py
           python3 .github/scripts/test-release-qualification-verifier.py

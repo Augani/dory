@@ -9,10 +9,8 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "sparkle-install-relaunch-gate.sh"
-
 
 class SparkleInstallRelaunchGateTests(unittest.TestCase):
     def invoke(
@@ -74,26 +72,6 @@ class SparkleInstallRelaunchGateTests(unittest.TestCase):
             paths[key].write_text("fixture\n", encoding="utf-8")
         return paths
 
-    def test_source_is_shell_valid_optimizer_safe_and_exactly_bound(self) -> None:
-        subprocess.run(["bash", "-n", str(GATE)], cwd=ROOT, check=True)
-        source = GATE.read_text(encoding="utf-8")
-        self.assertNotIn("assert ", source)
-        for contract in (
-            "scripts/validate-release-metadata.py",
-            "scripts/verify-sparkle-update.sh",
-            "scripts/verify-release-sbom.py",
-            "--untracked-files=all",
-            "source=Notarized Developer ID",
-            "candidate metadata source commit mismatch",
-            "run evidence authority already exists",
-            "atomic_install_swap=PASS",
-            "different_relaunch_pid=PASS",
-            "docker_context_removed=PASS",
-            "daemon_processes_stopped=PASS",
-            "initial_clean_user_state_restored=PASS",
-        ):
-            self.assertIn(contract, source)
-
     def test_live_execution_requires_confirmation_and_clean_release_user(self) -> None:
         with tempfile.TemporaryDirectory(prefix="dory-sparkle-gate-test.") as raw:
             temporary = pathlib.Path(raw).resolve()
@@ -113,7 +91,6 @@ class SparkleInstallRelaunchGateTests(unittest.TestCase):
             result = self.invoke(paths, temporary, build_only=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("required path is unavailable or indirect", result.stdout)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,10 +9,8 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "direct-dmg-install-gate.sh"
-
 
 class DirectDMGInstallGateTests(unittest.TestCase):
     def invoke(self, *arguments: str, runner_temp: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -29,20 +27,6 @@ class DirectDMGInstallGateTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             text=True,
         )
-
-    def test_script_is_syntax_valid_and_has_no_python_assertions(self) -> None:
-        syntax = subprocess.run(["bash", "-n", str(GATE)], check=False)
-        self.assertEqual(syntax.returncode, 0)
-        source = GATE.read_text(encoding="utf-8")
-        self.assertNotIn("assert ", source)
-        self.assertIn("validate-release-metadata.py", source)
-        self.assertIn("verify-release-sbom.py", source)
-        self.assertIn("hdiutil attach -readonly -nobrowse -plist", source)
-        self.assertIn("release-candidate-live-smoke.sh", source)
-        self.assertIn("DORY_RELEASE_LIVE_CONFIRMED=ISOLATED-DORY-RELEASE-USER", source)
-        self.assertIn('DORY_RELEASE_SOURCE_COMMIT="$SOURCE_COMMIT"', source)
-        self.assertIn('DORY_RELEASE_LIVE_LOG_ROOT="$EVIDENCE/live-smoke"', source)
-        self.assertIn('$EVIDENCE/live-smoke/live-manifest.txt', source)
 
     def test_help_documents_the_destructive_confirmation(self) -> None:
         result = self.invoke("--help")
@@ -83,7 +67,6 @@ class DirectDMGInstallGateTests(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 2)
         self.assertIn("unsafe --workroot", result.stderr)
-
 
 if __name__ == "__main__":
     unittest.main()

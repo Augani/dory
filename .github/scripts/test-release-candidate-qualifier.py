@@ -11,70 +11,10 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "qualify-release-candidate.sh"
 
-
 class ReleaseCandidateQualifierTests(unittest.TestCase):
-    def test_orchestrator_uses_signed_schema_two_authority_and_current_gate_apis(self) -> None:
-        subprocess.run(["bash", "-n", str(GATE)], check=True)
-        text = GATE.read_text(encoding="utf-8")
-        for proof in (
-            "QUALIFY-EXACT-DORY-RELEASE",
-            "validate-release-metadata.py",
-            "signed schema-2 release metadata validation failed",
-            "checked-out source does not match --source-commit",
-            "tracked qualification harness differs from the checked-out source commit",
-            "qualification harness authority changed during qualification",
-            "qualification harness bytes changed during qualification",
-            "engine PID is outside the exact isolated runtime authority",
-            "PHYSICAL-APFS-VOLUME-IDENTITY",
-            "ISOLATED-RUNTIME-DATA-DISK-GROWTH",
-            "ISOLATED-ENGINE-DEFAULT-PLATFORM",
-            "ISOLATED-ENGINE-PRIVATE-REGISTRY",
-            "ISOLATED-ENGINE-BIND-FILE-COHERENCE",
-            "ISOLATED-ENGINE-TESTCONTAINERS",
-            '--ryuk-image "$TESTCONTAINERS_RYUK_IMAGE"',
-            '--image "$IMAGE"',
-            '--compose "$COMPOSE"',
-            '--runner-image "$ACT_RUNNER_IMAGE"',
-            "ISOLATED-ENGINE-LONG-LIVED-TCP",
-            "ISOLATED-ENGINE-ENDURANCE-RELIABILITY",
-            "candidate-binding.txt",
-            "component_catalog_schema=2",
-            "component_catalog_signature_sha256=",
-            "app_executable_sha256=",
-            "dory_vmm_sha256=",
-            "kernel_sha256=",
-            "rootfs_sha256=",
-            "guest_agent_sha256=",
-            '"schemaVersion": 2',
-            '"kind": "dev.dory.release-qualification"',
-            '"candidateBindingSha256"',
-            '"componentCatalogSchemaVersion": 2',
-        ):
-            self.assertIn(proof, text, proof)
-        for unsafe in (
-            "assert ",
-            '"schemaVersion": 1',
-            'catalog.get("schemaVersion") == 1',
-            "DORY_ALLOW_UNNOTARIZED_QUALIFICATION",
-            "DORY_ALLOW_SHORT_QUALIFICATION",
-            "trap cleanup EXIT INT TERM",
-            'rm -rf "$private_registry_workroot"',
-            'DOCKER_HOST="unix://$SOCKET" "$DOCKER"',
-        ):
-            self.assertNotIn(unsafe, text, unsafe)
-
-        references = set(
-            re.findall(r"(?<![A-Za-z0-9_./-])(scripts/[A-Za-z0-9_./-]+(?:\.sh|\.py))", text)
-        )
-        self.assertGreaterEqual(len(references), 30)
-        for reference in references:
-            path = ROOT / reference
-            self.assertTrue(path.is_file(), reference)
-            self.assertFalse(path.is_symlink(), reference)
 
     def test_confirmation_fails_before_candidate_or_qualification_root_access(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -145,7 +85,6 @@ class ReleaseCandidateQualifierTests(unittest.TestCase):
             self.assertEqual(payload["candidateBindingSha256"], digest)
             self.assertEqual(payload["componentCatalogSchemaVersion"], 2)
             self.assertEqual(payload["componentCatalogSignatureSha256"], digest)
-
 
 if __name__ == "__main__":
     unittest.main()

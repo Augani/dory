@@ -9,10 +9,8 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "vz-native-ipv6-gate.sh"
-
 
 class VZNativeIPv6GateTests(unittest.TestCase):
     @staticmethod
@@ -57,30 +55,6 @@ class VZNativeIPv6GateTests(unittest.TestCase):
             check=False,
         )
 
-    def test_source_is_shell_valid_optimizer_safe_and_closes_authority(self) -> None:
-        subprocess.run(["bash", "-n", str(GATE)], cwd=ROOT, check=True)
-        source = GATE.read_text(encoding="utf-8")
-        self.assertNotIn("assert ", source)
-        for contract in (
-            "physical Apple-silicon macOS is required",
-            "nested virtualization does not qualify",
-            "input has an indirect ancestor",
-            '"$VMM" = "$SOURCE_APP/Contents/Helpers/dory-vmm"',
-            "source=Notarized Developer ID",
-            "TeamIdentifier=864H636QW4",
-            "a pre-existing network helper would be replaced",
-            "pre-existing PF authority marker",
-            "pre-existing forwarding authority marker",
-            "--unregister-network-helper",
-            "network helper survived final cleanup",
-            "run authority already exists",
-            "source_network_helper_unregistered=PASS",
-            'if [ "$SOURCE_ENABLED" != 1 ] || [ "$SOURCE_RESULT" != PASS ]',
-            "host_boot_session_unchanged=PASS",
-            "host_panic_report_absence=PASS",
-        ):
-            self.assertIn(contract, source)
-
     def test_indirect_input_fails_before_physical_host_probe(self) -> None:
         with tempfile.TemporaryDirectory(prefix="dory-vz-ipv6-test.") as raw:
             temporary = pathlib.Path(raw).resolve()
@@ -104,7 +78,6 @@ class VZNativeIPv6GateTests(unittest.TestCase):
             workroot = self.invoke(paths, temporary, workroot_name="unscoped")
         self.assertIn("exact confirmation token", confirmation.stdout)
         self.assertIn("dedicated VZ gate name", workroot.stdout)
-
 
 if __name__ == "__main__":
     unittest.main()

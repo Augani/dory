@@ -10,11 +10,9 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 RELEASE = ROOT / "scripts" / "release.sh"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
-
 
 class ReleaseOrchestratorTests(unittest.TestCase):
     @staticmethod
@@ -30,28 +28,6 @@ class ReleaseOrchestratorTests(unittest.TestCase):
             stderr=subprocess.STDOUT,
             check=False,
         )
-
-    def test_source_is_shell_valid_and_binds_public_release_authority(self) -> None:
-        subprocess.run(["bash", "-n", str(RELEASE)], cwd=ROOT, check=True)
-        source = RELEASE.read_text(encoding="utf-8")
-        self.assertNotIn("assert ", source)
-        for contract in (
-            "release build directory must be a direct child of the checkout",
-            "release build authority is not owned by this user",
-            "public releases must use Dory signing team 864H636QW4",
-            "scripts/verify-clean-release-source.sh",
-            "scripts/verify-macos-deployment-targets.sh",
-            "scripts/validate-app-update-payload.sh",
-            "source=Notarized Developer ID",
-            "scripts/generate-release-sbom.py",
-            "scripts/verify-release-sbom.py",
-            "scripts/generate-appcast.sh",
-            "write_release_manifest",
-            "package_macos_guest_tools",
-            "preflight_macos_guest_tools_package",
-            "public releases must build the signed macOS Guest Tools package",
-        ):
-            self.assertIn(contract, source)
 
     def test_guest_tools_packaging_defaults_to_public_release_only(self) -> None:
         disabled = self.run_bash(
@@ -82,18 +58,6 @@ class ReleaseOrchestratorTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("package candidate ID", result.stdout)
-
-    def test_guest_tools_installer_is_retained_and_published(self) -> None:
-        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-        for contract in (
-            "release-build/*.pkg",
-            "release-build/*.pkg.json",
-            "release-build/DoryGuestTools-${{ needs.release_candidate.outputs.version }}-arm64.pkg",
-            "release-build/DoryGuestTools-${{ needs.release_candidate.outputs.version }}-arm64.pkg.json",
-            'root / f"DoryGuestTools-{version}-arm64.pkg"',
-            'root / f"DoryGuestTools-{version}-arm64.pkg.json"',
-        ):
-            self.assertIn(contract, workflow)
 
     def test_missing_metadata_fails_before_release_mutation(self) -> None:
         result = subprocess.run(
@@ -129,7 +93,6 @@ class ReleaseOrchestratorTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must use Dory signing team 864H636QW4", result.stdout)
-
 
 if __name__ == "__main__":
     unittest.main()

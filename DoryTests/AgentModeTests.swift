@@ -39,18 +39,6 @@ struct AgentModeTests {
         )
     }
 
-    @Test func mainWindowIDIsStable() {
-        #expect(DoryApp.mainWindowID == "dory-main")
-    }
-
-    @Test func openDoryTargetsMainWindow() {
-        #expect(DoryCommands.openDoryWindowID == DoryApp.mainWindowID)
-    }
-
-    @Test func delegateSkipsActivationPolicyUnderTests() {
-        #expect(DoryAppDelegate.isTestHost == true)
-    }
-
     @Test func duplicateInstanceDetectionIgnoresCurrentProcess() {
         #expect(!DoryAppDelegate.hasOtherInstance(currentProcessIdentifier: 10, candidates: [10]))
         #expect(DoryAppDelegate.hasOtherInstance(currentProcessIdentifier: 10, candidates: [9, 10]))
@@ -58,10 +46,6 @@ struct AgentModeTests {
 
     @Test func staleInstancePIDsIgnoreCurrentAndInvalidCandidates() {
         #expect(DoryAppDelegate.staleInstancePIDs(currentProcessIdentifier: 10, candidates: [-1, 0, 10, 11, 12]) == [11, 12])
-    }
-
-    @Test func instanceLockPathLivesUnderDoryHome() {
-        #expect(DoryAppDelegate.instanceLockPath(home: "/Users/test") == "/Users/test/.dory/dory-app.lock")
     }
 
     @Test func displayQualificationRequiresAnIsolatedDaemon() throws {
@@ -310,11 +294,6 @@ struct AgentModeTests {
         #expect(store.backendStartRequested == true)
     }
 
-    @Test func delegateRespondsToWillTerminate() {
-        let delegate = DoryAppDelegate()
-        #expect(delegate.responds(to: #selector(NSApplicationDelegate.applicationWillTerminate(_:))))
-    }
-
     @Test func daemonAlwaysPersistsAfterAppQuit() throws {
         let suite = "DoryTests.keepDoryd.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -327,12 +306,4 @@ struct AgentModeTests {
         #expect(AppStore.resolvedKeepDorydRunningAfterQuit(defaults: defaults))
     }
 
-    @Test func userRequestedWindowSkipsLaunchGate() {
-        let store = AppStore()
-        store.onboarding = false
-        store.windowOpenRequested = true
-        #expect(store.windowOpenRequested == true)
-        store.windowOpenRequested = false
-        #expect(store.shouldOpenWindowOnLaunch == !store.isAgentMode)
-    }
 }

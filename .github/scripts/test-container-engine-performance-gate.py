@@ -9,10 +9,8 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "qualify-container-engine-performance.sh"
-
 
 class ContainerEnginePerformanceGateTests(unittest.TestCase):
     def invoke(
@@ -66,28 +64,6 @@ class ContainerEnginePerformanceGateTests(unittest.TestCase):
             check=False,
         )
 
-    def test_source_is_shell_valid_and_candidate_bound(self) -> None:
-        subprocess.run(["bash", "-n", str(GATE)], cwd=ROOT, check=True)
-        source = GATE.read_text(encoding="utf-8")
-        self.assertNotIn("assert ", source)
-        for contract in (
-            "scripts/validate-release-metadata.py",
-            'export PATH="$APP/Contents/Helpers:$PATH"',
-            '"$(command -v docker)" = "$CANDIDATE_DOCKER"',
-            "codesign --verify --strict --deep",
-            "xcrun stapler validate",
-            "candidate source commit mismatch",
-            "an existing OrbStack installation would be removed",
-            "an existing Colima installation would be removed",
-            'LIMA_COLIMA_STATE="$HOME/.lima/colima"',
-            "host rebooted during the performance campaign",
-            "engine_state_removed=PASS",
-            "dev.dory.container-engine-performance-qualification",
-            "cannot authorize Linux VM support or",
-        ):
-            self.assertIn(contract, source)
-        self.assertNotIn("dev.dory.linux-vm-performance-evidence", source)
-
     def test_explicit_clean_account_arming_precedes_host_or_filesystem_mutation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="dory-performance-gate-test.") as raw:
             temporary = pathlib.Path(raw).resolve()
@@ -133,7 +109,6 @@ class ContainerEnginePerformanceGateTests(unittest.TestCase):
             "dedicated dory-container-engine-performance name", wrong_name.stdout
         )
         self.assertIn("workroot cannot contain the candidate", overlap.stdout)
-
 
 if __name__ == "__main__":
     unittest.main()

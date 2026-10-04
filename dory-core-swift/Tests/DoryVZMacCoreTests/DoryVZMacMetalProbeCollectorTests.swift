@@ -116,6 +116,25 @@ final class DoryVZMacMetalProbeCollectorTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: resultURL.path))
   }
 
+  func testSessionReportsDisconnectedGuestWithoutTerminatingHelper() throws {
+    var sockets = [Int32](repeating: -1, count: 2)
+    XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+    defer { close(sockets[0]) }
+    // Install the production options before disconnecting: setting options after
+    // closure can itself fail on Darwin and would not exercise the framed write.
+    try DoryVZMacMetalProbeSession.configureTimeouts(sockets[0])
+    close(sockets[1])
+
+    XCTAssertThrowsError(
+      try DoryVZMacMetalProbeSession.writeFrame(
+        Data("challenge".utf8),
+        to: sockets[0]
+      )
+    ) { error in
+      XCTAssertEqual((error as? POSIXError)?.code, .EPIPE)
+    }
+  }
+
   func testSessionNeverOverwritesExistingEvidence() throws {
     var sockets = [Int32](repeating: -1, count: 2)
     XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
