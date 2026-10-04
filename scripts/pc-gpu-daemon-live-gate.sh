@@ -18,15 +18,27 @@ EXPECTED_OUTPUT=""
 WORKROOT=""
 DATA_DRIVE=""
 CONFIRM=""
+GPU_PROFILE=virgl
+GRAPHICS_SELECTION=virgl
+EXPECTED_BACKEND=virgl
 MEMORY_MB=4096
 CPUS=2
 TIMEOUT_SECONDS=900
+RENDERER_RECOVERY_PLAN=""
+RENDERER_RECOVERY_CONFIRM=""
+DESKTOP_LIFECYCLE=0
+DESKTOP_LIFECYCLE_CONFIRM=""
+DESKTOP_LOGIN_TEMPLATE=""
+NETWORK_MODE=disconnected
+INSTALLER_PLAN=""
+INSTALLER_CONFIRM=""
+TOOLS_ISO=""
 
 usage() {
   cat <<'EOF'
 Usage: scripts/pc-gpu-daemon-live-gate.sh [options]
 
-Run an isolated physical DoryPC VirGL runtime-selection smoke through the packaged Dory daemon.
+Run an isolated physical DoryPC VirGL2 or Venus runtime-selection smoke through the packaged Dory daemon.
 
 Required:
   --app PATH                Exact Developer-ID-signed Dory.app candidate
@@ -35,24 +47,47 @@ Required:
   --campaign-signature PATH Detached Ed25519 signature for the campaign authorization
   --installer-media PATH    Exact x86_64 EFI installer/disk admitted by the candidate manifest
   --pc-firmware DIR         Exact verified DoryPC firmware bundle admitted by the candidate
-  --guest-command COMMAND   Command to execute through the real guest agent
-  --expected-output TEXT    Required substring of the non-truncated guest stdout
+  --guest-command COMMAND   Required without --desktop-installer-plan; real guest-agent command
+  --expected-output TEXT    Required with --guest-command; non-truncated stdout substring
   --workroot PATH           New, absolute, campaign-owned evidence root
   --data-drive PATH         Existing, isolated Dory.dorydrive bound by the authorization
   --confirm TOKEN           Must be EXACT-DORY-PC-GPU-DAEMON
 
 Optional:
+  --desktop-installer-plan PATH
+                            Full stock Ubuntu Desktop 24.04.4 PC interactive keyboard plan
+                            (wave0-pc-gpu-TEMPLATE); installs the bundled native signed tools
+  --desktop-installer-confirm TOKEN
+                            Required with the plan: EXACT-DORY-PC-DESKTOP-INSTALL
+  --gpu-profile virgl|venus Select VirGL2 (default) or the PC host-visible Venus path
   --memory-mb N             Guest memory (default: 4096)
   --cpus N                  Guest CPUs (default: 2)
   --timeout-seconds N       Per-operation deadline (default: 900)
+  --renderer-recovery-plan PATH
+                            Installed Ubuntu 24.04 x86 redraw plan; adds installer eject,
+                            installed-disk boot and authenticated abrupt worker-loss replay
+  --renderer-recovery-confirm TOKEN
+                            Required with the plan: EXACT-DORY-PC-RENDERER-CRASH
+  --desktop-lifecycle       Run installed Ubuntu x86 cold/offline reopen, guest reboot,
+                            stock package updates and cold snapshot byte recovery
+  --desktop-lifecycle-confirm TOKEN
+                            Required with the lifecycle: EXACT-DORY-PC-DESKTOP-LIFECYCLE
+  --desktop-login-input-template PATH
+                            Optional balanced keyboard script for wave0-pc-gpu-TEMPLATE
   --help                    Show this help
 
 The gate starts a uniquely named launchd service with Docker disabled, activates only the supplied
 candidate campaign, creates and later deletes only its own machine, and requires DoryPC's
-hardware-accelerated VirGL runtime selection before running the guest command. Candidate authority
+hardware-accelerated selected GPU runtime before running the guest command. Candidate authority
 permits measurement only; this gate never marks a result as a public release qualification itself.
 The caller-supplied command and output substring do not independently prove GPU execution,
 shader/pixel correctness, presentation, or worker-loss recovery.
+The optional recovery phase requires an installed graphical guest prepared by the command or
+the complete screenshot-backed stock installer phase,
+an x86 probe build receipt, and a renderer-only signed fault policy. Recovery alone does not
+install Ubuntu, test surviving GL/Vulkan contexts, or promote the candidate to public qualification.
+Lifecycle mode enables shared NAT for installation/update phases and verifies an offline
+reopen with no IPv4/IPv6 default route. A successful snapshot restore is not a host disk-fault test.
 EOF
 }
 
@@ -92,17 +127,58 @@ while [ "$#" -gt 0 ]; do
     --workroot) need_value "$1" "$#"; WORKROOT="$2"; shift 2 ;;
     --data-drive) need_value "$1" "$#"; DATA_DRIVE="$2"; shift 2 ;;
     --confirm) need_value "$1" "$#"; CONFIRM="$2"; shift 2 ;;
+    --gpu-profile) need_value "$1" "$#"; GPU_PROFILE="$2"; shift 2 ;;
     --memory-mb) need_value "$1" "$#"; MEMORY_MB="$2"; shift 2 ;;
     --cpus) need_value "$1" "$#"; CPUS="$2"; shift 2 ;;
     --timeout-seconds) need_value "$1" "$#"; TIMEOUT_SECONDS="$2"; shift 2 ;;
+    --renderer-recovery-plan) need_value "$1" "$#"; RENDERER_RECOVERY_PLAN="$2"; shift 2 ;;
+    --renderer-recovery-confirm) need_value "$1" "$#"; RENDERER_RECOVERY_CONFIRM="$2"; shift 2 ;;
+    --desktop-installer-plan) need_value "$1" "$#"; INSTALLER_PLAN="$2"; shift 2 ;;
+    --desktop-installer-confirm) need_value "$1" "$#"; INSTALLER_CONFIRM="$2"; shift 2 ;;
+    --desktop-lifecycle) DESKTOP_LIFECYCLE=1; shift ;;
+    --desktop-lifecycle-confirm) need_value "$1" "$#"; DESKTOP_LIFECYCLE_CONFIRM="$2"; shift 2 ;;
+    --desktop-login-input-template) need_value "$1" "$#"; DESKTOP_LOGIN_TEMPLATE="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done
 
+case "$GPU_PROFILE" in
+  virgl) GRAPHICS_SELECTION=virgl; EXPECTED_BACKEND=virgl ;;
+  venus) GRAPHICS_SELECTION=virgl-venus; EXPECTED_BACKEND=virgl-venus ;;
+  *) die "--gpu-profile must be virgl or venus" ;;
+esac
+
 [ "$CONFIRM" = EXACT-DORY-PC-GPU-DAEMON ] || die "requires --confirm EXACT-DORY-PC-GPU-DAEMON"
+if [ -n "$INSTALLER_PLAN" ]; then
+  [ "$INSTALLER_CONFIRM" = EXACT-DORY-PC-DESKTOP-INSTALL ] \
+    || die "stock installation requires --desktop-installer-confirm EXACT-DORY-PC-DESKTOP-INSTALL"
+  NETWORK_MODE=shared-nat
+else
+  [ -z "$INSTALLER_CONFIRM" ] || die "stock installation confirmation requires a full installer plan"
+fi
+if [ -n "$RENDERER_RECOVERY_PLAN" ]; then
+  [ "$RENDERER_RECOVERY_CONFIRM" = EXACT-DORY-PC-RENDERER-CRASH ] \
+    || die "renderer recovery requires --renderer-recovery-confirm EXACT-DORY-PC-RENDERER-CRASH"
+else
+  [ -z "$RENDERER_RECOVERY_CONFIRM" ] || die "renderer recovery confirmation requires a redraw plan"
+fi
+if [ "$DESKTOP_LIFECYCLE" = 1 ]; then
+  [ "$DESKTOP_LIFECYCLE_CONFIRM" = EXACT-DORY-PC-DESKTOP-LIFECYCLE ] \
+    || die "desktop lifecycle requires --desktop-lifecycle-confirm EXACT-DORY-PC-DESKTOP-LIFECYCLE"
+  NETWORK_MODE=shared-nat
+else
+  [ -z "$DESKTOP_LIFECYCLE_CONFIRM" ] && [ -z "$DESKTOP_LOGIN_TEMPLATE" ] \
+    || die "desktop lifecycle confirmation/input requires --desktop-lifecycle"
+fi
+if [ -z "$INSTALLER_PLAN" ]; then
+  [ -n "$COMMAND" ] && [ -n "$EXPECTED_OUTPUT" ] || die "guest command/output or a full desktop installer plan is required"
+fi
+if [ -n "$COMMAND" ] || [ -n "$EXPECTED_OUTPUT" ]; then
+  [ -n "$COMMAND" ] && [ -n "$EXPECTED_OUTPUT" ] || die "guest command and expected output must be supplied together"
+fi
 for value in "$APP" "$CANDIDATE" "$CAMPAIGN_AUTHORITY" "$CAMPAIGN_SIGNATURE" \
-  "$INSTALLER" "$PC_FIRMWARE" "$COMMAND" "$EXPECTED_OUTPUT" "$WORKROOT" "$DATA_DRIVE"; do
+  "$INSTALLER" "$PC_FIRMWARE" "$WORKROOT" "$DATA_DRIVE"; do
   [ -n "$value" ] || die "all required options must be supplied"
 done
 for value in "$MEMORY_MB" "$CPUS" "$TIMEOUT_SECONDS"; do
@@ -111,6 +187,19 @@ for value in "$MEMORY_MB" "$CPUS" "$TIMEOUT_SECONDS"; do
 done
 [ "$MEMORY_MB" -le 63488 ] && [ "$CPUS" -le 64 ] && [ "$TIMEOUT_SECONDS" -le 7200 ] \
   || die "memory, CPU, or timeout exceeds the diagnostic limit"
+if [ -n "$RENDERER_RECOVERY_PLAN" ]; then
+  [ "$TIMEOUT_SECONDS" -le 1800 ] || die "renderer recovery timeout exceeds the bounded witness lifetime"
+  require_direct_file "$RENDERER_RECOVERY_PLAN" "renderer redraw plan"
+  RENDERER_RECOVERY_PLAN="$(cd "$(dirname "$RENDERER_RECOVERY_PLAN")" && pwd -P)/$(basename "$RENDERER_RECOVERY_PLAN")"
+fi
+if [ -n "$DESKTOP_LOGIN_TEMPLATE" ]; then
+  require_direct_file "$DESKTOP_LOGIN_TEMPLATE" "PC login input template"
+  DESKTOP_LOGIN_TEMPLATE="$(cd "$(dirname "$DESKTOP_LOGIN_TEMPLATE")" && pwd -P)/$(basename "$DESKTOP_LOGIN_TEMPLATE")"
+fi
+if [ -n "$INSTALLER_PLAN" ]; then
+  require_direct_file "$INSTALLER_PLAN" "stock PC desktop installer plan"
+  INSTALLER_PLAN="$(cd "$(dirname "$INSTALLER_PLAN")" && pwd -P)/$(basename "$INSTALLER_PLAN")"
+fi
 case "$WORKROOT" in
   /*) ;;
   *) die "--workroot must be absolute" ;;
@@ -126,6 +215,11 @@ require_direct_directory "$APP" "Dory.app"
 APP="$(cd "$(dirname "$APP")" && pwd -P)/Dory.app"
 HELPERS="$APP/Contents/Helpers"
 RESOURCES="$APP/Contents/Resources"
+if [ -n "$INSTALLER_PLAN" ]; then
+  TOOLS_ISO="$RESOURCES/dory-guest-tools-x86_64.iso"
+  if [ ! -e "$TOOLS_ISO" ]; then TOOLS_ISO="$RESOURCES/dory-guest-tools-amd64.iso"; fi
+  require_direct_file "$TOOLS_ISO" "bundled native PC guest-tools ISO"
+fi
 DORYD="$HELPERS/doryd"
 CTL="$HELPERS/dorydctl"
 RUNNER_APP="$HELPERS/DoryHVRunner.app"
@@ -195,6 +289,17 @@ jq -e --arg candidate "$CANDIDATE" --arg app "$APP" \
     and .capability.backend == "dory-hypervisor")
 ' "$CAMPAIGN_AUTHORITY" >/dev/null \
   || die "campaign authority does not bind this candidate, app, and DoryPC GPU cell"
+if [ -n "$RENDERER_RECOVERY_PLAN" ]; then
+  jq -e '
+    .machineIDPrefix == "wave0-pc-gpu-"
+    and any(.cells[]; .capability.guest == {"architecture":"x86_64","family":"linux"}
+      and .capability.backend == "dory-hypervisor"
+      and .capability.graphics == "hardware-accelerated-3d"
+      and .faultPolicy.permittedFaults == ["renderer-worker-sigkill"]
+      and (.faultPolicy.maximumArmingCount | type == "number" and floor == . and . >= 1 and . <= 8)
+      and (.faultPolicy.maximumArmedMilliseconds | type == "number" and floor == . and . >= 1 and . <= 30000))
+  ' "$CAMPAIGN_AUTHORITY" >/dev/null || die "PC recovery needs the exact renderer-only signed fault cell"
+fi
 
 mkdir -m 0700 "$WORKROOT" || die "could not exclusively create workroot"
 [ -d "$WORKROOT" ] && [ ! -L "$WORKROOT" ] || die "workroot changed while preparing"
@@ -203,6 +308,11 @@ RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 WORKDIR="$WORKROOT/$RUN_ID"
 mkdir -p "$WORKDIR" "$WORKDIR/home" "$WORKDIR/logs" "$WORKDIR/runtime"
 chmod 0700 "$WORKDIR" "$WORKDIR/home" "$WORKDIR/logs" "$WORKDIR/runtime"
+# The daemon and replay consume the same retained bytes, not mutable external aliases.
+cp "$CAMPAIGN_AUTHORITY" "$WORKDIR/campaign-authority.json"
+cp "$CAMPAIGN_SIGNATURE" "$WORKDIR/campaign-authority.json.sig"
+CAMPAIGN_AUTHORITY="$WORKDIR/campaign-authority.json"
+CAMPAIGN_SIGNATURE="$WORKDIR/campaign-authority.json.sig"
 SERVICE="dev.dory.wave0.pcgpu.$RUN_ID"
 MACHINE="wave0-pc-gpu-$RUN_ID"
 PLIST="$WORKDIR/$SERVICE.plist"
@@ -277,12 +387,12 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 python3 - "$PLIST" "$SERVICE" "$DORYD" "$WORKDIR" "$DATA_DRIVE" "$RUNNER" "$VMM" \
-  "$GVPROXY" "$PC_FIRMWARE" "$CAMPAIGN_AUTHORITY" "$CAMPAIGN_SIGNATURE" "$APP" <<'PY'
+  "$GVPROXY" "$PC_FIRMWARE" "$CAMPAIGN_AUTHORITY" "$CAMPAIGN_SIGNATURE" "$APP" "$NETWORK_MODE" <<'PY'
 import plistlib
 import sys
 
 (path, service, doryd, workdir, drive, runner, vmm, gvproxy, firmware,
- authority, signature, application) = sys.argv[1:]
+ authority, signature, application, network) = sys.argv[1:]
 environment = {
     "DORYD_ACCELERATED_DESKTOP": "1",
     "DORYD_DATA_DRIVE": drive,
@@ -294,7 +404,7 @@ environment = {
     "DORYD_MACHINE_LOG_DIR": workdir + "/logs",
     "DORYD_MACHINE_RUNTIME_DIR": workdir + "/runtime",
     "DORYD_MACH_SERVICE": service,
-    "DORYD_NETWORKING": "0",
+    "DORYD_NETWORKING": "1" if network == "shared-nat" else "0",
     "DORYD_PC_FIRMWARE_BUNDLE": firmware,
     "DORYD_VMM_HELPER": vmm,
     "DORYD_VMM_READY_HANDOFF": "1",
@@ -346,8 +456,8 @@ ctl machine create "$MACHINE" \
   --installer-iso "$INSTALLER" \
   --guest-architecture x86_64 \
   --memory-mb "$MEMORY_MB" --cpus "$CPUS" \
-  --display-mode desktop --runtime accelerated --graphics virgl \
-  --network disconnected \
+  --display-mode desktop --runtime accelerated --graphics "$GRAPHICS_SELECTION" \
+  --network "$NETWORK_MODE" \
   > "$WORKDIR/machine-create.json" 2> "$WORKDIR/machine-create.err" \
   || die "candidate campaign planner rejected the DoryPC launch request"
 ctl machine start "$MACHINE" > "$WORKDIR/machine-start.json" 2> "$WORKDIR/machine-start.err" \
@@ -356,16 +466,30 @@ ctl machine start "$MACHINE" > "$WORKDIR/machine-start.json" 2> "$WORKDIR/machin
 wait_for_ctl_state machine "$TIMEOUT_SECONDS" "$WORKDIR/machine-status" machine status "$MACHINE" \
   || die "DoryPC did not reach running state before the deadline, or entered a terminal state"
 cp "$WORKDIR/machine-status.out" "$WORKDIR/machine-status.json"
-jq -e '
+jq -e --arg backend "$EXPECTED_BACKEND" '
   .state == "running"
   and .guestArchitecture == "x86_64"
   and .runtimeGraphicsSelection.accelerationLevel == "hardware-accelerated-3d"
-  and .runtimeGraphicsSelection.backend == "virgl"
+  and .runtimeGraphicsSelection.backend == $backend
 ' "$WORKDIR/machine-status.json" >/dev/null \
-  || die "running machine is not the DoryPC hardware-accelerated VirGL selection"
-record_pass dorypc-runtime "x86_64 DoryPC hardware-accelerated VirGL selection reached running"
+  || die "running machine is not the DoryPC hardware-accelerated $EXPECTED_BACKEND selection"
+record_pass dorypc-runtime "x86_64 DoryPC hardware-accelerated $EXPECTED_BACKEND selection reached running"
 
-ctl machine exec "$MACHINE" --json --timeout-ms "$((TIMEOUT_SECONDS * 1000))" -- sh -ec "$COMMAND" \
+if [ -n "$INSTALLER_PLAN" ]; then
+  python3 "$ROOT/scripts/pc-ubuntu-installer.py" --app "$APP" --machine "$MACHINE" \
+    --mach-service "$SERVICE" --run-directory "$WORKDIR" --gpu-profile "$GPU_PROFILE" \
+    --timeout-seconds "$TIMEOUT_SECONDS" --installer-plan "$INSTALLER_PLAN" --installer-media "$INSTALLER" \
+    --tools-iso "$TOOLS_ISO" --confirm "$INSTALLER_CONFIRM" \
+    > "$WORKDIR/desktop-installer.out" 2> "$WORKDIR/desktop-installer.err" \
+    || die "stock PC desktop installation failed; raw evidence retained"
+  python3 "$ROOT/scripts/pc-ubuntu-installer.py" --verify-only --app "$APP" --machine "$MACHINE" \
+    --mach-service "$SERVICE" --run-directory "$WORKDIR" --gpu-profile "$GPU_PROFILE" \
+    > "$WORKDIR/desktop-installer-gate-verification.json" 2> "$WORKDIR/desktop-installer-gate-verification.err" \
+    || die "stock PC desktop installation did not independently replay"
+  record_pass stock-desktop-install "complete interactive stock installer, cold EFI disk boot, graphical login and exact native tools ISO/package replayed"
+fi
+if [ -n "$COMMAND" ]; then
+  ctl machine exec "$MACHINE" --json --timeout-ms "$((TIMEOUT_SECONDS * 1000))" -- sh -ec "$COMMAND" \
   > "$WORKDIR/guest-command.json" 2> "$WORKDIR/guest-command.err" \
   || die "DoryPC guest command transport failed"
 jq -e --arg expected "$EXPECTED_OUTPUT" '
@@ -377,6 +501,47 @@ jq -e --arg expected "$EXPECTED_OUTPUT" '
 ' "$WORKDIR/guest-command.json" >/dev/null \
   || die "DoryPC guest command did not emit the expected output"
 record_pass guest-command "caller-supplied command completed without truncation and emitted expected output"
+fi
+
+if [ "$DESKTOP_LIFECYCLE" = 1 ]; then
+  LOGIN_ARGUMENTS=()
+  if [ -n "$DESKTOP_LOGIN_TEMPLATE" ]; then
+    LOGIN_ARGUMENTS+=(--login-input-template "$DESKTOP_LOGIN_TEMPLATE")
+  fi
+  python3 "$ROOT/scripts/pc-ubuntu-desktop-lifecycle.py" --app "$APP" --machine "$MACHINE" \
+    --mach-service "$SERVICE" --run-directory "$WORKDIR" --gpu-profile "$GPU_PROFILE" \
+    --timeout-seconds "$TIMEOUT_SECONDS" --confirm "$DESKTOP_LIFECYCLE_CONFIRM" "${LOGIN_ARGUMENTS[@]}" \
+    > "$WORKDIR/desktop-lifecycle.out" 2> "$WORKDIR/desktop-lifecycle.err" \
+    || die "PC installed desktop lifecycle failed; raw evidence retained"
+  python3 "$ROOT/scripts/pc-ubuntu-desktop-lifecycle.py" --verify-only --app "$APP" --machine "$MACHINE" \
+    --mach-service "$SERVICE" --run-directory "$WORKDIR" --gpu-profile "$GPU_PROFILE" \
+    > "$WORKDIR/desktop-lifecycle-gate-verification.json" 2> "$WORKDIR/desktop-lifecycle-gate-verification.err" \
+    || die "PC desktop lifecycle did not independently replay"
+  record_pass desktop-lifecycle "installed x86 cold/offline reopen, guest reboot, stock APT upgrades and exact snapshot bytes replayed"
+elif [ -n "$RENDERER_RECOVERY_PLAN" ] && [ -z "$INSTALLER_PLAN" ]; then
+  # The caller's command must have completed a real disk install. Eject and cold-boot before
+  # creating the surviving-process witness; these are never permitted during the crash phase.
+  ctl machine stop "$MACHINE" > "$WORKDIR/installed-disk-stop.json" 2> "$WORKDIR/installed-disk-stop.err" \
+    || die "could not stop the owned installer session"
+  ctl machine update "$MACHINE" --eject-installer > "$WORKDIR/installed-disk-eject.json" \
+    2> "$WORKDIR/installed-disk-eject.err" || die "could not eject the owned installer"
+  ctl machine start "$MACHINE" > "$WORKDIR/installed-disk-start.json" 2> "$WORKDIR/installed-disk-start.err" \
+    || die "could not boot the owned installed disk"
+fi
+if [ -n "$RENDERER_RECOVERY_PLAN" ]; then
+  python3 "$ROOT/scripts/pc-ubuntu-renderer-recovery.py" --app "$APP" --machine "$MACHINE" \
+    --mach-service "$SERVICE" --run-directory "$WORKDIR" --redraw-plan "$RENDERER_RECOVERY_PLAN" \
+    --graphics-trace "$DATA_DRIVE/machines/$MACHINE/graphics-trace.ndjson" \
+    --timeout-seconds "$TIMEOUT_SECONDS" --network-mode "$NETWORK_MODE" --gpu-profile "$GPU_PROFILE" \
+    --mode unexpected-worker-crash --confirm "$RENDERER_RECOVERY_CONFIRM" \
+    > "$WORKDIR/renderer-recovery.out" 2> "$WORKDIR/renderer-recovery.err" \
+    || die "PC installed-disk renderer recovery failed; raw evidence retained"
+  python3 "$ROOT/scripts/pc-ubuntu-renderer-recovery.py" --verify-only --app "$APP" --machine "$MACHINE" \
+    --mach-service "$SERVICE" --run-directory "$WORKDIR" --network-mode "$NETWORK_MODE" --gpu-profile "$GPU_PROFILE" \
+    > "$WORKDIR/renderer-recovery-gate-verification.json" 2> "$WORKDIR/renderer-recovery-gate-verification.err" \
+    || die "PC renderer recovery did not independently replay"
+  record_pass renderer-recovery "actual worker acceptance/loss, same installed boot/process/memory/fsync bytes, fresh worker pixels replayed"
+fi
 
 ctl machine device-telemetry "$MACHINE" > "$WORKDIR/device-telemetry.json" \
   2> "$WORKDIR/device-telemetry.err" || die "could not collect DoryPC device telemetry"
@@ -401,16 +566,20 @@ trap - EXIT
 
 python3 - "$MANIFEST" "$APP" "$DORYD" "$CTL" "$RUNNER" "$CANDIDATE" "$INSTALLER" \
   "$SERVICE" "$MACHINE" "$RESULTS" "$COMMAND" "$EXPECTED_OUTPUT" "$MEMORY_MB" "$CPUS" \
-  "$TIMEOUT_SECONDS" "$PC_FIRMWARE" "$CAMPAIGN_AUTHORITY" "$CAMPAIGN_SIGNATURE" <<'PYMANIFEST'
+  "$TIMEOUT_SECONDS" "$PC_FIRMWARE" "$CAMPAIGN_AUTHORITY" "$CAMPAIGN_SIGNATURE" \
+  "$GPU_PROFILE" "$EXPECTED_BACKEND" "$RENDERER_RECOVERY_PLAN" "$ROOT" "$DESKTOP_LIFECYCLE" "$NETWORK_MODE" "$INSTALLER_PLAN" <<'PYMANIFEST'
 import datetime
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import sys
 
 (output, app, daemon, ctl, runner, candidate, installer, service, machine, results,
  command, expected_output, memory_mb, cpus, timeout_seconds, firmware, authority,
- signature) = sys.argv[1:]
+ signature, gpu_profile, graphics_backend, recovery_plan, source_root, desktop_lifecycle, network, *installer_options) = sys.argv[1:]
+if len(installer_options) > 1: raise SystemExit("invalid stock installer manifest arguments")
+installer_plan = installer_options[0] if installer_options else ""
 def digest(path):
     value = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -436,9 +605,12 @@ payload = {
     "qualificationMode": "signed-candidate-campaign-physical-dorypc-daemon-smoke",
     "createdAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "usesQEMU": False,
-    "proofScope": ["candidate-campaign-admission", "daemon-reported-hardware-3d-selection", "guest-command-output"],
+    "proofScope": ["candidate-campaign-admission", "daemon-reported-hardware-3d-selection"] + (["guest-command-output"] if command else []),
     "unverified": ["guest-drm-identity", "shader-pixel-correctness", "host-metal-execution", "present", "worker-loss"],
     "guestCommand": command,
+    "gpuProfile": gpu_profile,
+    "runtimeGraphicsBackend": graphics_backend,
+    "networkMode": network,
     "expectedOutputSubstring": expected_output,
     "resources": {"guestMemoryMiB": int(memory_mb), "guestCPUs": int(cpus), "operationTimeoutSeconds": int(timeout_seconds)},
     "firmwarePath": firmware,
@@ -456,6 +628,97 @@ payload = {
     "checks": checks,
     "artifactSHA256": attachments,
 }
+if installer_plan:
+    spec = importlib.util.spec_from_file_location("pc_gate_installer", Path(source_root) / "scripts/pc-ubuntu-installer.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with module.navigation.Recognizer() as recognize:
+        verdict = module.verify_installation(module.lifecycle.Evidence(evidence_root), machine, service, Path(app), graphics_backend, recognize)
+    proof = module.lifecycle.Evidence(evidence_root).read(module.PROOF)
+    media = module.lifecycle.Evidence(evidence_root).read("pc-installer-media.json")
+    tools_image = Path(app) / "Contents/Resources/dory-guest-tools-x86_64.iso"
+    if not tools_image.exists(): tools_image = Path(app) / "Contents/Resources/dory-guest-tools-amd64.iso"
+    if not (proof["candidateInventorySHA256"] == payload["candidateInventorySHA256"]
+            and proof["campaignManifestSHA256"] == payload["campaignAuthoritySHA256"]
+            and media["installer"]["sha256"] == payload["installerSHA256"]
+            and media["installer"]["byteCount"] == Path(installer).stat().st_size
+            and media["tools"] == module.media_digest(tools_image) and network == "shared-nat"):
+        raise SystemExit("stock installer belongs to another candidate/media/network authority")
+    payload["qualificationMode"] = "signed-candidate-campaign-physical-dorypc-stock-desktop-installation"
+    payload["proofScope"] += ["stock-interactive-ubuntu-x86-installation", "cold-installed-efi-root-and-graphical-login", "exact-native-tools-iso-and-package"]
+    payload["desktopInstallation"] = verdict
+    payload["desktopInstallationSHA256"] = digest(str(evidence_root / module.PROOF))
+    payload["unverified"].append("complete-desktop-qualification")
+if desktop_lifecycle == "1":
+    spec = importlib.util.spec_from_file_location("pc_gate_lifecycle", Path(source_root) / "scripts/pc-ubuntu-desktop-lifecycle.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    verdict = module.lifecycle.verify_readiness(module.lifecycle.Evidence(evidence_root), machine, service, Path(app),
+                                               architecture="x86_64", graphics_backend=graphics_backend)
+    readiness = module.lifecycle.Evidence(evidence_root).read("desktop-lifecycle-readiness.json")
+    if not (readiness["candidateInventorySHA256"] == payload["candidateInventorySHA256"]
+            and readiness["campaignManifestSHA256"] == payload["campaignAuthoritySHA256"]):
+        raise SystemExit("PC lifecycle evidence belongs to another retained candidate/authority")
+    if network != "shared-nat":
+        raise SystemExit("PC installed lifecycle requires its exact shared-NAT/offline/shared-NAT journey")
+    if installer_plan:
+        baseline = module.lifecycle.Evidence(evidence_root).read("installer-reboot.json")
+        raws = [module.lifecycle.Evidence(evidence_root).read(name) for name in sorted(baseline["references"])]
+        status = next(json.loads(raw["stdout"]) for raw in raws if raw.get("argv", [None] * 7)[6] == "status")
+        installed = payload["desktopInstallation"]
+        if not (baseline["beforeBootID"] == installed["installedBootID"]
+                and status["runtimeGraphicsSelection"]["operationID"] == installed["operationID"]
+                and status["runtimeIdentity"]["planSHA256"] == installed["resolvedPlanSHA256"]):
+            raise SystemExit("PC lifecycle replaced the installer's final guest/operation/plan")
+    payload["qualificationMode"] = "signed-candidate-campaign-physical-dorypc-installed-lifecycle"
+    payload["proofScope"] += ["installed-ubuntu-x86-boot", "cold-and-offline-reopen", "guest-initiated-reboot",
+                              "stock-apt-update-upgrade-install", "cold-snapshot-exact-byte-recovery"]
+    payload["desktopLifecycle"] = verdict
+    payload["desktopLifecycleSHA256"] = digest(str(evidence_root / "desktop-lifecycle-readiness.json"))
+    payload["unverified"] += ["host-full-flush-failure-injection", "complete-desktop-qualification"]
+if recovery_plan:
+    spec = importlib.util.spec_from_file_location("pc_gate_recovery", Path(source_root) / "scripts/pc-ubuntu-renderer-recovery.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    verdict = module.recovery.verify_recovery(module.recovery.lifecycle.Evidence(evidence_root), machine, service, Path(app),
+                                             architecture="x86_64", network=network, graphics_backend=graphics_backend)
+    crash = module.recovery.lifecycle.Evidence(evidence_root).read(module.recovery.PROOF)
+    if not (crash["candidateInventorySHA256"] == payload["candidateInventorySHA256"]
+            and crash["campaignManifestSHA256"] == payload["campaignAuthoritySHA256"]):
+        raise SystemExit("PC renderer evidence belongs to another retained candidate/authority")
+    if verdict["mode"] != "unexpected-worker-crash":
+        raise SystemExit("PC gate requires actual worker-loss evidence, not a controlled restart")
+    if desktop_lifecycle == "1":
+        previous = payload["desktopLifecycle"]
+        if not (previous["bootID"] == crash["bootID"] and previous["operationID"] == verdict["operationID"]
+                and previous["resolvedPlanSHA256"] == crash["resolvedPlanSHA256"]
+                and previous["rendererGeneration"] == verdict["beforeRendererGeneration"]):
+            raise SystemExit("PC renderer phase replaced the lifecycle's final guest, plan, operation or worker")
+    elif installer_plan:
+        previous = payload["desktopInstallation"]
+        if not (previous["installedBootID"] == crash["bootID"] and previous["operationID"] == verdict["operationID"]
+                and previous["resolvedPlanSHA256"] == crash["resolvedPlanSHA256"]
+                and previous["rendererGeneration"] == verdict["beforeRendererGeneration"]):
+            raise SystemExit("PC renderer phase replaced the installer's final guest/operation/plan/worker")
+    payload["qualificationMode"] = "signed-candidate-campaign-physical-dorypc-installed-" + (
+        "lifecycle-and-renderer-recovery" if desktop_lifecycle == "1" else "renderer-recovery")
+    payload["proofScope"] += ["installed-ubuntu-x86-boot", "renderer-worker-acceptance-and-interruption",
+                              "same-guest-process-memory-and-fsynced-bytes", "replacement-worker-challenged-pixels"]
+    payload["rendererRecovery"] = verdict
+    payload["rendererRecoverySHA256"] = digest(str(evidence_root / "renderer-recovery.json"))
+    # Recovery proves fresh hardware pixels, not API context survival or the complete report.
+    payload["unverified"] = ["guest-drm-identity", "surviving-gl-vulkan-contexts", "complete-desktop-qualification"]
+    if desktop_lifecycle == "1": payload["unverified"].append("host-full-flush-failure-injection")
 Path(output).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PYMANIFEST
-echo "DoryPC daemon runtime-selection smoke PASS; GPU correctness remains unverified; evidence: $WORKDIR"
+if [ -n "$RENDERER_RECOVERY_PLAN" ]; then
+  echo "DoryPC installed-disk renderer recovery replay PASS; not public qualification; evidence: $WORKDIR"
+else
+  if [ "$DESKTOP_LIFECYCLE" = 1 ]; then
+    echo "DoryPC installed desktop lifecycle replay PASS; GPU pixels and host disk faults remain unverified; evidence: $WORKDIR"
+  elif [ -n "$INSTALLER_PLAN" ]; then
+    echo "DoryPC stock desktop installation replay PASS; GPU pixels and complete desktop qualification remain unverified; evidence: $WORKDIR"
+  else
+    echo "DoryPC daemon runtime-selection smoke PASS; GPU correctness remains unverified; evidence: $WORKDIR"
+  fi
+fi

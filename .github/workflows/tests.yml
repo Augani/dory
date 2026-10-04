@@ -434,6 +434,7 @@ jobs:
           python3 -B scripts/test-preflight-wave0-fixtures.py -v
           python3 -B scripts/test-generate-macos-guest-tools-manifest.py -v
           python3 -B scripts/test-verify-macos-guest-metal-probe.py -v
+          python3 -B scripts/test-verify-macos-vm-performance-bundle.py -v
           python3 -B scripts/test-package-macos-guest-tools.py -v
           python3 -B scripts/test-verify-macos-guest-tools-package.py -v
           python3 -B GuestTools/Linux/test-package-source.py -v
@@ -441,6 +442,14 @@ jobs:
           python3 -B guest-probes/test-contract.py
           python3 -B guest-probes/test-displayed-pixel.py
           python3 -B guest-probes/test-opengl-strategy.py -v
+          python3 -B scripts/test-arm-ubuntu-desktop-lifecycle.py -v
+          python3 -B scripts/test-arm-ubuntu-mapped-page-fault.py -v
+          python3 -B scripts/test-arm-ubuntu-full-flush-fault.py -v
+          python3 -B scripts/test-arm-ubuntu-installer-navigation.py -v
+          python3 -B scripts/test-pc-ubuntu-installer.py -v
+          python3 -B scripts/test-pc-ubuntu-desktop-lifecycle.py -v
+          python3 -B scripts/test-pc-ubuntu-renderer-recovery.py -v
+          bash scripts/test-pc-gpu-daemon-live-gate.sh
           bash scripts/test-arm-ubuntu-daemon-live-gate.sh
           python3 .github/scripts/test-release-orchestrator.py
           python3 .github/scripts/verify-release-workflow-contract.py

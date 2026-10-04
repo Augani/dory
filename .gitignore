@@ -211,6 +211,10 @@ docs/
 !/scripts/test-validate-wave0-qualification-matrix.py
 !/scripts/pc-gpu-daemon-live-gate.sh
 !/scripts/test-pc-gpu-daemon-live-gate.sh
+!/scripts/pc-ubuntu-renderer-recovery.py
+!/scripts/test-pc-ubuntu-renderer-recovery.py
+!/scripts/pc-ubuntu-desktop-lifecycle.py
+!/scripts/test-pc-ubuntu-desktop-lifecycle.py
 
 # Candidate-bound physical Linux developer smoke (fail-closed; never release qualification).
 !/scripts/linux-local-runtime-smoke.sh
@@ -228,6 +232,9 @@ docs/
 !/scripts/fixtures/linux-vm-performance-bundle-schema1/**
 !/scripts/fixtures/hostshare_guest_probe.py
 !/scripts/fixtures/hostshare_nonping_probe.py
+!/scripts/fixtures/arm-navigation/
+!/scripts/fixtures/arm-navigation/text-screen.swift
+!/scripts/fixtures/arm-navigation/command-sequence-check.swift
 
 # Internal engine notes (not published)
 Packages/ContainerizationEngine/Docs/
@@ -283,3 +290,7 @@ scripts/__pycache__/
 !/scripts/qualify-signed-launch-handoff.py
 !/scripts/test-qualify-signed-launch-handoff.py
 !/scripts/fixtures/signed-launch-handoff-peer.c
+
+# Stock PC Ubuntu installer and signed tools handoff.
+!/scripts/pc-ubuntu-installer.py
+!/scripts/test-pc-ubuntu-installer.py

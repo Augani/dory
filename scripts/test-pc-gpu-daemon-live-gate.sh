@@ -32,6 +32,58 @@ grep -Fqx \
   'pc-gpu-daemon-live-gate: requires --confirm EXACT-DORY-PC-GPU-DAEMON' \
   "$TMP/rejected.out"
 
+if "$GATE" --gpu-profile invalid --confirm EXACT-DORY-PC-GPU-DAEMON \
+  > "$TMP/invalid-profile.out" 2>&1; then
+  echo "pc GPU daemon gate accepted an unsupported GPU profile" >&2
+  exit 1
+fi
+grep -Fqx 'pc-gpu-daemon-live-gate: --gpu-profile must be virgl or venus' \
+  "$TMP/invalid-profile.out"
+
+if "$GATE" --confirm EXACT-DORY-PC-GPU-DAEMON --desktop-installer-plan /missing/plan \
+  > "$TMP/missing-installer-confirm.out" 2>&1; then
+  echo "PC stock installation accepted no installation-specific confirmation" >&2
+  exit 1
+fi
+grep -Fqx 'pc-gpu-daemon-live-gate: stock installation requires --desktop-installer-confirm EXACT-DORY-PC-DESKTOP-INSTALL' \
+  "$TMP/missing-installer-confirm.out"
+if "$GATE" --confirm EXACT-DORY-PC-GPU-DAEMON --desktop-installer-confirm EXACT-DORY-PC-DESKTOP-INSTALL \
+  > "$TMP/missing-installer-plan.out" 2>&1; then
+  echo "PC stock installation accepted no full installer plan" >&2
+  exit 1
+fi
+grep -Fqx 'pc-gpu-daemon-live-gate: stock installation confirmation requires a full installer plan' \
+  "$TMP/missing-installer-plan.out"
+
+if "$GATE" --confirm EXACT-DORY-PC-GPU-DAEMON --renderer-recovery-plan /not/a/plan \
+  > "$TMP/missing-recovery-confirm.out" 2>&1; then
+  echo "PC renderer fault phase accepted no mode-specific confirmation" >&2
+  exit 1
+fi
+grep -Fqx 'pc-gpu-daemon-live-gate: renderer recovery requires --renderer-recovery-confirm EXACT-DORY-PC-RENDERER-CRASH' \
+  "$TMP/missing-recovery-confirm.out"
+if "$GATE" --confirm EXACT-DORY-PC-GPU-DAEMON --renderer-recovery-confirm EXACT-DORY-PC-RENDERER-CRASH \
+  > "$TMP/missing-recovery-plan.out" 2>&1; then
+  echo "PC renderer recovery accepted confirmation without a plan" >&2
+  exit 1
+fi
+grep -Fqx 'pc-gpu-daemon-live-gate: renderer recovery confirmation requires a redraw plan' \
+  "$TMP/missing-recovery-plan.out"
+if "$GATE" --confirm EXACT-DORY-PC-GPU-DAEMON --desktop-lifecycle \
+  > "$TMP/missing-lifecycle-confirm.out" 2>&1; then
+  echo "PC lifecycle writes accepted no mode-specific confirmation" >&2
+  exit 1
+fi
+grep -Fqx 'pc-gpu-daemon-live-gate: desktop lifecycle requires --desktop-lifecycle-confirm EXACT-DORY-PC-DESKTOP-LIFECYCLE' \
+  "$TMP/missing-lifecycle-confirm.out"
+if "$GATE" --confirm EXACT-DORY-PC-GPU-DAEMON --desktop-lifecycle-confirm EXACT-DORY-PC-DESKTOP-LIFECYCLE \
+  > "$TMP/missing-lifecycle.out" 2>&1; then
+  echo "PC lifecycle confirmation accepted no phase selection" >&2
+  exit 1
+fi
+grep -Fqx 'pc-gpu-daemon-live-gate: desktop lifecycle confirmation/input requires --desktop-lifecycle' \
+  "$TMP/missing-lifecycle.out"
+
 python3 - "$GATE" <<'PY'
 import pathlib
 import sys
@@ -44,13 +96,24 @@ required = (
     '"DORYD_VM_CANDIDATE_APPLICATION_ROOT": application',
     '"candidate-campaign-admission"',
     '--guest-architecture x86_64',
-    '--display-mode desktop --runtime accelerated --graphics virgl',
+    '--display-mode desktop --runtime accelerated --graphics "$GRAPHICS_SELECTION"',
+    'venus) GRAPHICS_SELECTION=virgl-venus; EXPECTED_BACKEND=virgl-venus',
     '.runtimeGraphicsSelection.accelerationLevel == "hardware-accelerated-3d"',
-    '.runtimeGraphicsSelection.backend == "virgl"',
+    '.runtimeGraphicsSelection.backend == $backend',
     '"usesQEMU": False',
     'HOME="$WORKDIR/home" "$CTL"',
     'launchctl bootstrap "gui/$(id -u)" "$PLIST"',
     'ctl machine delete "$MACHINE"',
+    'ctl machine update "$MACHINE" --eject-installer',
+    '"$ROOT/scripts/pc-ubuntu-renderer-recovery.py" --verify-only',
+    '--graphics-trace "$DATA_DRIVE/machines/$MACHINE/graphics-trace.ndjson"',
+    '.faultPolicy.permittedFaults == ["renderer-worker-sigkill"]',
+    'cp "$CAMPAIGN_AUTHORITY" "$WORKDIR/campaign-authority.json"',
+    '"$ROOT/scripts/pc-ubuntu-desktop-lifecycle.py" --verify-only',
+    '"$ROOT/scripts/pc-ubuntu-installer.py" --verify-only',
+    '--tools-iso "$TOOLS_ISO" --confirm "$INSTALLER_CONFIRM"',
+    '--network "$NETWORK_MODE"',
+    '"DORYD_NETWORKING": "1" if network == "shared-nat" else "0"',
 )
 for value in required:
     assert value in source, f"missing gate contract: {value}"
@@ -142,7 +205,7 @@ manifest_path = evidence / "manifest.json"
 command = [sys.executable, "-c", manifest_code, str(manifest_path), str(app), str(root / "daemon"),
            str(root / "control"), str(root / "runner"), str(candidate), str(installer), "service", "machine",
            str(evidence / "results.tsv"), "echo marker", "marker", "4096", "2", "900",
-           str(root / "firmware input"), str(authority), str(signature)]
+           str(root / "firmware input"), str(authority), str(signature), "venus", "virgl-venus", "", str(Path(sys.argv[1]).parent.parent), "0", "disconnected"]
 subprocess.run(command, check=True, capture_output=True, text=True)
 manifest = json.loads(manifest_path.read_text())
 assert manifest["releaseQualified"] is False
@@ -150,10 +213,25 @@ assert manifest["qualificationMode"].endswith("-smoke")
 assert "shader-pixel-correctness" in manifest["unverified"]
 assert "host-metal-execution" in manifest["unverified"]
 assert manifest["guestCommand"] == "echo marker"
+assert manifest["gpuProfile"] == "venus"
+assert manifest["runtimeGraphicsBackend"] == "virgl-venus"
 assert manifest["resources"]["guestCPUs"] == 2
 assert set(manifest["artifactSHA256"]) == {"results.tsv", "guest-command.json"}
 for name, expected in manifest["artifactSHA256"].items():
     assert hashlib.sha256((evidence / name).read_bytes()).hexdigest() == expected
+# Adding a recovery flag cannot upgrade a smoke receipt with no raw recovery evidence.
+forged = list(command)
+forged[-4] = "/synthetic/redraw-plan.json"
+result = subprocess.run(forged, capture_output=True, text=True)
+assert result.returncode != 0
+assert "renderer-recovery.json" in result.stderr
+forged = list(command); forged[-2] = "1"; forged[-1] = "shared-nat"
+result = subprocess.run(forged, capture_output=True, text=True)
+assert result.returncode != 0
+assert "desktop-lifecycle-readiness.json" in result.stderr
+forged = [*command, "/synthetic/full-installer-plan.json"]
+result = subprocess.run(forged, capture_output=True, text=True)
+assert result.returncode != 0, "installer flag promoted a smoke without retained installation evidence"
 # External aliases cannot silently replace the portable raw campaign record.
 (evidence / "external.json").symlink_to(candidate / "component-candidate-inventory.json")
 result = subprocess.run(command, capture_output=True, text=True)
