@@ -243,5 +243,103 @@
     "Every default120M/120s slice still stops at instruction-budget before userspace.",
     "Complete userspace retake uses1B/900s and overlaps an isolated IO guest; elapsed time is not a controlled comparison.",
     "No admitted accelerated desktop, native Mac physical campaign or release cell is established."
-  ]
+  ],
+  "receiveWorkerContinuation": {
+    "date": "2026-10-04",
+    "sourceCommit": "97279c8fa33c53135cfe3f2a1b64ae40d1303218",
+    "change": "Host ingress publishes a leaf wake; the sole CPU worker drains the receive queue before tracking reconciliation and interrupt delivery. Tracked DMA admission remains intact. Standalone and SMP contracts are unchanged.",
+    "verification": {
+      "executionAndDecodeSwiftTests": 2180,
+      "runnerSwiftTests": 37,
+      "XCTestRegistrations": 4,
+      "XCTestOptInSkips": 1,
+      "threadSanitizerTests": 17,
+      "threadSanitizerReports": 0,
+      "appBuildForTesting": "passed; signing/bootstrap disabled, installed app untouched"
+    },
+    "original900SecondGate": {
+      "status": "failed",
+      "outcome": {
+        "exitCode": 124,
+        "passed": false,
+        "reason": "wall-budget"
+      },
+      "receipt": "pvh-io-stress-worker-receive.json",
+      "sourceCommit": "97279c8fa33c53135cfe3f2a1b64ae40d1303218",
+      "runnerSHA256": "3aafa18bc961a81fcc61e7e6c5481249d63feb517fa5821a15acefa6fb7f33c0",
+      "runID": "649df85b-29fd-4b0a-8087-389cf04278ec",
+      "wallSeconds": 900,
+      "maximumInstructions": 1500000000,
+      "elapsedSeconds": 900.000612167,
+      "retiredInstructions": 839307000,
+      "stage": "finished",
+      "releaseQualified": false,
+      "hostIO": {
+        "block": {
+          "capacityBytes": 33554432,
+          "discardRequests": 0,
+          "flushRequests": 8,
+          "readBytes": 1052672,
+          "readRequests": 9,
+          "reopenedAndVerified": false,
+          "runID": "649df85b-29fd-4b0a-8087-389cf04278ec",
+          "writeBytes": 1048576,
+          "writeRequests": 8,
+          "writeZeroesRequests": 0,
+          "zeroedBytes": 0
+        },
+        "network": {
+          "acceptedBytes": 983040,
+          "acceptedFrames": 960,
+          "deliveredReplies": 960,
+          "ignoredFrames": 6,
+          "queuedReplies": 0,
+          "runID": "649df85b-29fd-4b0a-8087-389cf04278ec",
+          "timingScope": "Duration comes from the guest workload result; this backend does not independently measure guest time.",
+          "verified": false
+        }
+      }
+    },
+    "extendedFunctionalDiagnosis": {
+      "status": "failed",
+      "outcome": {
+        "passed": false,
+        "exitCode": -10,
+        "reason": "SIGBUS-no-final-receipt"
+      },
+      "receipt": null,
+      "command": "pvh-io-stress-worker-receive-extended-command.json",
+      "sourceCommit": "97279c8fa33c53135cfe3f2a1b64ae40d1303218",
+      "runnerSHA256": "3aafa18bc961a81fcc61e7e6c5481249d63feb517fa5821a15acefa6fb7f33c0",
+      "runID": "36b38a7c-450d-4315-aa61-fd1f8e357386",
+      "wallSeconds": 1800,
+      "maximumInstructions": 1500000000,
+      "elapsedSeconds": 1504.2614253748907,
+      "retiredInstructions": null,
+      "stage": null,
+      "releaseQualified": false,
+      "scope": "Elapsed is wrapper wall time. Final guest state and host IO counters are unavailable."
+    },
+    "latestDefaultBudget": {
+      "status": "failed",
+      "outcome": {
+        "exitCode": 1,
+        "passed": false,
+        "reason": "instruction-budget"
+      },
+      "receipt": "pvh-default-worker-receive.json",
+      "sourceCommit": "97279c8fa33c53135cfe3f2a1b64ae40d1303218",
+      "runnerSHA256": "3aafa18bc961a81fcc61e7e6c5481249d63feb517fa5821a15acefa6fb7f33c0",
+      "runID": "dd8fa230-5f9e-496a-ae99-7a33726d6a60",
+      "wallSeconds": 120,
+      "maximumInstructions": 120000000,
+      "elapsedSeconds": 79.432105958,
+      "retiredInstructions": 120000000,
+      "stage": "finished",
+      "releaseQualified": false
+    },
+    "criteria": "Unchanged 4096..16384 full UUID/sequence/payload echoes, 5..30s guest network timing, eight block rounds/flushes, independent host reopen proof, zero backend failure/drop/pending frames and actual S5.",
+    "scope": "Extended run had no other checks owned by this task overlapping; user app/daemon and unrelated work remained. A 1800s diagnostic pass cannot pass the failed 900s or default 120M/120s gate. Seven-workload receipt above predates the receive change.",
+    "nativeCrash": "Earlier queue-error candidate exited SIGBUS(-10) at a stack target during a generated callback boundary. Current receive-worker candidate also exited SIGBUS(-10), with PC/LR in non-executable Malloc Tiny memory and no recovered faulting-thread frames. Neither final guest state nor anonymous generated instructions were retained. The exact shared cause is unproved; native control-flow/ABI preservation remains open."
+  }
 }
