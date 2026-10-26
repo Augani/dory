@@ -7,6 +7,242 @@ import Testing
 
 @Suite(.serialized)
 struct VirtioFSTests {
+    @Test func blockingAdvisoryUnlockCanProgressThroughGlobalDrain() async throws {
+        let harness = try VirtioFSNotificationHarness(requestQueueCount: 2, inlineRequests: false)
+        try harness.write("locks", to: "drain-lock.txt")
+        try await harness.prepareCoherentCaching()
+        let lookup = try harness.performFuseRequest(
+            makeFuseRequest(opcode: .lookup, unique: 800, payload: Array("drain-lock.txt\0".utf8)), queue: 2
+        )
+        let nodeID = Array(lookup.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
+        func open(_ unique: UInt64) throws -> UInt64 {
+            var payload = [UInt8]()
+            payload.appendLE(UInt32(O_RDWR))
+            payload.appendLE(UInt32(0))
+            let response = try harness.performFuseRequest(
+                makeFuseRequest(opcode: .open, unique: unique, nodeID: nodeID, payload: payload), queue: 2
+            )
+            return Array(response.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
+        }
+        func lockPayload(handle: UInt64, owner: UInt64, type: UInt32) -> [UInt8] {
+            var payload = [UInt8]()
+            for value in [handle, owner, UInt64(0), UInt64(7)] { payload.appendLE(value) }
+            for value in [type, UInt32(42), UInt32(0), UInt32(0)] { payload.appendLE(value) }
+            return payload
+        }
+        let first = try open(801)
+        let second = try open(802)
+        let acquired = try harness.performFuseRequest(
+            makeFuseRequest(opcode: .setlk, unique: 803, nodeID: nodeID,
+                            payload: lockPayload(handle: first, owner: 21, type: 1)), queue: 2
+        )
+        #expect(try FuseProtocol.decodeOutHeader(acquired).error == 0)
+        let unlock = makeFuseRequest(opcode: .setlk, unique: 805, nodeID: nodeID,
+                                     payload: lockPayload(handle: first, owner: 21, type: 2))
+        defer {
+            _ = try? harness.performFuseRequest(
+                makeFuseRequest(opcode: .setlk, unique: 806, nodeID: nodeID,
+                                payload: lockPayload(handle: first, owner: 21, type: 2)), queue: 3
+            )
+        }
+        let pending = try harness.enqueueFuseRequest(
+            makeFuseRequest(opcode: .setlkw, unique: 804, nodeID: nodeID,
+                            payload: lockPayload(handle: second, owner: 22, type: 1)), queue: 2
+        )
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(try harness.responseLength(pending) == 0)
+        let fs = harness.fs
+        let invalidating = Task {
+            try await fs.invalidateAtomically([.inode(nodeID: nodeID)], maximumBatchSize: 1,
+                                              timeout: .seconds(1), requestDrainTimeout: .seconds(2))
+        }
+        #expect(await eventually { fs.requestPublicationGateClosed })
+        let unlocked = try harness.performFuseRequest(unlock, queue: 3)
+        #expect(try FuseProtocol.decodeOutHeader(unlocked).error == 0)
+        #expect(try FuseProtocol.decodeOutHeader(harness.waitForFuseResponse(pending)).error == 0)
+        #expect(await eventually { (try? harness.usedIndex(queue: 1)) == 1 })
+        #expect(try harness.acknowledgeConsumedInvalidations() == 1)
+        try await invalidating.value
+        #expect(!fs.requestPublicationGateClosed)
+    }
+
+    @Test(arguments: [false, true])
+    func globalDrainOrdersPhysicalWriteAndCrossingSnapshotBeforeAck(lookupSnapshot: Bool) async throws {
+        let harness = try VirtioFSNotificationHarness(requestQueueCount: 2, inlineRequests: false)
+        try harness.write("old-data", to: "physical-boundary.txt")
+        try await harness.prepareCoherentCaching()
+        let lookup = try harness.performFuseRequest(
+            makeFuseRequest(opcode: .lookup, unique: 760, payload: Array("physical-boundary.txt\0".utf8)),
+            queue: 2
+        )
+        let oldNodeID = Array(lookup.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
+        var openPayload = [UInt8]()
+        openPayload.appendLE(UInt32(O_RDWR))
+        openPayload.appendLE(UInt32(0))
+        let opened = try harness.performFuseRequest(
+            makeFuseRequest(opcode: .open, unique: 761, nodeID: oldNodeID, payload: openPayload),
+            queue: 2
+        )
+        let handle = Array(opened.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
+        let beforeWrite = DispatchSemaphore(value: 0)
+        let releaseWrite = DispatchSemaphore(value: 0)
+        let snapshotReady = DispatchSemaphore(value: 0)
+        let releaseSnapshot = DispatchSemaphore(value: 0)
+        harness.workerChannel.requestExecutionCorrelationTestHook = { unique in
+            guard unique == 762 else { return }
+            beforeWrite.signal()
+            releaseWrite.wait()
+        }
+        harness.fs.responseFenceTestHook = { header, _ in
+            guard header.unique == 763 else { return }
+            snapshotReady.signal()
+            releaseSnapshot.wait()
+        }
+        defer {
+            releaseWrite.signal()
+            releaseSnapshot.signal()
+            harness.workerChannel.requestExecutionCorrelationTestHook = nil
+            harness.fs.responseFenceTestHook = nil
+        }
+        let write = try harness.enqueueFuseRequest(
+            makeFuseWriteRequest(unique: 762, nodeID: oldNodeID, handle: handle, contents: Array("new-data".utf8)),
+            queue: 2
+        )
+        #expect(await semaphoreSignals(beforeWrite))
+        #expect(try harness.contents(of: "physical-boundary.txt") == "old-data")
+        let fs = harness.fs
+        let invalidating = Task {
+            try await fs.invalidateAtomically(
+                [.inode(nodeID: oldNodeID), .entry(parentNodeID: HostFS.rootNodeID, name: "physical-boundary.txt")],
+                maximumBatchSize: 2,
+                timeout: .seconds(1)
+            )
+        }
+        #expect(await eventually { fs.requestPublicationGateClosed })
+        let pending = try harness.enqueueFuseRequest(
+            lookupSnapshot
+                ? makeFuseRequest(opcode: .lookup, unique: 763, payload: Array("physical-boundary.txt\0".utf8))
+                : makeFuseReadRequest(unique: 763, nodeID: oldNodeID, handle: handle, count: 8),
+            queue: 3
+        )
+        // A physical pre-boundary write, not merely its used-ring response, is still pending.
+        let snapshotDuringPreDrain = await semaphoreSignals(snapshotReady, timeout: .milliseconds(100))
+        #expect(snapshotDuringPreDrain)
+        if lookupSnapshot {
+            try FileManager.default.moveItem(
+                at: harness.rootURL.appendingPathComponent("physical-boundary.txt"),
+                to: harness.rootURL.appendingPathComponent("previous-identity.txt")
+            )
+            try harness.write("replacement", to: "physical-boundary.txt")
+        }
+        releaseWrite.signal()
+        _ = try harness.waitForFuseResponse(write)
+        // Conservatively retain the existing global barrier: the crossing snapshot can be old,
+        // but must publish before notification, so ACK cannot make that snapshot current again.
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(try harness.usedIndex(queue: 1) == 0)
+        releaseSnapshot.signal()
+        _ = try harness.waitForFuseResponse(pending)
+        #expect(await eventually { (try? harness.usedIndex(queue: 1)) == 2 })
+        #expect(try harness.acknowledgeConsumedInvalidations() == 2)
+        try await invalidating.value
+        // A fresh request after ACK observes the new data/identity, not a neutralized old grant.
+        let response = try harness.performFuseRequest(
+            lookupSnapshot
+                ? makeFuseRequest(opcode: .lookup, unique: 764, payload: Array("physical-boundary.txt\0".utf8))
+                : makeFuseReadRequest(unique: 764, nodeID: oldNodeID, handle: handle, count: 8),
+            queue: 3
+        )
+        #expect(try FuseProtocol.decodeOutHeader(response).error == 0)
+        let payload = Array(response.dropFirst(FuseOutHeader.byteCount))
+        if lookupSnapshot {
+            #expect(payload.leUInt64(at: 0) != oldNodeID)
+        } else {
+            #expect(String(decoding: payload, as: UTF8.self) == "new-data")
+        }
+    }
+
+    @Test(arguments: ["ack", "missing-ack", "prefix-timeout", "drain-timeout", "cancel", "reset"])
+    func writeDrainAndAckBudgetsAreIndependent(outcome: String) async throws {
+        let harness = try VirtioFSNotificationHarness(inlineRequests: false)
+        try harness.write("old", to: "budget.txt")
+        try await harness.prepareCoherentCaching()
+        let lookup = try harness.performFuseRequest(makeFuseRequest(opcode: .lookup, unique: 700, payload: Array("budget.txt\0".utf8)), queue: 2)
+        let nodeID = Array(lookup.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
+        var payload = [UInt8]()
+        payload.appendLE(UInt32(O_RDWR))
+        payload.appendLE(UInt32(0))
+        let opened = try harness.performFuseRequest(makeFuseRequest(opcode: .open, unique: 701, nodeID: nodeID, payload: payload), queue: 2)
+        let handle = Array(opened.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        harness.fs.responseFenceTestHook = { header, opcode in
+            guard header.unique == 702, opcode == .write else { return }
+            entered.signal()
+            release.wait()
+        }
+        defer { release.signal(); harness.fs.responseFenceTestHook = nil }
+        let usedBefore = try harness.usedIndex(queue: 2)
+        _ = try harness.enqueueFuseRequest(makeFuseWriteRequest(unique: 702, nodeID: nodeID, handle: handle, contents: Array("new".utf8)), queue: 2)
+        #expect(await semaphoreSignals(entered))
+        let releaseTask = Task {
+            try await Task.sleep(for: .milliseconds(1200))
+            release.signal()
+        }
+        defer { releaseTask.cancel() }
+        let fs = harness.fs
+        let clock = ContinuousClock()
+        let started = clock.now
+        let delivering = Task {
+            try await fs.invalidateAtomically(
+                outcome == "prefix-timeout" ? [.inode(nodeID: nodeID), .inode(nodeID: nodeID)] : [.inode(nodeID: nodeID)],
+                maximumBatchSize: 1,
+                timeout: .seconds(1),
+                requestDrainTimeout: outcome == "drain-timeout" ? .milliseconds(100) : .seconds(30)
+            )
+        }
+        #expect(await eventually { fs.requestPublicationGateClosed })
+        if outcome == "cancel" { delivering.cancel() }
+        if outcome == "reset" { harness.transport.write(offset: 0x070, value: 0, width: 4) }
+        try await releaseTask.value
+        if outcome == "ack" || outcome == "missing-ack" || outcome == "prefix-timeout" {
+            #expect(await eventually { (try? harness.usedIndex(queue: 1)) == 1 })
+            if outcome == "ack" {
+                #expect(try harness.acknowledgeConsumedInvalidations() == 1)
+            } else if outcome == "prefix-timeout" {
+                try await Task.sleep(for: .milliseconds(600))
+                #expect(try harness.acknowledgeConsumedInvalidations() == 1)
+                #expect(await eventually { (try? harness.usedIndex(queue: 1)) == 2 })
+            }
+        }
+        do {
+            try await delivering.value
+            #expect(outcome == "ack")
+            #expect(!fs.requestPublicationGateClosed)
+        } catch {
+            switch outcome {
+            case "missing-ack", "prefix-timeout":
+                #expect(error as? VirtioFSNotificationError == .acknowledgementTimedOut)
+                let elapsed = started.duration(to: clock.now)
+                #expect(elapsed >= .seconds(2))
+                #expect(elapsed < .seconds(3))
+                // One deadline covers the prefix; a late ACK cannot reopen the failure latch.
+                _ = try harness.acknowledgeConsumedInvalidations()
+            case "drain-timeout":
+                #expect(error as? VirtioFSNotificationError == .requestDrainTimedOut(activeRequests: 1))
+                #expect(try harness.usedIndex(queue: 2) == usedBefore)
+            case "cancel":
+                #expect(error is CancellationError)
+                #expect(try harness.usedIndex(queue: 2) == usedBefore)
+            case "reset":
+                #expect(error as? VirtioFSNotificationError == .transportReset)
+                // Reset clears transport registers, not the old used-ring bytes in guest RAM.
+                #expect(try harness.usedIndex(queue: 2) == usedBefore)
+            default: Issue.record("unexpected invalidation failure: \(error)")
+            }
+            #expect(fs.requestPublicationGateClosed)
+        }
+    }
     @Test func exposesVirtioFSDeviceIdentityAndQueues() throws {
         let root = try TestVirtioFSRoot()
         let fs = try VirtioFS(tag: "home", hostFS: HostFS(rootPath: root.url.path), requestQueueCount: 4)

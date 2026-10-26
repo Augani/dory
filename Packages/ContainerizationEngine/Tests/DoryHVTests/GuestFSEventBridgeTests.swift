@@ -180,7 +180,7 @@ struct GuestFSEventBridgeTests {
     @Test func nestedTimeoutBudgetsCannotExpireOuterTransactionsFirst() {
         #expect(
             DoryFSWorkerCoherenceTiming.reverseExchangeNanoseconds
-                > 1_000_000_000
+                > 30_000_000_000 + 1_000_000_000
                     + DoryFSWorkerCoherenceTiming.guestWatcherAttemptNanoseconds
         )
         #expect(

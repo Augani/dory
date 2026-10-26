@@ -699,14 +699,14 @@ public enum DoryFSWorkerCoherenceTiming {
     public static let guestWatcherMaximumRetryDelayNanoseconds: UInt64 = 250_000_000
     public static let preparationRequestNanoseconds: UInt64 = 5_000_000_000
 
-    /// A steady-state reverse delivery can consume the one-second virtiofs invalidation budget and
-    /// the two-second guest-watcher budget. Keep scheduler headroom outside both inner deadlines.
-    public static let reverseExchangeNanoseconds: UInt64 = 4_000_000_000
+    /// Thirty seconds is a bounded pre-boundary drain policy, not a host-I/O completion guarantee.
+    /// The ordered prefix then owns one second for ACKs and the guest watcher owns two seconds.
+    public static let reverseExchangeNanoseconds: UInt64 = 34_000_000_000
 
     /// Activation drains every retained share before workload readiness. A total budget prevents a
     /// pathological number of slow shares from turning startup into an unbounded XPC transaction.
     public static let activationCatchupNanoseconds: UInt64 = 40_000_000_000
 
     /// The outer request contains the catch-up budget plus one already-started reverse exchange.
-    public static let activationRequestNanoseconds: UInt64 = 45_000_000_000
+    public static let activationRequestNanoseconds: UInt64 = 75_000_000_000
 }

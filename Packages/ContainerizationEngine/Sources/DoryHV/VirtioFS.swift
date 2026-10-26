@@ -475,12 +475,14 @@ public final class VirtioFS: VirtioDeviceBackend {
     private func submitInvalidations(
         _ invalidations: [VirtioFSInvalidation],
         retainRequestGateForCaller: Bool,
-        requestGateDeadline: ContinuousClock.Instant? = nil
+        requestGateDeadline: ContinuousClock.Instant? = nil,
+        drainRequests: Bool = true
     ) async throws -> VirtioFSNotificationBarrier {
         guard !invalidations.isEmpty else {
             return VirtioFSNotificationBarrier(notificationCount: 0)
         }
         let frames = try invalidations.map { try $0.encoded() }
+        let submissionEpoch = notificationLock.withLock { notificationEpoch }
         guard frames.allSatisfy({ $0.count <= Int(Self.notificationBufferSize) }) else {
             // The public invalidation encoders currently make this unreachable, but preserve the
             // all-or-nothing admission guarantee if new FUSE notification types are added later.
@@ -490,7 +492,10 @@ public final class VirtioFS: VirtioDeviceBackend {
         // Close request admission before touching the transport, then suspend without holding the
         // MMIO register lock until every response from the preceding epoch has reached its used
         // ring. handleKick never waits on this gate, which avoids a register-lock deadlock.
-        try await closeRequestGateAndWaitForActiveResponses(deadline: requestGateDeadline)
+        try await closeRequestGateAndWaitForActiveResponses(
+            deadline: requestGateDeadline,
+            drainRequests: drainRequests
+        )
 
         // Preserve the actual transport even when notification eligibility is false. A low-level
         // submission failure reopens the request gate and must be able to redrain request queues
@@ -512,6 +517,7 @@ public final class VirtioFS: VirtioDeviceBackend {
         transport.withQueueLock {
             notificationLock.lock()
             guard notificationTransport === transport,
+                  notificationEpoch == submissionEpoch,
                   notificationNegotiated,
                   notificationQueueReady,
                   transport.negotiatedFeatures & Self.notificationFeature != 0,
@@ -587,21 +593,34 @@ public final class VirtioFS: VirtioDeviceBackend {
     public func invalidateAtomically(
         _ invalidations: [VirtioFSInvalidation],
         maximumBatchSize: Int,
-        timeout: Duration = .seconds(2)
+        timeout: Duration = .seconds(2),
+        requestDrainTimeout: Duration = .seconds(30)
     ) async throws {
         guard !invalidations.isEmpty else { return }
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: timeout)
+        // Recovery policy, not a guarantee that an uncancellable host syscall finishes in 30s.
+        // Keep the global response barrier: new non-WRITEs may progress, but their snapshots must
+        // publish before notification. Continuous arrivals can exhaust this bounded drain policy.
+        let drainDeadline = clock.now.advanced(by: requestDrainTimeout)
+        let submissionEpoch = notificationLock.withLock { notificationEpoch }
         let batchSize = max(1, min(maximumBatchSize, notificationBacklogLimit))
         var retainedBarriers = [VirtioFSNotificationBarrier]()
+        var prefixGateHeld = false
         do {
+            try await closeRequestGateAndWaitForActiveResponses(deadline: drainDeadline)
+            prefixGateHeld = true
+            guard notificationLock.withLock({ notificationEpoch == submissionEpoch }) else {
+                throw VirtioFSNotificationError.transportReset
+            }
+            let deadline = clock.now.advanced(by: timeout)
             var start = 0
             while start < invalidations.count {
                 let end = min(start + batchSize, invalidations.count)
                 let barrier = try await submitInvalidations(
                     Array(invalidations[start..<end]),
                     retainRequestGateForCaller: true,
-                    requestGateDeadline: deadline
+                    requestGateDeadline: deadline,
+                    drainRequests: start != 0
                 )
                 retainedBarriers.append(barrier)
                 let remaining = clock.now.duration(to: deadline)
@@ -618,6 +637,8 @@ public final class VirtioFS: VirtioDeviceBackend {
             for barrier in retainedBarriers {
                 releaseCallerRetainedRequestGate(barrier, succeeded: true)
             }
+            finishRequestGateSubmissionWithoutBarrier(transport: nil, latchFailure: false)
+            prefixGateHeld = false
         } catch {
             // Any returned error leaves delivery or cache revocation uncertain. Revoke future TTLs
             // and permanently hold request publication for this backend before the coordinator can
@@ -628,6 +649,9 @@ public final class VirtioFS: VirtioDeviceBackend {
                 releaseCallerRetainedRequestGate(barrier, succeeded: false)
             }
             latchRequestGateFailure(barrier: nil)
+            if prefixGateHeld {
+                finishRequestGateSubmissionWithoutBarrier(transport: nil, latchFailure: true)
+            }
             recordInvalidationFailure(latched: true)
             throw error
         }
@@ -1429,16 +1453,24 @@ private extension VirtioFS {
     }
 
     func closeRequestGateAndWaitForActiveResponses(
-        deadline: ContinuousClock.Instant? = nil
+        deadline: ContinuousClock.Instant? = nil,
+        drainRequests: Bool = true
     ) async throws {
         let waiterID = UUID()
-        let result: Result<Void, VirtioFSNotificationError> = await withCheckedContinuation { continuation in
+        let result: Result<Void, VirtioFSNotificationError> = await withTaskCancellationHandler {
+          await withCheckedContinuation { continuation in
             var immediate: Result<Void, VirtioFSNotificationError>?
             var timeout: Duration?
             requestGateLock.withLock {
                 requestGateClosed = true
                 requestGateSubmissionsInProgress += 1
-                if let deadline {
+                guard !Task.isCancelled, !requestGateFailureLatched, !connectionResetPending else {
+                    requestGateSubmissionsInProgress -= 1
+                    requestGateFailureLatched = true
+                    immediate = .failure(.transportReset)
+                    return
+                }
+                if drainRequests, let deadline {
                     let remaining = ContinuousClock().now.duration(to: deadline)
                     guard remaining > .zero else {
                         requestGateSubmissionsInProgress -= 1
@@ -1450,7 +1482,7 @@ private extension VirtioFS {
                     }
                     timeout = remaining
                 }
-                guard activeRequestCount > 0 else {
+                guard drainRequests, activeRequestCount > 0 else {
                     immediate = .success(())
                     timeout = nil
                     return
@@ -1467,7 +1499,11 @@ private extension VirtioFS {
             if let immediate {
                 continuation.resume(returning: immediate)
             }
+          }
+        } onCancel: {
+            self.timeOutRequestGateWaiter(waiterID)
         }
+        try Task.checkCancellation()
         try result.get()
     }
 
@@ -1588,9 +1624,7 @@ private extension VirtioFS {
         ) = requestGateLock.withLock {
             precondition(activeRequestCount > 0)
             activeRequestCount -= 1
-            guard activeRequestCount == 0 else {
-                return ([], false)
-            }
+            guard activeRequestCount == 0 else { return ([], false) }
             let shouldReset = connectionResetPending && !connectionResetInProgress
             if shouldReset {
                 connectionResetInProgress = true
