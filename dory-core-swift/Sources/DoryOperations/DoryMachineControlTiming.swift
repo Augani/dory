@@ -9,9 +9,9 @@ public enum DoryMachineControlTiming {
     /// A first desktop boot may consume the daemon's full 180-second readiness window.
     public static let startSeconds: TimeInterval = 240
 
-    /// Stop serializes a guest handshake/receipt, helper acknowledgement, and the 30-second host
-    /// termination bound. Ninety seconds preserves a scheduling margin around that full path.
-    public static let stopSeconds: TimeInterval = 90
+    /// Stop serializes a guest handshake/receipt, helper acknowledgement, and the 60-second host
+    /// termination bound. Two minutes preserves a scheduling margin around that full path.
+    public static let stopSeconds: TimeInterval = 120
 
     /// Restart performs the complete stop and start paths in sequence.
     public static let restartSeconds: TimeInterval = stopSeconds + startSeconds

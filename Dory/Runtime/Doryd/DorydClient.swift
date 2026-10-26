@@ -1856,7 +1856,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
     // daemon to return its exact outcome instead of replacing it with a simultaneous UI timeout.
     private static let engineColdStartTimeout: TimeInterval = 250
     // Engine shutdown has no per-machine guest/helper acknowledgement path.
-    private static let engineShutdownTimeout: TimeInterval = 45
+    private static let engineShutdownTimeout: TimeInterval = 75
     // doryd allows the bounded in-guest resource probe three seconds. Keep transport overhead and
     // scheduling pressure from replacing a valid daemon result with the default control timeout.
     private static let dockerGuestResourceProbeTimeout: TimeInterval = 10

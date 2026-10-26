@@ -671,7 +671,7 @@ write_doryd_launch_agent() {
     <key>KeepAlive</key>
     <true/>
     <key>ExitTimeOut</key>
-    <integer>45</integer>
+    <integer>70</integer>
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>StandardOutPath</key>

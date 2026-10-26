@@ -8,13 +8,19 @@ import Foundation
 /// host timeout from cutting through a still-clean guest shutdown and leaving Docker metadata that
 /// references a snapshot containerd had not committed.
 public enum DoryEngineShutdownTiming {
-    public static let dockerdGraceSeconds: TimeInterval = 20
-    public static let helperWatchdogSeconds: TimeInterval = 25
-    public static let hostTerminationSeconds: TimeInterval = 30
+    public static let reloadGraceSeconds: TimeInterval = 10
+    public static let dockerdGraceSeconds: TimeInterval = 30
+    public static let serviceGraceSeconds: TimeInterval = 2
+    public static let helperWatchdogSeconds: TimeInterval = 55
+    public static let hostTerminationSeconds: TimeInterval = 60
 
     public static let pollIntervalSeconds: TimeInterval = 0.25
 
     public static var dockerdPollAttempts: Int {
         Int(dockerdGraceSeconds / pollIntervalSeconds)
+    }
+
+    public static var servicePollAttempts: Int {
+        Int(serviceGraceSeconds / pollIntervalSeconds)
     }
 }

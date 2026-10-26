@@ -17,16 +17,12 @@ public enum GuestContainerCompatibilityCommand {
 
 /// Builds the guest-side listener used when a Dory VM is asked to stop.
 ///
-/// `sync; poweroff -f` alone makes the filesystem structurally recoverable, but it can still leave
-/// Docker's container metadata ahead of containerd's snapshot transaction. Stop dockerd first and
-/// wait for it to quiesce; only the bounded fallback is allowed to force the daemon down. Once no
-/// daemon can allocate new blocks, trim free ext4 extents through virtio discard before the final
-/// sync/unmount so deleted Docker data is returned to the host safely.
+/// Keep live-restore for daemon-only restarts, but disable it before terminating the whole VM.
 public enum GuestShutdownCommand {
     public static func listener(port: UInt16 = 2377) -> String {
         "( while true; do nc -l -p \(port) >/dev/null 2>&1; echo shutdown requested; "
             + shutdownSequence()
-            + "; done ) & true"
+            + "\nexit $?; done ) & true"
     }
 
     /// Runs from a dory-agent exec request. The short delay lets the agent return the successful
@@ -34,7 +30,7 @@ public enum GuestShutdownCommand {
     public static func detachedAgentRequest() -> String {
         "( sleep 0.1; echo shutdown requested; "
             + shutdownSequence()
-            + " ) >/var/log/dory-shutdown.log 2>&1 </dev/null &"
+            + " ) >/dev/console 2>&1 </dev/null &"
     }
 
     /// Requests a normal systemd shutdown for a full desktop guest.
@@ -54,19 +50,91 @@ public enum GuestShutdownCommand {
             + ">>/var/log/dory-shutdown.log 2>&1"
     }
 
-    private static func shutdownSequence() -> String {
-        let attempts = DoryEngineShutdownTiming.dockerdPollAttempts
+    static func shutdownSequence() -> String {
         let interval = DoryEngineShutdownTiming.pollIntervalSeconds
-        return "DORY_DOCKERD_PID=$(cat /var/run/docker.pid 2>/dev/null || pidof dockerd 2>/dev/null || true); "
-            + "if [ -n \"$DORY_DOCKERD_PID\" ]; then kill -TERM $DORY_DOCKERD_PID 2>/dev/null || true; "
-            + "DORY_DOCKERD_WAIT=0; while kill -0 $DORY_DOCKERD_PID 2>/dev/null "
-            + "&& [ \"$DORY_DOCKERD_WAIT\" -lt \(attempts) ]; do sleep \(interval); "
-            + "DORY_DOCKERD_WAIT=$((DORY_DOCKERD_WAIT + 1)); done; "
-            + "if kill -0 $DORY_DOCKERD_PID 2>/dev/null; then echo dockerd shutdown timed out; "
-            + "kill -KILL $DORY_DOCKERD_PID 2>/dev/null || true; sleep 1; fi; fi; "
-            + "fstrim -v /var/lib/docker >/var/log/dory-data-trim.log 2>&1 || true; "
-            + "cp /var/log/dory-data-trim.log /mnt/dory-logs/data-trim.log 2>/dev/null || true; "
-            + "sync; umount /var/lib/docker 2>/dev/null || true; sync; poweroff -f"
+        return """
+        dory_shutdown_clock() {
+          read DORY_UPTIME DORY_IDLE </proc/uptime || return 1
+          DORY_NOW=$(( ${DORY_UPTIME%.*} * 100 + 1${DORY_UPTIME#*.} - 100 ))
+        }
+        dory_service_pids() {
+          for DORY_PID in $(pidof "$1" 2>/dev/null); do [ "$DORY_PID" = 1 ] || echo "$DORY_PID"; done
+        }
+        dory_stop_service() {
+          DORY_SERVICE=$1; DORY_WAIT=0; DORY_PIDS=$(dory_service_pids "$DORY_SERVICE")
+          [ -n "$DORY_PIDS" ] || return 0
+          kill -TERM $DORY_PIDS || return 1
+          while [ -n "$(dory_service_pids "$DORY_SERVICE")" ]; do
+            [ "$DORY_WAIT" -lt "$2" ] || { echo "DORY-SHUTDOWN-FAILED: $DORY_SERVICE still running" >&2; return 1; }
+            sleep \(interval); DORY_WAIT=$((DORY_WAIT + 1))
+          done
+        }
+        dory_shutdown() {
+          DORY_DOCKER_PIDS=$(dory_service_pids dockerd)
+          if [ -n "$DORY_DOCKER_PIDS" ]; then
+            dory_shutdown_clock || return 1
+            DORY_RELOAD_DEADLINE=$((DORY_NOW + \(Int(DoryEngineShutdownTiming.reloadGraceSeconds * 100))))
+            DORY_CONFIG=/etc/docker/daemon.json
+            DORY_CONFIG_TMP=$DORY_CONFIG.shutdown.$$
+            [ -f "$DORY_CONFIG" ] && [ ! -L "$DORY_CONFIG" ] || { echo 'DORY-SHUTDOWN-FAILED: missing daemon config' >&2; return 1; }
+            grep -q '"live-restore":true' "$DORY_CONFIG" || { echo 'DORY-SHUTDOWN-FAILED: expected generated live-restore config' >&2; return 1; }
+            (umask 077; set -C; : >"$DORY_CONFIG_TMP") || return 1
+            if ! cp -p "$DORY_CONFIG" "$DORY_CONFIG_TMP" ||
+               ! sed 's/"live-restore":true/"live-restore":false/' "$DORY_CONFIG" >"$DORY_CONFIG_TMP"; then
+              rm -f "$DORY_CONFIG_TMP"; return 1
+            fi
+            if ! timeout -k 1 2 /usr/local/bin/dockerd --validate --config-file "$DORY_CONFIG_TMP" >/dev/null 2>&1; then
+              rm -f "$DORY_CONFIG_TMP"; echo 'DORY-SHUTDOWN-FAILED: invalid daemon config' >&2; return 1
+            fi
+            if ! mv "$DORY_CONFIG_TMP" "$DORY_CONFIG"; then rm -f "$DORY_CONFIG_TMP"; return 1; fi
+            kill -HUP $DORY_DOCKER_PIDS || { echo 'DORY-SHUTDOWN-FAILED: daemon reload signal' >&2; return 1; }
+            while :; do
+              [ -n "$(dory_service_pids dockerd)" ] || { echo 'DORY-SHUTDOWN-FAILED: dockerd exited before reload confirmation; task state unverified' >&2; return 1; }
+              dory_shutdown_clock || return 1
+              [ "$DORY_NOW" -lt "$DORY_RELOAD_DEADLINE" ] || { echo 'DORY-SHUTDOWN-FAILED: live-restore reload not confirmed' >&2; return 1; }
+              DORY_REMAINING=$((DORY_RELOAD_DEADLINE - DORY_NOW))
+              if [ "$DORY_REMAINING" -lt 2 ]; then sleep 0.01; continue; fi
+              DORY_PROBE=$((DORY_REMAINING / 2)); [ "$DORY_PROBE" -le 100 ] || DORY_PROBE=100
+              DORY_GRACE=$((DORY_REMAINING - DORY_PROBE)); [ "$DORY_GRACE" -le 100 ] || DORY_GRACE=100
+              DORY_PROBE=$(printf '%s.%02d' "$((DORY_PROBE / 100))" "$((DORY_PROBE % 100))")
+              DORY_GRACE=$(printf '%s.%02d' "$((DORY_GRACE / 100))" "$((DORY_GRACE % 100))")
+              DORY_LIVE_RESTORE=$(timeout -k "$DORY_GRACE" "$DORY_PROBE" /usr/local/bin/docker -H unix:///var/run/docker.sock info --format '{{.LiveRestoreEnabled}}') &&
+                [ "$DORY_LIVE_RESTORE" = false ] && break
+              dory_shutdown_clock || return 1
+              DORY_PAUSE=$((DORY_RELOAD_DEADLINE - DORY_NOW))
+              [ "$DORY_PAUSE" -le \(Int(DoryEngineShutdownTiming.pollIntervalSeconds * 100)) ] || DORY_PAUSE=\(Int(DoryEngineShutdownTiming.pollIntervalSeconds * 100))
+              [ "$DORY_PAUSE" -le 0 ] || sleep "$(printf '0.%02d' "$DORY_PAUSE")"
+            done
+          fi
+          dory_stop_service dockerd \(DoryEngineShutdownTiming.dockerdPollAttempts) || return 1
+          dory_stop_service containerd \(DoryEngineShutdownTiming.servicePollAttempts) || return 1
+          dory_stop_service dory-agent \(DoryEngineShutdownTiming.servicePollAttempts) || return 1
+          DORY_RECLAIM_PID=$(cat /run/dory-storage-reclaim.pid 2>/dev/null || true)
+          case "$DORY_RECLAIM_PID" in
+            '') ;;
+            *[!0-9]*|0|1) echo 'DORY-SHUTDOWN-FAILED: invalid reclaim PID' >&2; return 1 ;;
+            *)
+              if kill -0 "$DORY_RECLAIM_PID" 2>/dev/null; then
+                kill -TERM "$DORY_RECLAIM_PID" || return 1
+                DORY_WAIT=0
+                while kill -0 "$DORY_RECLAIM_PID" 2>/dev/null; do
+                  [ "$DORY_WAIT" -lt \(DoryEngineShutdownTiming.servicePollAttempts) ] || { echo 'DORY-SHUTDOWN-FAILED: reclaim still running' >&2; return 1; }
+                  sleep \(interval); DORY_WAIT=$((DORY_WAIT + 1))
+                done
+              fi ;;
+          esac
+          if mountpoint -q /var/lib/docker; then
+            timeout -k 1 1 fstrim -v /var/lib/docker || echo 'DORY: shutdown trim skipped' >&2
+            sync || return 1
+            umount /var/lib/docker || { echo 'DORY-SHUTDOWN-FAILED: data unmount' >&2; return 1; }
+          fi
+          sync || return 1
+          mount -o remount,ro / || { echo 'DORY-SHUTDOWN-FAILED: root remount' >&2; return 1; }
+          echo 'DORY-SHUTDOWN-CLEAN: data unmounted, root read-only'
+          poweroff -f
+        }
+        dory_shutdown || { echo 'DORY-SHUTDOWN-FAILED: refusing clean poweroff; host watchdog may force exit' >&2; sync; exit 1; }
+        """
     }
 }
 
@@ -80,11 +148,20 @@ public enum GuestStorageReclaimCommand {
         intervalSeconds: UInt64 = defaultIntervalSeconds
     ) -> String {
         let interval = max(60, intervalSeconds)
-        return "( while true; do sleep \(interval); "
-            + "if mountpoint -q /var/lib/docker; then "
-            + "fstrim -v /var/lib/docker >/var/log/dory-data-trim.log 2>&1 || true; "
-            + "cp /var/log/dory-data-trim.log /mnt/dory-logs/data-trim.log 2>/dev/null || true; "
-            + "fi; done ) & true"
+        return """
+        /bin/sh -c '
+          child=
+          stop_reclaim() { [ -z "$child" ] || { kill -TERM "$child" 2>/dev/null; wait "$child"; }; exit 0; }
+          trap stop_reclaim TERM INT
+          while true; do
+            sleep \(interval) & child=$!; wait "$child"; child=
+            if mountpoint -q /var/lib/docker; then
+              fstrim -v /var/lib/docker >/var/log/dory-data-trim.log 2>&1 & child=$!; wait "$child"; child=
+              cp /var/log/dory-data-trim.log /mnt/dory-logs/data-trim.log 2>/dev/null || true
+            fi
+          done
+        ' & echo $! >/run/dory-storage-reclaim.pid
+        """
     }
 }
 
@@ -96,7 +173,7 @@ public enum GuestBuildCacheGCCommand {
 
     public static func configureDaemon() -> String {
         let openFiles = GuestContainerCompatibilityCommand.defaultOpenFiles
-        let configuration = #"{"builder":{"gc":{"enabled":true,"defaultKeepStorage":"\#(defaultKeepStorage)"}},"default-ulimits":{"nofile":{"Name":"nofile","Hard":\#(openFiles),"Soft":\#(openFiles)}}}"#
+        let configuration = #"{"live-restore":true,"builder":{"gc":{"enabled":true,"defaultKeepStorage":"\#(defaultKeepStorage)"}},"default-ulimits":{"nofile":{"Name":"nofile","Hard":\#(openFiles),"Soft":\#(openFiles)}}}"#
         return "mkdir -p /etc/docker; printf '%s\\n' '\(configuration)' >/etc/docker/daemon.json"
     }
 }

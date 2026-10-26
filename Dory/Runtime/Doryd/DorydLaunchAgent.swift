@@ -23,10 +23,8 @@ enum DorydLaunchAgent {
             .appendingPathComponent("d", isDirectory: true)
             .standardizedFileURL
     }
-    // Docker gets 20 seconds, dory-hv gets 25, and doryd gets 30 before its own last resort.
-    // launchd's system default is only five seconds on current macOS, so make upgrade/logout
-    // replacement honor the same graceful shutdown contract as an explicit engine stop.
-    static let exitTimeoutSeconds = 45
+    // Leave ten seconds beyond doryd's 60-second host termination budget for upgrade/logout.
+    nonisolated static let exitTimeoutSeconds = 70
     private static let bootstrapRetryCount = 20
 
     struct Install: Sendable, Equatable {
@@ -115,6 +113,8 @@ enum DorydLaunchAgent {
         var running: Bool
         var plistPath: String?
         var programPath: String?
+        var stopping = false
+        var environment: [String: String]? = nil
     }
 
     enum Decision: Sendable, Equatable {
@@ -139,6 +139,7 @@ enum DorydLaunchAgent {
         launchAgentsDirectory: URL? = nil,
         configuration: Configuration = Configuration(),
         bootstrapRetryDelay: Duration = .milliseconds(250),
+        shutdownWaitTimeout: Duration = .seconds(exitTimeoutSeconds),
         runner: @escaping Runner = runLaunchctl
     ) async -> Bool {
         guard let current = currentInstall(
@@ -146,7 +147,11 @@ enum DorydLaunchAgent {
             launchAgentsDirectory: launchAgentsDirectory,
             configuration: configuration
         ) else { return false }
-        let plistChanged: Bool
+        guard let root = try? PropertyListSerialization.propertyList(
+            from: Data(current.plistContents.utf8), options: [], format: nil
+        ) as? [String: Any],
+              let expectedEnvironment = root["EnvironmentVariables"] as? [String: String] else { return false }
+        var plistChanged: Bool
         do {
             plistChanged = try writeCurrentInstall(current)
         } catch {
@@ -157,6 +162,25 @@ enum DorydLaunchAgent {
         let print = await runner(["print", service])
         let status = print.ok ? parseStatus(print.stdout) : nil
 
+        // A reopened GUI can arrive before the previous GUI's bootout has finished.
+        if status?.stopping == true {
+            guard await waitForRemoval(service: service, timeout: shutdownWaitTimeout,
+                                       retryDelay: bootstrapRetryDelay, runner: runner) else { return false }
+            return await bootstrapAndKickstart(uid: uid, plistPath: current.plistPath,
+                                              programPath: current.programPath,
+                                              expectedEnvironment: expectedEnvironment,
+                                              shutdownWaitTimeout: shutdownWaitTimeout,
+                                              retryDelay: bootstrapRetryDelay, runner: runner)
+        }
+
+        if let status, status.loaded,
+           normalize(status.programPath) == normalize(current.programPath),
+           normalize(status.plistPath) == normalize(current.plistPath) {
+            // A recreated file says nothing about the configuration launchd already loaded.
+            guard let loaded = status.environment else { return false }
+            plistChanged = plistChanged || loaded != expectedEnvironment
+        }
+
         switch decision(
             status: status,
             currentPlist: current.plistPath,
@@ -165,21 +189,29 @@ enum DorydLaunchAgent {
         ) {
         case .upToDate:
             guard status?.running == false else { return true }
-            let kickstarted = await runner(["kickstart", "-k", service])
+            let kickstarted = await runner(["kickstart", service])
             return kickstarted.ok
         case .bootstrap:
             return await bootstrapAndKickstart(
                 uid: uid,
                 plistPath: current.plistPath,
+                programPath: current.programPath,
+                expectedEnvironment: expectedEnvironment,
+                shutdownWaitTimeout: shutdownWaitTimeout,
                 retryDelay: bootstrapRetryDelay,
                 runner: runner
             )
         case .replace:
             let bootout = await runner(["bootout", service])
             guard bootout.ok || isMissingServiceError(bootout.stderr) else { return false }
+            guard await waitForRemoval(service: service, timeout: shutdownWaitTimeout,
+                                       retryDelay: bootstrapRetryDelay, runner: runner) else { return false }
             return await bootstrapAndKickstart(
                 uid: uid,
                 plistPath: current.plistPath,
+                programPath: current.programPath,
+                expectedEnvironment: expectedEnvironment,
+                shutdownWaitTimeout: shutdownWaitTimeout,
                 retryDelay: bootstrapRetryDelay,
                 runner: runner
             )
@@ -238,9 +270,31 @@ enum DorydLaunchAgent {
         }
     }
 
+    private static func waitForRemoval(
+        service: String,
+        timeout: Duration,
+        retryDelay: Duration,
+        runner: Runner
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !Task.isCancelled {
+            let result = await runner(["print", service])
+            if !result.ok { return isMissingServiceError(result.stderr) }
+            guard clock.now < deadline else { return false }
+            do {
+                try await Task.sleep(for: min(retryDelay, clock.now.duration(to: deadline)))
+            } catch { return false }
+        }
+        return false
+    }
+
     private static func bootstrapAndKickstart(
         uid: uid_t,
         plistPath: String,
+        programPath: String,
+        expectedEnvironment: [String: String],
+        shutdownWaitTimeout: Duration,
         retryDelay: Duration,
         runner: @escaping Runner
     ) async -> Bool {
@@ -249,14 +303,22 @@ enum DorydLaunchAgent {
         for attempt in 0..<bootstrapRetryCount {
             let bootstrapped = await runner(["bootstrap", domain, plistPath])
             if bootstrapped.ok {
-                let kickstarted = await runner(["kickstart", "-k", service])
-                if kickstarted.ok { return true }
+                // RunAtLoad already started it; -k would kill the newborn daemon.
+                return true
             }
 
             let print = await runner(["print", service])
             let status = print.ok ? parseStatus(print.stdout) : nil
-            if let status, status.loaded, normalize(status.plistPath) == normalize(plistPath) {
-                let kickstarted = await runner(["kickstart", "-k", service])
+            if status?.stopping == true {
+                guard await waitForRemoval(service: service, timeout: shutdownWaitTimeout,
+                                           retryDelay: retryDelay, runner: runner) else { return false }
+            }
+            if let status, status.loaded, !status.stopping,
+               normalize(status.plistPath) == normalize(plistPath),
+               normalize(status.programPath) == normalize(programPath) {
+                guard status.environment == expectedEnvironment else { return false }
+                if status.running { return true }
+                let kickstarted = await runner(["kickstart", service])
                 if kickstarted.ok { return true }
             }
 
@@ -314,7 +376,9 @@ enum DorydLaunchAgent {
             loaded: !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             running: output.contains("state = running") || output.contains("job state = running"),
             plistPath: value(for: "path", in: output),
-            programPath: value(for: "program", in: output)
+            programPath: value(for: "program", in: output),
+            stopping: ["sigtermed", "exiting"].contains(value(for: "state", in: output)?.lowercased() ?? ""),
+            environment: loadedEnvironment(output)
         )
     }
 
@@ -366,6 +430,20 @@ enum DorydLaunchAgent {
         return URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
+    private static func loadedEnvironment(_ output: String) -> [String: String]? {
+        var environment: [String: String]?
+        for line in output.split(whereSeparator: \.isNewline) {
+            let line = line.trimmingCharacters(in: .whitespaces)
+            if line == "environment = {" { environment = [:]; continue }
+            guard environment != nil else { continue }
+            if line == "}" { return environment }
+            guard let separator = line.range(of: " => ") else { continue }
+            let key = String(line[..<separator.lowerBound])
+            if key.hasPrefix("DORYD_") { environment?[key] = String(line[separator.upperBound...]) }
+        }
+        return nil
+    }
+
     private static func isMissingServiceError(_ message: String) -> Bool {
         message.localizedCaseInsensitiveContains("No such process")
             || message.localizedCaseInsensitiveContains("Could not find service")
@@ -390,12 +468,17 @@ enum DorydLaunchAgent {
             [.posixPermissions: 0o700],
             ofItemAtPath: runtimeDirectory.path
         )
-        if let existing = try? String(contentsOf: url, encoding: .utf8),
-           existing == install.plistContents {
+        let existed = FileManager.default.fileExists(atPath: url.path)
+        let existing = try? Data(contentsOf: url)
+        if let existing,
+           let oldPlist = try? PropertyListSerialization.propertyList(from: existing, options: [], format: nil) as? NSDictionary,
+           let newPlist = try? PropertyListSerialization.propertyList(from: Data(install.plistContents.utf8), options: [], format: nil) as? NSDictionary,
+           oldPlist == newPlist {
             return false
         }
         try install.plistContents.write(to: url, atomically: true, encoding: .utf8)
-        return true
+        // ensureCurrent compares the loaded environment when recreating a missing file.
+        return existed
     }
 
     static func launchAgentPlist(

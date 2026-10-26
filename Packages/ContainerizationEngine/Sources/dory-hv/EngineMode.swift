@@ -1514,8 +1514,9 @@ enum EngineMode {
             // after every boot and network transition. Keep its material on tmpfs: a privileged
             // container must not be able to turn durable Docker data into a root-sourced boot file.
         ]
+        // Live-restore is configured in daemon.json so VM shutdown can disable it through reload.
         script += GuestDockerRestartCommand.installerLines(
-            dockerdArguments: "dockerd -H unix:///var/run/docker.sock --log-level=warn --live-restore --feature containerd-snapshotter=true \(bridgeNetwork.dockerDaemonArguments) $DORY_RUNTIME_ARGS $DORY_AMD64_RUNTIME_ARGS $DORY_IPV6_DOCKER_ARGS"
+            dockerdArguments: "dockerd -H unix:///var/run/docker.sock --log-level=warn --feature containerd-snapshotter=true \(bridgeNetwork.dockerDaemonArguments) $DORY_RUNTIME_ARGS $DORY_AMD64_RUNTIME_ARGS $DORY_IPV6_DOCKER_ARGS"
         )
         script += [
             GuestStorageReclaimCommand.periodicLoop(),

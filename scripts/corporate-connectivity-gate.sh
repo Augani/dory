@@ -70,7 +70,16 @@ require_source 'temporaryCABundle' dory-core-swift/Sources/DorydKit/CorporateCon
 require_source 'reconcileAfterWake' dory-core-swift/Sources/DorydKit/CorporateConnectivity.swift 'wake reconciliation'
 require_source 'lastFingerprint.*snapshot\.fingerprint' dory-core-swift/Sources/DorydKit/CorporateConnectivity.swift 'DHCP/interface/VPN fingerprint reconciliation'
 require_source 'DORY_CORPORATE_CHANGED=0' dory-core-swift/Sources/DorydKit/DockerTier.swift 'effective digest no-op'
-require_source '--live-restore' Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift 'live-restore dockerd reconfiguration'
+require_source '"live-restore":true' dory-core-swift/Sources/DoryCore/GuestShutdownCommand.swift 'default live-restore for daemon-only reconfiguration'
+require_source '"live-restore":true' guest/initfs/init 'default live-restore in fallback init'
+if rg -q -- '--live-restore' "$ROOT/Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift"; then
+  echo 'corporate connectivity gate: CLI live-restore conflicts with VM-shutdown config reload' >&2
+  exit 1
+fi
+require_source 'kill -HUP' dory-core-swift/Sources/DoryCore/GuestShutdownCommand.swift 'VM-only daemon config reload'
+require_source 'LiveRestoreEnabled' dory-core-swift/Sources/DoryCore/GuestShutdownCommand.swift 'effective reload confirmation before shutdown'
+require_source 'docker -H unix:///var/run/docker.sock info' dory-core-swift/Sources/DoryCore/GuestShutdownCommand.swift 'local daemon reload probe independent of DOCKER_HOST'
+require_source 'DORY_LIVE_RESTORE.*= false' dory-core-swift/Sources/DoryCore/GuestShutdownCommand.swift 'confirmed disabled live-restore before TERM'
 require_source 'network corporate status' dory-core-swift/Sources/dorydctl/main.swift 'CLI status/plan/apply surface'
 require_source 'CORPORATE CONNECTIVITY' Dory/Features/Settings/SettingsView.swift 'guided Settings surface'
 

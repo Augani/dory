@@ -837,6 +837,22 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(shareDevice.tag, "src")
         XCTAssertTrue(shareDevice.share is VZSingleDirectoryShare)
         let bootScript = try String(contentsOfFile: "\(base)/dorycfg/boot.sh", encoding: .utf8)
+        // Exercise the helper emitted by the real VZ builder, including shutdown's quiet call.
+        let mountsPath = "\(base)/mounts"
+        try "/dev/vdb /var/lib/docker ext4 rw 0 0\n".write(
+            toFile: mountsPath, atomically: true, encoding: .utf8
+        )
+        let mountpointPrefix = try XCTUnwrap(bootScript.components(separatedBy: "\nmkdir -p /proc").first)
+        let mountpointCheck = Process()
+        mountpointCheck.executableURL = URL(fileURLWithPath: "/bin/sh")
+        mountpointCheck.arguments = [
+            "-c",
+            mountpointPrefix.replacingOccurrences(of: "/proc/mounts", with: mountsPath)
+                + "\nmountpoint /var/lib/docker && mountpoint -q /var/lib/docker && ! mountpoint -q /missing",
+        ]
+        try mountpointCheck.run()
+        mountpointCheck.waitUntilExit()
+        XCTAssertEqual(mountpointCheck.terminationStatus, 0)
         XCTAssertTrue(bootScript.contains(
             "export DORY_OPERATION_ID='\(DoryOperationIdentity.canonical(operationID))'"
         ))
@@ -844,7 +860,7 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertTrue(bootScript.contains("export APP_ENV='dev build'"))
         XCTAssertTrue(bootScript.contains("/usr/lib/dory/configure-machine"))
         XCTAssertTrue(bootScript.contains("mount -t virtiofs -o 'ro' 'src' '/workspace/src'"))
-        XCTAssertTrue(bootScript.contains("kill -TERM $DORY_DOCKERD_PID"))
+        XCTAssertTrue(bootScript.contains("dory_stop_service dockerd"))
         XCTAssertTrue(bootScript.contains("umount /var/lib/docker"))
         XCTAssertTrue(bootScript.contains("blockdev --getsize64 /dev/vdb"))
         XCTAssertTrue(bootScript.contains("dumpe2fs -h /dev/vdb"))

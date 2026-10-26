@@ -1,10 +1,52 @@
 import Foundation
+import Darwin
 import DoryOperations
 import Testing
 @testable import Dory
 
 @MainActor
 struct DorydLaunchAgentTests {
+    @Test func launchdPlistBudgetsCoverTheActualHostShutdownDeadline() throws {
+        let repository = ProcessInfo.processInfo.environment["DORY_TEST_REPO_ROOT"].map { URL(fileURLWithPath: $0) }
+            ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let timing = try String(
+            contentsOf: repository.appendingPathComponent("dory-core-swift/Sources/DoryCore/DoryEngineShutdownTiming.swift"),
+            encoding: .utf8
+        )
+        func seconds(_ name: String) throws -> Int {
+            let line = try #require(timing.split(separator: "\n").first { $0.contains("let \(name):") })
+            let value = try #require(line.split(separator: "=").last)
+            return try #require(Int(value.trimmingCharacters(in: .whitespaces)))
+        }
+        let hostSeconds = try seconds("hostTerminationSeconds")
+        #expect(hostSeconds > (try seconds("helperWatchdogSeconds")))
+        var plists = [
+            DorydLaunchAgent.launchAgentPlist(
+                program: "/Applications/Dory.app/Contents/Helpers/doryd",
+                helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers")
+            ),
+            try String(contentsOf: repository.appendingPathComponent("dory-core-swift/launchd/dev.dory.doryd.plist"), encoding: .utf8),
+        ]
+        for path in ["scripts/build.sh", "scripts/bundle-engine.sh"] {
+            let source = try String(contentsOf: repository.appendingPathComponent(path), encoding: .utf8)
+            let templates = source.components(separatedBy: "<?xml").dropFirst().compactMap { section -> String? in
+                guard let end = section.range(of: "</plist>") else { return nil }
+                let xml = "<?xml" + section[..<end.upperBound]
+                return xml.contains("<key>ExitTimeOut</key>") ? xml : nil
+            }
+            #expect(templates.count == 1)
+            plists.append(contentsOf: templates)
+        }
+        for plist in plists {
+            let root = try #require(
+                PropertyListSerialization.propertyList(from: Data(plist.utf8), options: [], format: nil) as? [String: Any]
+            )
+            let timeout = try #require(root["ExitTimeOut"] as? Int)
+            #expect(timeout == DorydLaunchAgent.exitTimeoutSeconds)
+            #expect(timeout >= hostSeconds + 10)
+        }
+    }
+
     @Test func launchAgentPrefersRetinaCapableVMMApplication() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("DoryVMMBundle-\(UUID().uuidString)", isDirectory: true)
@@ -91,6 +133,7 @@ struct DorydLaunchAgentTests {
                 path = \(plistURL.path)
                 state = waiting
                 program = \(dorydURL.path)
+                \(LifecycleFixture.environmentBlock(program: dorydURL, helpers: helpersURL))
             }
             """
         )
@@ -106,7 +149,7 @@ struct DorydLaunchAgentTests {
         #expect(ok)
         #expect(recorder.commands == [
             ["print", DorydLaunchAgent.serviceTarget()],
-            ["kickstart", "-k", DorydLaunchAgent.serviceTarget()],
+            ["kickstart", DorydLaunchAgent.serviceTarget()],
         ])
     }
 
@@ -172,17 +215,11 @@ struct DorydLaunchAgentTests {
         #expect(decision == .replace)
     }
 
-    @Test func ensureCurrentReplacesStaleLaunchdJob() async {
-        let temporaryDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("DorydLaunchAgentTests-\(UUID().uuidString)", isDirectory: true)
-        let launchAgentsDirectory = temporaryDirectory.appendingPathComponent("LaunchAgents", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
-
+    @Test func ensureCurrentReplacesStaleLaunchdJob() async throws {
+        let fixture = try LifecycleFixture()
+        let launchAgentsDirectory = fixture.agents
+        defer { fixture.remove() }
         let currentPlist = launchAgentsDirectory.appendingPathComponent("\(DorydLaunchAgent.label).plist").path
-        let currentProgram = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/doryd").path
-        guard FileManager.default.isExecutableFile(atPath: currentProgram) else {
-            return
-        }
 
         let recorder = LaunchctlRecorder(printOutput:
             """
@@ -194,12 +231,12 @@ struct DorydLaunchAgentTests {
             """
         )
 
-        let ok = await DorydLaunchAgent.ensureCurrent(bundle: .main, launchAgentsDirectory: launchAgentsDirectory) { arguments in
+        let ok = await DorydLaunchAgent.ensureCurrent(bundle: fixture.bundle, launchAgentsDirectory: launchAgentsDirectory) { arguments in
             recorder.run(arguments)
         }
 
         #expect(ok)
-        #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootout", "bootstrap", "kickstart"])
+        #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootout", "print", "bootstrap"])
         #expect(recorder.commands.first { $0.first == "bootstrap" }?.last == currentPlist)
     }
 
@@ -261,7 +298,7 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>dory.local</string>"))
         #expect(plist.contains("<key>StandardOutPath</key>"))
         #expect(plist.contains("<string>\(DorydLaunchAgent.logPath)</string>"))
-        #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootstrap", "kickstart"])
+        #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootstrap"])
         #expect(recorder.commands.first { $0.first == "bootstrap" }?.last == plistURL.path)
     }
 
@@ -321,6 +358,7 @@ struct DorydLaunchAgentTests {
                 path = \(plistURL.path)
                 state = running
                 program = \(dorydURL.path)
+                \(LifecycleFixture.environmentBlock(program: dorydURL, helpers: helpersURL))
             }
             """
         )
@@ -336,7 +374,7 @@ struct DorydLaunchAgentTests {
         let plist = try String(contentsOf: plistURL, encoding: .utf8)
         #expect(ok)
         #expect(plist.contains("<string>team.dory.local</string>"))
-        #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootout", "bootstrap", "kickstart"])
+        #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootout", "print", "bootstrap"])
 
         let rejectingRecorder = LaunchctlRecorder(
             printOutput:
@@ -345,6 +383,7 @@ struct DorydLaunchAgentTests {
                 path = \(plistURL.path)
                 state = running
                 program = \(dorydURL.path)
+                \(LifecycleFixture.environmentBlock(program: dorydURL, helpers: helpersURL))
             }
             """,
             bootoutStatus: 5,
@@ -403,7 +442,7 @@ struct DorydLaunchAgentTests {
         }
 
         #expect(ok)
-        #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootout", "bootstrap", "print", "bootstrap", "kickstart"])
+        #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootout", "print", "bootstrap", "print", "bootstrap"])
     }
 
     @Test func bootoutCurrentStopsLaunchAgentService() async {
@@ -534,7 +573,7 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>4096</string>"))
         #expect(plist.contains("<key>ExitTimeOut</key>"))
         #expect(plist.contains("<integer>\(DorydLaunchAgent.exitTimeoutSeconds)</integer>"))
-        #expect(DorydLaunchAgent.exitTimeoutSeconds > 30)
+        #expect(DorydLaunchAgent.exitTimeoutSeconds >= 70)
     }
 
     @Test func launchAgentCarriesExplicitPersistedEngineChoices() throws {
@@ -612,6 +651,188 @@ struct DorydLaunchAgentTests {
         #expect(longestMachineSocket.utf8.count <= 103)
     }
 
+
+    @Test func missingPlistRecreationLeavesMatchingRunningJobAlone() async throws {
+        let fixture = try LifecycleFixture()
+        defer { fixture.remove() }
+        let recorder = LaunchctlRecorder(printOutput: fixture.status("running"))
+        let ok = await DorydLaunchAgent.ensureCurrent(
+            bundle: fixture.bundle, launchAgentsDirectory: fixture.agents
+        ) { recorder.run($0) }
+        #expect(ok)
+        #expect(FileManager.default.fileExists(atPath: fixture.plist.path))
+        #expect(recorder.commands.map { $0[0] } == ["print"])
+    }
+
+
+    @Test func missingPlistWithChangedLoadedSettingsStillReplaces() async throws {
+        let fixture = try LifecycleFixture()
+        defer { fixture.remove() }
+        let recorder = LaunchctlRecorder(printOutput: fixture.status("running"))
+        let ok = await DorydLaunchAgent.ensureCurrent(
+            bundle: fixture.bundle, launchAgentsDirectory: fixture.agents,
+            configuration: .init(domainSuffix: "changed.dory.local"),
+            bootstrapRetryDelay: .zero
+        ) { recorder.run($0) }
+        #expect(ok)
+        #expect(recorder.commands.map { $0[0] } == ["print", "bootout", "print", "bootstrap"])
+        #expect(try String(contentsOf: fixture.plist, encoding: .utf8).contains("changed.dory.local"))
+    }
+
+    @Test func missingPlistWithUnknownLoadedSettingsNeverClaimsSuccess() async throws {
+        let fixture = try LifecycleFixture()
+        defer { fixture.remove() }
+        let recorder = LaunchctlRecorder(printOutput: """
+        gui/501/dev.dory.doryd = {
+            path = \(fixture.plist.path)
+            state = running
+            program = \(fixture.program.path)
+        }
+        """)
+        for _ in 0..<2 {
+            let ok = await DorydLaunchAgent.ensureCurrent(
+                bundle: fixture.bundle, launchAgentsDirectory: fixture.agents
+            ) { recorder.run($0) }
+            #expect(!ok)
+        }
+        #expect(recorder.commands.map { $0[0] } == ["print", "print"])
+    }
+
+    @Test func loadedSettingsIgnoreInheritedAndLaunchdInjectedEnvironment() {
+        let status = DorydLaunchAgent.parseStatus("""
+        inherited environment = {
+            DORYD_MEMORY_MB => 256
+        }
+        environment = {
+            OSLogRateLimit => 64
+            DORYD_MEMORY_MB => 8192
+            XPC_SERVICE_NAME => dev.dory.doryd
+        }
+        """)
+        #expect(status.environment == ["DORYD_MEMORY_MB": "8192"])
+    }
+
+    @Test func changedExitTimeoutWithSameLoadedEnvironmentStillReplaces() async throws {
+        let fixture = try LifecycleFixture()
+        defer { fixture.remove() }
+        let xml = DorydLaunchAgent.launchAgentPlist(
+            program: fixture.program.path, helpersDirectory: fixture.helpers
+        )
+        var old = try PropertyListSerialization.propertyList(from: Data(xml.utf8), options: [], format: nil) as! [String: Any]
+        old["ExitTimeOut"] = 45
+        try PropertyListSerialization.data(fromPropertyList: old, format: .xml, options: 0).write(to: fixture.plist)
+        let recorder = LaunchctlRecorder(printOutput: fixture.status("running"))
+        let ok = await DorydLaunchAgent.ensureCurrent(
+            bundle: fixture.bundle, launchAgentsDirectory: fixture.agents,
+            bootstrapRetryDelay: .zero
+        ) { recorder.run($0) }
+        #expect(ok)
+        #expect(recorder.commands.map { $0[0] } == ["print", "bootout", "print", "bootstrap"])
+        let updated = try PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.plist), options: [], format: nil) as! [String: Any]
+        #expect(updated["ExitTimeOut"] as? Int == DorydLaunchAgent.exitTimeoutSeconds)
+    }
+
+    @Test func equivalentBinaryPlistDoesNotRestartMatchingJob() async throws {
+        let fixture = try LifecycleFixture()
+        defer { fixture.remove() }
+        let xml = DorydLaunchAgent.launchAgentPlist(
+            program: fixture.program.path, helpersDirectory: fixture.helpers
+        )
+        let object = try PropertyListSerialization.propertyList(from: Data(xml.utf8), options: [], format: nil)
+        let binary = try PropertyListSerialization.data(fromPropertyList: object, format: .binary, options: 0)
+        try binary.write(to: fixture.plist)
+        let recorder = LaunchctlRecorder(printOutput: fixture.status("running"))
+        let ok = await DorydLaunchAgent.ensureCurrent(
+            bundle: fixture.bundle, launchAgentsDirectory: fixture.agents
+        ) { recorder.run($0) }
+        #expect(ok)
+        #expect(recorder.commands.map { $0[0] } == ["print"])
+        #expect(try Data(contentsOf: fixture.plist) == binary)
+    }
+
+    @Test func reopenedGUIWaitsForStoppingJobWithoutAnotherBootout() async throws {
+        let fixture = try LifecycleFixture()
+        defer { fixture.remove() }
+        let stopping = fixture.status("SIGTERMed")
+        let recorder = LaunchctlRecorder(printOutput: "", queuedPrints: [stopping, stopping, nil])
+        let ok = await DorydLaunchAgent.ensureCurrent(
+            bundle: fixture.bundle, launchAgentsDirectory: fixture.agents,
+            bootstrapRetryDelay: .zero
+        ) { recorder.run($0) }
+        #expect(ok)
+        #expect(recorder.commands.map { $0[0] } == ["print", "print", "print", "bootstrap"])
+        #expect(!recorder.commands.contains { $0.contains("-k") || $0.first == "bootout" })
+    }
+
+    @Test func stoppingJobWaitIsBoundedAndDoesNotBootstrapOnTimeout() async throws {
+        let fixture = try LifecycleFixture()
+        defer { fixture.remove() }
+        let recorder = LaunchctlRecorder(printOutput: fixture.status("SIGTERMed"))
+        let ok = await DorydLaunchAgent.ensureCurrent(
+            bundle: fixture.bundle, launchAgentsDirectory: fixture.agents,
+            bootstrapRetryDelay: .zero, shutdownWaitTimeout: .zero
+        ) { recorder.run($0) }
+        #expect(!ok)
+        #expect(recorder.commands.map { $0[0] } == ["print", "print"])
+    }
+
+    @Test func bootstrapInProgressWaitsForStoppingJobBeforeRetry() async throws {
+        let fixture = try LifecycleFixture()
+        defer { fixture.remove() }
+        let stopping = fixture.status("SIGTERMed")
+        let recorder = LaunchctlRecorder(
+            printOutput: "", bootstrapStatuses: [37, 0],
+            queuedPrints: [nil, stopping, stopping, nil]
+        )
+        let ok = await DorydLaunchAgent.ensureCurrent(
+            bundle: fixture.bundle, launchAgentsDirectory: fixture.agents,
+            bootstrapRetryDelay: .zero
+        ) { recorder.run($0) }
+        #expect(ok)
+        #expect(recorder.commands.map { $0[0] } == ["print", "bootstrap", "print", "print", "print", "bootstrap"])
+        #expect(!recorder.commands.contains { $0.contains("-k") || $0.first == "bootout" })
+    }
+
+    @Test func executedBootstrapCommandsKeepRunAtLoadChildAlive() async throws {
+        let fixture = try LifecycleFixture()
+        defer { fixture.stopOwnedChild(); fixture.remove() }
+        let script = fixture.root.appendingPathComponent("launchctl-fixture.sh")
+        // Execute the real command sequence against an owned stand-in, never /bin/launchctl.
+        try """
+        #!/bin/sh
+        set -eu
+        state=\(fixture.root.path)
+        printf '%s\\n' "$*" >>"$state/commands"
+        case "$1" in
+          print) echo 'Could not find service' >&2; exit 1 ;;
+          bootstrap)
+            /bin/sleep 30 </dev/null >/dev/null 2>&1 &
+            echo $! >"$state/child.pid"
+            ;;
+          kickstart)
+            if [ "${2:-}" = -k ]; then
+              /bin/sleep 0.018
+              kill -TERM "$(cat "$state/child.pid")"
+              : >"$state/newborn-killed"
+            fi
+            ;;
+          *) exit 2 ;;
+        esac
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let ok = await DorydLaunchAgent.ensureCurrent(
+            bundle: fixture.bundle, launchAgentsDirectory: fixture.agents
+        ) { arguments in
+            LifecycleFixture.execute(script, arguments: arguments)
+        }
+        let child = try #require(fixture.childPID)
+        #expect(ok)
+        #expect(kill(child, 0) == 0)
+        #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("newborn-killed").path))
+        let commands = try String(contentsOf: fixture.root.appendingPathComponent("commands"), encoding: .utf8)
+        #expect(!commands.contains("kickstart"))
+    }
+
     @Test func launchAgentDoesNotOwnRuntimeModePolicy() {
         let plist = DorydLaunchAgent.launchAgentPlist(
             program: "/Applications/Dory.app/Contents/Helpers/doryd",
@@ -622,11 +843,96 @@ struct DorydLaunchAgentTests {
     }
 }
 
+
+@MainActor
+private struct LifecycleFixture {
+    let root: URL
+    let bundle: Bundle
+    let helpers: URL
+    let agents: URL
+    var program: URL { helpers.appendingPathComponent("doryd") }
+    var plist: URL { agents.appendingPathComponent("\(DorydLaunchAgent.label).plist") }
+
+    init() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("DoryLifecycle-\(UUID().uuidString)")
+        let app = root.appendingPathComponent("Dory.app")
+        helpers = app.appendingPathComponent("Contents/Helpers")
+        agents = root.appendingPathComponent("LaunchAgents")
+        try FileManager.default.createDirectory(at: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+        try """
+        <?xml version="1.0"?><plist version="1.0"><dict>
+        <key>CFBundleIdentifier</key><string>dev.dory.lifecycle-fixture</string>
+        </dict></plist>
+        """.write(to: app.appendingPathComponent("Contents/Info.plist"), atomically: true, encoding: .utf8)
+        let executable = helpers.appendingPathComponent("doryd")
+        try "#!/bin/sh\n".write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        guard let found = Bundle(url: app) else { throw CocoaError(.fileReadCorruptFile) }
+        bundle = found
+    }
+
+    func status(_ state: String, configuration: DorydLaunchAgent.Configuration = .init()) -> String {
+        """
+        gui/501/dev.dory.doryd = {
+            path = \(plist.path)
+            state = \(state)
+            program = \(program.path)
+            \(Self.environmentBlock(program: program, helpers: helpers, configuration: configuration))
+        }
+        """
+    }
+
+    static func environmentBlock(program: URL, helpers: URL, configuration: DorydLaunchAgent.Configuration = .init()) -> String {
+        let plist = DorydLaunchAgent.launchAgentPlist(program: program.path, helpersDirectory: helpers, configuration: configuration)
+        let root = try! PropertyListSerialization.propertyList(from: Data(plist.utf8), options: [], format: nil) as! [String: Any]
+        let environment = root["EnvironmentVariables"] as! [String: String]
+        return "environment = {\n" + environment.keys.sorted().map { "\($0) => \(environment[$0]!)" }.joined(separator: "\n") + "\n}"
+    }
+
+    var childPID: pid_t? {
+        guard let text = try? String(contentsOf: root.appendingPathComponent("child.pid"), encoding: .utf8) else { return nil }
+        return pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    func stopOwnedChild() {
+        guard let pid = childPID, pid > 1 else { return }
+        _ = kill(pid, SIGTERM)
+        for _ in 0..<100 {
+            if kill(pid, 0) == -1 && errno == ESRCH { return }
+            usleep(10_000)
+        }
+        #expect(kill(pid, 0) == -1, "owned fixture sleep process must be cleaned up")
+    }
+
+    func remove() { try? FileManager.default.removeItem(at: root) }
+
+    nonisolated static func execute(_ executable: URL, arguments: [String]) -> DorydLaunchAgent.CommandResult {
+        let process = Process()
+        let output = Pipe()
+        let error = Pipe()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = error
+        do { try process.run() }
+        catch { return .init(status: 127, stdout: "", stderr: "\(error)") }
+        let stdout = output.fileHandleForReading.readDataToEndOfFile()
+        let stderr = error.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return .init(status: process.terminationStatus,
+                     stdout: String(decoding: stdout, as: UTF8.self),
+                     stderr: String(decoding: stderr, as: UTF8.self))
+    }
+}
+
 private final class LaunchctlRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private let printStatus: Int32
     private let printOutput: String
     private var bootstrapStatuses: [Int32]
+    private var queuedPrints: [String?]
+    private var removed = false
     private let bootoutStatus: Int32
     private let bootoutStderr: String
     private var recorded: [[String]] = []
@@ -635,12 +941,14 @@ private final class LaunchctlRecorder: @unchecked Sendable {
         printStatus: Int32 = 0,
         printOutput: String,
         bootstrapStatuses: [Int32] = [],
+        queuedPrints: [String?] = [],
         bootoutStatus: Int32 = 0,
         bootoutStderr: String = ""
     ) {
         self.printStatus = printStatus
         self.printOutput = printOutput
         self.bootstrapStatuses = bootstrapStatuses
+        self.queuedPrints = queuedPrints
         self.bootoutStatus = bootoutStatus
         self.bootoutStderr = bootoutStderr
     }
@@ -653,18 +961,28 @@ private final class LaunchctlRecorder: @unchecked Sendable {
 
     func run(_ arguments: [String]) -> DorydLaunchAgent.CommandResult {
         lock.lock()
+        defer { lock.unlock() }
         recorded.append(arguments)
         let bootstrapStatus = arguments.first == "bootstrap" && !bootstrapStatuses.isEmpty
             ? bootstrapStatuses.removeFirst()
             : nil
-        lock.unlock()
         if arguments.first == "print" {
+            if !queuedPrints.isEmpty {
+                if let output = queuedPrints.removeFirst() {
+                    return DorydLaunchAgent.CommandResult(status: 0, stdout: output, stderr: "")
+                }
+                return DorydLaunchAgent.CommandResult(status: 1, stdout: "", stderr: "Could not find service")
+            }
+            if removed {
+                return DorydLaunchAgent.CommandResult(status: 1, stdout: "", stderr: "Could not find service")
+            }
             return DorydLaunchAgent.CommandResult(status: printStatus, stdout: printOutput, stderr: "")
         }
         if let bootstrapStatus {
             return DorydLaunchAgent.CommandResult(status: bootstrapStatus, stdout: "", stderr: "")
         }
         if arguments.first == "bootout" {
+            if bootoutStatus == 0 { removed = true }
             return DorydLaunchAgent.CommandResult(status: bootoutStatus, stdout: "", stderr: bootoutStderr)
         }
         return DorydLaunchAgent.CommandResult(status: 0, stdout: "", stderr: "")
