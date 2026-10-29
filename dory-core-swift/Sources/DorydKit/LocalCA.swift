@@ -136,7 +136,11 @@ public struct DoryLocalCA {
         let certificate = directory.appendingPathComponent("\(safeName).crt")
         let key = directory.appendingPathComponent("\(safeName).key")
         let csr = directory.appendingPathComponent("\(safeName).csr")
-        defer { try? fileManager.removeItem(at: csr) }
+        let extensionsFile = directory.appendingPathComponent("\(safeName).extensions-\(UUID().uuidString).cnf")
+        defer {
+            try? fileManager.removeItem(at: csr)
+            try? fileManager.removeItem(at: extensionsFile)
+        }
 
         var san = "subjectAltName=DNS:\(domain),DNS:*.\(domain)"
         for name in extraSANs where !name.isEmpty {
@@ -147,9 +151,11 @@ public struct DoryLocalCA {
             "-keyout", key.path, "-out", csr.path, "-subj", "/CN=\(domain)",
             "-addext", san,
         ])
+        try Data("[dory_leaf]\n\(san)\n".utf8).write(to: extensionsFile)
         try DoryShell.run(openssl, [
             "x509", "-req", "-in", csr.path, "-CA", caCertificate.path, "-CAkey", caKey.path,
-            "-CAcreateserial", "-out", certificate.path, "-days", "825", "-copy_extensions", "copyall",
+            "-CAcreateserial", "-out", certificate.path, "-days", "825",
+            "-extfile", extensionsFile.path, "-extensions", "dory_leaf",
         ])
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: key.path)
         try fileManager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: certificate.path)

@@ -15,7 +15,7 @@ struct LocalCATests {
         #expect(ca.caExists)
         #expect(FileManager.default.fileExists(atPath: ca.caCertificate.path))
 
-        let pair = try ca.issue(domain: "web.dory.local")
+        let pair = try ca.issue(domain: "web.dory.local", extraSANs: ["api.dory.local"])
         #expect(FileManager.default.fileExists(atPath: pair.certificate.path))
         #expect(FileManager.default.fileExists(atPath: pair.privateKey.path))
 
@@ -25,7 +25,20 @@ struct LocalCATests {
         // The SAN must include the requested domain.
         let text = try ca.certificateText(pair.certificate)
         #expect(text.contains("web.dory.local"))
+        #expect(text.contains("api.dory.local"))
         #expect(text.contains("Dory Local CA"))
+    }
+
+    @Test func rejectsCertificateNamesThatCouldInjectOpenSSLConfiguration() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("dory-ca-invalid-name-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let ca = LocalCA(directory: directory)
+        guard ca.opensslPath != nil else { return }
+        #expect(throws: ShellError.self) {
+            try ca.issue(domain: "web.dory.local\n[attacker]")
+        }
     }
 
     @Test func localTrustParserAcceptsOnlyAValidDoryCA() throws {

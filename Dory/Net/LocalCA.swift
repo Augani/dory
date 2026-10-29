@@ -4,6 +4,7 @@ nonisolated enum ShellError: Error, Sendable {
     case launchFailed(String)
     case nonZeroExit(Int32, String)
     case toolNotFound(String)
+    case invalidArgument(String)
 }
 
 nonisolated enum Shell {
@@ -112,11 +113,18 @@ nonisolated struct LocalCA: Sendable {
     @discardableResult
     func issue(domain: String, extraSANs: [String] = []) throws -> CertificatePair {
         guard let openssl = opensslPath else { throw ShellError.toolNotFound("openssl") }
+        try Self.validateCertificateName(domain)
+        for name in extraSANs where !name.isEmpty { try Self.validateCertificateName(name) }
         try ensureCA()
-        let certificate = directory.appendingPathComponent("\(domain).crt")
-        let key = directory.appendingPathComponent("\(domain).key")
-        let csr = directory.appendingPathComponent("\(domain).csr")
-        defer { try? FileManager.default.removeItem(at: csr) }
+        let safeName = domain.replacingOccurrences(of: "/", with: "_")
+        let certificate = directory.appendingPathComponent("\(safeName).crt")
+        let key = directory.appendingPathComponent("\(safeName).key")
+        let csr = directory.appendingPathComponent("\(safeName).csr")
+        let extensionsFile = directory.appendingPathComponent("\(safeName).extensions-\(UUID().uuidString).cnf")
+        defer {
+            try? FileManager.default.removeItem(at: csr)
+            try? FileManager.default.removeItem(at: extensionsFile)
+        }
 
         // TLS wildcards match a single label, so a `*.dory.local` cert does NOT cover multi-level
         // names like `web.default.k8s.dory.local`. Callers pass those explicitly as extra SANs.
@@ -127,9 +135,11 @@ nonisolated struct LocalCA: Sendable {
             "-keyout", key.path, "-out", csr.path, "-subj", "/CN=\(domain)",
             "-addext", san,
         ])
+        try Data("[dory_leaf]\n\(san)\n".utf8).write(to: extensionsFile)
         try Shell.run(openssl, [
             "x509", "-req", "-in", csr.path, "-CA", caCertificate.path, "-CAkey", caKey.path,
-            "-CAcreateserial", "-out", certificate.path, "-days", "825", "-copy_extensions", "copyall",
+            "-CAcreateserial", "-out", certificate.path, "-days", "825",
+            "-extfile", extensionsFile.path, "-extensions", "dory_leaf",
         ])
         return CertificatePair(certificate: certificate, privateKey: key)
     }
@@ -158,6 +168,19 @@ nonisolated struct LocalCA: Sendable {
     func certificateText(_ certificate: URL) throws -> String {
         guard let openssl = opensslPath else { throw ShellError.toolNotFound("openssl") }
         return try Shell.run(openssl, ["x509", "-in", certificate.path, "-noout", "-text"])
+    }
+
+    private static func validateCertificateName(_ name: String) throws {
+        var value = name
+        if value.hasPrefix("*.") { value = String(value.dropFirst(2)) }
+        let labels = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard !labels.isEmpty else { throw ShellError.invalidArgument("certificate name: \(name)") }
+        for label in labels {
+            guard !label.isEmpty,
+                  label.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else {
+                throw ShellError.invalidArgument("certificate name: \(name)")
+            }
+        }
     }
 
 }
